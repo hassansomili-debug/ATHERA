@@ -14,10 +14,13 @@ const API_ORIGIN = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:800
 
 const isHostedBuild = Boolean(process.env.VERCEL) || process.env.CI === "1";
 if (isHostedBuild && !process.env.NEXT_PUBLIC_API_BASE_URL) {
-  throw new Error(
-    "NEXT_PUBLIC_API_BASE_URL is required for a hosted build: it is baked into the " +
-      "Content-Security-Policy at build time, so a missing value silently blocks every " +
-      "API call in the browser. Set it in the Vercel project's environment variables.",
+  console.warn(
+    "\n⚠️  NEXT_PUBLIC_API_BASE_URL is not set for this hosted build.\n" +
+      "   It is baked into the Content-Security-Policy at build time, so the deployed\n" +
+      "   site will be able to reach only http://localhost:8000 — every API call from\n" +
+      "   the browser will be blocked.\n" +
+      "   The build continues, and the app announces the misconfiguration in the UI\n" +
+      "   instead of failing silently. Set the variable and redeploy when the API is up.\n",
   );
 }
 
