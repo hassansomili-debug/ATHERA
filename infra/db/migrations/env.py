@@ -30,7 +30,11 @@ DATABASE_URL = os.getenv(
     "DATABASE_MIGRATION_URL",
     "postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera",
 )
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+# `%` يُفلَّت قبل التمرير: alembic يمرّر القيمة عبر ConfigParser الذي يقرأ
+# `%` كبداية استيفاء. وكلمة مرور مُرمَّزة للرابط تحمل `%40` لأي `@` — وهو
+# رمز شائع في كلمات المرور. تمريرها كما هي يُفشل الترحيل برسالة عن «صياغة
+# استيفاء» لا تذكر قاعدة البيانات ولا الكلمة، فيضيع الوقت في المكان الخطأ.
+config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

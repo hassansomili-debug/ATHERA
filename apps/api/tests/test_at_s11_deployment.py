@@ -142,3 +142,40 @@ def test_no_migration_drops_a_constraint_through_the_naming_convention():
         "استخدم SQL صريحًا لحذف قيد check حتى لا يتدخل اصطلاح التسمية: "
         f"{offenders}"
     )
+
+
+def test_migration_url_survives_a_password_that_needs_url_encoding():
+    """كلمة مرور فيها `@` تكسر الترحيل ما لم يُفلَّت `%`.
+
+    alembic يمرّر الرابط عبر ConfigParser الذي يقرأ `%` كبداية استيفاء،
+    وكلمة مُرمَّزة للرابط تحمل `%40` لأي `@` — وهو رمز شائع جدًّا. النتيجة
+    فشل برسالة عن «صياغة استيفاء» لا تذكر قاعدة البيانات ولا الكلمة.
+
+    وقع هذا فعلًا على Supabase وأضاع وقتًا في المكان الخطأ.
+    """
+    import configparser
+    import urllib.parse
+
+    password = "Secret@1234#x"
+    encoded = urllib.parse.quote(password, safe="")
+    url = f"postgresql+psycopg://user:{encoded}@host:5432/db"
+
+    parser = configparser.ConfigParser()
+    parser.add_section("alembic")
+
+    # الرفض يقع عند **الضبط** لا عند القراءة — ولهذا يفشل الترحيل قبل أن
+    # يلمس قاعدة البيانات، فلا يظهر في الرسالة ما يدل على مصدر الخلل.
+    with pytest.raises(ValueError, match="interpolation"):
+        parser.set("alembic", "raw_url", url)
+
+    # كما صار: يمرّ ويعيد الرابط سليمًا بعد فكّ الإفلات
+    parser.set("alembic", "escaped_url", url.replace("%", "%%"))
+    assert parser.get("alembic", "escaped_url") == url
+
+
+def test_alembic_env_escapes_the_url_before_handing_it_to_config():
+    """الفحص على المصدر: القاعدة تُنتهك بحذف `.replace` لا بتعديل سلوك آخر."""
+    source = (REPO / "infra/db/migrations/env.py").read_text(encoding="utf-8")
+    assert 'DATABASE_URL.replace("%", "%%")' in source, (
+        "env.py يجب أن يفلّت `%` قبل set_main_option"
+    )
