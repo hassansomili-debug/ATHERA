@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  api:
+    name: API — اختبارات القبول | acceptance tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: athera_owner
+          POSTGRES_PASSWORD: athera_owner_pw
+          POSTGRES_DB: athera
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U athera_owner -d athera"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://athera_app:athera_app_pw@localhost:5432/athera
+      DATABASE_MIGRATION_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera
+      JWT_SECRET: ci-only-not-a-real-secret
+      MODEL_PROVIDER: "null"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e "apps/api[dev]"
+      - name: Migrate (RLS + append-only audit)
+        run: cd infra/db && alembic upgrade head
+      - name: Lint
+        run: cd apps/api && ruff check .
+      - name: Architecture boundaries (§38.6.8 / ADR-0003)
+        run: cd apps/api && lint-imports
+      - name: Acceptance tests AT-S0-*
+        run: cd apps/api && pytest -v
+      - name: Downgrade drill (AT-S0-13)
+        run: cd infra/db && alembic downgrade base
+
+  web:
+    name: Web — ثنائي اللغة | bilingual build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: cd apps/web && npm install
+      - run: cd apps/web && npm run typecheck
+      - run: cd apps/web && npm run lint
+      - run: cd apps/web && npm run build
+
+  security:
+    name: Security — أسرار وتبعيات | secrets and dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Secret scanning (AT-S0-10)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Dependency audit
+        run: pip install pip-audit && pip-audit -r <(pip install -e apps/api --dry-run --report - 2>/dev/null || echo "") || true

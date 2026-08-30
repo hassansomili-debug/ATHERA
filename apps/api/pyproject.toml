@@ -1,0 +1,54 @@
+[project]
+name = "athera-api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "pydantic[email]>=2.9",
+  "pydantic-settings>=2.6",
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30",
+  "alembic>=1.14",
+  "argon2-cffi>=23.1",
+  "pyjwt>=2.9",
+  "pyotp>=2.9",
+  "boto3>=1.35",
+  "uuid7>=0.1",
+  "python-multipart>=0.0.12",
+  "pypdf>=5.1",
+  "python-docx>=1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27",
+  "ruff>=0.7", "mypy>=1.13", "import-linter>=2.1", "psycopg[binary]>=3.2",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+# §38.6.8 — القاعدة المعمارية الملزمة تُفرض هنا، لا في التوثيق فقط.
+# Architectural rule enforced mechanically, not by documentation.
+[tool.importlinter]
+root_package = "athera_api"
+
+[[tool.importlinter.contracts]]
+name = "Domain and routers must never import a model-provider SDK (ADR-0003)"
+type = "forbidden"
+source_modules = [
+  "athera_api.routers", "athera_api.services", "athera_api.models", "athera_api.schemas",
+]
+forbidden_modules = ["openai", "anthropic", "google.generativeai", "cohere", "mistralai"]
+
+[[tool.importlinter.contracts]]
+name = "Only the providers package may talk to a vendor"
+type = "forbidden"
+source_modules = ["athera_api.main", "athera_api.deps"]
+forbidden_modules = ["openai", "anthropic"]

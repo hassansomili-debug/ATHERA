@@ -1,0 +1,128 @@
+/*
+ * توكينات الهوية | Design tokens (§26.3)
+ * Midnight Navy · Teal · Warm Gold · Soft Ivory · Cool Gray
+ *
+ * الخصائص المنطقية (inline-start/end) بدل left/right: التخطيط نفسه يعمل في
+ * الاتجاهين دون ورقة أنماط مرآة.
+ */
+:root {
+  --athera-navy: #0f1e33;
+  --athera-navy-soft: #1b2f4d;
+  --athera-teal: #1f8a8c;
+  --athera-gold: #c9922f;
+  --athera-ivory: #f7f4ee;
+  --athera-gray: #6b7684;
+  --athera-gray-soft: #d9dee5;
+
+  --bg: var(--athera-ivory);
+  --fg: var(--athera-navy);
+  --muted: var(--athera-gray);
+  --border: var(--athera-gray-soft);
+  --surface: #ffffff;
+
+  --radius: 10px;
+  --space: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: var(--athera-navy);
+    --fg: var(--athera-ivory);
+    --muted: #9aa7b6;
+    --border: #2a3f5f;
+    --surface: var(--athera-navy-soft);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html[dir="rtl"] body { font-family: "IBM Plex Sans Arabic", "Noto Sans Arabic", system-ui, sans-serif; }
+html[dir="ltr"] body { font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.6;
+}
+
+.shell { display: flex; min-block-size: 100vh; }
+
+.sidebar {
+  inline-size: 260px;
+  padding: calc(var(--space) * 1.5);
+  border-inline-end: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.content { flex: 1; padding: calc(var(--space) * 2); }
+
+.brand { display: flex; align-items: baseline; gap: 8px; margin-block-end: 24px; }
+.brand strong { font-size: 20px; letter-spacing: 0.02em; }
+.brand span { color: var(--muted); font-size: 12px; }
+
+.nav-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.nav-list a {
+  display: block;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  color: inherit;
+  text-decoration: none;
+  border-inline-start: 3px solid transparent;
+}
+.nav-list a:hover { background: color-mix(in srgb, var(--athera-teal) 8%, transparent); }
+.nav-list a[aria-current="page"] {
+  border-inline-start-color: var(--athera-gold);
+  background: color-mix(in srgb, var(--athera-teal) 12%, transparent);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space);
+}
+
+.grid { display: grid; gap: var(--space); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+
+.metric-value { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.metric-label { color: var(--muted); font-size: 13px; }
+
+.locale-switch {
+  margin-block-start: 24px;
+  padding-block-start: 16px;
+  border-block-start: 1px solid var(--border);
+  font-size: 13px;
+}
+.locale-switch a { color: var(--athera-teal); }
+
+.provenance-note {
+  margin-block-start: 24px;
+  padding: 12px;
+  border-inline-start: 3px solid var(--athera-gold);
+  background: color-mix(in srgb, var(--athera-gold) 8%, transparent);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.form { display: grid; gap: 12px; max-inline-size: 360px; }
+.form label { display: grid; gap: 4px; font-size: 14px; }
+.form input {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+}
+.form button {
+  padding: 10px 16px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--athera-teal);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.error { color: #b3261e; font-size: 13px; }

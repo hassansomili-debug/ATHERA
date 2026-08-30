@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+# Node
+node_modules/
+.next/
+out/
+# Env & secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Build
+dist/
+build/
+*.egg-info/
+# OS
+.DS_Store
+# نسخ iCloud المتضاربة: يُنشئها التزامن باسم "ملف 2.py" فتُجمَع مع
+# الاختبارات وتُشغَّل نسخة قديمة، أو تُلتزم إلى git بلا انتباه.
+* [0-9].*
+*.icloud
