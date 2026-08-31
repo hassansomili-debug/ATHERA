@@ -88,10 +88,29 @@ type = "forbidden"
 source_modules = [
   "athera_api.routers", "athera_api.services", "athera_api.models", "athera_api.schemas",
 ]
-forbidden_modules = ["openai", "anthropic", "google.generativeai", "cohere", "mistralai"]
+# `google` وحدها لا `google.generativeai`: import-linter يرفض حزمة فرعية من
+# حزمة خارجية («subpackages of external packages are not valid»). والمنع
+# هنا **أوسع** لا أضيق — مساحة `google` كلها ممنوعة على طبقة النطاق، وهو ما
+# يشمل `google.generativeai` و`google.genai` معًا. ولا سطر في المستودع
+# يستورد شيئًا تحتها اليوم.
+forbidden_modules = ["openai", "anthropic", "google", "cohere", "mistralai"]
+# **الاستيراد المباشر وحده هو المحظور.** بلا هذا المفتاح يعدّ العقد كل سلسلة
+# غير مباشرة مخالفة، فيكسر نفسه بالمعمارية التي يحرسها: كل مسار يصل إلى
+# `providers.gateway` — وهذا هو الغرض من البوابة — يصل عبرها إلى المحوّل ثم
+# إلى حزمة المزود. العقد بهذه الصيغة غير قابل للتحقق أصلًا ما دامت البوابة
+# مستعملة. والحدّ الذي يفرضه ADR-0003 باقٍ كما هو: أول `import anthropic`
+# يُكتب داخل موجّه أو خدمة أو نموذج أو عقد يكسر العقد فورًا.
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 name = "Only the providers package may talk to a vendor"
 type = "forbidden"
 source_modules = ["athera_api.main", "athera_api.deps"]
 forbidden_modules = ["openai", "anthropic"]
+# **الاستيراد المباشر وحده هو المحظور.** بلا هذا المفتاح يعدّ العقد كل سلسلة
+# غير مباشرة مخالفة، فيكسر نفسه بالمعمارية التي يحرسها: كل مسار يصل إلى
+# `providers.gateway` — وهذا هو الغرض من البوابة — يصل عبرها إلى المحوّل ثم
+# إلى حزمة المزود. العقد بهذه الصيغة غير قابل للتحقق أصلًا ما دامت البوابة
+# مستعملة. والحدّ الذي يفرضه ADR-0003 باقٍ كما هو: أول `import anthropic`
+# يُكتب داخل موجّه أو خدمة أو نموذج أو عقد يكسر العقد فورًا.
+allow_indirect_imports = true
