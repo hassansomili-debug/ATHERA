@@ -6,17 +6,17 @@ import { AtheraApiError, apiFetch } from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
- * محفظة الأبحاث (§12).
+ * محفظة الأبحاث.
  *
- * «الوحدة المتوقعة» تُعرض منفصلة تمامًا عن الوحدات المحسوبة في مركز الترقية:
- * الأولى إسقاط والثانية إنجاز، وخلطهما هو بالضبط ما يصنع توقعًا كاذبًا.
+ * كانت تعرض «الوحدة المتوقعة» — وهي وحدة لائحة ترقية مُسقَطة، لا مقياس بحث.
+ * أُزيلت مع إعادة التموضع (ADR-0005). والحقل `expected_units` ما زال يعود من
+ * الـAPI ولا تقرؤه الواجهة؛ يُزال من العقد في مرحلة S3.
  */
 interface Project {
   id: string;
   working_title: string;
   study_type: string | null;
   status: string;
-  expected_units: number | null;
   target_journal_name: string | null;
   target_index_tier: string | null;
   current_gate: string | null;
@@ -71,8 +71,6 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
         </article>
       ) : null}
 
-      <p className="provenance-note">{t("portfolio.projectionNote")}</p>
-
       {projects.length === 0 ? <p style={{ color: "var(--muted)" }}>{t("portfolio.empty")}</p> : null}
 
       <div style={{ display: "grid", gap: 8 }}>
@@ -85,7 +83,6 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
               </span>
             </div>
             <div className="metric-label" style={{ marginBlockStart: 6 }}>
-              {t("portfolio.expectedUnits")}: {project.expected_units ?? "—"} ·{" "}
               {t("portfolio.targetJournal")}: {project.target_journal_name ?? "—"}
               {project.target_index_tier ? ` (${project.target_index_tier})` : ""}
             </div>

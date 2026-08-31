@@ -1,10 +1,15 @@
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
- * لوحة الباحث (§27.2) — الهيكل فقط في Sprint 0.
+ * لوحة الباحث — الهيكل فقط.
  *
  * القيم معروضة كـ"لا بيانات بعد" عمدًا: المنتج لا يعرض رقمًا بلا مصدر
- * (§4 Evidence First). ستُملأ من محرك الترقية في MVP-2.
+ * (Evidence First).
+ *
+ * أربعة مؤشرات كانت هنا — جاهزية الترقية، والوحدات البحثية، ووحدات
+ * التأليف المنفرد، وشرط Web of Science الصارم — وكلها مقاييس لائحة ترقية
+ * أكاديمية لا مقاييس بحث. أُزيلت مع إعادة التموضع (ADR-0005). وتُعاد بناء
+ * هذه الشاشة كليًا على نوايا البحث الخمس في مرحلة S4.
  */
 export default async function DashboardPage({
   params,
@@ -16,10 +21,6 @@ export default async function DashboardPage({
   const t = translator(getMessages(locale));
 
   const metrics = [
-    "dashboard.promotionReadiness",
-    "dashboard.researchUnits",
-    "dashboard.soleAuthorUnits",
-    "dashboard.strictWos",
     "dashboard.activeProjects",
     "dashboard.pendingApprovals",
   ];
