@@ -26,6 +26,13 @@ class FileCompleteRequest(BaseModel):
 
 
 class FileResponse(BaseModel):
+    """ما يعرفه النظام عن الملف — لا أكثر.
+
+    **لا حقل «مُحلَّل» ولا «مفهوم»:** التفكيك لم يقع بعد، ونمذجة حالته
+    تحتاج عمودًا في القاعدة لا يوجد اليوم. الحالة الصادقة الوحيدة الآن
+    `stored`.
+    """
+
     id: uuid.UUID
     original_filename: str
     content_type: str

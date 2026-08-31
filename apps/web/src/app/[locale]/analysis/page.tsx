@@ -5,6 +5,7 @@ import { use, useCallback, useState } from "react";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { useDeferredLoad } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
+import { FileUpload } from "@/components/FileUpload";
 
 /**
  * محرّك التحليل (§17، §18).
@@ -92,6 +93,9 @@ export default function AnalysisPage({ params }: { params: Promise<{ locale: str
     <>
       <h1>{t("analysis.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("analysis.subtitle")}</p>
+      <div style={{ marginBlock: "18px 24px" }}>
+        <FileUpload locale={locale} messages={getMessages(locale)} />
+      </div>
       <p className="provenance-note">{t("analysis.frozenNote")}</p>
       {error ? <p className="error">{error}</p> : null}
 

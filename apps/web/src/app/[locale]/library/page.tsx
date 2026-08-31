@@ -4,6 +4,7 @@ import { use, useEffect, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
+import { FileUpload } from "@/components/FileUpload";
 
 /**
  * مكتبة الأدلة (§14).
@@ -73,6 +74,9 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
     <>
       <h1>{t("library.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("library.subtitle")}</p>
+      <div style={{ marginBlock: "18px 24px" }}>
+        <FileUpload locale={locale} messages={getMessages(locale)} />
+      </div>
 
       <form className="form" onSubmit={importDoi} style={{ maxInlineSize: 480 }}>
         <label>

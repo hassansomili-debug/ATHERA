@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     refresh_token_ttl_seconds: int = 1_209_600
     mfa_required_for_admin_roles: bool = True
 
+    # مزوّد التخزين: `s3` لأي تخزين متوافق · `memory` للاختبار · `none` لمعطّل.
+    # الاسم الوحيد الذي يُبدَّل عند الانتقال بين المزودين؛ الباقي عناوين ومفاتيح.
+    storage_provider: str = "s3"
     s3_endpoint_url: str = "http://localhost:9000"
     s3_region: str = "us-east-1"
     s3_bucket: str = "athera-dev"
