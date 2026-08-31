@@ -4,13 +4,8 @@ import { useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
+import { saveSession, type TokenPair } from "@/lib/session";
 import { use } from "react";
-
-interface TokenPair {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-}
 
 export default function LoginPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale: raw } = use(params);
@@ -28,7 +23,7 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
     setBusy(true);
     setError(null);
     try {
-      await apiFetch<TokenPair>("/api/v1/auth/login", {
+      const tokens = await apiFetch<TokenPair>("/api/v1/auth/login", {
         method: "POST",
         locale,
         body: JSON.stringify({
@@ -37,6 +32,8 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
           totp_code: totp.trim() === "" ? null : totp.trim(),
         }),
       });
+      // بلا هذا السطر يضيع الرمز فور التحويل، فتُرفض كل شاشة بعده.
+      saveSession(tokens);
       window.location.href = `/${locale}`;
     } catch (err) {
       // الخطأ يصل بلغتين؛ نعرض لغة الواجهة الحالية.

@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import type { Locale, Messages } from "@/lib/i18n";
+import { SessionControl } from "./SessionControl";
 import { translator } from "@/lib/i18n";
 
 const ITEMS: Array<{ key: string; path: string }> = [
@@ -38,6 +39,7 @@ export function SideNav({ locale, messages }: { locale: Locale; messages: Messag
           </li>
         ))}
       </ul>
+      <SessionControl locale={locale} messages={messages} />
     </nav>
   );
 }

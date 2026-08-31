@@ -6,6 +6,7 @@
  * البناء لو حاول أحد.
  */
 import type { Locale } from "./i18n";
+import { clearSession, getAccessToken } from "./session";
 
 const CONFIGURED_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 const BASE_URL = CONFIGURED_BASE_URL ?? "http://localhost:8000";
@@ -60,6 +61,13 @@ export class AtheraApiError extends Error {
   }
 }
 
+/**
+ * الرمز يُقرأ من الجلسة تلقائيًّا ما لم يُمرَّر صراحةً.
+ *
+ * الافتراض المعاكس — أن تتذكّر كل شاشة تمريره — فشل فعلًا: إحدى وعشرون
+ * شاشة من اثنتين وعشرين كانت تستدعي الـAPI بلا ترويسة مصادقة، فيردّ
+ * الخادم «بيانات الدخول غير صحيحة» وهو محقّ.
+ */
 export async function apiFetch<T>(
   path: string,
   { locale, token, ...init }: RequestInit & { locale: Locale; token?: string },
@@ -70,15 +78,25 @@ export async function apiFetch<T>(
     throw new AtheraApiError(0, { ...MISCONFIGURED_ERROR, locale });
   }
 
+  const bearer = token ?? getAccessToken();
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
       "Accept-Language": locale,
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
       ...init.headers,
     },
   });
+
+  if (response.status === 401 && !path.startsWith("/api/v1/auth/")) {
+    // رمز منتهٍ أو مفقود: تُمحى الجلسة ويُعاد التوجيه إلى الدخول بدل ترك
+    // المستخدم أمام «بيانات الدخول غير صحيحة» في شاشة لا علاقة لها بالدخول.
+    clearSession();
+    if (typeof window !== "undefined") {
+      window.location.href = `/${locale}/login`;
+    }
+  }
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);
