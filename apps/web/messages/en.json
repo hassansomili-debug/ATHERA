@@ -286,7 +286,19 @@
       "thesis_owner": "Thesis owner",
       "supervisor_with_consent": "Supervisor with the owner's consent",
       "institution_policy": "Owning institution under its policy"
-    }
+    },
+    "addTitle": "Register a thesis",
+    "addTitleAr": "Thesis title in Arabic",
+    "addTitleEn": "Title in English (optional)",
+    "addDegree": "Degree",
+    "addDefendedOn": "Defence date (optional)",
+    "addDataCollectedOn": "Data collection date (optional)",
+    "addInstitution": "Awarding institution (optional)",
+    "addRightsBasis": "Basis of use rights (optional)",
+    "addOwner": "Thesis owner's name (optional)",
+    "addSupervisor": "Supervisor's name (optional)",
+    "addSubmit": "Register the thesis",
+    "addNote": "Registration records the thesis; it grants no right: the basis of use stays a claim until the GT1 gate. Parsing a thesis requires its file to be attached."
   },
   "opportunities": {
     "title": "Publication map",
