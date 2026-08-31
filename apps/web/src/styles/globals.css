@@ -125,10 +125,9 @@ a { color: var(--teal); }
   color: var(--muted); padding-inline: 11px; margin-block-end: 6px;
 }
 
-/* رابط أثيرا AI يحمل التدرّج — الموضع الوحيد الذي يظهر فيه في التنقل */
-.nav-ai a { background: var(--ai-tint); font-weight: 560; color: var(--fg); }
-.nav-ai a:hover { background: var(--ai-tint); box-shadow: var(--shadow-sm); }
-.nav-ai .nav-dot { background: var(--violet); opacity: 1; }
+/* أثيرا AI: العنصر الوحيد الذي يحمل التدرّج في القائمة */
+.nav-list li:nth-child(2) a { background: var(--ai-tint); font-weight: 560; color: var(--fg); }
+.nav-list li:nth-child(2) .nav-dot { background: var(--violet); opacity: 1; }
 
 /* ══════ البطاقات ══════ */
 .card {

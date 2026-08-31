@@ -5,6 +5,7 @@ import { use, useCallback, useState } from "react";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { useDeferredLoad } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
+import { ContextLinks } from "@/components/ContextLinks";
 
 /**
  * الإعدادات ووضع التشغيل (§26.4، §32، §36).
@@ -38,6 +39,32 @@ interface Notification {
   read_at: string | null;
   created_at: string;
 }
+
+/** الحساب: ما يخص هوية الباحث وذاكرته الموثقة. */
+const ACCOUNT_LINKS = [
+  { key: "nav.profile", path: "profile", hint: "settings.profileHint" },
+  { key: "nav.facts", path: "facts", hint: "settings.factsHint" },
+  { key: "nav.memory", path: "memory", hint: "settings.memoryHint" },
+  { key: "nav.agents", path: "agents", hint: "settings.agentsHint" },
+];
+
+/**
+ * متقدّم — الشفافية والإدارة.
+ *
+ * سجل التشغيل وسجل التدقيق لا يظهران لباحث عادي: هما يصفان تنفيذ النظام
+ * لا عمل الباحث. ويُعرضان لمن يحمل دورًا إداريًا وحده — والدور يُقرأ من
+ * `/settings/posture`، أي من الخادم لا من ظنّ الواجهة. والمساران يبقيان
+ * عاملين لمن يعرفهما بأي حال؛ الإخفاء تنظيمُ عرضٍ لا حاجزُ صلاحية،
+ * والحاجز الحقيقي في الخادم حيث RBAC وRLS.
+ */
+const ADVANCED_LINKS = [
+  { key: "nav.traces", path: "traces", hint: "settings.tracesHint" },
+  { key: "nav.audit", path: "audit", hint: "settings.auditHint" },
+];
+
+const ADMIN_ROLES = new Set([
+  "research_admin", "college_admin", "institution_admin", "system_admin",
+]);
 
 export default function SettingsPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale: raw } = use(params);
@@ -135,6 +162,23 @@ export default function SettingsPage({ params }: { params: Promise<{ locale: str
           </article>
         ))}
       </div>
+
+      <ContextLinks
+        locale={locale}
+        messages={getMessages(locale)}
+        label="settings.accountLabel"
+        items={ACCOUNT_LINKS}
+      />
+
+      {(posture?.roles ?? []).some((role) => ADMIN_ROLES.has(role)) ? (
+        <ContextLinks
+          locale={locale}
+          messages={getMessages(locale)}
+          label="settings.advancedLabel"
+          items={ADVANCED_LINKS}
+          note="settings.advancedNote"
+        />
+      ) : null}
     </>
   );
 }

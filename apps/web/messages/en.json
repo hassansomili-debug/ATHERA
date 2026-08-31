@@ -417,7 +417,16 @@
     "notifications": "Notifications",
     "emptyNotifications": "No notifications.",
     "read": "Read",
-    "markRead": "Mark as read"
+    "markRead": "Mark as read",
+    "accountLabel": "Account",
+    "profileHint": "Your institution, rank, field, and ORCID.",
+    "factsHint": "Extracted fact candidates awaiting your approval.",
+    "memoryHint": "What you approved, now verified memory.",
+    "agentsHint": "What ATHERA AI can and cannot do, with its declared constraints.",
+    "advancedLabel": "Advanced — transparency and administration",
+    "advancedNote": "These two logs describe system execution rather than your research, and appear for administrative roles. The role is read from the server; the real boundary lives there, not in a hidden link.",
+    "tracesHint": "Every run with its tools, cost, and latency.",
+    "auditHint": "An append-only log with a verifiable hash chain."
   },
   "team": {
     "title": "Project team and decisions",
@@ -536,5 +545,15 @@
     "targetTierHint": "Your own target: peer-reviewed · Scopus · Web of Science · open access · no APC…",
     "reasons": "Match reasons",
     "reasonsHint": "Every criterion with its weight, ratio and reason — never a bare score."
+  },
+  "workspace": {
+    "toolsLabel": "Project tools",
+    "toolsNote": "These tools serve a specific project rather than the researcher at large, so they live here rather than in the persistent navigation. Their routes are unchanged.",
+    "threadHint": "From problem to recommendation, with no missing link.",
+    "claimsHint": "Every claim with its support, and no citation without it.",
+    "opportunitiesHint": "Publication opportunities mined from theses, and their readiness.",
+    "teamHint": "Members, CRediT roles, and the decision log.",
+    "approvalsHint": "Approvals and alerts awaiting your decision.",
+    "briefsHint": "The intelligence brief and novelty checks."
   }
 }

@@ -5,6 +5,7 @@ import { use, useEffect, useState } from "react";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { stageKeyFor } from "@/lib/stages";
+import { ContextLinks } from "@/components/ContextLinks";
 
 /**
  * محفظة الأبحاث.
@@ -32,6 +33,22 @@ interface ReferencePlan {
   note_ar: string;
   note_en: string;
 }
+
+/**
+ * أدوات المشروع — كانت في القائمة الدائمة، وموضعها هنا.
+ *
+ * ستّتها تخدم مشروعًا قائمًا لا الباحث عمومًا: خيطه الذهبي، وسجل ادعاءاته،
+ * وفرص النشر المشتقّة منه، وفريقه، وقراراته المنتظرة، ونشراته. ومساراتها
+ * لم تتغيّر — من حفظ رابطًا منها ما زال يعمل.
+ */
+const PROJECT_TOOLS = [
+  { key: "nav.thread", path: "thread", hint: "workspace.threadHint" },
+  { key: "nav.claims", path: "claims", hint: "workspace.claimsHint" },
+  { key: "nav.opportunities", path: "opportunities", hint: "workspace.opportunitiesHint" },
+  { key: "nav.team", path: "team", hint: "workspace.teamHint" },
+  { key: "nav.approvals", path: "approvals", hint: "workspace.approvalsHint" },
+  { key: "nav.briefs", path: "briefs", hint: "workspace.briefsHint" },
+];
 
 export default function PortfolioPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale: raw } = use(params);
@@ -93,6 +110,14 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
           </article>
         ))}
       </div>
+
+      <ContextLinks
+        locale={locale}
+        messages={getMessages(locale)}
+        label="workspace.toolsLabel"
+        items={PROJECT_TOOLS}
+        note="workspace.toolsNote"
+      />
     </>
   );
 }
