@@ -40,8 +40,11 @@ export default async function LocaleLayout({
         <div className="shell">
           <aside className="sidebar">
             <div className="brand">
-              <strong>{t("app.name")}</strong>
-              <span>{locale === "ar" ? "ATHERA" : "أثيرا"}</span>
+              <span className="brand-mark" aria-hidden="true" />
+              <span>
+                <strong>{t("app.name")}</strong>
+                <span>{locale === "ar" ? "ATHERA" : "أثيرا"}</span>
+              </span>
             </div>
             <SideNav locale={locale} messages={messages} />
             <LocaleSwitcher locale={locale} messages={messages} />

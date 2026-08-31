@@ -5,26 +5,32 @@
     "loading": "Loading…"
   },
   "nav": {
-    "dashboard": "Researcher dashboard",
-    "profile": "Academic profile",
-    "portfolio": "Research portfolio",
-    "library": "Literature library",
-    "theses": "Thesis library",
-    "approvals": "Decisions awaiting approval",
-    "audit": "Audit log",
+    "dashboard": "Home",
+    "ai": "ATHERA AI",
+    "portfolio": "My Research",
+    "library": "Research Library",
+    "search": "Scientific Search",
+    "theses": "Theses",
+    "analysis": "Data & Analysis",
+    "manuscripts": "Manuscript Studio",
+    "journals": "Journals & Publishing",
+    "review": "Review",
+    "trends": "Research Radar",
     "settings": "Settings",
-    "facts": "Fact review",
+    "profile": "Academic profile",
     "memory": "Verified memory",
-    "agents": "Agents and constraints",
-    "traces": "Execution trace",
-    "claims": "Claims ledger",
-    "thread": "Golden Thread Lab",
-    "opportunities": "Publication map",
-    "manuscripts": "Manuscript factory",
-    "analysis": "Analysis engine",
-    "trends": "Proactive intelligence",
+    "facts": "Fact review",
+    "approvals": "Decision inbox",
     "team": "Project team",
-    "briefs": "Intelligence brief"
+    "thread": "Golden Thread",
+    "claims": "Claim ledger",
+    "opportunities": "Publication opportunities",
+    "briefs": "Briefs",
+    "agents": "ATHERA AI capabilities",
+    "traces": "Run history",
+    "audit": "Audit log",
+    "sectionWorkspace": "Research workspace",
+    "sectionAccount": "Account & transparency"
   },
   "auth": {
     "signIn": "Sign in",
@@ -36,8 +42,8 @@
     "genericError": "Sign-in failed."
   },
   "dashboard": {
-    "title": "Researcher dashboard",
-    "subtitle": "Real progress, not performance theatre",
+    "title": "What do you want to accomplish?",
+    "subtitle": "Start with an idea, thesis, paper, dataset, DOI, or link — and let ATHERA build the research workflow with you.",
     "activeProjects": "Active projects",
     "pendingApprovals": "Decisions awaiting your approval",
     "verifiedMemory": "Verified memory",
@@ -133,7 +139,7 @@
     "blockedNote": "This output was blocked and never shown to the user."
   },
   "portfolio": {
-    "title": "Research portfolio",
+    "title": "My Research",
     "subtitle": "Parallel papers serving one scientific line.",
     "empty": "No projects yet.",
     "targetJournal": "Target journal",
@@ -142,7 +148,7 @@
     "suggestionOnly": "A re-orderable suggestion, not a fixed rule."
   },
   "library": {
-    "title": "Evidence library",
+    "title": "Research Library",
     "subtitle": "Every source with its access state, retraction status and last verification.",
     "search": "Search sources",
     "empty": "No sources yet.",
@@ -237,7 +243,7 @@
   },
   "theses": {
     "title": "Thesis library",
-    "subtitle": "From a thesis to legitimate papers, not republished chapters.",
+    "subtitle": "Turn a thesis into independent, publication-ready research opportunities.",
     "empty": "No theses yet.",
     "degree": "Degree",
     "masters": "Master's",
@@ -269,7 +275,8 @@
     "addOwner": "Thesis owner's name (optional)",
     "addSupervisor": "Supervisor's name (optional)",
     "addSubmit": "Register the thesis",
-    "addNote": "Registration records the thesis; it grants no right: the basis of use stays a claim until the GT1 gate. Parsing a thesis requires its file to be attached."
+    "addNote": "Registration records the thesis; it grants no right: the basis of use stays a claim until the GT1 gate. Parsing a thesis requires its file to be attached.",
+    "uploadCta": "Upload Thesis"
   },
   "opportunities": {
     "title": "Publication map",
@@ -300,7 +307,7 @@
     }
   },
   "manuscripts": {
-    "title": "Manuscript factory",
+    "title": "Manuscript Studio",
     "subtitle": "Build the manuscript section by section, tying every result to an analysis run.",
     "gateNote": "Gate G9 does not open by clicking: every unsupported claim, and every result with no analysis run, stays a blocker. The server enforces it; this screen only explains it.",
     "empty": "No manuscripts yet.",
@@ -315,7 +322,7 @@
     "missingSections": "Missing sections"
   },
   "analysis": {
-    "title": "Analysis engine",
+    "title": "Data & Analysis",
     "subtitle": "From raw data to interpretation, along an unbroken evidence chain.",
     "frozenNote": "Analysis runs only on a frozen dataset version, and a plan cannot be edited once locked.",
     "datasets": "Datasets",
@@ -333,7 +340,7 @@
     "rawImmutable": "RAW — immutable"
   },
   "trends": {
-    "title": "Proactive intelligence",
+    "title": "Research Radar",
     "subtitle": "Watch research trends and turn them into actionable opportunities.",
     "evidenceNote": "No orphan signals: every signal carries a source, an identifier and a date. Model output is recorded but never counted as evidence.",
     "validatedTrends": "Trends",
@@ -445,5 +452,89 @@
     "alerts": "Alerts",
     "acknowledged": "Seen and acknowledged",
     "acknowledge": "Acknowledge"
+  },
+  "home": {
+    "title": "What do you want to accomplish?",
+    "subtitle": "Start with an idea, thesis, paper, dataset, DOI, or link — and let ATHERA build the research workflow with you.",
+    "actionsLabel": "Start here",
+    "ideaTitle": "Build a paper from an idea",
+    "ideaHint": "From a topic to the problem, gap, question and method.",
+    "thesisTitle": "Convert a thesis into papers",
+    "thesisHint": "Parse the thesis and mine independent publication opportunities.",
+    "dataTitle": "Build a paper from data",
+    "dataHint": "From raw data to a grounded analysis and interpretation.",
+    "searchTitle": "Search scientific literature",
+    "searchHint": "Collect the literature and tie it to your claims.",
+    "continueTitle": "Continue an existing research project",
+    "continueHint": "Pick your projects up where you left them."
+  },
+  "ai": {
+    "title": "ATHERA AI",
+    "subtitle": "The research brain: it reads what you upload and proposes — it approves nothing on your behalf.",
+    "placeholder": "Enter an idea, upload a thesis, paper, dataset, DOI, or link…",
+    "upload": "Upload file",
+    "link": "DOI or link",
+    "voice": "Voice input",
+    "send": "Start",
+    "startersLabel": "Or start from a ready intent",
+    "gateTitle": "ATHERA AI execution is not activated yet.",
+    "gateBody": "The model provider is set to none, so no model is called and no result is generated. The interface shows the path without claiming to have walked it — activation is a separate, announced stage.",
+    "gateCheck": "Live operating state",
+    "intentIdea": "Build research from an idea",
+    "intentThesis": "Analyze a thesis",
+    "intentSearch": "Search literature",
+    "intentMethod": "Review methodology",
+    "intentData": "Analyze data",
+    "intentManuscript": "Improve manuscript",
+    "intentJournal": "Find journals",
+    "intentReview": "Review my paper",
+    "deterministic": "What works today without a model",
+    "deterministicBody": "Deterministic extraction, the nine consistency checks, journal matching and readiness scoring — all run on rules, not on a model."
+  },
+  "stages": {
+    "idea": "Idea",
+    "literature": "Literature",
+    "design": "Design",
+    "data": "Data",
+    "analysis": "Analysis",
+    "writing": "Writing",
+    "review": "Review",
+    "journal": "Journal",
+    "ready": "Ready for Submission"
+  },
+  "search": {
+    "title": "Scientific Search",
+    "subtitle": "Find papers and import them into your library with their source.",
+    "placeholder": "Title, keywords, or DOI…",
+    "submit": "Search",
+    "gateTitle": "External search is not activated yet.",
+    "gateBody": "The literature registry is set to offline, so no external registry is called and no results are shown. What works today: manual DOI import into your library.",
+    "empty": "No results yet."
+  },
+  "review": {
+    "title": "Review",
+    "subtitle": "Review your paper before an editor does.",
+    "scientific": "Scientific Review",
+    "scientificHint": "Claims, their support, and the contribution.",
+    "method": "Methodology Review",
+    "methodHint": "Design, sample, and instrument.",
+    "statistical": "Statistical Review",
+    "statisticalHint": "Tests, assumptions, and runs.",
+    "editorial": "Editorial Review",
+    "editorialHint": "Structure, language, and completeness.",
+    "open": "Open the review council",
+    "note": "Review proposes patches; it never edits an approved version."
+  },
+  "journalsPage": {
+    "title": "Journals & Publishing",
+    "subtitle": "Find a suitable journal and prepare the manuscript for submission.",
+    "openStudio": "Open Manuscript Studio",
+    "note": "The system never estimates acceptance probability and has no field for it. Matching explains its reasons.",
+    "publicationFit": "Publication fit",
+    "publicationFitHint": "Is this journal the right venue for your paper? Fifteen points out of a hundred.",
+    "targetTier": "Target journal tier",
+    "targetTierHint": "Your own target: peer-reviewed · Scopus · Web of Science · open access · no APC…",
+    "reasons": "Match reasons",
+    "reasonsHint": "Every criterion with its weight, ratio and reason — never a bare score."
   }
 }

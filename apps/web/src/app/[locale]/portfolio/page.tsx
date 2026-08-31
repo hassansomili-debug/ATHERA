@@ -4,6 +4,7 @@ import { use, useEffect, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
+import { stageKeyFor } from "@/lib/stages";
 
 /**
  * محفظة الأبحاث.
@@ -78,13 +79,16 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
           <article className="card" key={project.id}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
               <strong>{project.working_title}</strong>
-              <span className="metric-label">
-                {t("portfolio.gate")}: {project.current_gate ?? "—"}
-              </span>
+
             </div>
-            <div className="metric-label" style={{ marginBlockStart: 6 }}>
-              {t("portfolio.targetJournal")}: {project.target_journal_name ?? "—"}
-              {project.target_index_tier ? ` (${project.target_index_tier})` : ""}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockStart: 10 }}>
+              <span className="chip chip-stage">{t(`stages.${stageKeyFor(project.current_gate)}`)}</span>
+              {project.study_type ? <span className="chip chip-muted">{project.study_type}</span> : null}
+              {project.target_journal_name ? (
+                <span className="chip chip-muted">
+                  {t("portfolio.targetJournal")}: {project.target_journal_name}
+                </span>
+              ) : null}
             </div>
           </article>
         ))}
