@@ -313,7 +313,7 @@ async def match_journals(
     now = dt.datetime.now(dt.UTC)
     profile = journals.ManuscriptProfile(
         keywords=frozenset(payload.keywords), method_keys=frozenset(payload.method_keys),
-        required_tier=payload.required_tier, max_apc_usd=payload.max_apc_usd,
+        target_journal_tier=payload.target_journal_tier, max_apc_usd=payload.max_apc_usd,
         requires_open_access=payload.requires_open_access,
     )
     candidates = (await session.execute(select(Journal).limit(50))).scalars().all()

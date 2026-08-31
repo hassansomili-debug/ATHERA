@@ -41,7 +41,7 @@ BASE_GUARDS: Final = frozenset({
 })
 
 _VERIFIED_MEMORY: Final = frozenset({
-    "researcher_fact", "promotion_policy", "verified_evidence",
+    "researcher_fact", "verified_evidence",
     "project_decision", "journal_fact", "analysis_result",
 })
 
@@ -58,18 +58,6 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             allowed_tools=frozenset({"memory.search_verified", "profile.read", "facts.list_pending"}),
             guards=BASE_GUARDS,
             reads_memory=_VERIFIED_MEMORY,
-        ),
-        AgentSpec(
-            key="promotion_auditor",
-            name_ar="مدقق الترقية", name_en="Promotion Auditor",
-            responsibility_ar="تحليل اللائحة وحساب الفجوة",
-            responsibility_en="Analyse the policy and compute the gap",
-            constraint_ar="لا يفترض قاعدة غير موثقة",
-            constraint_en="Never assumes an undocumented rule",
-            allowed_tools=frozenset({"memory.search_verified", "profile.read"}),
-            guards=BASE_GUARDS | {"numbers_require_analysis_run"},
-            reads_memory=frozenset({"promotion_policy", "researcher_fact", "verified_evidence"}),
-            gate="G0",
         ),
         AgentSpec(
             key="opportunity_scout",

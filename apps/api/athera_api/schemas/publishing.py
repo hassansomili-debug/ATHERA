@@ -66,7 +66,11 @@ class JournalMatchRequest(BaseModel):
     manuscript_id: uuid.UUID
     keywords: list[str] = []
     method_keys: list[str] = []
-    required_tier: str | None = Field(default=None, pattern="^[ABCDX]$")
+    # هدف النشر الذي يعلنه الباحث. الحروف A–X مقبولة توافقًا مع ما سبق.
+    target_journal_tier: str | None = Field(
+        default=None,
+        pattern="^(any_peer_reviewed|scopus|web_of_science|q1|q2|open_access|no_apc|custom|[ABCDX])$",
+    )
     max_apc_usd: float | None = None
     requires_open_access: bool = False
 

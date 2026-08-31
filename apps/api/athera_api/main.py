@@ -27,7 +27,6 @@ from .routers import memory as memory_router
 from .routers import portfolio as portfolio_router
 from .routers import profile as profile_router
 from .routers import publishing as publishing_router
-from .routers import promotion as promotion_router
 from .routers import settings as settings_router
 from .routers import team as team_router
 from .routers import tenants as tenants_router
@@ -40,7 +39,7 @@ app = FastAPI(
     title="ATHERA API",
     version="0.1.0",
     description=(
-        "Research Intelligence & Academic Promotion Operating System — Sprint 0 foundation. "
+        "AI-Native Scientific Research & Publication Platform. "
         "واجهة برمجية ثنائية اللغة؛ كل خطأ يحمل رمزًا آليًا ونصًا بالعربية والإنجليزية."
     ),
 )
@@ -123,7 +122,6 @@ app.include_router(inbox_router.router)
 app.include_router(profile_router.router)
 app.include_router(memory_router.router)
 app.include_router(brain_router.router)
-app.include_router(promotion_router.router)
 app.include_router(portfolio_router.router)
 app.include_router(team_router.router)
 app.include_router(settings_router.router)

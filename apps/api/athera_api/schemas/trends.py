@@ -86,7 +86,7 @@ class OpportunityFitRequest(BaseModel):
     researcher_fit: float | None = None
     data_feasibility: float | None = None
     journal_fit: float | None = None
-    promotion_value: float | None = None
+    publication_potential: float | None = None
     execution_risk: float | None = None
 
 

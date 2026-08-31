@@ -21,7 +21,6 @@ test: test-api test-arch ## كل الاختبارات | all tests
 test-offline: ## اختبارات لا تحتاج قاعدة بيانات | tests that need no database
 	cd apps/api && pytest -q \
 	  tests/test_at_s1_03_parsing_locators.py \
-	  tests/test_at_s3_01_no_hardcoded_policy.py tests/test_at_s3_02_10_calculator.py \
 	  tests/test_at_s5_01_09_golden_thread.py tests/test_at_s5_10_11_methodology.py \
 	  tests/test_at_s7_01_06_journals.py tests/test_at_s7_07_11_manuscript_review.py \
 	  tests/test_at_s8_01_06_lineage_plan.py tests/test_at_s8_07_11_outputs_tools.py \

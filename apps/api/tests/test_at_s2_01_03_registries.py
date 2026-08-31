@@ -7,10 +7,14 @@ import pytest
 from athera_api.brain import agents as registry
 from athera_api.brain import tools as tool_registry
 
-# الأجنتات السبعة عشر كما وردت في §8 — القائمة مكتوبة يدويًا عمدًا حتى
-# يفشل الاختبار إذا حُذف أجنت من السجل بصمت.
+# الأجنتات الستة عشر — القائمة مكتوبة يدويًا عمدًا حتى يفشل الاختبار إذا
+# حُذف أجنت من السجل بصمت.
+#
+# كانت سبعة عشر. سقط `promotion_auditor` مع إزالة الترقية الأكاديمية
+# (ADR-0005): كان يحلّل لائحة جامعية ويحسب فجوة ترقية، ولا موضع له في منصة
+# بحث ونشر. ولم يسقط معه أجنت واحد من أجنتات النزاهة.
 SPEC_AGENTS = {
-    "research_manager", "promotion_auditor", "opportunity_scout", "literature_agent",
+    "research_manager", "opportunity_scout", "literature_agent",
     "evidence_curator", "golden_thread_agent", "theory_agent", "methodology_agent",
     "ethics_agent", "data_agent", "analysis_agent", "scientific_writer",
     "journal_matcher", "peer_review_council", "revision_agent", "thesis_miner",
@@ -18,9 +22,9 @@ SPEC_AGENTS = {
 }
 
 
-def test_all_seventeen_agents_from_spec_are_registered():
+def test_all_sixteen_agents_from_spec_are_registered():
     assert set(registry.AGENTS) == SPEC_AGENTS
-    assert len(registry.AGENTS) == 17
+    assert len(registry.AGENTS) == 16
 
 
 def test_every_agent_declares_a_constraint_in_both_languages():
@@ -47,7 +51,7 @@ def test_base_guards_apply_to_every_agent():
 
 def test_agents_that_touch_numbers_require_an_analysis_run():
     """قيود §8 المتعلقة بالأرقام تُترجم إلى حاجز، لا إلى نص في تعليمات."""
-    for key in ("analysis_agent", "scientific_writer", "data_agent", "promotion_auditor"):
+    for key in ("analysis_agent", "scientific_writer", "data_agent"):
         assert "numbers_require_analysis_run" in registry.AGENTS[key].guards
 
 

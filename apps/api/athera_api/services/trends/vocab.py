@@ -32,7 +32,7 @@ OPPORTUNITY_CRITERIA: Final[dict[str, tuple[int, str, str]]] = {
     "researcher_fit": (15, "ملاءمة الباحث", "Researcher fit"),
     "data_feasibility": (10, "قابلية الحصول على البيانات", "Data feasibility"),
     "journal_fit": (10, "ملاءمة المجلات", "Journal fit"),
-    "promotion_value": (10, "قيمة الترقية", "Promotion value"),
+    "publication_potential": (10, "إمكان النشر", "Publication potential"),
     "execution_risk": (5, "مخاطر التنفيذ", "Execution risk"),
 }
 

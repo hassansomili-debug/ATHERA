@@ -7,7 +7,7 @@
 
 المرجع الوظيفي: مواصفة **ATHERA v2.0**، وقرار التموضع في [`docs/adr/ADR-0005-v2-repositioning.md`](docs/adr/ADR-0005-v2-repositioning.md). أما [`athera_claude_v1.2/`](athera_claude_v1.2/SUPERSEDED.md) فوثيقة **منسوخة** تُحفظ مرجعًا تاريخيًا: §3 و§11 (الترقية الأكاديمية) ساقطتان، وما عداهما نافذ.
 
-> **الحالة: ترحيل v2.0 — المرحلتان S0 وS1.** التموضع مُعتمد، والترقية الأكاديمية أُزيلت من تجربة المستخدم. خدمات الترقية ومساراتها وجداولها ما زالت في الخادم بلا كشف، تنتظر مرحلة S3 — دين معلن لا مخفيّ.
+> **الحالة: ترحيل v2.0 — حتى S3.** التموضع مُعتمد، والترقية الأكاديمية أُزيلت من الواجهة ومن الخادم معًا: ستة مسارات وخمس خدمات وسبعة نماذج. وثلاثة أبعاد بدّلت معناها لا وزنها — `publication_fit` و`publication_potential` و`target_journal_tier` (ADR-0006). **الجداول السبعة باقية خاملة** حتى ترحيل التنظيف في S8 — دين معلن لا مخفيّ.
 >
 > وقبل ذلك: السبرنتات التسعة في §42 مكتملة، ومعها الذكاء الاستباقي §51 — رصد اتجاهات يميّز الإشارة عن الضجيج بأربعة شروط، ودرجتان منفصلتان بنيويًا (قوة الاتجاه ≠ قابلية النشر)، وخط أنابيب P0–P14 ينتهي عند Ready for Submission لا عند النشر.
 
@@ -30,12 +30,11 @@
 | مستخرِج حتمي يعمل بلا نموذج | [`services/extraction/rules.py`](apps/api/athera_api/services/extraction/rules.py) | §4، §41.2 |
 | ترقية الذاكرة عبر مسار واحد فقط | [`services/memory.py`](apps/api/athera_api/services/memory.py) | §7.4، TC-01 |
 | شاشة مراجعة الحقائق (بوابة G0) | [`apps/web/src/app/[locale]/facts/`](apps/web/src/app/%5Blocale%5D/facts/) | §10.2، §9 |
-| سجل الأجنتات السبعة عشر بقيوده | [`brain/agents.py`](apps/api/athera_api/brain/agents.py) | §8 |
+| سجل الأجنتات الستة عشر بقيوده | [`brain/agents.py`](apps/api/athera_api/brain/agents.py) | §8 |
 | سجل أدوات بلا أثر جانبي | [`brain/tools.py`](apps/api/athera_api/brain/tools.py) | §7.1 |
 | حواجز نزاهة حتمية على المخرجات | [`brain/guardrails.py`](apps/api/athera_api/brain/guardrails.py) | §4، §8، §18.1، §20.4 |
 | منسّق العقل البحثي | [`brain/orchestrator.py`](apps/api/athera_api/brain/orchestrator.py) | §7.1، §7.2 |
 | عارض الأثر والتكلفة | [`apps/web/src/app/[locale]/traces/`](apps/web/src/app/%5Blocale%5D/traces/) | §38.5 |
-| ~~محرك ترقية أكاديمية~~ · **مُهمَل** — محجوب عن الواجهة، يُزال في S3 | `services/promotion/` | ADR-0005 |
 | محفظة الأبحاث والخطة المرجعية | [`routers/portfolio.py`](apps/api/athera_api/routers/portfolio.py) | §12 |
 | سجلات أدبيات قابلة للتبديل وبلا شبكة في الاختبار | [`services/literature/registry.py`](apps/api/athera_api/services/literature/registry.py) | §14.1، §34.1 |
 | حالة الوصول تحكم الاقتطاف | [`models/literature.py`](apps/api/athera_api/models/literature.py) | §14.2، §14.5 |
@@ -126,7 +125,7 @@ make verify-audit      # سلامة سلسلة التدقيق
 | **قيود قاعدة البيانات** | العزل، مناعة التدقيق، §7.4، §14.5، GT1، §21، §31.6، §51 | **مُشغَّل: 14 ترحيلًا صعودًا ونزولًا، و12 فعلًا ممنوعًا مُنعت كلها** |
 | **الـAPI من طرف إلى طرف** | رفض G9، رفض التحليل غير المجمَّد، رفض التقديم قبل الجاهزية — عبر HTTP برمز موقّع وRLS مفعّلة | **مُشغَّل** |
 
-**الحصيلة: 437 اختبارًا مُجمَّعًا — 436 ناجحًا، 1 متخطى، 0 فاشل** (مُشغَّلة في CI على PostgreSQL بـpgvector) — و**128 مسار API**، و**21 شاشة** تجتاز `tsc` و`next build`.
+**الحصيلة: 432 اختبارًا مُجمَّعًا — 431 ناجحًا، 1 متخطى، 0 فاشل** (مُشغَّلة في CI على PostgreSQL بـpgvector) — و**122 مسار API**، و**21 شاشة** تجتاز `tsc` و`next build`.
 
 `scripts/verify_db_constraints.py` يحاول **اثنتي عشرة عملية ممنوعة** ويفشل إن نجحت أيٌّ منها.
 
