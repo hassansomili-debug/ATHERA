@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .vocab import READINESS_STATUSES, REPORT_SECTIONS, REVIEWER_ROLES
+from .vocab import READINESS_STATUSES, REVIEWER_ROLES
 
 SEVERITIES = ("major", "minor")
 

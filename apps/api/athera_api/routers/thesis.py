@@ -19,7 +19,6 @@ from ..models.files import File
 from ..models.portfolio import ResearchProject
 from ..models.research import ResearcherProfile
 from ..models.thesis import (
-    AuthorshipAgreement,
     AuthorshipParty,
     CreditRoleAssignment,
     OpportunityOverlapScore,
@@ -48,7 +47,7 @@ from ..schemas.thesis import (
 )
 from ..services import audit
 from ..services.parsing import UnsupportedDocument, parse
-from ..services.thesis import aging, miner, overlap, readiness, rights, vocab
+from ..services.thesis import aging, miner, overlap, rights, vocab
 
 router = APIRouter(prefix="/api/v1", tags=["thesis"])
 

@@ -3,7 +3,6 @@
 يحتاج قاعدة بيانات حية — الأثر والتنبيهات وسجل التدقيق كلها صفوف حقيقية.
 """
 import datetime as dt
-import uuid
 
 import pytest
 from sqlalchemy import select

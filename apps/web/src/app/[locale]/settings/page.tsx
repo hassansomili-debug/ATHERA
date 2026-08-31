@@ -1,8 +1,9 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
+import { useDeferredLoad } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -61,9 +62,7 @@ export default function SettingsPage({ params }: { params: Promise<{ locale: str
     }
   }, [locale, t]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  useDeferredLoad(load);
 
   async function markRead(id: string) {
     setBusyId(id);

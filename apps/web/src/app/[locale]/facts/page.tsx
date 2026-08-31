@@ -1,8 +1,9 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
+import { useDeferredLoad } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -39,9 +40,7 @@ export default function FactsPage({ params }: { params: Promise<{ locale: string
     }
   }, [locale, t]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  useDeferredLoad(load);
 
   async function decide(id: string, decision: "approve" | "reject") {
     setBusyId(id);

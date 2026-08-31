@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import select, text
 
 from athera_api.db import tenant_session
-from athera_api.models.audit import AuditEvent
 from athera_api.models.files import File
 
 pytestmark = pytest.mark.asyncio
