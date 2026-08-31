@@ -69,7 +69,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
     async function boot() {
       try {
         const [list, creditRoles, memberRoles] = await Promise.all([
-          apiFetch<Project[]>("/api/v1/projects", { locale }),
+          apiFetch<Project[]>("/api/v1/portfolio/projects", { locale }),
           apiFetch<Vocabulary[]>("/api/v1/vocab/credit-roles", { locale }),
           apiFetch<Vocabulary[]>("/api/v1/vocab/member-roles", { locale }),
         ]);
