@@ -1,46 +1,63 @@
+import Link from "next/link";
+
+import { AtheraAiInput } from "@/components/AtheraAiInput";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
- * لوحة الباحث — الهيكل فقط.
+ * الرئيسية — مركز أفعال بحثية، لا لوحة مؤشرات.
  *
- * القيم معروضة كـ"لا بيانات بعد" عمدًا: المنتج لا يعرض رقمًا بلا مصدر
- * (Evidence First).
+ * ما كان هنا: ستة عدّادات، أربعة منها مقاييس لائحة ترقية، وكلها تعرض شرطة.
+ * لوحة تفتح على أصفار تُعلّم المستخدم أن المنتج فارغ. والسؤال الأول الآن
+ * سؤال لا رقم: «ماذا تريد أن تنجز؟»
  *
- * أربعة مؤشرات كانت هنا — جاهزية الترقية، والوحدات البحثية، ووحدات
- * التأليف المنفرد، وشرط Web of Science الصارم — وكلها مقاييس لائحة ترقية
- * أكاديمية لا مقاييس بحث. أُزيلت مع إعادة التموضع (ADR-0005). وتُعاد بناء
- * هذه الشاشة كليًا على نوايا البحث الخمس في مرحلة S4.
+ * ولا عدّاد أجنتات ولا تشغيلات ولا أحداث تدقيق — تلك أعداد تصف النظام
+ * لنفسه، والباحث لم يأتِ ليقرأ عن النظام.
  */
-export default async function DashboardPage({
+const ACTIONS = [
+  { key: "idea", path: "ai", icon: "✦", tint: "var(--ai-tint)" },
+  { key: "thesis", path: "theses", icon: "◈", tint: "color-mix(in srgb, var(--sky) 12%, transparent)" },
+  { key: "data", path: "analysis", icon: "▣", tint: "color-mix(in srgb, var(--teal) 12%, transparent)" },
+  { key: "search", path: "search", icon: "⌕", tint: "color-mix(in srgb, var(--violet) 12%, transparent)" },
+  { key: "continue", path: "portfolio", icon: "◑", tint: "color-mix(in srgb, var(--mint) 45%, transparent)" },
+];
+
+export default async function HomePage({
   params,
 }: {
   params: Promise<{ locale: string }>;
 }) {
   const { locale: raw } = await params;
   const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
-  const t = translator(getMessages(locale));
-
-  const metrics = [
-    "dashboard.activeProjects",
-    "dashboard.pendingApprovals",
-  ];
+  const messages = getMessages(locale);
+  const t = translator(messages);
 
   return (
     <>
-      <h1>{t("dashboard.title")}</h1>
-      <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("dashboard.subtitle")}</p>
+      <div className="page-head">
+        <h1>{t("home.title")}</h1>
+        <p>{t("home.subtitle")}</p>
+      </div>
 
-      <section className="grid" aria-label={t("dashboard.title")}>
-        {metrics.map((key) => (
-          <article className="card" key={key}>
-            <div className="metric-label">{t(key)}</div>
-            <div className="metric-value">—</div>
-          </article>
-        ))}
+      <section aria-label={t("ai.title")} style={{ maxInlineSize: "78ch", marginBlockEnd: 34 }}>
+        <AtheraAiInput locale={locale} messages={messages} />
       </section>
 
-      <p className="provenance-note">{t("provenance.noFabrication")}</p>
-      <p style={{ color: "var(--muted)", fontSize: 14 }}>{t("dashboard.emptyState")}</p>
+      <section aria-label={t("home.actionsLabel")}>
+        <p className="nav-label" style={{ paddingInline: 0, marginBlockEnd: 12 }}>
+          {t("home.actionsLabel")}
+        </p>
+        <div className="actions">
+          {ACTIONS.map((action) => (
+            <Link className="action" key={action.key} href={`/${locale}/${action.path}`}>
+              <span className="action-icon" aria-hidden="true" style={{ background: action.tint }}>
+                {action.icon}
+              </span>
+              <strong>{t(`home.${action.key}Title`)}</strong>
+              <span>{t(`home.${action.key}Hint`)}</span>
+            </Link>
+          ))}
+        </div>
+      </section>
     </>
   );
 }
