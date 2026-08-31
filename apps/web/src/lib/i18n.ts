@@ -31,12 +31,28 @@ export function otherLocale(locale: Locale): Locale {
   return locale === "ar" ? "en" : "ar";
 }
 
-/** قراءة مفتاح متداخل بأمان: t("dashboard.title") */
+/**
+ * قراءة مفتاح متداخل بأمان: t("dashboard.title")
+ *
+ * **المُخرَج مُخزَّن عمدًا.** عشرون شاشة تضع `t` في مصفوفة اعتماديات
+ * `useEffect`. لو أُنشئت دالة جديدة عند كل عرض، لتغيّرت الاعتمادية عند كل
+ * عرض، ولأعاد التأثير الجلب، ولأعاد الجلب العرض — حلقة لا نهائية تقصف
+ * الـAPI بلا أن يظهر في الشاشة شيء معطوب. الكتالوج كائن ثابت مستورد، فحفظ
+ * الدالة عليه في `WeakMap` يجعل `t` ثابتة مرجعيًّا بلا تعديل أي شاشة.
+ */
+const TRANSLATORS = new WeakMap<Messages, (path: string) => string>();
+
 export function translator(messages: Messages) {
-  return (path: string): string => {
+  const cached = TRANSLATORS.get(messages);
+  if (cached) return cached;
+
+  const translate = (path: string): string => {
     const value = path
       .split(".")
       .reduce<unknown>((node, key) => (node as Record<string, unknown>)?.[key], messages);
     return typeof value === "string" ? value : path;
   };
+
+  TRANSLATORS.set(messages, translate);
+  return translate;
 }
