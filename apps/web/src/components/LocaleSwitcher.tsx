@@ -7,7 +7,7 @@ import type { Locale, Messages } from "@/lib/i18n";
 import { otherLocale, translator } from "@/lib/i18n";
 
 /**
- * التبديل يحفظ الموضع في الصفحة: /ar/promotion ⇄ /en/promotion.
+ * التبديل يحفظ الموضع في الصفحة: /ar/theses ⇄ /en/theses.
  * تبديل اللغة لا يعيد المستخدم إلى البداية — وهذا فرق ملموس في منتج عربي أولًا.
  */
 export function LocaleSwitcher({ locale, messages }: { locale: Locale; messages: Messages }) {

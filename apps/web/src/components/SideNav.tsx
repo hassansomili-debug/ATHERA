@@ -9,7 +9,6 @@ const ITEMS: Array<{ key: string; path: string }> = [
   { key: "nav.profile", path: "profile" },
   { key: "nav.facts", path: "facts" },
   { key: "nav.memory", path: "memory" },
-  { key: "nav.promotion", path: "promotion" },
   { key: "nav.portfolio", path: "portfolio" },
   { key: "nav.team", path: "team" },
   { key: "nav.thread", path: "thread" },

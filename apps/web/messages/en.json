@@ -1,13 +1,12 @@
 {
   "app": {
     "name": "ATHERA",
-    "tagline": "Research Intelligence & Academic Promotion Operating System",
+    "tagline": "AI-Native Scientific Research & Publication Platform",
     "loading": "Loading…"
   },
   "nav": {
     "dashboard": "Researcher dashboard",
     "profile": "Academic profile",
-    "promotion": "Promotion centre",
     "portfolio": "Research portfolio",
     "library": "Literature library",
     "theses": "Thesis library",
@@ -39,15 +38,11 @@
   "dashboard": {
     "title": "Researcher dashboard",
     "subtitle": "Real progress, not performance theatre",
-    "promotionReadiness": "Promotion readiness",
-    "researchUnits": "Research units",
-    "soleAuthorUnits": "Sole-author units",
-    "strictWos": "Strict Web of Science requirement",
     "activeProjects": "Active projects",
     "pendingApprovals": "Decisions awaiting your approval",
     "verifiedMemory": "Verified memory",
     "risks": "Risks and alerts",
-    "emptyState": "No data yet. Start by uploading your CV and promotion policy."
+    "emptyState": "No data yet. Start with an idea, a thesis, a literature collection, or a dataset."
   },
   "provenance": {
     "verified": "Verified",
@@ -137,38 +132,14 @@
     "denied": "Denied",
     "blockedNote": "This output was blocked and never shown to the user."
   },
-  "promotion": {
-    "title": "Promotion centre",
-    "subtitle": "Every requirement with its status and source — no single score hiding a blocking gap.",
-    "unitsTotal": "Computed units",
-    "unitsUnknown": "Not computable",
-    "rulesMet": "Requirements met",
-    "rulesBlocking": "Blocking requirements",
-    "rulesNeedingVerification": "Need institutional verification",
-    "ready": "Case complete",
-    "notReady": "Case incomplete",
-    "noPolicy": "No promotion policy has been imported yet.",
-    "required": "Required",
-    "actual": "Current",
-    "status": {
-      "met": "Met",
-      "not_met": "Not met",
-      "needs_institutional_verification": "Needs institutional verification",
-      "not_applicable": "Not applicable"
-    },
-    "blockingNote": "A single blocking requirement stops the case regardless of the rest.",
-    "verificationNote": "A rule no human has verified counts as neither met nor unmet."
-  },
   "portfolio": {
     "title": "Research portfolio",
     "subtitle": "Parallel papers serving one scientific line.",
     "empty": "No projects yet.",
-    "expectedUnits": "Expected units",
     "targetJournal": "Target journal",
     "gate": "Current gate",
     "referencePlan": "Reference plan",
-    "suggestionOnly": "A re-orderable suggestion, not a fixed rule.",
-    "projectionNote": "Expected units are a projection, not an achievement, and never count in the case."
+    "suggestionOnly": "A re-orderable suggestion, not a fixed rule."
   },
   "library": {
     "title": "Evidence library",
