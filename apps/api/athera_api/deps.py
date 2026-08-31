@@ -76,8 +76,19 @@ def require_roles(*role_keys: str):
     async def _guard(principal: Principal = Depends(get_principal)) -> Principal:
         if not set(role_keys) & set(principal.roles):
             raise Forbidden(role_required=",".join(role_keys))
-        if set(principal.roles) & rbac.ADMIN_ROLE_KEYS and not principal.mfa_satisfied:
-            # §36.1 — MFA إلزامي للأدوار الإدارية.
+        # §36.1 — MFA للأدوار الإدارية، وقابليته للإطفاء إعدادٌ لا استثناء.
+        #
+        # كان الفحص هنا مفروضًا بصرف النظر عن `mfa_required_for_admin_roles`،
+        # بينما يحترمه مسار الدخول. النتيجة تناقض: دخول ينجح ثم كل مسار إداري
+        # يُرفض بـ«التحقق بخطوتين مطلوب» بلا سبيل إلى تحقيقه. الموضعان يقرآن
+        # الإعداد نفسه الآن، فيتفق ما يُسمح به عند الباب وما يُسمح به بعده.
+        from .config import get_settings  # noqa: PLC0415 — يتجنّب استيرادًا دائريًا
+
+        if (
+            get_settings().mfa_required_for_admin_roles
+            and set(principal.roles) & rbac.ADMIN_ROLE_KEYS
+            and not principal.mfa_satisfied
+        ):
             raise Unauthorized("auth.mfa_required")
         return principal
 
