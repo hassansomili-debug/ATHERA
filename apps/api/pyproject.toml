@@ -23,7 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27",
-  "ruff>=0.7", "mypy>=1.13", "import-linter>=2.1", "psycopg[binary]>=3.2",
+  "ruff==0.16.5", "mypy>=1.13", "import-linter>=2.1", "psycopg[binary]>=3.2",
 ]
 
 [tool.pytest.ini_options]
@@ -33,6 +33,43 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+# مجموعة القواعد **مصرَّح بها**، ولا تُترك لافتراضات ruff.
+#
+# السبب: المشروع لم يعلن `select`، فورث افتراضات ruff — وهي تغيّرت من ستين
+# قاعدة في 0.7.4 (عائلتا E وF) إلى أربعمئة وثلاث عشرة في 0.16.5 (سبع
+# وثلاثين عائلة). ومع `ruff>=0.7` بلا سقف كان CI يجلب أحدث إصدار وقت
+# التشغيل، فتتغيّر قواعد الفحص بلا تغيير سطر واحد من الكود. الإعلان الصريح
+# هنا مع التثبيت أعلاه يجعل الفحص يعطي النتيجة نفسها اليوم وبعد سنة.
+#
+# `E4,E7,E9,F` هي بالضبط ما كان مفعَّلًا حين كُتب هذا الكود. و`B` (bugbear)
+# مضافة عمدًا: تكشف أنماط أخطاء حقيقية كالمعامل الافتراضي القابل للتغيير.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]
+
+# B008 يمنع استدعاء دالة في قيمة معامل افتراضية — وهو بالضبط الاصطلاح الذي
+# **يفرضه FastAPI** للحقن: `x = Depends(...)`. لا يُعاد كتابة مئة توقيع
+# مسار لإرضاء قاعدة؛ يُستثنى المُستدعى نفسه.
+#
+# و`require_roles` مصنع اعتماديات خاص بنا يُستدعى داخل `Depends(...)`،
+# فيأخذ الحكم نفسه.
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+  "fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Header",
+  "fastapi.Body", "fastapi.Form", "fastapi.File", "fastapi.Cookie",
+  "fastapi.Security",
+  "athera_api.deps.require_roles",
+]
+
+# B017 يمنع `pytest.raises(Exception)` العريض. وهو محق عمومًا — لكن أربعة
+# اختبارات تؤكد أن **قاعدة البيانات** ترفض فعلًا ممنوعًا (RLS، ومناعة
+# السجل، وقاعدة §7.4)، ونوع الاستثناء هناك تفصيلُ تنفيذٍ في asyncpg
+# وSQLAlchemy لا خاصيةَ أمانٍ: انتهاك RLS قد يصل `ProgrammingError`،
+# وtrigger قد يصل `InternalError`. تضييق النوع يربط اختبار أمان بتصنيف
+# أخطاء المشغّل. وحيث يكون النوع مستقرًّا يضيّقه الكود فعلًا — انظر
+# `test_memory_promotion_rule.py` وفيه `pytest.raises(IntegrityError)`.
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B017"]
 
 # §38.6.8 — القاعدة المعمارية الملزمة تُفرض هنا، لا في التوثيق فقط.
 # Architectural rule enforced mechanically, not by documentation.

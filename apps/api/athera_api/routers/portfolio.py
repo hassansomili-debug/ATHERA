@@ -1,5 +1,4 @@
 """محفظة الأبحاث | Research portfolio API (§12)."""
-import uuid
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select

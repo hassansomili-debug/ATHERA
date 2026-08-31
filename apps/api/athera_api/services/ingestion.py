@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..errors import AtheraError, NotFound
 from ..models.files import File
 from ..models.research import DocumentChunk, ExtractionRun, FactCandidate
-from . import audit, storage
+from . import audit
 from .extraction.base import ExtractionResult, Extractor
 from .extraction.rules import RuleBasedExtractor
 from .parsing import UnsupportedDocument, parse

@@ -47,7 +47,6 @@ from ..schemas.publishing import (
     ReviewRoundResponse,
     SectionUpsertRequest,
     SubmissionPackageResponse,
-    VersionCreateRequest,
 )
 from ..services import audit
 from ..services.publishing import journals, manuscript, review, vocab

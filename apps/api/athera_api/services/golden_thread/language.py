@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .vocab import CAUSAL_DESIGNS, SAMPLING_STRATEGIES
+
 # صيغ سببية صريحة — عربية وإنجليزية.
 _CAUSAL_PATTERNS = [
     re.compile(r"يؤدي\s+إلى"),
@@ -59,8 +61,6 @@ _GENERALIZATION_HEDGES = [
     re.compile(r"\blimited\s+to\s+the\s+sample\b", re.IGNORECASE),
     re.compile(r"\bnot\s+generali[sz]able\b", re.IGNORECASE),
 ]
-
-from .vocab import CAUSAL_DESIGNS, SAMPLING_STRATEGIES
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?؟])\s+|\n+")
 

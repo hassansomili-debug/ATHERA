@@ -1,8 +1,7 @@
 """AT-S0-02/03 — مناعة سجل التدقيق وسلسلة التجزئة (§37، ADR-0004)."""
-import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from athera_api.db import tenant_session
 from athera_api.services import audit
