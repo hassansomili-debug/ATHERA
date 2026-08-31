@@ -1,0 +1,44 @@
+# نشر الـAPI على Fly.io | ATHERA API deployment.
+#
+# المنطقة `sin` (سنغافورة): القاعدة في مومباي، لكن Fly أهمل `bom` ولا يقبل
+# موارد جديدة فيها. سنغافورة أقرب ما يتاح إليها (~50 مللي ثانية).
+#
+# قرب الـAPI من القاعدة يسبق قربه من المتصفح: صفحة واحدة قد تُصدر عشرة
+# استعلامات متتابعة، بينما بين المتصفح والـAPI رحلة واحدة.
+
+app = "athera-api"
+primary_region = "sin"
+
+[build]
+  dockerfile = "infra/docker/api.Dockerfile"
+
+[env]
+  APP_ENV = "production"
+  APP_DEFAULT_LOCALE = "ar"
+  APP_SUPPORTED_LOCALES = "ar,en"
+  # لا استدعاء نموذج، ولا سجل خارجي، ولا رصد مجدول — حتى يُفعَّل كلٌّ صراحةً.
+  MODEL_PROVIDER = "null"
+  MODEL_EXTERNAL_SEND_MAX_CLASSIFICATION = "C1"
+  LITERATURE_REGISTRY = "offline"
+  TEMPORAL_ENABLED = "0"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # النوم عند الخمول واليقظة عند أول طلب: التكلفة تتبع الاستخدام لا الوقت.
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    # `/healthz` يقول إن العملية حيّة، و`/readyz` يقول إنها تصل إلى القاعدة.
+    # الفحص على الثاني: عملية حيّة بلا قاعدة تستقبل طلبات لا تستطيع خدمتها.
+    path = "/readyz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

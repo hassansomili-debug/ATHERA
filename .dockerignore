@@ -1,0 +1,32 @@
+# سياق البناء يُرفع كاملًا إلى الباني قبل أن يُقرأ أي سطر من Dockerfile.
+# بلا هذا الملف تُرفع مئات الميغابايت لا يحتاجها البناء إطلاقًا.
+
+.git
+.github
+node_modules
+**/node_modules
+.next
+**/.next
+.vercel
+**/.vercel
+.venv
+**/.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# أسرار: لا تدخل صورة قط. الأسرار تُحقن من Fly وقت التشغيل.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# لا يحتاجها الـAPI
+apps/web
+athera_claude_v1.2
+docs
+.DS_Store
