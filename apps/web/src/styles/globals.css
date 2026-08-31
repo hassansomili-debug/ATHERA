@@ -108,7 +108,9 @@ body {
 
 .form { display: grid; gap: 12px; max-inline-size: 360px; }
 .form label { display: grid; gap: 4px; font-size: 14px; }
-.form input {
+.form input,
+.form select,
+.form textarea {
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -116,6 +118,7 @@ body {
   color: inherit;
   font: inherit;
 }
+.form textarea { resize: vertical; }
 .form button {
   padding: 10px 16px;
   border: none;
@@ -125,4 +128,6 @@ body {
   font: inherit;
   cursor: pointer;
 }
+/* زر مشغول يبقى مقروءًا: التعطيل حالة معلنة لا اختفاء. */
+.form button:disabled { opacity: 0.6; cursor: progress; }
 .error { color: #b3261e; font-size: 13px; }
