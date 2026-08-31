@@ -3,6 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
+import { useDeferredLoad } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -103,9 +104,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
     }
   }, [locale, thesisId, t]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  useDeferredLoad(load);
 
   return (
     <>

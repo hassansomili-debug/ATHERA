@@ -34,7 +34,11 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
       });
       // بلا هذا السطر يضيع الرمز فور التحويل، فتُرفض كل شاشة بعده.
       saveSession(tokens);
-      window.location.href = `/${locale}`;
+      // إعادة تحميل كاملة عمدًا لا `router.push`: الجلسة تُقرأ عند التركيب،
+      // فالتنقّل داخل العميل يترك الشريط الجانبي يعرض «تسجيل الدخول».
+      // و`assign` استدعاء لا إسناد على `window` — الإسناد يرفضه
+      // `react-hooks/immutability`.
+      window.location.assign(`/${locale}`);
     } catch (err) {
       // الخطأ يصل بلغتين؛ نعرض لغة الواجهة الحالية.
       setError(

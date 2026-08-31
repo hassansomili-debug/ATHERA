@@ -75,6 +75,12 @@ extend-immutable-calls = [
 # Architectural rule enforced mechanically, not by documentation.
 [tool.importlinter]
 root_package = "athera_api"
+# العقدان أدناه يمنعان استيراد حزم **خارج** `athera_api`. وimport-linter
+# لا يبني رسمًا للحزم الخارجية إلا بطلب صريح، فيرفض التشغيل بلا هذا المفتاح:
+# «The top level configuration must have include_external_packages=True when
+# there are external forbidden modules». تفعيله شرط تشغيلٍ لعقود ADR-0003،
+# لا توسيعٌ لها.
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Domain and routers must never import a model-provider SDK (ADR-0003)"

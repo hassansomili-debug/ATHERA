@@ -3,6 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
+import { useDeferredLoad } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -98,9 +99,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
     }
   }, [locale, projectId, t]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  useDeferredLoad(load);
 
   async function addMember() {
     setBusy(true);
