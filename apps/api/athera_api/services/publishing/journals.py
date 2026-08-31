@@ -149,7 +149,7 @@ class ManuscriptProfile:
 
     keywords: frozenset[str] = frozenset()
     method_keys: frozenset[str] = frozenset()
-    required_tier: str | None = None
+    target_journal_tier: str | None = None
     max_apc_usd: float | None = None
     requires_open_access: bool = False
 
@@ -203,13 +203,80 @@ def _jaccard(left: frozenset[str], right: frozenset[str]) -> float | None:
     return round(len(left & right) / len(union), 4) if union else None
 
 
+
+# ترتيب طبقات الثقة من الأقوى إلى المستبعدة.
+_TIER_ORDER = ("A", "B", "C", "D", "X")
+
+
+def publication_fit(
+    target: str | None, tier: TierAssessment, facts: JournalFacts
+) -> tuple[float | None, str, str]:
+    """§20.4 — هل هذه المجلة هي الوعاء الذي يقصده الباحث؟
+
+    كان هذا البُعد يقيس «ملاءمة متطلبات الترقية»: طبقة تفرضها لائحة جامعية.
+    صار يقيس هدف النشر الذي **يعلنه الباحث** — تفضيلًا لا شرطًا، ولا وعدًا
+    بقبول. الوزن لم يتغيّر (15)، والمجموع باقٍ عند 100.
+
+    و`None` تعني «لا يُعرف» لا «صفر»: بيانات الأرباع غير مُنمذجة، وغياب
+    الرسوم أو نموذج الوصول غياب معلومة لا مخالفة. تقديرها تخمينٌ يمنعه §20.
+    """
+    if target is None:
+        return None, "لم يُحدَّد هدف نشر لهذه المخطوطة.", "No publication target is set for this manuscript."
+
+    # توافق خلفي: طبقة بحرف واحد تُقارن بترتيب الثقة كما كانت.
+    if target in _TIER_ORDER:
+        ok = _TIER_ORDER.index(tier.tier) <= _TIER_ORDER.index(target)
+        return (1.0 if ok else 0.0,
+                f"الهدف طبقة {target} والمجلة في الطبقة {tier.tier}.",
+                f"Target tier {target}; journal is tier {tier.tier}.")
+
+    if target == "any_peer_reviewed":
+        ok = facts.is_peer_reviewed and tier.tier != "X"
+        return (1.0 if ok else 0.0,
+                "الهدف أي مجلة محكّمة." + ("" if ok else " والمجلة مستبعدة أو غير محكّمة."),
+                "Target is any peer-reviewed journal." + ("" if ok else " This journal is excluded or not peer-reviewed."))
+
+    if target == "web_of_science":
+        ok = tier.tier in ("A", "B")
+        return (1.0 if ok else 0.0,
+                f"الهدف Web of Science والمجلة في الطبقة {tier.tier}.",
+                f"Target is Web of Science; journal is tier {tier.tier}.")
+
+    if target == "scopus":
+        ok = tier.tier in ("A", "B", "C")
+        return (1.0 if ok else 0.0,
+                f"الهدف Scopus والمجلة في الطبقة {tier.tier}.",
+                f"Target is Scopus; journal is tier {tier.tier}.")
+
+    if target in ("q1", "q2"):
+        # الأرباع غير مُنمذجة في `JournalFacts`. لا تُقدَّر ولا تُخمَّن.
+        return None, "بيانات أرباع المجلات غير متوفرة — لا تُقدَّر.", "Journal quartile data is unavailable — never estimated."
+
+    if target == "open_access":
+        if facts.oa_model is None:
+            return None, "نموذج الوصول غير موثق.", "Access model is not documented."
+        ok = facts.oa_model != "closed"
+        return (1.0 if ok else 0.0, f"الهدف وصول مفتوح ونموذج المجلة: {facts.oa_model}.",
+                f"Target is open access; journal model: {facts.oa_model}.")
+
+    if target == "no_apc":
+        if facts.apc_usd is None:
+            return None, "رسوم النشر غير معروفة.", "Article processing charge unknown."
+        ok = facts.apc_usd == 0
+        return (1.0 if ok else 0.0, f"الهدف بلا رسوم والرسوم {facts.apc_usd} دولار.",
+                f"Target is no APC; charge is {facts.apc_usd} USD.")
+
+    # `custom` وأي قيمة غير معروفة: هدف لا تملك المطابقة معيارًا آليًا له.
+    return None, "هدف نشر مخصص — يُقيَّم بشريًا.", "Custom publication target — assessed by a human."
+
+
 def match(
     manuscript: ManuscriptProfile,
     facts: JournalFacts,
     policy: TierPolicy,
     *,
     as_of: dt.datetime,
-    promotion_required_tier: str | None = None,
+    target_journal_tier: str | None = None,
 ) -> JournalMatch:
     tier = assess_tier(facts, policy, as_of=as_of)
     criteria: list[CriterionScore] = []
@@ -242,17 +309,9 @@ def match(
         "Overlap between the study method and the journal's methods." if method is not None
         else "Journal methods are not documented.")
 
-    required = promotion_required_tier or manuscript.required_tier
-    if required is None:
-        promotion_ratio: float | None = None
-        promo_ar = "لم تُحدَّد طبقة مطلوبة في لائحة الترقية."
-        promo_en = "No required tier is set by the promotion policy."
-    else:
-        order = ["A", "B", "C", "D", "X"]
-        promotion_ratio = 1.0 if order.index(tier.tier) <= order.index(required) else 0.0
-        promo_ar = f"الطبقة المطلوبة {required} والمجلة في الطبقة {tier.tier}."
-        promo_en = f"Required tier {required}; journal is tier {tier.tier}."
-    add("promotion_fit", promotion_ratio, promo_ar, promo_en)
+    target = target_journal_tier or manuscript.target_journal_tier
+    fit_ratio, fit_ar, fit_en = publication_fit(target, tier, facts)
+    add("publication_fit", fit_ratio, fit_ar, fit_en)
 
     counted = [a for a in tier.indexes if a.counts]
     if not tier.indexes:
@@ -305,8 +364,9 @@ def match(
         blockers.append("journal_excluded")
     if tier.stale_indexes:
         blockers.append("indexing_needs_reverification")
-    if required is not None and promotion_ratio == 0.0:
-        blockers.append("tier_below_promotion_requirement")
+    # الحاجب يقول إن المجلة دون هدف الباحث، لا إنها دون شرط لائحة.
+    if target is not None and fit_ratio == 0.0:
+        blockers.append("below_publication_target")
 
     return JournalMatch(
         journal_id=facts.journal_id, journal_name=facts.name, tier=tier,

@@ -64,7 +64,7 @@ def test_a_hot_trend_with_no_researcher_fit_is_not_actionable():
 
     fit = scoring.score({
         "novelty": 0.9, "momentum": 1.0, "research_gap": 0.8, "researcher_fit": 0.0,
-        "data_feasibility": 0.0, "journal_fit": 0.5, "promotion_value": 0.3,
+        "data_feasibility": 0.0, "journal_fit": 0.5, "publication_potential": 0.3,
         "execution_risk": 0.2,
     })
     assert fit.fit_score > 50            # الوزن وحده يوحي بأنها معقولة

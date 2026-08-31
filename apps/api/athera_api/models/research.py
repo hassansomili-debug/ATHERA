@@ -30,7 +30,6 @@ from .base import Base, TenantScoped, Timestamped, uuid_pk
 # §7.3 — فئات الذاكرة الثماني ومستوى التحقق المطلوب لكل واحدة.
 MEMORY_CATEGORIES: Final[dict[str, str]] = {
     "researcher_fact": "user_or_document",     # الرتبة، التخصص، المهارات
-    "promotion_policy": "official_source",     # الوحدات، النقاط، شروط المجلات
     "verified_evidence": "bibliographic",      # دراسة، DOI، نتيجة منشورة
     "project_decision": "human_approval",      # السؤال، النظرية، المنهج، المجلة
     "working_hypothesis": "provisional",       # فكرة أو علاقة مقترحة

@@ -119,21 +119,9 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "أجنت غير معروف.",
         "en": "Unknown agent.",
     },
-    "promotion.no_policy": {
-        "ar": "لا توجد لائحة ترقية مستوردة بعد.",
-        "en": "No promotion policy has been imported yet.",
-    },
-    "promotion.profile_required": {
-        "ar": "يلزم إنشاء الملف الأكاديمي قبل حساب الترقية.",
-        "en": "An academic profile is required before computing the promotion case.",
-    },
-    "promotion.rule_not_found": {
-        "ar": "القاعدة غير موجودة.",
-        "en": "Rule not found.",
-    },
-    "promotion.rule_needs_source": {
-        "ar": "لا يمكن اعتماد قاعدة بلا موضع في وثيقة اللائحة.",
-        "en": "A rule cannot be verified without a locator in the policy document.",
+    "portfolio.profile_required": {
+        "ar": "يلزم إنشاء الملف الأكاديمي قبل إنشاء مشروع بحثي.",
+        "en": "An academic profile is required before creating a research project.",
     },
     "evidence.doi_not_resolved": {
         "ar": "لم يُعثر على هذا المعرّف في أي سجل علمي؛ لن يُنشأ مرجع بديل.",

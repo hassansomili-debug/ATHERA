@@ -8,7 +8,7 @@ from typing import Final
 # §9 — البوابات كبيانات لا كسلاسل متناثرة في الموجّهات.
 GATES: Final[dict[str, tuple[str, str]]] = {
     "G0": ("اعتماد حقيقة مستخرَجة", "Approve an extracted fact"),
-    "G1": ("اعتماد ملف الباحث وقاعدة الترقية", "Approve profile and promotion rule"),
+    "G1": ("اعتماد الملف الأكاديمي للباحث", "Approve the researcher profile"),
     "G2": ("اعتماد المشكلة والفجوة", "Approve problem and gap"),
     "G3": ("اعتماد السؤال والهدف", "Approve question and objective"),
     "G4": ("اعتماد الإطار النظري", "Approve theoretical framework"),

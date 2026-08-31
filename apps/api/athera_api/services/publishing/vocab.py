@@ -38,12 +38,26 @@ MATCH_CRITERIA: Final[dict[str, tuple[int, str, str]]] = {
     "scope_fit": (20, "ملاءمة النطاق", "Scope fit"),
     "recent_article_similarity": (15, "تشابه المقالات الحديثة", "Recent article similarity"),
     "method_fit": (12, "ملاءمة المنهج", "Method fit"),
-    "promotion_fit": (15, "ملاءمة متطلبات الترقية", "Promotion fit"),
+    "publication_fit": (15, "ملاءمة هدف النشر", "Publication fit"),
     "indexing_status": (15, "حالة الفهرسة", "Indexing status"),
     "integrity_publisher_trust": (12, "نزاهة الناشر وموثوقيته", "Integrity and publisher trust"),
     "cost": (5, "الكلفة", "Cost"),
     "oa_license": (3, "الوصول المفتوح والترخيص", "Open access and licence"),
     "review_information": (3, "معلومات التحكيم الموثوقة", "Trusted review information"),
+}
+
+# هدف النشر الذي يعلنه الباحث — **تفضيل لا لائحة**. كان يأتي من لائحة ترقية
+# جامعية تفرض طبقة؛ صار قرار الباحث في أين يريد أن ينشر. ولا يَعِد أيٌّ منها
+# بقبول: الهدف يوجّه الترشيح ولا يتنبأ بقرار محرّر.
+TARGET_JOURNAL_TIERS: Final[dict[str, tuple[str, str]]] = {
+    "any_peer_reviewed": ("أي مجلة محكّمة", "Any peer-reviewed journal"),
+    "scopus": ("مفهرسة في Scopus", "Indexed in Scopus"),
+    "web_of_science": ("مفهرسة في Web of Science", "Indexed in Web of Science"),
+    "q1": ("الربع الأول", "First quartile"),
+    "q2": ("الربع الثاني أو أعلى", "Second quartile or better"),
+    "open_access": ("وصول مفتوح", "Open access"),
+    "no_apc": ("بلا رسوم نشر", "No article processing charge"),
+    "custom": ("هدف مخصص", "Custom target"),
 }
 
 # §20.3 — نقاط إعادة التحقق الأربع.

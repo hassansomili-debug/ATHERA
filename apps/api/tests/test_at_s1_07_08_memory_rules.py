@@ -4,10 +4,15 @@ import pytest
 from athera_api.models.research import MEMORY_CATEGORIES, PROMOTION_PATHS
 
 
-def test_all_eight_memory_categories_from_spec_are_present():
-    """§7.3 — الفئات الثماني، بلا نقصان ولا اختراع فئة تاسعة."""
+def test_all_seven_memory_categories_from_spec_are_present():
+    """§7.3 — الفئات السبع، بلا نقصان ولا اختراع فئة ثامنة.
+
+    كانت ثمانيًا. سقطت `promotion_policy` مع إزالة الترقية الأكاديمية
+    (ADR-0005): كانت تحمل وحدات اللائحة ونقاطها. ولم يمسّ ذلك آلية ترقية
+    الذاكرة نفسها — `PROMOTION_PATHS` أدناه كما هي، وهي المقصودة بالحماية.
+    """
     expected = {
-        "researcher_fact", "promotion_policy", "verified_evidence", "project_decision",
+        "researcher_fact", "verified_evidence", "project_decision",
         "working_hypothesis", "journal_fact", "analysis_result", "temporary_context",
     }
     assert set(MEMORY_CATEGORIES) == expected

@@ -26,16 +26,6 @@ from .literature import (
     SourceVersion,
 )
 from .portfolio import ProjectDecision, ProjectMember, ResearchProgram, ResearchProject
-from .promotion import (
-    RULE_TYPES,
-    PromotionCase,
-    PromotionEvidence,
-    PromotionPolicy,
-    PromotionPolicyVersion,
-    PromotionRule,
-    PromotionScenario,
-    ResearcherPublication,
-)
 from .files import File, FileAccessLog
 from .identity import (
     Membership,
@@ -131,7 +121,6 @@ __all__ = [
     "Method", "Instrument", "InstrumentItem", "Protocol",
     "Journal", "JournalIndexingRecord", "Author", "Source", "SourceVersion", "SourceAuthor",
     "EvidenceExcerpt", "Claim", "ClaimEvidenceLink", "ACCESS_STATES", "SUPPORT_LEVELS",
-    "PromotionPolicy", "PromotionPolicyVersion", "PromotionRule", "PromotionCase",
-    "PromotionEvidence", "PromotionScenario", "ResearcherPublication", "RULE_TYPES",
+    "RULE_TYPES",
     "ResearchProgram", "ResearchProject", "ProjectMember", "ProjectDecision",
 ]

@@ -121,7 +121,7 @@ def test_match_carries_its_criteria_and_blockers():
     )
     profile = journals.ManuscriptProfile(
         keywords=frozenset({"advertising", "trust"}),
-        method_keys=frozenset({"survey"}), required_tier="A",
+        method_keys=frozenset({"survey"}), target_journal_tier="A",
     )
     result = journals.match(profile, facts, POLICY, as_of=NOW)
 
@@ -144,10 +144,10 @@ def test_uncomputed_criteria_are_declared_and_score_zero():
 def test_blockers_name_the_reason():
     esci = journals.JournalFacts(journal_id="j2", name="ESCI J", indexing=(record("ESCI"),))
     below = journals.match(
-        journals.ManuscriptProfile(keywords=frozenset({"x"}), required_tier="A"),
+        journals.ManuscriptProfile(keywords=frozenset({"x"}), target_journal_tier="A"),
         esci, POLICY, as_of=NOW,
     )
-    assert "tier_below_promotion_requirement" in below.blockers
+    assert "below_publication_target" in below.blockers
 
     stale = journals.JournalFacts(journal_id="j4", name="Stale",
                                   indexing=(record("SSCI", days_ago=400),))

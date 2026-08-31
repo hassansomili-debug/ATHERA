@@ -8,7 +8,7 @@ from ..deps import Principal, get_principal, get_session
 from ..errors import NotFound
 from ..models.portfolio import ResearchProject
 from ..models.research import ResearcherProfile
-from ..schemas.promotion import ProjectCreateRequest, ProjectResponse
+from ..schemas.portfolio import ProjectCreateRequest, ProjectResponse
 from ..services import audit
 
 router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"])
@@ -62,7 +62,7 @@ async def create_project(
         )
     ).scalar_one_or_none()
     if profile is None:
-        raise NotFound("promotion.profile_required")
+        raise NotFound("portfolio.profile_required")
 
     project = ResearchProject(
         tenant_id=principal.tenant_id, profile_id=profile.id, program_id=payload.program_id,
