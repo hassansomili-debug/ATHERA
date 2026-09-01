@@ -39,7 +39,15 @@
     "password": "Password",
     "totp": "Two-factor code",
     "submit": "Sign in",
-    "genericError": "Sign-in failed."
+    "genericError": "Unable to sign in. Check your email and password.",
+    "totpHint": "Enter the code from the authenticator app linked to your account.",
+    "totpInvalid": "That code is not valid. Try again.",
+    "showPassword": "Show",
+    "hidePassword": "Hide",
+    "forgotPassword": "Forgot password?",
+    "forgotPasswordUnavailable": "Password recovery is not available yet — contact your platform administrator.",
+    "alreadySignedIn": "You are already signed in.",
+    "continueToApp": "Continue to ATHERA"
   },
   "dashboard": {
     "title": "What do you want to accomplish?",

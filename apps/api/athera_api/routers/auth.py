@@ -32,7 +32,7 @@ from ..security import (
     verify_password,
     verify_totp,
 )
-from ..services import audit, rbac
+from ..services import audit, login_throttle, rbac
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 settings = get_settings()
@@ -116,13 +116,44 @@ async def register(payload: RegisterRequest, locale: str = Depends(get_locale)) 
         return await _issue_pair(session, user, tenant.id, ["researcher"], mfa_satisfied=False)
 
 
+async def _audit_failed_login(session, email: str, reason: str,
+                              *, user_id=None) -> None:
+    """محاولة فاشلة تُسجَّل — وكانت تمرّ بلا أثر.
+
+    **ولا بريد في السجل.** بصمة البريد تكفي لربط المحاولات ببعضها وللكشف عن
+    هجوم موزّع، ولا تجعل جدول التدقيق قائمةَ عناوين لمن حاول ولم ينجح — ومنهم
+    من ليس له حساب أصلًا.
+
+    ويُسجَّل بلا مستأجر: المحاولة تسبق معرفته، وقد لا يكون لها واحد.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()[:32]
+    await audit.record(
+        session, tenant_id=None, action="auth.login_failed",
+        object_type="user", object_id=user_id, actor_user_id=None,
+        actor_kind="system",
+        state_after={"reason": reason, "email_fingerprint": digest},
+        reason="failed sign-in attempt",
+    )
+
+
 @router.post("/login", response_model=TokenPair)
 async def login(payload: LoginRequest, locale: str = Depends(get_locale)) -> TokenPair:
     async with system_session() as session:
+        # **قبل فحص كلمة المرور.** المفتاح بريدٌ لا مستخدم: الخنق يجب أن
+        # يعمل على بريد لا وجود له أيضًا، وإلا صار اختلاف السلوك طريقةً
+        # لعدّ الحسابات القائمة.
+        login_throttle.check(payload.email)
+
         user = (
             await session.execute(select(User).where(User.email == payload.email.lower()))
         ).scalar_one_or_none()
         if user is None or not user.is_active or not verify_password(user.password_hash, payload.password):
+            # المحاولة الفاشلة تُعدّ وتُسجَّل — وكلاهما لم يكن يقع.
+            login_throttle.record_failure(payload.email)
+            await _audit_failed_login(session, payload.email, "invalid_credentials",
+                                      user_id=user.id if user else None)
             raise Unauthorized("auth.invalid_credentials")
 
         membership_q = select(Membership, Role).join(Role, Role.id == Membership.role_id).where(
@@ -134,6 +165,9 @@ async def login(payload: LoginRequest, locale: str = Depends(get_locale)) -> Tok
             )
         rows = (await session.execute(membership_q)).all()
         if not rows:
+            login_throttle.record_failure(payload.email)
+            await _audit_failed_login(session, payload.email, "no_membership",
+                                      user_id=user.id)
             raise Unauthorized("auth.invalid_credentials")
 
         tenant_id = rows[0][0].tenant_id
