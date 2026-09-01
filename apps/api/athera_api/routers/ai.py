@@ -115,6 +115,7 @@ async def ask(
             tool_calls=[],
             input_classification="C1",
             extra_system=policy,
+            output_locale=locale,
         )
     except AtheraError:
         raise
