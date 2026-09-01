@@ -87,14 +87,23 @@ jobs:
           alembic downgrade base
           alembic upgrade head
 
-      - name: Assert the drill reached 0016 and left the test database untouched
+      - name: Assert the drill reached the repository head and left the test database untouched
         env:
           PGPASSWORD: athera_owner_pw
         run: |
+          # **الرأس المتوقّع يُشتقّ ولا يُثبَّت نصًّا.**
+          #
+          # كان مكتوبًا `0016` حرفيًّا، فسقطت هذه الخطوة عند أول ترحيل بعده
+          # — والتدريب نفسه كان ناجحًا. تأكيدٌ يحمل رقمًا محفوظًا يقيس عمر
+          # الملف لا صحّة الترحيل، ويطلب تعديلًا يدويًّا مع كل إضافة.
+          expected=$(cd infra/db && alembic heads 2>/dev/null \
+            | grep -oE '^[0-9]+' | head -1)
+          test -n "$expected" || { echo "::error::could not read alembic head"; exit 1; }
           head=$(psql -h localhost -U athera_owner -d athera_migration -tAc \
             "SELECT version_num FROM alembic_version")
-          echo "drill head: $head"
-          test "$head" = "0016" || { echo "::error::drill head is $head, expected 0016"; exit 1; }
+          echo "drill head: $head · repository head: $expected"
+          test "$head" = "$expected" \
+            || { echo "::error::drill head is $head, expected $expected"; exit 1; }
 
           # بيانات القبول باقية كما تركتها الاختبارات — التدريب لم يمسّها.
           unknown=$(psql -h localhost -U athera_owner -d athera \
@@ -103,7 +112,7 @@ jobs:
           test "$unknown" -ge 1 || {
             echo "::error::the drill mutated the acceptance-test database"; exit 1; }
 
-          # وحارس 0016 ما يزال قائمًا على قاعدة الاختبارات.
+          # وحارس حالات القرار ما يزال قائمًا على قاعدة الاختبارات.
           psql -h localhost -U athera_owner -d athera -tAc \
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint
              WHERE conname = 'ck_fact_candidates_ck_candidate_status'" | grep -q unknown || {
