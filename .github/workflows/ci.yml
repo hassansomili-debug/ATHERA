@@ -20,8 +20,17 @@ jobs:
           --health-cmd "pg_isready -U athera_owner -d athera"
           --health-interval 5s --health-timeout 5s --health-retries 20
     env:
+      # قاعدة الاختبارات: يكتب فيها pytest بيانات قبولٍ حقيقية وتبقى.
       DATABASE_URL: postgresql+asyncpg://athera_app:athera_app_pw@localhost:5432/athera
       DATABASE_MIGRATION_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera
+      # قاعدة تدريب الترحيل: نظيفة، ومنفصلة، ولا تلمسها الاختبارات.
+      #
+      # **ولماذا الفصل؟** لأن التدريب كان يجري على قاعدة الاختبارات نفسها،
+      # فيصطدم `downgrade base` ببيانات قبولٍ صحيحة. وحين تركت اختبارات S5C
+      # ستة مرشّحين بحالة «لا أعرف» رفض الترحيل 0016 التنازل — **وكان محقًّا**:
+      # تحويلها إلى «مرفوض» إتلافُ قرار بشري. فالعطب في عزل التدريب لا في
+      # الحارس، وإصلاحه بإضعاف الحارس كان سيبدّد الضمان الذي وُجد لأجله.
+      MIGRATION_DRILL_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera_migration
       JWT_SECRET: ci-only-not-a-real-secret
       MODEL_PROVIDER: "null"
     steps:
@@ -37,8 +46,58 @@ jobs:
         run: cd apps/api && lint-imports
       - name: Acceptance tests AT-S0-*
         run: cd apps/api && pytest -v
-      - name: Downgrade drill (AT-S0-13)
-        run: cd infra/db && alembic downgrade base
+
+      # ── تدريب الترحيل: على قاعدة نظيفة مخصَّصة ──
+      #
+      # `DATABASE_MIGRATION_URL` هي الآلية القائمة التي يقرأها `env.py`؛
+      # تُوجَّه هنا إلى قاعدة أخرى بدل أن تُخترع آلية ثانية.
+      - name: Create a clean migration-drill database
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          psql -h localhost -U athera_owner -d postgres \
+            -c 'DROP DATABASE IF EXISTS athera_migration' \
+            -c 'CREATE DATABASE athera_migration'
+
+      - name: Assert the drill database is empty before the drill
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          tables=$(psql -h localhost -U athera_owner -d athera_migration -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          echo "public tables in athera_migration: $tables"
+          test "$tables" = "0" || { echo "::error::drill database is not clean"; exit 1; }
+
+      - name: Migration roundtrip drill (AT-S0-13) — head → base → head
+        env:
+          DATABASE_MIGRATION_URL: ${{ env.MIGRATION_DRILL_URL }}
+        run: |
+          cd infra/db
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: Assert the drill reached 0016 and left the test database untouched
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          head=$(psql -h localhost -U athera_owner -d athera_migration -tAc \
+            "SELECT version_num FROM alembic_version")
+          echo "drill head: $head"
+          test "$head" = "0016" || { echo "::error::drill head is $head, expected 0016"; exit 1; }
+
+          # بيانات القبول باقية كما تركتها الاختبارات — التدريب لم يمسّها.
+          unknown=$(psql -h localhost -U athera_owner -d athera \
+            -tAc "SELECT count(*) FROM fact_candidates WHERE status = 'unknown'")
+          echo "unknown candidates still in the test database: $unknown"
+          test "$unknown" -ge 1 || {
+            echo "::error::the drill mutated the acceptance-test database"; exit 1; }
+
+          # وحارس 0016 ما يزال قائمًا على قاعدة الاختبارات.
+          psql -h localhost -U athera_owner -d athera -tAc \
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint
+             WHERE conname = 'ck_fact_candidates_ck_candidate_status'" | grep -q unknown || {
+            echo "::error::the status constraint changed on the test database"; exit 1; }
 
   web:
     name: Web — ثنائي اللغة | bilingual build

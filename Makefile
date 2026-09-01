@@ -30,7 +30,17 @@ verify-constraints: ## يحاول كل ممنوع ويفشل إن نجح | attem
 	python3 scripts/verify_db_constraints.py
 
 migrate-roundtrip: ## ترحيل كامل صعودًا ونزولًا | full up/down migration drill
-	cd infra/db && alembic upgrade head && alembic downgrade base && alembic upgrade head
+	@# على قاعدة مخصَّصة لا على قاعدة التطوير.
+	@#
+	@# التنازل يمرّ على كل ترحيل، ومنها حرّاسٌ يرفضون إتلاف قرارٍ بشري
+	@# (0016 مثلًا يرفض التنازل ما دام مرشّحٌ بحالة «لا أعرف» قائمًا).
+	@# فتشغيل التدريب على قاعدة فيها بياناتك يصطدم بها — والصواب قاعدة
+	@# نظيفة، لا حذف البيانات لتمرير التدريب.
+	psql "$${ADMIN_DATABASE_URL:-postgresql://athera_owner:athera_owner_pw@localhost:5432/postgres}" \
+	  -c 'DROP DATABASE IF EXISTS athera_migration' \
+	  -c 'CREATE DATABASE athera_migration'
+	cd infra/db && DATABASE_MIGRATION_URL="$${MIGRATION_DRILL_URL:-postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera_migration}" \
+	  sh -c 'alembic upgrade head && alembic downgrade base && alembic upgrade head'
 
 test-api: ## اختبارات القبول | acceptance tests AT-S0-*
 	cd apps/api && pytest -v
