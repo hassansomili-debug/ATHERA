@@ -52,7 +52,11 @@ export function usePosture(locale: Locale): Posture {
   return {
     loading,
     items,
-    modelEnabled: Boolean(valueOf("model_provider")) && valueOf("model_provider") !== "null",
+    // الخادم يعلن `not_configured` لمزوّد مُسمّى بلا مفتاح — فلا نعدّه متاحًا.
+    modelEnabled:
+      Boolean(valueOf("model_provider")) &&
+      valueOf("model_provider") !== "null" &&
+      valueOf("model_provider") !== "not_configured",
     literatureOnline: Boolean(valueOf("literature_registry")) && valueOf("literature_registry") !== "offline",
   };
 }

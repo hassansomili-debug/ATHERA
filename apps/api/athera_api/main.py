@@ -15,6 +15,7 @@ from .config import get_settings
 from .errors import AtheraError, athera_error_handler
 from .i18n.catalog import all_translations, negotiate_locale, translate
 from .routers import analysis as analysis_router
+from .routers import ai as ai_router
 from .routers import audit as audit_router
 from .routers import auth as auth_router
 from .routers import brain as brain_router
@@ -122,6 +123,7 @@ app.include_router(inbox_router.router)
 app.include_router(profile_router.router)
 app.include_router(memory_router.router)
 app.include_router(brain_router.router)
+app.include_router(ai_router.router)
 app.include_router(portfolio_router.router)
 app.include_router(team_router.router)
 app.include_router(settings_router.router)

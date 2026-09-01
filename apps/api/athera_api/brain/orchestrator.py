@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -102,6 +103,21 @@ def _render_context(items: list[dict]) -> str:
     return "\n\n".join(blocks) if blocks else "<CONTEXT/>"
 
 
+def _input_fingerprint(question: str, spec: AgentSpec) -> dict[str, object]:
+    """وصف المدخل بلا نقله.
+
+    القاعدة: كل قيمة هنا يجب أن تبقى صحيحة لو كان النصّ يحمل بيانات مشاركين.
+    الطول والبصمة والنية تصفه؛ والنصّ نفسه لا يُحفظ ولا يُقتطع منه شيء.
+    """
+    return {
+        "intent": spec.key,
+        "gate": spec.gate,
+        "chars": len(question),
+        "sha256": hashlib.sha256(question.encode("utf-8")).hexdigest(),
+    }
+
+
+
 class Orchestrator:
     def __init__(self, gateway: ModelGateway | None = None) -> None:
         self._gateway = gateway or ModelGateway()
@@ -117,6 +133,13 @@ class Orchestrator:
         tool_calls: list[ToolCall] | None = None,
         trace_id: uuid.UUID | None = None,
         parent_agent_run_id: uuid.UUID | None = None,
+        # تصنيف نصّ الباحث نفسه. كان الحساب يعتمد الأدوات وحدها، فتشغيلةٌ
+        # بلا أدوات تُعلَن C0 — أي «عام» — بينما سؤال بحثي حرّ هو C1 بنصّ
+        # مصفوفة التصنيف. الإعلان هنا يجعل الحساب أدقّ لا أوسع: السقف كما هو،
+        # وما كان يمرّ بادعاء C0 صار يمرّ بإعلانه الصحيح.
+        input_classification: str = "C1",
+        # تعليمات نظام إضافية — سياسة نزاهة تُضاف إلى قيد الأجنت لا تحلّ محله.
+        extra_system: str | None = None,
     ) -> AgentResult:
         spec: AgentSpec = get_agent(agent_key)
         trace_id = trace_id or uuid.uuid4()
@@ -126,7 +149,14 @@ class Orchestrator:
             agent_key=spec.key,
             status="running",
             started_at=dt.datetime.now(dt.UTC),
-            input_summary={"question": question[:500], "gate": spec.gate},
+            # **بيانات تشغيل لا محتوى بحثي.** كان هذا الحقل يحفظ أول خمسمئة
+            # حرف من نصّ الباحث حرفيًّا — وهو قد يحمل فكرة غير منشورة أو
+            # مقطعًا من مخطوطة أو ذكرًا لمشاركين. وحفظه لا يخدم تشخيصًا:
+            # ما يلزم للتشخيص هو الطول والبصمة والنية، لا النصّ.
+            #
+            # والبصمة تكفي لما يُحتاج فعلًا: مطابقة تشغيلتين لنفس المدخل،
+            # وتتبّع إعادة المحاولة — بلا استرجاع النصّ منها.
+            input_summary=_input_fingerprint(question, spec),
         )
         run.trace_id = trace_id
         run.parent_agent_run_id = parent_agent_run_id
@@ -136,7 +166,13 @@ class Orchestrator:
         await session.flush()
 
         # ── 1+2. السياسة والسياق ──
-        requested = tool_calls or [ToolCall(key="memory.search_verified", kwargs={"query": None})]
+        # `or` كان يبتلع القائمة الفارغة: من يطلب «بلا أدوات» صراحةً كان
+        # يحصل على بحث الذاكرة الافتراضي — وتصنيفه C2 يتجاوز سقف الإرسال.
+        # التمييز بين «غير محدَّد» (None) و«بلا أدوات» ([]) يجعل الطلب مسموعًا.
+        requested = (
+            [ToolCall(key="memory.search_verified", kwargs={"query": None})]
+            if tool_calls is None else tool_calls
+        )
         context_items: list[dict] = []
         classifications: list[str] = ["C0"]
 
@@ -182,11 +218,13 @@ class Orchestrator:
                     responsibility_ar=spec.responsibility_ar,
                     constraint_ar=spec.constraint_ar, constraint_en=spec.constraint_en,
                 )),
+                *([Message(role="system", content=extra_system)] if extra_system else []),
+                # نصّ الباحث في دور `user` وحده — ولا مسار يرفعه إلى `system`.
                 Message(role="user", content=f"{question}\n\n{_render_context(context_items)}"),
             ],
             schema=BrainAnswer.model_json_schema(),
             temperature=0.0,
-            classification=_max_classification(classifications),
+            classification=_max_classification([*classifications, input_classification]),
         )
         response, model_run = await self._gateway.generate_structured(
             session, tenant_id=tenant_id, request=request, agent_run_id=run.id

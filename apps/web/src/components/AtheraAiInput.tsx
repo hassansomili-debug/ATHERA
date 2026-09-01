@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { AtheraApiError, apiFetch } from "@/lib/api";
+import { AiAnswerCard, type AiAnswer } from "./AiAnswer";
 import { type Locale, type Messages, translator } from "@/lib/i18n";
 import { usePosture } from "@/lib/posture";
 
@@ -18,7 +20,28 @@ export function AtheraAiInput({
   const t = translator(messages);
   const { modelEnabled, loading } = usePosture(locale);
   const [value, setValue] = useState("");
-  const disabled = loading || !modelEnabled;
+  const [busy, setBusy] = useState(false);
+  const [answer, setAnswer] = useState<AiAnswer | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const disabled = loading || !modelEnabled || busy;
+
+  async function ask() {
+    setBusy(true);
+    setError(null);
+    setAnswer(null);
+    try {
+      setAnswer(await apiFetch<AiAnswer>("/api/v1/ai/ask", {
+        method: "POST",
+        locale,
+        body: JSON.stringify({ question: value.trim() }),
+      }));
+    } catch (err) {
+      // خطأ المزوّد يصل مترجَمًا — ولا يُستبدل بنصّ مُولَّد.
+      setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.askFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <>
@@ -36,12 +59,20 @@ export function AtheraAiInput({
             <button type="button" className="ai-tool" disabled={disabled}>📎 {t("ai.upload")}</button>
             <button type="button" className="ai-tool" disabled={disabled}>🔗 {t("ai.link")}</button>
             <button type="button" className="ai-tool" disabled={disabled}>🎙 {t("ai.voice")}</button>
-            <button type="button" className="ai-send" disabled={disabled || value.trim() === ""}>
-              {t("ai.send")}
+            <button
+              type="button"
+              className="ai-send"
+              disabled={disabled || value.trim().length < 8}
+              onClick={() => void ask()}
+            >
+              {busy ? t("ai.thinking") : t("ai.send")}
             </button>
           </div>
         </div>
       </div>
+
+      {error ? <p className="error" style={{ marginBlockStart: 10 }}>{error}</p> : null}
+      {answer ? <AiAnswerCard messages={messages} data={answer} /> : null}
 
       {!loading && !modelEnabled ? (
         <div className="gate" style={{ marginBlockStart: 12 }}>
