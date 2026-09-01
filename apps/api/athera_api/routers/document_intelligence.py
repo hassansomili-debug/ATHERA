@@ -20,14 +20,17 @@ from ..errors import AtheraError, NotFound
 from ..models.files import File
 from ..models.research import ExtractionRun, FactCandidate
 from ..models.thesis import Thesis
+from ..models.audit import AuditEvent
 from ..schemas.document_intelligence import (
     CandidateDecision,
     CandidateResponse,
+    ConsentDecision,
+    ConsentState,
     ExtractionStateResponse,
     ReviewResponse,
     SectionGroup,
 )
-from ..services import audit, memory, rbac, storage
+from ..services import audit, consent, memory, rbac, storage
 from ..services.document_intelligence import fields as catalogue
 from ..services.document_intelligence import pipeline
 from ..services.document_intelligence.contracts import STATUS_EXTRACTED, ExtractionBatch
@@ -58,6 +61,14 @@ _STATE_MESSAGES = {
     Status.VERIFIED.value: ("روجعت واعتُمدت", "Reviewed and approved"),
     Status.PARSE_FAILED.value: ("تعذّرت قراءة الملف", "The document could not be read"),
     Status.EXTRACTION_FAILED.value: ("تعذّر استخراج البيانات", "Information extraction failed"),
+    Status.AWAITING_CONSENT.value: (
+        "تمّت القراءة المحلية · بانتظار إذنك للمعالجة بالذكاء الاصطناعي",
+        "Local reading complete · awaiting your authorization for AI processing",
+    ),
+    Status.LOCAL_ONLY.value: (
+        "تمّت القراءة المحلية · لم تأذن بالمعالجة الخارجية",
+        "Local reading complete · external processing not authorized",
+    ),
 }
 
 _SECTION_LABELS = {
@@ -90,7 +101,7 @@ def _t(locale: str, ar: str, en: str) -> str:
 # في `pipeline.run_extraction` لا هنا.
 
 
-async def _model_reader(session, *, tenant_id, actor_user_id, locale):
+async def _model_reader(session, *, tenant_id, actor_user_id, locale, grant):
     """محوّل بين خط الأنابيب والمنسّق — والنداء يمرّ بالمنسّق حصرًا."""
 
     async def call(*, question: str, schema: dict, classification: str, locale: str = locale):
@@ -103,9 +114,11 @@ async def _model_reader(session, *, tenant_id, actor_user_id, locale):
             instruction=EXTRACTION_INSTRUCTION,
             payload=question,
             # §7 — نصّ رسالة غير منشورة: C2. والبوابة هي التي تسمح أو تمنع،
-            # ولا يُرفع السقف من هنا.
+            # ولا يُرفع السقف من هنا: الإذن مقروء من موافقة الباحث لا مُعطى
+            # لنفسه، والتصنيف يبقى C2 ولا يُخفَّض ليمرّ.
             input_classification=classification,
             output_locale=locale,
+            grant=grant,
         )
         return batch.model_dump()
 
@@ -147,12 +160,23 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
                 await session.execute(select(File).where(File.id == file_id))
             ).scalar_one()
             data = storage.get_store().get(record.storage_key)
+
+            # **الموافقة تُقرأ من القاعدة قبل أي إرسال** — ولا تُستنتج من رفعٍ
+            # ولا دخولٍ ولا توفّر مزوّد. وغيابها لا يُعطّل القراءة المحلية.
+            grant = await consent.authorization_for(
+                session, tenant_id=tenant_id, file_id=file_id)
+            consent_state = await consent.state(
+                session, tenant_id=tenant_id, file_id=file_id)
+
             reader = await _model_reader(session, tenant_id=tenant_id,
-                                         actor_user_id=actor_id, locale=locale)
+                                         actor_user_id=actor_id, locale=locale,
+                                         grant=grant)
             result = await pipeline.run_extraction(
                 session, tenant_id=tenant_id, actor_user_id=actor_id,
                 file_record=record, data=data, orchestrator=reader, locale=locale,
                 run_id=run_id,
+                external_allowed=grant is not None,
+                consent_state=consent_state,
             )
         # ما استُبعد يُسجَّل عددًا لا نصًّا: «حُجبت ثلاثة مقاطع لوجود معرّفات
         # شخصية» معلومةٌ للباحث وللتدقيق، ومحتواها ليس كذلك.
@@ -165,6 +189,10 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
                 "not_found": len(result.not_found),
                 "excluded_from_external_send": result.excluded,
                 "failed_sections": result.failed_sections,
+                # §12 — هل أُذن بالإرسال الخارجي، وبأي قدرة.
+                "external_c2_authorized": grant is not None,
+                "capability": consent.CAPABILITY if grant else None,
+                "consent_state": consent_state,
             },
             reason="document read and structured proposals recorded; nothing verified yet",
         )
@@ -284,6 +312,130 @@ def _view(row: FactCandidate, locale: str, *, conflict: object = None) -> Candid
         edited_by_human=bool(payload.get("edited_by_human")),
         conflict_with=conflict,
     )
+
+
+# ──────────────────────────── إذن المعالجة الخارجية ────────────────────────────
+
+
+def _consent_copy(locale: str, provider: str) -> tuple[str, str, str, str, str]:
+    """نصّ بوابة الإذن — يسمّي المزوّد المضبوط فعلًا لا اسمًا مكتوبًا في ترجمة."""
+    if locale == "en":
+        return (
+            "AI processing of this thesis",
+            "This thesis is unpublished research material. To run advanced extraction, "
+            f"ATHERA will send only the necessary excerpts to the external AI provider "
+            f"used by the platform ({provider}).\n\n"
+            "This will not approve any information automatically; you will review "
+            "everything ATHERA extracts before approving it.",
+            "I agree — start processing",
+            "Use local extraction only",
+            "Withdraw authorization",
+        )
+    return (
+        "معالجة الرسالة بالذكاء الاصطناعي",
+        "هذه الرسالة مادة بحثية غير منشورة. لإجراء الاستخراج المتقدم، سترسل أثيرا "
+        f"الأجزاء اللازمة فقط إلى مزود الذكاء الاصطناعي الخارجي المستخدم في المنصة "
+        f"({provider}).\n\n"
+        "لن يؤدي ذلك إلى اعتماد المعلومات تلقائيًا؛ ستراجع أنت كل ما تستخرجه أثيرا "
+        "قبل اعتماده.",
+        "أوافق وأبدأ المعالجة",
+        "استخدام الاستخراج المحلي فقط",
+        "اسحب الإذن",
+    )
+
+
+async def _consent_view(session: AsyncSession, principal: Principal,
+                        thesis: Thesis) -> ConsentState:
+    from ..providers.gateway import active_model, provider_readiness  # noqa: PLC0415
+
+    provider = provider_readiness()[0]
+    row = await consent._row(session, tenant_id=principal.tenant_id, file_id=thesis.file_id)
+    state = await consent.state(session, tenant_id=principal.tenant_id, file_id=thesis.file_id)
+    title, body, accept, decline, revoke = _consent_copy(principal.locale, provider)
+
+    # ما استُبعد محليًّا — يُعرض قبل الموافقة لا بعدها: الباحث يوافق وهو يعلم
+    # أن الملاحق ومقاطع المعرّفات الشخصية لن تُرسل أصلًا.
+    excluded: dict[str, int] = {}
+    run = (
+        await session.execute(
+            select(ExtractionRun).where(ExtractionRun.file_id == thesis.file_id)
+            .order_by(ExtractionRun.started_at.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    if run is not None:
+        event = (
+            await session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.object_id == thesis.file_id,
+                    AuditEvent.action == "thesis.extraction_completed",
+                ).order_by(AuditEvent.occurred_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+        if event is not None and isinstance(event.state_after, dict):
+            excluded = event.state_after.get("excluded_from_external_send") or {}
+
+    return ConsentState(
+        file_id=thesis.file_id, state=state,
+        capability=consent.CAPABILITY,
+        max_classification=consent.CAPABILITY_CEILING[consent.CAPABILITY],
+        provider=provider, model=active_model(),
+        decided_at=row.decided_at if row is not None else None,
+        title=title, body=body, accept_label=accept,
+        decline_label=decline, revoke_label=revoke,
+        excluded_chunks=excluded,
+    )
+
+
+@router.get("/{thesis_id}/consent", response_model=ConsentState)
+async def consent_state(
+    thesis_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ConsentState:
+    thesis = await _guard(session, principal, thesis_id)
+    if thesis.file_id is None:
+        raise AtheraError("thesis.no_file", status_code=422)
+    return await _consent_view(session, principal, thesis)
+
+
+@router.post("/{thesis_id}/consent", response_model=ConsentState)
+async def decide_consent(
+    thesis_id: uuid.UUID,
+    payload: ConsentDecision,
+    background: BackgroundTasks,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ConsentState:
+    """قرار الباحث في إرسال رسالته إلى مزوّد خارجي.
+
+    **والموافقة لا تعني اعتمادًا.** هي إذنٌ بالقراءة لا بالتصديق: ما يعود
+    يبقى مرشّحًا `unverified` حتى يقرّر الباحث فيه واحدًا واحدًا.
+
+    والسحب يوقف ما هو آتٍ ولا يستردّ ما أُرسل — ولا تدّعي الواجهة غير ذلك.
+    """
+    thesis = await _guard(session, principal, thesis_id)
+    if thesis.file_id is None:
+        raise AtheraError("thesis.no_file", status_code=422)
+    # الكتابة تحتاج ملكية لا قراءة: من يقرأ مستندًا لا يقرّر إرساله خارجًا.
+    await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
+                                     "file", thesis.file_id, "write")
+
+    from ..providers.gateway import active_model, provider_readiness  # noqa: PLC0415
+
+    await consent.record_decision(
+        session, tenant_id=principal.tenant_id, file_id=thesis.file_id,
+        actor_user_id=principal.user_id, granted=payload.decision == "grant",
+        provider=provider_readiness()[0], model=active_model(),
+        revocation=payload.decision == "revoke",
+        request_id=principal.request_id,
+    )
+    await session.flush()
+
+    # الموافقة وحدها تبدأ المعالجة الخارجية — والرفض والسحب لا يشغّلان شيئًا.
+    if payload.decision == "grant":
+        background.add_task(_process, principal.tenant_id, principal.user_id,
+                            thesis.file_id, principal.locale)
+    return await _consent_view(session, principal, thesis)
 
 
 @router.get("/{thesis_id}/review", response_model=ReviewResponse)

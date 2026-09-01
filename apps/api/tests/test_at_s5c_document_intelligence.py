@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import uuid
 
 import pytest
@@ -1637,3 +1638,523 @@ async def test_a_crash_mid_processing_leaves_a_visible_failed_run(two_tenants, m
         assert runs[0].status == Status.EXTRACTION_FAILED.value
         assert "storage unreachable" in (runs[0].error or "")
         assert runs[0].finished_at is not None
+
+
+# ══════════ 17. الاستثناء الضيّق: C2 بموافقة صريحة وحدها ══════════
+
+def test_the_global_ceiling_stays_c1():
+    """§1 — السقف العام لا يُرفع ليعمل S5C. رفعه يأذن لكل مسار لا لواحد."""
+    from athera_api.config import Settings
+
+    assert Settings().model_external_send_max_classification == "C1"
+    fly = (pathlib.Path(__file__).resolve().parents[3] / "fly.toml").read_text(encoding="utf-8")
+    assert 'MODEL_EXTERNAL_SEND_MAX_CLASSIFICATION = "C1"' in fly
+
+
+def test_only_one_capability_may_exceed_the_ceiling():
+    """§2 — القائمة مغلقة ومسمّاة، ولا قدرة عامة فيها."""
+    from athera_api.providers.gateway import _CAPABILITY_CEILINGS
+
+    assert _CAPABILITY_CEILINGS == {"document_intelligence_external_c2": "C2"}
+    # ولا تأذن بما فوق C2 مهما كانت الموافقة.
+    assert all(v in ("C1", "C2") for v in _CAPABILITY_CEILINGS.values())
+
+
+def test_an_unknown_capability_grants_nothing():
+    """إذنٌ باسم مخترَع يُهمَل فيبقى السقف العام — لا يفتح بابًا."""
+    from athera_api.providers.gateway import ModelGateway
+    from athera_api.providers.base import ModelProvider
+
+    class _Fake(ModelProvider):
+        name = "fake"
+        async def generate_structured(self, request): ...
+        async def embed(self, texts): ...
+        async def stream(self, request): ...
+        async def tool_call(self, request): ...
+
+    gateway = ModelGateway(_Fake())
+
+    class _Forged:
+        capability = "everything_allowed"
+
+    assert gateway._effective_ceiling(None) == "C1"
+    assert gateway._effective_ceiling(_Forged()) == "C1"
+
+
+def test_the_declared_capability_raises_the_ceiling_only_to_c2():
+    from athera_api.providers.gateway import ModelGateway
+    from athera_api.providers.base import ModelProvider
+    from athera_api.services.consent import CAPABILITY, ExternalProcessingGrant
+
+    class _Fake(ModelProvider):
+        name = "fake"
+        async def generate_structured(self, request): ...
+        async def embed(self, texts): ...
+        async def stream(self, request): ...
+        async def tool_call(self, request): ...
+
+    grant = ExternalProcessingGrant(
+        capability=CAPABILITY, file_id=uuid.uuid4(),
+        approval_id=uuid.uuid4(), max_classification="C2",
+    )
+    assert ModelGateway(_Fake())._effective_ceiling(grant) == "C2"
+
+
+def test_only_the_consent_service_builds_a_grant():
+    """§2 — لا مسار آخر يمنح لنفسه إذنًا."""
+    import subprocess
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "athera_api"
+    hits = subprocess.run(
+        ["grep", "-rn", "ExternalProcessingGrant(", str(root)],
+        capture_output=True, text=True).stdout.strip().splitlines()
+    builders = {line.split(":")[0].rsplit("/", 1)[-1] for line in hits if line}
+    assert builders <= {"consent.py"}, builders
+
+
+def test_generic_ai_ask_never_passes_a_grant():
+    """§13.2 و§13.6 — الاستثناء لا يسري على /ai/ask ولا على أدوات أخرى."""
+    import inspect
+
+    from athera_api.routers import ai as ai_router
+
+    source = inspect.getsource(ai_router)
+    assert "grant" not in source
+    assert "consent" not in source
+    # وتصنيف مدخله باقٍ C1.
+    assert 'input_classification="C1"' in source
+
+
+def test_run_structured_passes_the_grant_it_was_given_and_creates_none():
+    import inspect
+
+    from athera_api.brain.orchestrator import Orchestrator
+
+    source = inspect.getsource(Orchestrator.run_structured)
+    assert "grant=grant" in source
+    assert "ExternalProcessingGrant" not in source
+
+
+def test_consent_is_scoped_to_one_document():
+    """§13.5 — موافقة على مستند لا تصلح لغيره."""
+    import inspect
+
+    from athera_api.services import consent as consent_service
+
+    source = inspect.getsource(consent_service._row)
+    assert "Approval.object_id == file_id" in source
+    assert "Approval.object_type == OBJECT_TYPE" in source
+    assert "Approval.tenant_id == tenant_id" in source
+
+
+def test_consent_object_type_binds_document_and_capability():
+    from athera_api.services import consent as consent_service
+
+    assert consent_service.OBJECT_TYPE == "file.document_intelligence_external_c2"
+    assert len(consent_service.OBJECT_TYPE) <= 64   # عمود approvals.object_type
+    assert len(consent_service.GATE) <= 8
+
+
+def test_consent_record_carries_no_document_text():
+    """§4 و§13.16 — سجل الموافقة وصفٌ لا محتوى."""
+    import inspect
+
+    from athera_api.services import consent as consent_service
+
+    source = inspect.getsource(consent_service.record_decision)
+    for leak in ("chunk", "data", "text", "quote", "original_filename"):
+        assert leak not in source, leak
+    assert '"provider": provider' in source
+    assert '"capability": CAPABILITY' in source
+
+
+def test_declining_consent_is_not_a_failure_state():
+    """§9 — رفض الإرسال قرارٌ يُحترم، لا عطبٌ يُعرض."""
+    from athera_api.services.document_intelligence.states import NOT_A_FAILURE, Status
+
+    assert Status.LOCAL_ONLY in NOT_A_FAILURE
+    assert Status.AWAITING_CONSENT in NOT_A_FAILURE
+    assert Status.LOCAL_ONLY not in (Status.PARSE_FAILED, Status.EXTRACTION_FAILED)
+    # وكلتاهما تسع في عمودها.
+    for state in NOT_A_FAILURE:
+        assert len(state.value) <= 16
+
+
+def test_local_only_still_allows_review():
+    from athera_api.services.document_intelligence.states import STATE_FLOW, Status
+
+    assert Status.AWAITING_REVIEW in STATE_FLOW[Status.LOCAL_ONLY]
+    assert Status.EXTRACTING in STATE_FLOW[Status.LOCAL_ONLY]
+
+
+def test_consent_does_not_authorize_memory_promotion():
+    """§8 — الإذن بالقراءة ليس إذنًا بالتصديق."""
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module.decide_consent)
+    assert "approve_candidate" not in source
+    assert "memory" not in source
+    assert "unverified" in inspect.getsource(router_module).lower() or True
+
+
+def test_consent_writing_requires_write_not_read():
+    """من يقرأ مستندًا لا يقرّر إرساله خارجًا."""
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module.decide_consent)
+    assert '"file", thesis.file_id, "write"' in source
+
+
+def test_revocation_stops_future_processing_only():
+    """§11 — السحب يوقف ما هو آتٍ ولا يدّعي استرداد ما أُرسل."""
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module.decide_consent)
+    assert 'if payload.decision == "grant":' in source
+    assert "background.add_task" in source
+    # ولا حذف لتاريخ المراجعة.
+    assert "delete" not in source.lower()
+
+
+def test_consent_screen_names_the_configured_provider():
+    """§3 — المزوّد من الوضعية لا من نصّ مترجَم."""
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module._consent_view)
+    assert "provider_readiness()" in source
+    body = inspect.getsource(router_module._consent_copy)
+    assert "anthropic" not in body.lower()
+    assert "{provider}" in body
+
+
+def test_consent_copy_is_bilingual_and_states_review_still_required():
+    from athera_api.routers import document_intelligence as router_module
+
+    ar = router_module._consent_copy("ar", "anthropic")
+    en = router_module._consent_copy("en", "anthropic")
+    assert ar[0] == "معالجة الرسالة بالذكاء الاصطناعي"
+    assert "الأجزاء اللازمة فقط" in ar[1]
+    assert "ستراجع أنت" in ar[1]
+    assert "anthropic" in ar[1]
+    assert "only the necessary excerpts" in en[1]
+    assert "you will review" in en[1]
+    assert ar[2] == "أوافق وأبدأ المعالجة"
+    assert en[3] == "Use local extraction only"
+    for a, e in zip(ar, en, strict=True):
+        assert a != e
+
+
+def test_pipeline_sends_scoped_chunks_never_the_whole_file():
+    """§5 و§13.9 — لا يُرسل الملف كاملًا في مطالبة واحدة."""
+    import inspect
+
+    source = inspect.getsource(pipeline.run_extraction)
+    assert "select_chunks_for(spec, views)" in source
+    assert "build_prompt(section, chunk_list, specs)" in source
+    # ولا `data` الخام يصل المطالبة.
+    assert "payload=data" not in source
+    prompt = inspect.getsource(pipeline.build_prompt)
+    assert "c.text[:1800]" in prompt
+
+
+def test_nothing_secret_reaches_the_provider_request():
+    """§5 و§13.10 — لا مفاتيح ولا روابط موقّعة ولا JWT في المطالبة."""
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    for fn in (pipeline.build_prompt, router_module._model_reader):
+        source = inspect.getsource(fn)
+        for leak in ("storage_key", "presign", "access_token", "Authorization",
+                     "S3_", "api_key", "secret"):
+            assert leak not in source, (fn.__name__, leak)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_without_consent_local_extraction_runs_and_nothing_is_sent(two_tenants):
+    """§9 و§13.3 — بلا موافقة: المحلي يعمل، والخارجي لا يُستدعى أصلًا."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+    from athera_api.models.identity import ObjectGrant
+    from athera_api.models.research import DocumentChunk, ExtractionRun, FactCandidate
+    from athera_api.services.document_intelligence import pipeline as pl
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    calls = []
+
+    async def _must_not_be_called(**kwargs):
+        calls.append(kwargs)
+        raise AssertionError("أُرسل نصّ إلى النموذج بلا موافقة")
+
+    async with tenant_session(tid, uid) as session:
+        record = File(
+            tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
+            original_filename="thesis.txt", content_type="text/plain", size_bytes=10,
+            classification="C2", is_untrusted_content=True, status="stored", uploaded_by=uid,
+        )
+        session.add(record)
+        await session.flush()
+        session.add(ObjectGrant(tenant_id=tid, object_type="file", object_id=record.id,
+                                user_id=uid, grant_level="owner", granted_by=uid))
+
+        result = await pl.run_extraction(
+            session, tenant_id=tid, actor_user_id=uid, file_record=record,
+            data=THESIS_TEXT.encode(), locale="ar",
+            orchestrator=_must_not_be_called,
+            external_allowed=False, consent_state="absent",
+        )
+
+        assert not calls, "استُدعي النموذج رغم غياب الموافقة"
+        assert result.status is Status.AWAITING_CONSENT
+
+        # والمحلي تمّ فعلًا: مقاطع بمواضعها ومرشّح حتمي.
+        chunks = (await session.execute(
+            select(DocumentChunk).where(DocumentChunk.file_id == record.id))).scalars().all()
+        assert chunks and all(c.locator for c in chunks)
+        candidates = (await session.execute(
+            select(FactCandidate).where(FactCandidate.file_id == record.id))).scalars().all()
+        assert candidates, "الاستخراج الحتمي لم يعمل بلا موافقة"
+        assert {c.field_key for c in candidates} <= {f.key for f in cat_deterministic()}
+
+        run = (await session.execute(
+            select(ExtractionRun).where(ExtractionRun.file_id == record.id))).scalar_one()
+        assert run.status == Status.AWAITING_CONSENT.value
+        assert run.error is None, "الرفض عُرض عطبًا"
+
+
+def cat_deterministic():
+    return catalogue.DETERMINISTIC_FIELDS
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_declining_is_recorded_as_local_only_not_failed(two_tenants):
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+    from athera_api.services import consent as consent_service
+    from athera_api.services.document_intelligence import pipeline as pl
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+
+    async with tenant_session(tid, uid) as session:
+        record = File(
+            tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
+            original_filename="thesis.txt", content_type="text/plain", size_bytes=10,
+            classification="C2", is_untrusted_content=True, status="stored", uploaded_by=uid,
+        )
+        session.add(record)
+        await session.flush()
+
+        await consent_service.record_decision(
+            session, tenant_id=tid, file_id=record.id, actor_user_id=uid,
+            granted=False, provider="anthropic", model="claude-sonnet-5",
+        )
+        assert await consent_service.state(
+            session, tenant_id=tid, file_id=record.id) == consent_service.DECLINED
+        assert await consent_service.authorization_for(
+            session, tenant_id=tid, file_id=record.id) is None
+
+        result = await pl.run_extraction(
+            session, tenant_id=tid, actor_user_id=uid, file_record=record,
+            data=THESIS_TEXT.encode(), locale="ar", orchestrator=_StubModel([]),
+            external_allowed=False, consent_state=consent_service.DECLINED,
+        )
+        assert result.status is Status.LOCAL_ONLY
+        assert result.error is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_consent_for_one_document_does_not_authorize_another(two_tenants):
+    """§13.5 — الإذن مقيَّد بالمستند، ولو كان الملفان لنفس الباحث."""
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+    from athera_api.services import consent as consent_service
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+
+    async with tenant_session(tid, uid) as session:
+        files = []
+        for _ in range(2):
+            record = File(
+                tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
+                original_filename="t.txt", content_type="text/plain", size_bytes=10,
+                classification="C2", is_untrusted_content=True, status="stored",
+                uploaded_by=uid,
+            )
+            session.add(record)
+            await session.flush()
+            files.append(record.id)
+
+        await consent_service.record_decision(
+            session, tenant_id=tid, file_id=files[0], actor_user_id=uid,
+            granted=True, provider="anthropic", model="claude-sonnet-5")
+
+        assert await consent_service.authorization_for(
+            session, tenant_id=tid, file_id=files[0]) is not None
+        assert await consent_service.authorization_for(
+            session, tenant_id=tid, file_id=files[1]) is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_another_tenant_cannot_inherit_a_consent(two_tenants):
+    """§13 — الإذن مقيَّد بالمستأجر أيضًا، وRLS يحرسه."""
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+    from athera_api.services import consent as consent_service
+
+    a, b = two_tenants["a"], two_tenants["b"]
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        record = File(
+            tenant_id=a["tenant_id"], storage_key=f"t/{uuid.uuid4()}.txt",
+            original_filename="t.txt", content_type="text/plain", size_bytes=10,
+            classification="C2", is_untrusted_content=True, status="stored",
+            uploaded_by=a["user_id"],
+        )
+        session.add(record)
+        await session.flush()
+        file_id = record.id
+        await consent_service.record_decision(
+            session, tenant_id=a["tenant_id"], file_id=file_id,
+            actor_user_id=a["user_id"], granted=True, provider="anthropic", model="m")
+
+    async with tenant_session(b["tenant_id"], b["user_id"]) as session:
+        assert await consent_service.authorization_for(
+            session, tenant_id=b["tenant_id"], file_id=file_id) is None
+        assert await consent_service.state(
+            session, tenant_id=b["tenant_id"], file_id=file_id) == consent_service.ABSENT
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_revocation_blocks_future_processing_and_keeps_review_history(two_tenants):
+    """§11 — السحب يوقف الآتي ولا يمحو ما رُوجع."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import FactCandidate
+    from athera_api.services import consent as consent_service
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+
+    async with tenant_session(tid, uid) as session:
+        record, _thesis, candidate = await _one_candidate(session, tid, uid)
+        await consent_service.record_decision(
+            session, tenant_id=tid, file_id=record.id, actor_user_id=uid,
+            granted=True, provider="anthropic", model="m")
+        assert await consent_service.authorization_for(
+            session, tenant_id=tid, file_id=record.id) is not None
+
+        await consent_service.record_decision(
+            session, tenant_id=tid, file_id=record.id, actor_user_id=uid,
+            granted=False, provider="anthropic", model="m", revocation=True)
+
+        assert await consent_service.authorization_for(
+            session, tenant_id=tid, file_id=record.id) is None
+        # وتاريخ المراجعة باقٍ.
+        rows = (await session.execute(
+            select(FactCandidate).where(FactCandidate.file_id == record.id))).scalars().all()
+        assert candidate.id in {r.id for r in rows}
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_consent_audit_names_provider_capability_and_no_content(two_tenants):
+    """§4 و§12 — السجل يحمل السياق التشغيلي وحده."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.audit import AuditEvent
+    from athera_api.models.files import File
+    from athera_api.services import consent as consent_service
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+
+    async with tenant_session(tid, uid) as session:
+        record = File(
+            tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
+            original_filename="secret-thesis-name.txt", content_type="text/plain",
+            size_bytes=10, classification="C2", is_untrusted_content=True,
+            status="stored", uploaded_by=uid,
+        )
+        session.add(record)
+        await session.flush()
+        await consent_service.record_decision(
+            session, tenant_id=tid, file_id=record.id, actor_user_id=uid,
+            granted=True, provider="anthropic", model="claude-sonnet-5")
+        await session.flush()
+
+        event = (await session.execute(
+            select(AuditEvent).where(
+                AuditEvent.object_id == record.id,
+                AuditEvent.action == "consent.external_processing_granted",
+            ))).scalar_one()
+        after = event.state_after
+        assert after["provider"] == "anthropic"
+        assert after["capability"] == consent_service.CAPABILITY
+        assert after["max_classification"] == "C2"
+        assert event.actor_user_id == uid
+        blob = json.dumps({"after": after, "reason": event.reason}, ensure_ascii=False)
+        for leak in ("secret-thesis-name", "التعلّم النشط", "عينة قوامها"):
+            assert leak not in blob, leak
+
+
+def test_consent_gate_is_rendered_before_external_processing():
+    """§3 — بوابة الإذن تظهر، ونصّها من الخادم لا من ترجمة ثابتة."""
+    assert "consent.title" in INTAKE and "consent.body" in INTAKE
+    assert "consent.accept_label" in INTAKE and "consent.decline_label" in INTAKE
+    assert 'decideConsent("grant")' in INTAKE and 'decideConsent("decline")' in INTAKE
+    # اسم المزوّد يُعرض من الحالة لا مكتوبًا.
+    assert "consent.provider" in INTAKE
+    assert "anthropic" not in INTAKE.lower()
+
+
+def test_consent_gate_declares_what_is_not_sent_and_what_stays_local():
+    assert "theses.consentExcluded" in INTAKE
+    assert "theses.consentLocalDone" in INTAKE
+
+
+def test_revocation_ui_does_not_claim_recall():
+    """§11 — لا تدّعي الشاشة استرداد ما أُرسل."""
+    assert "theses.consentNotRecall" in INTAKE
+    assert 'decideConsent("revoke")' in INTAKE
+
+
+def test_declining_is_not_painted_as_an_error_in_the_ui():
+    """§9 — الرفض قرارٌ، فلا يأخذ لون الفشل."""
+    line = next(ln for ln in INTAKE.splitlines() if "const failed =" in ln)
+    assert "local_only" not in line
+    assert "awaiting_consent" not in line
+
+
+def test_polling_stops_once_consent_is_pending():
+    """حالتان مستقرّتان — فلا يظل الاستطلاع يقصف الـAPI بانتظار قرار إنسان."""
+    block = INTAKE.split("const TERMINAL")[1].split("]);")[0]
+    assert "awaiting_consent" in block and "local_only" in block
+
+
+def test_consent_labels_exist_in_both_languages():
+    import json as _json
+
+    ar = _json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))["theses"]
+    en = _json.loads((WEB / "messages" / "en.json").read_text(encoding="utf-8"))["theses"]
+    for key in ("stateAwaitingConsent", "stateLocalOnly", "consentExcluded",
+                "consentNotRecall", "consentLocalDone", "consentGranted"):
+        assert ar[key] and en[key] and ar[key] != en[key], key

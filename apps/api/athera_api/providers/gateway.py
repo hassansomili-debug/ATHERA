@@ -106,6 +106,33 @@ def classification_allowed(classification: str, ceiling: str) -> bool:
         return False
 
 
+# ── الاستثناء الضيّق ──
+#
+# القدرات المأذون لها بتجاوز السقف العام، وسقفُ كلٍّ منها **بالاسم**. القائمة
+# هنا لا في الاستدعاء: إذنٌ يحمل اسمًا خارجها يُرفض، فلا يستطيع مسارٌ آخر أن
+# يخترع قدرةً لنفسه.
+#
+# ولا تُوسَّع بقدرة عامة: «كل شيء» ليس قدرة، وإضافة اسم هنا قرار سياسة يُرى
+# في المراجعة لا إعداد يمرّ.
+_CAPABILITY_CEILINGS: Final[dict[str, str]] = {
+    "document_intelligence_external_c2": "C2",
+}
+
+
+def capability_ceiling(capability: str) -> str | None:
+    return _CAPABILITY_CEILINGS.get(capability)
+
+
+def active_model() -> str | None:
+    """اسم النموذج المضبوط — تُجيب عنه حزمة المزودين لا الراوترات.
+
+    فقراءة `settings.anthropic_model` خارج هذه الحزمة تسرّب معرفةَ بائعٍ إلى
+    طبقةٍ لا تعنيها، وتجعل إضافة مزوّد ثانٍ تعديلًا في أماكن لا علاقة لها به.
+    """
+    settings = get_settings()
+    return {"anthropic": settings.anthropic_model}.get(settings.model_provider) or None
+
+
 class ModelGateway:
     def __init__(self, provider: ModelProvider | None = None) -> None:
         self._provider = provider or build_provider()
@@ -115,6 +142,22 @@ class ModelGateway:
     def provider_name(self) -> str:
         return self._provider.name
 
+    def _effective_ceiling(self, grant: object | None) -> str:
+        """السقف العام، أو سقف القدرة المأذونة — أيّهما أعلى، ولا شيء غيرهما.
+
+        **ولا يُخفَّض السقف العام بإذن**: الإذن يوسّع لقدرته ولا يضيّق لغيرها.
+        وإذنٌ باسم غير معروف يُهمَل تمامًا فيبقى السقف العام — لا يُرفض
+        الطلب بل يُعامَل كأن لا إذن، وهو الأسلم.
+        """
+        base = self._settings.model_external_send_max_classification
+        capability = getattr(grant, "capability", None)
+        if capability is None:
+            return base
+        allowed = capability_ceiling(capability)
+        if allowed is None:
+            return base
+        return max((base, allowed), key=CLASSIFICATION_ORDER.index)
+
     async def generate_structured(
         self,
         session: AsyncSession,
@@ -122,8 +165,15 @@ class ModelGateway:
         tenant_id: uuid.UUID,
         request: ModelRequest,
         agent_run_id: uuid.UUID | None = None,
+        grant: object | None = None,
     ) -> tuple[ModelResponse, ModelRun]:
-        ceiling = self._settings.model_external_send_max_classification
+        """الإرسال عبر البوابة — ولا مسار يتجاوزها.
+
+        `grant` إذنٌ **لنداء واحد على مستند واحد**، تبنيه `services/consent`
+        وحدها بعد قراءة موافقة صريحة محسومة. وبلا إذن يبقى السقف العام هو
+        الحاكم — فلا يرتفع لأحد بمجرد أن مسارًا يحتاجه.
+        """
+        ceiling = self._effective_ceiling(grant)
         # المزود المحلي/الصفري لا يغادر بياناته الخادم، فلا يخضع لسقف الإرسال الخارجي.
         if self._provider.name != "null" and not classification_allowed(request.classification, ceiling):
             raise AtheraError(

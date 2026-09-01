@@ -72,3 +72,36 @@ class CandidateDecision(BaseModel):
     """`approve` مع `value` = تعديل ثم اعتماد."""
     value: Any = None
     reason: str | None = Field(default=None, max_length=1000)
+
+
+class ConsentDecision(BaseModel):
+    """قرار الباحث في إرسال مستنده إلى مزوّد خارجي.
+
+    ولا قيمة افتراضية: الموافقة تُقال صراحةً ولا تُستنتج من صمت.
+    """
+
+    decision: str = Field(pattern="^(grant|decline|revoke)$")
+
+
+class ConsentState(BaseModel):
+    """حالة الإذن كما هي — وما يترتب عليها.
+
+    `provider` يُقرأ من وضعية المنصة لا من نصّ مترجَم: شاشةٌ تسمّي مزوّدًا
+    غير المضبوط فعلًا تطلب موافقةً على غير ما سيقع.
+    """
+
+    file_id: uuid.UUID
+    # granted | declined | absent
+    state: str
+    capability: str
+    max_classification: str
+    provider: str
+    model: str | None = None
+    decided_at: dt.datetime | None = None
+    title: str
+    body: str
+    accept_label: str
+    decline_label: str
+    revoke_label: str
+    # ما يُستبعَد محليًّا قبل أي إرسال — عددًا لا نصًّا.
+    excluded_chunks: dict[str, int] = Field(default_factory=dict)

@@ -106,7 +106,9 @@ def test_every_translation_key_the_web_app_uses_actually_resolves():
 
     # المفاتيح الحرفية وحدها؛ المركَّبة (`theses.${x}`) تُترك للأنواع.
     used = set()
-    pattern = re.compile(r't\(\s*"([a-zA-Z][a-zA-Z0-9_.]*)"\s*\)')
+    # `(?<![\w$])` يمنع التقاط نهايات معرّفات أخرى: `decideConsent("grant")`
+    # كانت تُقرأ استدعاءً لـ`t("grant")` فيُبلَّغ عن مفتاح لا وجود له.
+    pattern = re.compile(r'(?<![\w$])t\(\s*"([a-zA-Z][a-zA-Z0-9_.]*)"\s*\)')
     for source in web_src.rglob("*.tsx"):
         used |= set(pattern.findall(source.read_text(encoding="utf-8")))
 

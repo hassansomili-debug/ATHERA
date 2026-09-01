@@ -29,17 +29,32 @@ class Status(StrEnum):
     PARSE_FAILED = "parse_failed"
     EXTRACTION_FAILED = "extract_failed"
 
+    # ── حالتان تقولان «تمّ المحلي ولم يُؤذَن للخارجي» ──
+    #
+    # ورفضُ الباحث إرسالَ رسالته إلى مزوّد خارجي **ليس فشلًا**، فلا يُعرض
+    # فشلًا. والتمييز بين «لم يقرّر بعد» و«قرّر ألّا يُرسل» تمييزٌ حقيقي:
+    # الأول ينتظر قراره، والثاني قرارٌ اتُّخذ ويُحترم.
+    AWAITING_CONSENT = "awaiting_consent"   # القراءة المحلية تمّت، والقرار معلّق
+    LOCAL_ONLY = "local_only"               # القراءة المحلية تمّت، والباحث رفض الإرسال
+
 
 # الانتقالات المسموحة. `verified` لا تُبلَغ إلا بقرار إنسان (§19).
 STATE_FLOW: Final[dict[Status, tuple[Status, ...]]] = {
     Status.PARSING: (Status.PARSED, Status.PARSE_FAILED),
-    Status.PARSED: (Status.EXTRACTING,),
+    Status.PARSED: (Status.EXTRACTING, Status.AWAITING_CONSENT, Status.LOCAL_ONLY),
     Status.EXTRACTING: (Status.AWAITING_REVIEW, Status.EXTRACTION_FAILED),
     Status.AWAITING_REVIEW: (Status.VERIFIED, Status.EXTRACTING),
     Status.VERIFIED: (Status.EXTRACTING,),
     Status.PARSE_FAILED: (Status.PARSING,),
     Status.EXTRACTION_FAILED: (Status.EXTRACTING,),
+    # الموافقة تفتح الطريق إلى الاستخراج الخارجي، والرفض يوقفه — وكلاهما
+    # يبقي المراجعة ممكنة على ما استُخرج محليًّا.
+    Status.AWAITING_CONSENT: (Status.EXTRACTING, Status.LOCAL_ONLY, Status.AWAITING_REVIEW),
+    Status.LOCAL_ONLY: (Status.EXTRACTING, Status.AWAITING_REVIEW),
 }
+
+# حالات تعني «لم يقع فشل» — تُعرض بلا لون خطأ.
+NOT_A_FAILURE: Final = (Status.AWAITING_CONSENT, Status.LOCAL_ONLY)
 
 TERMINAL_FAILURES: Final = (Status.PARSE_FAILED, Status.EXTRACTION_FAILED)
 

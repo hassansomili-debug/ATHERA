@@ -127,6 +127,8 @@ async def run_extraction(
     orchestrator,
     locale: str = "ar",
     run_id: uuid.UUID | None = None,
+    external_allowed: bool = True,
+    consent_state: str = "granted",
 ) -> PipelineResult:
     """التشغيلة كاملة — وكل فشل يُسمّى بسببه ولا يُبتلع.
 
@@ -161,7 +163,7 @@ async def run_extraction(
         return PipelineResult(run.id, Status.PARSE_FAILED, 0, 0, {}, [], str(exc)[:200])
 
     run.chunks_parsed = len(rows)
-    run.status = Status.EXTRACTING.value
+    run.status = Status.EXTRACTING.value if external_allowed else Status.PARSED.value
     views = _views(rows)
     excluded = excluded_report(views)
 
@@ -181,6 +183,18 @@ async def run_extraction(
             confidence=1.0, status="unverified",
         ))
         candidates += 1
+
+    # ── بلا إذن: يقف الخط عند المحلي، ولا يُعدّ ذلك فشلًا ──
+    #
+    # الاستخراج الحتمي تمّ، والمقاطع محفوظة بمواضعها، والمراجعة ممكنة على ما
+    # استُخرج. وما لم يقع هو **الإرسال الخارجي وحده** — فيُقال باسمه.
+    if not external_allowed:
+        run.candidates_proposed = candidates
+        run.status = (Status.LOCAL_ONLY.value if consent_state == "declined"
+                      else Status.AWAITING_CONSENT.value)
+        run.finished_at = dt.datetime.now(dt.UTC)
+        return PipelineResult(run.id, Status(run.status), len(rows), candidates,
+                              excluded, [], None, ())
 
     # ── النموذج، قسمًا قسمًا، على المقاطع المختارة وحدها ──
     failed: list[str] = []

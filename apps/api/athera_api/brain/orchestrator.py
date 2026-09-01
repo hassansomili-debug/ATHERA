@@ -355,6 +355,7 @@ class Orchestrator:
         input_classification: str,
         trace_id: uuid.UUID | None = None,
         output_locale: str = "ar",
+        grant: object | None = None,
     ) -> tuple[BaseModel, uuid.UUID]:
         """تشغيلة تُعيد **عقدًا محدَّدًا** لا إجابة نثرية.
 
@@ -408,7 +409,10 @@ class Orchestrator:
         )
         try:
             response, model_run = await self._gateway.generate_structured(
-                session, tenant_id=tenant_id, request=request, agent_run_id=run.id
+                session, tenant_id=tenant_id, request=request, agent_run_id=run.id,
+                # الإذن يُمرَّر ولا يُنشأ هنا: المنسّق ينقل قرارًا اتُّخذ، ولا
+                # يمنح لنفسه إذنًا.
+                grant=grant,
             )
         except Exception as exc:
             run.status = "failed"
