@@ -23,10 +23,18 @@ class ThesisCreateRequest(BaseModel):
 
 
 class ThesisResponse(BaseModel):
+    """`None` تعني «لم يُستخرَج بعد»، لا «فارغ» ولا قيمة نائبة.
+
+    والواجهة تترجمها إلى حالة مفهومة («جارٍ استخراج عنوان الرسالة»)؛ فالعقد
+    يبقى واقعيًّا والتسمية تبقى مسؤولية العرض.
+    """
+
     id: uuid.UUID
-    title: str
-    title_ar: str
-    degree: str
+    title: str | None
+    title_ar: str | None
+    degree: str | None
+    # حالة المعالجة — من آخر تشغيلة استخراج، لا من حالة الملف.
+    processing_status: str | None = None
     defended_on: dt.date | None
     data_collected_on: dt.date | None
     rights_basis: str | None

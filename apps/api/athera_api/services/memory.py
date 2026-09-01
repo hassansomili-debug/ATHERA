@@ -183,6 +183,57 @@ async def reject_candidate(
     return candidate
 
 
+async def mark_candidate_unknown(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    reason: str | None = None,
+) -> FactCandidate:
+    """«لا أعرف» قرارٌ ثالث — لا اعتماد ولا رفض (S5C §13).
+
+    **ولماذا لا يكفي الرفض؟** لأن الرفض يقول «هذا خطأ»، و«لا أعرف» تقول
+    «لا أستطيع الحكم». وخلطهما يفسد الإشارة: إعادة قراءة لاحقة تحتاج أن
+    تميّز ما حكم عليه الباحث بالبطلان عمّا تركه معلّقًا.
+
+    **والتمييز يسكن `value` لا `status`.** قيد القاعدة
+    `ck_candidate_status` يحصر العمود في `unverified | approved | rejected`،
+    وقيمة رابعة تحتاج ترحيلًا لم يُعتمد. فالعمود يأخذ `rejected` — وهو
+    الصحيح لغرضه: قرارٌ نهائي لا ينتج ذاكرة — و`value.human_decision`
+    يحمل التمييز، ويُعرَض في الواجهة «لا أعرف» لا «مرفوض».
+
+    ولا ذاكرة تُنتَج منه — مثل الرفض تمامًا، ولنفس السبب: `verified` لا
+    يُبلَغ إلا بتأكيد صريح عبر أحد مسارات §7.4.
+    """
+    candidate = (
+        await session.execute(select(FactCandidate).where(FactCandidate.id == candidate_id))
+    ).scalar_one_or_none()
+    if candidate is None:
+        raise NotFound("memory.candidate_not_found")
+    if candidate.status != "unverified":
+        raise MemoryPromotionError("memory.already_decided", status=candidate.status)
+
+    candidate.status = "rejected"
+    candidate.value = {**(candidate.value or {}), "human_decision": "unknown"}
+    candidate.decided_by = actor_user_id
+    candidate.decided_at = dt.datetime.now(dt.UTC)
+    candidate.decision_reason = reason
+
+    await audit.record(
+        session,
+        tenant_id=tenant_id,
+        action="memory.fact_marked_unknown",
+        object_type="fact_candidate",
+        object_id=candidate.id,
+        actor_user_id=actor_user_id,
+        state_before={"status": "unverified"},
+        state_after={"status": "rejected", "human_decision": "unknown"},
+        reason=reason,
+    )
+    return candidate
+
+
 async def verified_memories(
     session: AsyncSession,
     *,

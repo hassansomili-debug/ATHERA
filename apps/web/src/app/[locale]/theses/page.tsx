@@ -1,11 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { useDeferredLoad } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
-import { FileUpload } from "@/components/FileUpload";
+import { ThesisIntake } from "@/components/ThesisIntake";
 
 /**
  * مكتبة الرسائل (§23).
@@ -16,8 +17,10 @@ import { FileUpload } from "@/components/FileUpload";
  */
 interface Thesis {
   id: string;
-  title: string;
-  degree: string;
+  // `null` تعني «لم يُستخرَج بعد» — ولا تُملأ باسم ملف ولا بتخمين.
+  title: string | null;
+  degree: string | null;
+  processing_status: string | null;
   defended_on: string | null;
   data_collected_on: string | null;
   rights_basis: string | null;
@@ -118,8 +121,9 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
     <>
       <h1>{t("theses.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("theses.subtitle")}</p>
+      {/* الرفع أولًا: الباحث يرفع رسالته فتُقرأ — لا يملأ نموذجًا عنها. */}
       <div style={{ marginBlock: "18px 24px" }}>
-        <FileUpload locale={locale} messages={getMessages(locale)} />
+        <ThesisIntake locale={locale} messages={getMessages(locale)} />
       </div>
       <p className="provenance-note">{t("theses.rightsNote")}</p>
       {error ? <p className="error">{error}</p> : null}
@@ -131,9 +135,18 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
         {theses.map((thesis) => (
           <article className="card" key={thesis.id}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <strong>{thesis.title}</strong>
+              <strong>
+                {thesis.title ?? (
+                  <span style={{ color: "var(--muted)", fontWeight: 400 }}>
+                    {t("theses.noTitleYet")}
+                  </span>
+                )}
+              </strong>
               <span className="metric-label">
-                {t("theses.degree")}: {t(`theses.${thesis.degree === "phd" ? "phd" : "masters"}`)}
+                {t("theses.degree")}:{" "}
+                {thesis.degree === null
+                  ? t("theses.noDegreeYet")
+                  : t(`theses.${thesis.degree === "phd" ? "phd" : "masters"}`)}
               </span>
             </div>
 
@@ -149,6 +162,17 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
             </div>
 
             <div style={{ display: "flex", gap: 8, marginBlockStart: 12, flexWrap: "wrap" }}>
+              {thesis.processing_status ? (
+                <Link
+                  href={`/${locale}/theses/${thesis.id}/review`}
+                  style={{
+                    padding: "8px 16px", borderRadius: "var(--radius)",
+                    background: "var(--athera-teal)", color: "#fff", textDecoration: "none",
+                  }}
+                >
+                  {t("theses.reviewCta")}
+                </Link>
+              ) : null}
               <button
                 type="button"
                 onClick={() => run(thesis.id, "parse")}
