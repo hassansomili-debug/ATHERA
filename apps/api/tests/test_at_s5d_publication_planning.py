@@ -1002,3 +1002,151 @@ async def test_the_old_thesis_miner_still_works(two_tenants):
     drafts = miner.mine(facts)
     assert drafts, "المنقّب القائم توقّف عن العمل"
     assert all(d.opportunity_kind for d in drafts)
+
+
+# ══════════ 11. الواجهة: ما تقوله وما تمتنع عنه ══════════
+
+PAGE = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
+        / "publication-opportunities" / "page.tsx").read_text(encoding="utf-8")
+
+
+def test_the_page_lives_inside_a_project_not_in_global_navigation():
+    """§1 — فرص النشر أداةُ مشروع، ولا عنصر تنقّل جديد."""
+    nav = (WEB / "src" / "components" / "SideNav.tsx").read_text(encoding="utf-8")
+    assert "publication-opportunities" not in nav
+    assert "publicationPlanning" not in nav
+    # وتُفتح من بطاقة المشروع.
+    portfolio = (WEB / "src" / "app" / "[locale]" / "portfolio"
+                 / "page.tsx").read_text(encoding="utf-8")
+    assert "publication-opportunities" in portfolio
+
+
+def test_the_three_states_are_never_collapsed_into_one_error():
+    """§18 — نقصُ أدلة، وإذنٌ مطلوب، وعطبُ معالجة: ثلاثة، ولكلٍّ شاشته."""
+    for phase in ('"insufficient"', '"consent"', '"failed"', '"generating"', '"ready"'):
+        assert phase in PAGE, phase
+    assert "publicationPlanning.insufficient" in PAGE
+    assert "publicationPlanning.consentTitle" in PAGE
+    assert "publicationPlanning.providerFailed" in PAGE
+    # ونقصُ الأدلة يُشرح حدًّا علميًّا لا عطبًا.
+    assert "publicationPlanning.insufficientWhy" in PAGE
+
+
+def test_the_ui_never_claims_acceptance_probability():
+    """§5 — لا احتمال قبول، ولا لفظ يوحي به."""
+    lowered = PAGE.lower()
+    for forbidden in ("acceptance", "probability", "احتمال القبول", "فرصة القبول",
+                      "نسبة القبول"):
+        assert forbidden not in lowered and forbidden not in PAGE, forbidden
+    assert "publicationPlanning.evidenceReady" in PAGE
+    assert "publicationPlanning.evidenceReadyHint" in PAGE
+
+
+def test_the_ui_never_claims_novelty_or_journal_facts():
+    """§6 — السجل مغلق، والشاشة تقول ذلك ولا تدّعي غيره."""
+    assert "publicationPlanning.literaturePending" in PAGE
+    assert "publicationPlanning.journalNotAssessed" in PAGE
+    for forbidden in ("quartile", "Q1", "impact_factor", "APC",
+                      "لم تُدرس من قبل", "جدة مؤكدة"):
+        assert forbidden not in PAGE, forbidden
+
+
+def test_the_ui_distinguishes_proposal_from_verified_fact():
+    """§4 — التمييز ظاهر، ومصدره حقل `origin` من الخادم."""
+    assert "publicationPlanning.proposal" in PAGE
+    assert "publicationPlanning.verified" in PAGE
+    assert 'entry.origin === "verified_evidence"' in PAGE
+    assert "item.proposal_notice" in PAGE
+
+
+def test_the_ui_requires_a_human_selection():
+    """§3 — لا اختيار تلقائي؛ الفرصة المختارة تُقرأ من حالة الخادم."""
+    assert 'decide(item, "select")' in PAGE and 'decide(item, "exclude")' in PAGE
+    assert 'o.planning_status === "selected"' in PAGE
+    # ولا سطر يختار نيابةً عن الباحث.
+    assert "autoSelect" not in PAGE and "selectFirst" not in PAGE
+
+
+def test_the_ui_keeps_planning_and_publication_lifecycles_apart():
+    """§3 — أوسمة التخطيط الأربعة، ولا خلط بدورة النشر."""
+    for state in ("statusProposed", "statusSelected", "statusExcluded",
+                  "statusSuperseded"):
+        assert f"publicationPlanning.{state}" in PAGE, state
+    # ولا عرض لحالات دورة النشر في هذه الشاشة.
+    for other in ("rights_pending", "ready_to_submit", "converted"):
+        assert other not in PAGE, other
+
+
+def test_consent_ui_sends_the_current_fingerprint_and_names_the_provider():
+    """§8 — الموافقة على اللقطة التي رآها الباحث، والمزوّد من الوضعية."""
+    assert "context_fingerprint: context.fingerprint" in PAGE
+    assert "context.provider" in PAGE
+    assert "anthropic" not in PAGE.lower()
+    assert "publicationPlanning.consentStale" in PAGE
+
+
+def test_the_evidence_map_shows_locators_and_no_storage_urls():
+    """§12 — الموضع يُعرض، والرابط الموقّع لا."""
+    assert "publicationPlanning.locator" in PAGE
+    assert "ref.locator" in PAGE
+    for leak in ("storage_key", "presign", "X-Amz", "signed_url", "s3."):
+        assert leak not in PAGE, leak
+
+
+def test_the_outline_ui_shows_structure_not_prose():
+    """§13، §14 — أقسامٌ بأدلتها وحدودها، ولا فقرة."""
+    for key in ("sectionPurpose", "evidenceAvailable", "evidenceMissing",
+                "claimsAllowed", "claimsUnsupported", "outlineNotice"):
+        assert f"publicationPlanning.{key}" in PAGE, key
+    for drafting in ("generateParagraph", "draftIntroduction", "fullText", "prose"):
+        assert drafting not in PAGE, drafting
+
+
+def test_validator_findings_are_shown_not_silently_repaired():
+    """§11 — الملاحظات تُعرض بشدّتها، ولا «تصحيح» يمحوها."""
+    assert "thread.issues.map" in PAGE
+    assert "publicationPlanning.blocking" in PAGE
+    assert "publicationPlanning.advisory" in PAGE
+    for repair in ("autoFix", "applyFix", "correctIssue"):
+        assert repair not in PAGE, repair
+
+
+def test_status_is_not_communicated_by_colour_alone():
+    """§22 — الحالة نصٌّ، واللون يزيدها ولا يحملها."""
+    assert "planningLabel[item.planning_status]" in PAGE
+    assert 'aria-pressed={item.planning_status === "selected"}' in PAGE
+
+
+def test_generation_cannot_double_submit():
+    """§22 — زرٌّ يُعطَّل أثناء العمل، فلا تشغيلتان بنقرتين."""
+    assert "if (busy) return;" in PAGE
+    assert PAGE.count("disabled={busy}") >= 5
+
+
+def test_the_page_uses_the_shared_deferred_loader():
+    """قاعدة `set-state-in-effect` — والمُساعد قائم في المستودع."""
+    assert "useDeferredLoad(load)" in PAGE
+    assert "useEffect" not in PAGE
+
+
+def test_every_planning_translation_key_resolves_in_both_languages():
+    import re
+
+    ar = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
+    en = json.loads((WEB / "messages" / "en.json").read_text(encoding="utf-8"))
+    used = set(re.findall(r'"(publicationPlanning\.[a-zA-Z]+)"', PAGE))
+    used |= set(re.findall(r'`publicationPlanning\.\$\{[^}]+\}`', PAGE)) and set()
+    assert used, "لم تُلتقط مفاتيح"
+    for key in used:
+        leaf = key.split(".", 1)[1]
+        assert leaf in ar["publicationPlanning"], f"AR ينقصه {leaf}"
+        assert leaf in en["publicationPlanning"], f"EN ينقصه {leaf}"
+        assert ar["publicationPlanning"][leaf] != en["publicationPlanning"][leaf], leaf
+
+
+def test_the_existing_namespaces_are_untouched():
+    """§21 — `review` و`thesisReview` لم تُكتَبا فوقهما."""
+    ar = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
+    assert ar["review"]["title"] == "المراجعة والتحكيم"
+    assert ar["thesisReview"]["title"] == "راجع ما استخرجته أثيرا"
+    assert "publicationPlanning" in ar and ar["publicationPlanning"]["title"] == "فرص النشر"
