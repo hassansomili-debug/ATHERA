@@ -102,6 +102,9 @@ class Approval(Base, TenantScoped, Timestamped):
     decided_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     workflow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # بصمة السياق الذي أُذن له (S5D §7) — قابلة للعدم: بوابات §9 وموافقات
+    # S5C لا تستعملها. ووجودها يجعل الإذن مرتبطًا بأدلةٍ بعينها لا مفتوحًا.
+    context_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class IntegrityAlert(Base, TenantScoped, Timestamped, BilingualName):

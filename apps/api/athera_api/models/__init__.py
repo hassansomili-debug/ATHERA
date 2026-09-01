@@ -25,6 +25,12 @@ from .literature import (
     SourceAuthor,
     SourceVersion,
 )
+from .planning import (
+    ManuscriptOutline,
+    OpportunityEvidenceLink,
+    PlanningRun,
+    ThreadElementEvidence,
+)
 from .portfolio import ProjectDecision, ProjectMember, ResearchProgram, ResearchProject
 from .files import File, FileAccessLog
 from .identity import (
@@ -99,6 +105,10 @@ from .trends import (
 from .runs import AgentRun, ModelRun, Notification, ToolRun
 
 __all__ = [
+    "ManuscriptOutline",
+    "OpportunityEvidenceLink",
+    "PlanningRun",
+    "ThreadElementEvidence",
     "Base", "Tenant", "Organization", "User", "Role", "Permission", "RolePermission",
     "Membership", "ObjectGrant", "RefreshToken", "MfaFactor",
     "AuditEvent", "ProvenanceEvent", "Approval", "IntegrityAlert",

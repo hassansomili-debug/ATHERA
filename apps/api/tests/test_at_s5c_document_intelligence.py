@@ -1729,13 +1729,23 @@ def test_the_global_ceiling_stays_c1():
     assert 'MODEL_EXTERNAL_SEND_MAX_CLASSIFICATION = "C1"' in fly
 
 
-def test_only_one_capability_may_exceed_the_ceiling():
-    """§2 — القائمة مغلقة ومسمّاة، ولا قدرة عامة فيها."""
+def test_the_capability_list_is_closed_and_named():
+    """§2 — القائمة مغلقة ومسمّاة، ولا قدرة عامة فيها.
+
+    وتوسّعت بقدرة تخطيط النشر (S5D) — بقيمة معلومة لا بفتح الباب: كل قدرة
+    باسمها الصريح، وسقفها C2 ولا شيء فوقه.
+    """
     from athera_api.providers.gateway import _CAPABILITY_CEILINGS
 
-    assert _CAPABILITY_CEILINGS == {"document_intelligence_external_c2": "C2"}
+    assert set(_CAPABILITY_CEILINGS) == {
+        "document_intelligence_external_c2",
+        "publication_planning_external_c2",
+    }
     # ولا تأذن بما فوق C2 مهما كانت الموافقة.
     assert all(v in ("C1", "C2") for v in _CAPABILITY_CEILINGS.values())
+    # ولا اسم عامّ يبتلع غيره.
+    for name in _CAPABILITY_CEILINGS:
+        assert name.endswith("_external_c2") and len(name) > 20, name
 
 
 def test_an_unknown_capability_grants_nothing():

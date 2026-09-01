@@ -31,16 +31,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.audit import Approval
 from . import audit
 
-# القدرة الوحيدة المأذون لها بتجاوز السقف العام — وباسمها لا بصفتها.
+# القدرات المأذون لها بتجاوز السقف العام — كلٌّ باسمها لا بصفتها.
+#
+# **وقدرةٌ لا تأذن لأختها.** موافقة قراءة المستند (S5C) لا تصلح لتخطيط النشر
+# (S5D): الأولى تُرسل مقاطع رسالة لاستخراج بياناتها، والثانية تُرسل حقائق
+# موثقة لبناء مقترحات. غرضان مختلفان يقرّهما الباحث مرتين.
 CAPABILITY: Final = "document_intelligence_external_c2"
+PLANNING_CAPABILITY: Final = "publication_planning_external_c2"
 
-# ما تأذن به هذه القدرة **بالضبط**. لا C3 ولا C4 مهما كانت الموافقة.
-CAPABILITY_CEILING: Final[dict[str, str]] = {CAPABILITY: "C2"}
+# ما تأذن به كل قدرة **بالضبط**. لا C3 ولا C4 مهما كانت الموافقة.
+CAPABILITY_CEILING: Final[dict[str, str]] = {
+    CAPABILITY: "C2",
+    PLANNING_CAPABILITY: "C2",
+}
 
 GATE: Final = "DIC2"
+PLANNING_GATE: Final = "PPC2"
 OBJECT_TYPE: Final = f"file.{CAPABILITY}"
+PLANNING_OBJECT_TYPE: Final = f"project.{PLANNING_CAPABILITY}"
 
 GRANTED: Final = "granted"
+# أُذن ثم تغيّرت الأدلة — ليست رفضًا، وليست إذنًا للقطة الجديدة.
+STALE: Final = "stale"
 DECLINED: Final = "declined"
 ABSENT: Final = "absent"
 
@@ -57,6 +69,8 @@ class ExternalProcessingGrant:
     file_id: uuid.UUID
     approval_id: uuid.UUID
     max_classification: str
+    # بصمة اللقطة التي أُذن لها — `None` لقدرات لا تعمل على لقطة (S5C).
+    context_fingerprint: str | None = None
 
 
 async def _row(session: AsyncSession, *, tenant_id: uuid.UUID,
@@ -96,6 +110,125 @@ async def authorization_for(
         capability=CAPABILITY, file_id=file_id, approval_id=row.id,
         max_classification=CAPABILITY_CEILING[CAPABILITY],
     )
+
+
+# ─────────────────── تخطيط النشر: موافقة مربوطة بلقطة ───────────────────
+
+
+async def _planning_row(session: AsyncSession, *, tenant_id: uuid.UUID,
+                        project_id: uuid.UUID) -> Approval | None:
+    return (
+        await session.execute(
+            select(Approval).where(
+                Approval.tenant_id == tenant_id,
+                Approval.object_type == PLANNING_OBJECT_TYPE,
+                Approval.object_id == project_id,
+            ).order_by(Approval.created_at.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def planning_state(session: AsyncSession, *, tenant_id: uuid.UUID,
+                         project_id: uuid.UUID,
+                         context_fingerprint: str | None = None) -> str:
+    """`granted` أو `declined` أو `stale` أو `absent`.
+
+    و`stale` حالةٌ رابعة يحتاجها التخطيط وحده: أُذن، ثم تغيّرت الأدلة. وليست
+    رفضًا — الباحث لم يرجع عن شيء — لكنها ليست إذنًا للقطة الجديدة.
+    """
+    row = await _planning_row(session, tenant_id=tenant_id, project_id=project_id)
+    if row is None:
+        return ABSENT
+    if row.status != "approved":
+        return DECLINED
+    if context_fingerprint and row.context_fingerprint != context_fingerprint:
+        return STALE
+    return GRANTED
+
+
+async def planning_authorization(
+    session: AsyncSession, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
+    context_fingerprint: str,
+) -> ExternalProcessingGrant | None:
+    """إذن التخطيط — **ولا يُمنح للقطة غير التي أُذن لها**.
+
+    فبصمةٌ مختلفة تعني أدلةً تغيّرت: أُضيفت ذاكرة موثقة، أو تبدّل نصّها.
+    وإرسالها تحت إذنٍ سابق إرسالٌ لما لم يره صاحب القرار.
+    """
+    row = await _planning_row(session, tenant_id=tenant_id, project_id=project_id)
+    if row is None or row.status != "approved":
+        return None
+    if row.context_fingerprint != context_fingerprint:
+        return None
+    return ExternalProcessingGrant(
+        capability=PLANNING_CAPABILITY, file_id=project_id, approval_id=row.id,
+        max_classification=CAPABILITY_CEILING[PLANNING_CAPABILITY],
+        context_fingerprint=context_fingerprint,
+    )
+
+
+async def record_planning_decision(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    project_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    granted: bool,
+    provider: str,
+    model: str | None,
+    context_fingerprint: str,
+    evidence_count: int,
+    revocation: bool = False,
+    request_id: str | None = None,
+) -> Approval:
+    """يسجّل قرار الباحث في إرسال أدلته الموثقة لبناء فرص نشر.
+
+    والبصمة تُحفظ مع القرار، فيُعرف لاحقًا **على أي أدلة** أُذن.
+    """
+    now = dt.datetime.now(dt.UTC)
+    row = await _planning_row(session, tenant_id=tenant_id, project_id=project_id)
+    before = row.status if row is not None else None
+
+    if row is None:
+        row = Approval(
+            tenant_id=tenant_id, gate=PLANNING_GATE, object_type=PLANNING_OBJECT_TYPE,
+            object_id=project_id, requested_by=actor_user_id,
+        )
+        session.add(row)
+
+    row.status = "approved" if granted else "rejected"
+    row.decided_by = actor_user_id
+    row.decided_at = now
+    row.context_fingerprint = context_fingerprint if granted else None
+    row.reason = (
+        "planning consent revoked by researcher" if revocation
+        else ("researcher authorized external AI publication planning for this project"
+              if granted else "researcher declined external AI publication planning")
+    )
+    await session.flush()
+
+    await audit.record(
+        session, tenant_id=tenant_id,
+        action="consent.publication_planning_revoked" if revocation
+        else ("consent.publication_planning_granted" if granted
+              else "consent.publication_planning_declined"),
+        object_type="research_project", object_id=project_id,
+        actor_user_id=actor_user_id, approval_id=row.id,
+        state_before={"status": before},
+        state_after={
+            "status": row.status,
+            "capability": PLANNING_CAPABILITY,
+            "max_classification": CAPABILITY_CEILING[PLANNING_CAPABILITY],
+            "provider": provider,
+            "model": model,
+            # بصمةٌ وعدد — لا نصّ دليل واحد.
+            "context_fingerprint": context_fingerprint,
+            "evidence_count": evidence_count,
+        },
+        reason=row.reason,
+        request_id=request_id,
+    )
+    return row
 
 
 async def record_decision(
