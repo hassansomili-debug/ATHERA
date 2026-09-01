@@ -31,6 +31,9 @@ class FakeProvider:
             raise self._error
         return ModelResponse(
             content=self._text, provider="fake", model="fake-1",
+            # حمولة مطابقة لعقد العقل — فيكتمل مسار المنسّق لا يتوقف عنده.
+            structured={"answer_ar": self._text, "citations": [],
+                        "unsupported_claims": [], "evidence_gaps": []},
             usage=ModelUsage(input_tokens=40, output_tokens=25, latency_ms=12),
         )
 
@@ -321,3 +324,80 @@ def test_sensitive_classifications_still_need_explicit_activation():
     assert gateway.classification_allowed("C1", ceiling)
     for sensitive in ("C2", "C3", "C4"):
         assert not gateway.classification_allowed(sensitive, ceiling), sensitive
+
+
+# ══════════ الخصوصية: نصّ الباحث لا يُحفظ ══════════
+
+MARKER = "SENSITIVE-RESEARCH-TEXT-DO-NOT-PERSIST-7391"
+
+
+async def test_raw_research_text_is_never_persisted_anywhere(clients, monkeypatch, caplog):
+    """النصّ يمرّ إلى المزوّد ولا يستقرّ في أي صفّ ولا سجل.
+
+    الفحص على الجداول الثلاثة التي تكتبها التشغيلة — `agent_runs` و
+    `model_runs` و`audit_events` — لا على دالة واحدة. فحفظ النصّ قد يتسرّب
+    من أي منها، والاختبار الذي يفحص موضعًا واحدًا يطمئن بلا سبب.
+    """
+    import logging
+
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.audit import AuditEvent
+    from athera_api.models.runs import AgentRun, ModelRun
+
+    from athera_api.brain.orchestrator import Orchestrator
+    from athera_api.config import get_settings
+
+    fake = _use_fake(monkeypatch, FakeProvider())
+    http, tenants = clients
+    tenant = tenants["a"]
+    caplog.set_level(logging.DEBUG)
+
+    question = f"{MARKER} — أريد دراسة أثر الذكاء الاصطناعي في الاتصال التسويقي."
+
+    # **المساران معًا.** `/ai/ask` يستدعي البوابة مباشرةً فلا يكتب `AgentRun`،
+    # والمنسّق هو من يكتبه. فحص الأول وحده كان سيمرّ فارغًا: لا صفّ يُفحص،
+    # فلا شيء يُكتشف — وهو ما وقع فعلًا قبل تصحيح هذا الاختبار.
+    response = await http["a"].post("/api/v1/ai/ask", json={"question": question})
+    assert response.status_code == 200
+
+    # ومسار المنسّق عبر HTTP محجوب بسقف التصنيف الافتراضي (سلوك قائم
+    # ومقصود)، فيُستدعى مباشرةً والسقف يُرفع **في هذا الاختبار وحده** لبلوغ
+    # السطر الذي تغيّر فعلًا.
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification", "C4",
+                        raising=False)
+    async with tenant_session(tenant["tenant_id"], tenant["user_id"]) as run_session:
+        await Orchestrator().run_agent(
+            run_session, tenant_id=tenant["tenant_id"], actor_user_id=tenant["user_id"],
+            agent_key="research_manager", question=question,
+        )
+
+    # ① النصّ وصل المزوّد فعلًا — وإلا لكان الاختبار يثبت العدم.
+    assert any(MARKER in m.content for m in fake.seen[0].messages)
+
+    async with tenant_session(tenant["tenant_id"], tenant["user_id"]) as session:
+        runs = (await session.execute(select(AgentRun))).scalars().all()
+        model_runs = (await session.execute(select(ModelRun))).scalars().all()
+        events = (await session.execute(select(AuditEvent))).scalars().all()
+
+    # ② ولا صفّ يحمله.
+    for run in runs:
+        assert MARKER not in str(run.input_summary), "النصّ في input_summary"
+        assert MARKER not in str(run.output_summary), "النصّ في output_summary"
+    for run in model_runs:
+        assert MARKER not in str(run.__dict__), "النصّ في model_runs"
+    for event in events:
+        assert MARKER not in str(event.state_before) + str(event.state_after), "النصّ في سجل التدقيق"
+
+    # ③ ولا سجل تشغيل.
+    assert MARKER not in caplog.text, "النصّ في السجلات"
+
+    # ④ وبقيت بيانات التشغيل المفيدة — الخصوصية لا تعني عمى التشخيص.
+    assert runs, "لم يُكتب أي صفّ تشغيل — الاختبار كان سيمرّ فارغًا"
+    summary = runs[0].input_summary or {}
+    assert summary.get("chars") == len(question)
+    assert len(summary.get("sha256", "")) == 64
+    assert summary.get("intent")
+    assert model_runs, "لم تُسجَّل أي تشغيلة نموذج"
+    assert model_runs[0].provider and model_runs[0].latency_ms is not None
