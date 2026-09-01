@@ -1,6 +1,7 @@
 """AT-S0-10 — لا أسرار في المستودع (§36.1)."""
 import pathlib
 import re
+import subprocess
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
@@ -11,16 +12,35 @@ SECRET_PATTERNS = [
     re.compile(r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\."),
 ]
 
-SKIP_DIRS = {".git", "node_modules", ".next", ".venv", "__pycache__", ".pytest_cache"}
 SKIP_FILES = {"athera.txt"}
+BINARY_SUFFIXES = {".png", ".jpg", ".pdf", ".docx", ".ico", ".woff2"}
+
+
+def _tracked_files() -> list[pathlib.Path]:
+    """الملفات المتعقَّبة في git وحدها.
+
+    الاختبار اسمه «committed»، فيجب أن يعني ذلك. المسح على نظام الملفات كان
+    يلتقط ملفات محلية غير متعقَّبة ومُتجاهَلة — `apps/web/.env.local` مثلًا —
+    فيفشل عند كل مطوّر لديه بيئة محلية، بينما المستودع نظيف تمامًا.
+
+    وإنذار كاذب متكرر أسوأ من فحص غائب: يُعلِّم المطوّر تجاهل الحارس.
+
+    والاشتقاق من `git ls-files` يحترم `.gitignore` بحكم تعريفه، ولا يضعف
+    الكشف: الأنماط نفسها على كل ملف يمكن أن يصل إلى المستودع فعلًا.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT, capture_output=True, check=True, text=True,
+    )
+    return [REPO_ROOT / name for name in result.stdout.split("\0") if name]
 
 
 def test_no_secret_material_committed():
     offenders = []
-    for path in REPO_ROOT.rglob("*"):
-        if not path.is_file() or set(path.parts) & SKIP_DIRS or path.name in SKIP_FILES:
+    for path in _tracked_files():
+        if not path.is_file() or path.name in SKIP_FILES:
             continue
-        if path.suffix in {".png", ".jpg", ".pdf", ".docx", ".ico", ".woff2"}:
+        if path.suffix in BINARY_SUFFIXES:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")

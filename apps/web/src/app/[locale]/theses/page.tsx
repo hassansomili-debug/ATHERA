@@ -5,6 +5,7 @@ import { use, useCallback, useState } from "react";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { useDeferredLoad } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
+import { FileUpload } from "@/components/FileUpload";
 
 /**
  * مكتبة الرسائل (§23).
@@ -117,6 +118,9 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
     <>
       <h1>{t("theses.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("theses.subtitle")}</p>
+      <div style={{ marginBlock: "18px 24px" }}>
+        <FileUpload locale={locale} messages={getMessages(locale)} />
+      </div>
       <p className="provenance-note">{t("theses.rightsNote")}</p>
       {error ? <p className="error">{error}</p> : null}
       {theses.length === 0 && !error ? (

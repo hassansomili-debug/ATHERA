@@ -82,6 +82,20 @@ async def posture(
             ),
         ),
         PostureItem(
+            key="storage",
+            label=_pick(locale, "تخزين ملفات البحث", "Research file storage"),
+            value=settings.storage_provider,
+            detail=_pick(
+                locale,
+                "التخزين مُهيّأ: الرفع والتنزيل يعملان. والملفات خاصة — لا رابط عام."
+                if settings.storage_provider != "none" else
+                "لا تخزين مُهيّأ: الرفع معطّل حتى تُضبط بيانات المزوّد.",
+                "Storage is configured: upload and download work. Files stay private — no public URL."
+                if settings.storage_provider != "none" else
+                "No storage configured: upload is disabled until provider credentials are set.",
+            ),
+        ),
+        PostureItem(
             key="literature_registry",
             label=_pick(locale, "سجل الأدبيات", "Literature registry"),
             value=registry,

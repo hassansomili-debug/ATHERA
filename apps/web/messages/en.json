@@ -555,5 +555,16 @@
     "teamHint": "Members, CRediT roles, and the decision log.",
     "approvalsHint": "Approvals and alerts awaiting your decision.",
     "briefsHint": "The intelligence brief and novelty checks."
+  },
+  "upload": {
+    "title": "Upload a research file",
+    "hint": "PDF · DOCX · TXT · RIS · BibTeX · CSV · XLSX · SPSS",
+    "pick": "Choose a file",
+    "uploading": "Uploading…",
+    "stored": "Stored",
+    "failed": "Upload failed.",
+    "readyNote": "The file is stored privately and tied to your account. **It has not been parsed or analyzed** — analysis is a separate, announced stage.",
+    "gateTitle": "File storage is not configured yet.",
+    "gateBody": "Upload is disabled until provider credentials are set on the server. This is independent of ATHERA AI."
   }
 }
