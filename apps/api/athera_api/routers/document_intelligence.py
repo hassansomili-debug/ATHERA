@@ -178,24 +178,37 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
                 external_allowed=grant is not None,
                 consent_state=consent_state,
             )
-        # ما استُبعد يُسجَّل عددًا لا نصًّا: «حُجبت ثلاثة مقاطع لوجود معرّفات
-        # شخصية» معلومةٌ للباحث وللتدقيق، ومحتواها ليس كذلك.
-        await audit.record(
-            session, tenant_id=tenant_id, action="thesis.extraction_completed",
-            object_type="file", object_id=record.id, actor_user_id=actor_id,
-            state_after={
-                "status": result.status.value, "chunks": result.chunks,
-                "candidates": result.candidates,
-                "not_found": len(result.not_found),
-                "excluded_from_external_send": result.excluded,
-                "failed_sections": result.failed_sections,
-                # §12 — هل أُذن بالإرسال الخارجي، وبأي قدرة.
-                "external_c2_authorized": grant is not None,
-                "capability": consent.CAPABILITY if grant else None,
-                "consent_state": consent_state,
-            },
-            reason="document read and structured proposals recorded; nothing verified yet",
-        )
+
+            # **داخل المعاملة، لا بعدها.**
+            #
+            # كان هذا النداء خارج `async with` بمسافة بادئة واحدة، فيُنفَّذ
+            # على جلسةٍ أُغلق سياقها: المعاملة أُودعت، و`SET LOCAL
+            # app.tenant_id` زال معها — فيسقط الإدراج بصمت ولا يُكتب الحدث.
+            # والنتيجة أن سجل «ما أُذن به وما استُبعد» لم يوجد قط، وشاشة
+            # الإذن تعرض «مستبعَد: لا شيء» دائمًا وهي لا تعرف.
+            #
+            # ولم يكشفه اختبار لأن الاختبارات تستدعي `run_extraction` مباشرة
+            # لا `_process`، فالسطر لم يُنفَّذ فيها أصلًا.
+            #
+            # وما استُبعد يُسجَّل عددًا لا نصًّا: «حُجبت ثلاثة مقاطع لوجود
+            # معرّفات شخصية» معلومةٌ للباحث وللتدقيق، ومحتواها ليس كذلك.
+            await audit.record(
+                session, tenant_id=tenant_id, action="thesis.extraction_completed",
+                object_type="file", object_id=record.id, actor_user_id=actor_id,
+                state_after={
+                    "status": result.status.value, "chunks": result.chunks,
+                    "candidates": result.candidates,
+                    "not_found": len(result.not_found),
+                    "excluded_from_external_send": result.excluded,
+                    "failed_sections": result.failed_sections,
+                    # §12 — هل أُذن بالإرسال الخارجي، وبأي قدرة.
+                    "external_c2_authorized": grant is not None,
+                    "capability": consent.CAPABILITY if grant else None,
+                    "consent_state": consent_state,
+                },
+                reason="document read and structured proposals recorded; "
+                       "nothing verified yet",
+            )
     except Exception as exc:  # noqa: BLE001 — الفشل يُروى ولا يُبتلع
         # **لا نصّ مستند هنا.** نوع الاستثناء ورسالته ومعرّفات التشغيل تكفي
         # للتشخيص؛ ومحتوى الرسالة لا يخصّ سجلًّا تشغيليًّا.

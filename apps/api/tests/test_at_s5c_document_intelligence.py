@@ -2183,3 +2183,41 @@ def test_work_is_committed_before_it_is_scheduled():
         commit = source.index("await session.commit()")
         schedule = source.index("background.add_task")
         assert commit < schedule, f"{fn.__name__}: جُدولت المهمة قبل الإيداع"
+
+
+def test_every_database_write_in_the_background_task_sits_inside_a_transaction():
+    """السجل الذي وُضع خارج `async with` لا يُكتب — بصمت.
+
+    كان نداء `thesis.extraction_completed` بمسافة بادئة واحدة خارج كتلة
+    المعاملة، فيُنفَّذ على جلسةٍ أُغلق سياقها: المعاملة أُودعت و`SET LOCAL
+    app.tenant_id` زال معها، فسقط الإدراج ولم يوجد الحدث قط. والنتيجة أن
+    شاشة الإذن كانت تعرض «مستبعَد: لا شيء» دائمًا وهي لا تعرف.
+
+    ولم يكشفه اختبار لأن الاختبارات تستدعي `run_extraction` مباشرة لا
+    `_process` — فيُفحص الآن بالبنية لا بالتشغيل.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from athera_api.routers import document_intelligence as router_module
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(router_module._process)))
+    fn = tree.body[0]
+
+    def spans(node):
+        lines = [n.lineno for n in ast.walk(node) if hasattr(n, "lineno")]
+        return min(lines), max(lines)
+
+    blocks = [spans(n) for n in ast.walk(fn) if isinstance(n, ast.AsyncWith)]
+    writes = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and getattr(n.func.value, "id", None) == "audit"
+    ]
+    assert writes, "لم يُعثر على أي كتابة تدقيق — تغيّر الاسم؟"
+    for call in writes:
+        assert any(start <= call.lineno <= end for start, end in blocks), (
+            f"audit.record عند السطر {call.lineno} خارج كتلة معاملة"
+        )
