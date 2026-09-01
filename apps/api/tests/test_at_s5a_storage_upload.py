@@ -355,3 +355,37 @@ async def test_oversize_is_rejected_mid_stream_not_after_full_receipt(clients, m
     monkeypatch.setattr(storage, "MAX_DATASET_BYTES", 64 * 1024)
     response = await _upload(clients["a"], b"a,b\n" + b"1,2\n" * 40_000, "big.csv", "text/csv")
     assert response.status_code == 413
+
+
+# ══════════ صدق الإفصاح: اسم المزوّد ليس دليل تهيئة ══════════
+
+@pytest.mark.parametrize(
+    ("env", "provider", "endpoint", "key", "expected"),
+    [
+        # إنتاج بالقيم الافتراضية للتطوير = غير مُهيّأ، مهما قال اسم المزوّد.
+        ("production", "s3", "http://localhost:9000", "minioadmin", False),
+        ("production", "s3", "", "", False),
+        ("production", "s3", "https://x.r2.cloudflarestorage.com", "AKIAREAL", True),
+        ("production", "none", "https://x.r2.cloudflarestorage.com", "AKIAREAL", False),
+        ("development", "s3", "http://localhost:9000", "minioadmin", True),
+    ],
+)
+def test_posture_reports_real_configuration_not_the_provider_name(
+    monkeypatch, env, provider, endpoint, key, expected
+):
+    """نشرٌ بلا أسرار كان يبدو «مُهيّأً» لأن الإعداد الافتراضي في الكود `s3`.
+
+    وإعلان قدرة غير قائمة أسوأ من إعلان غيابها: المستخدم يرفع فيفشل بلا سبب
+    مفهوم، بدل أن يُقال له إن التخزين لم يُضبط.
+    """
+    from athera_api.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "app_env", env, raising=False)
+    monkeypatch.setattr(settings, "storage_provider", provider, raising=False)
+    monkeypatch.setattr(settings, "s3_endpoint_url", endpoint, raising=False)
+    monkeypatch.setattr(settings, "s3_access_key_id", key, raising=False)
+    monkeypatch.setattr(settings, "s3_bucket", "athera", raising=False)
+    monkeypatch.setattr(settings, "s3_secret_access_key", "secret", raising=False)
+
+    assert storage.is_configured() is expected

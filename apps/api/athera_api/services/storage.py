@@ -193,6 +193,36 @@ class UnconfiguredStore(ObjectStore):
     def presign_put(self, key: str, content_type: str, *, expires_in: int) -> str: raise StorageNotConfigured()
 
 
+# القيم الافتراضية للتطوير — وجودها في الإنتاج يعني «لم يُضبط شيء».
+_DEV_ENDPOINTS: Final = frozenset({"", "http://localhost:9000", "http://minio:9000"})
+_DEV_KEYS: Final = frozenset({"", "minioadmin"})
+
+
+def is_configured() -> bool:
+    """هل التخزين مُهيّأ فعلًا — لا مجرد اسم مزوّد مكتوب؟
+
+    اسم المزوّد لا يكفي دليلًا. الإعداد الافتراضي في الكود `s3` يشير إلى
+    MinIO محلي بمفاتيح تطوير؛ فنشرٌ بلا أسرار يبدو «مُهيّأً» وهو يشير إلى
+    منفذ لا وجود له داخل الحاوية.
+
+    وإعلانُ قدرةٍ غير قائمة أسوأ من إعلان غيابها: المستخدم يرفع فيفشل بلا
+    سبب مفهوم، بدل أن يُقال له إن التخزين لم يُضبط بعد.
+    """
+    settings = get_settings()
+    if settings.storage_provider == "none":
+        return False
+    if settings.storage_provider == "memory":
+        return True
+    if settings.app_env == "development":
+        return True
+    return (
+        settings.s3_endpoint_url not in _DEV_ENDPOINTS
+        and settings.s3_access_key_id not in _DEV_KEYS
+        and bool(settings.s3_bucket)
+        and bool(settings.s3_secret_access_key)
+    )
+
+
 @lru_cache
 def get_store() -> ObjectStore:
     provider = get_settings().storage_provider
