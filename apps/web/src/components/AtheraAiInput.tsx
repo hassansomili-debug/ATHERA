@@ -18,7 +18,7 @@ export function AtheraAiInput({
   locale, messages, rows = 3,
 }: { locale: Locale; messages: Messages; rows?: number }) {
   const t = translator(messages);
-  const { modelEnabled, loading } = usePosture(locale);
+  const { modelEnabled, modelGateReason, loading } = usePosture(locale);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [answer, setAnswer] = useState<AiAnswer | null>(null);
@@ -74,11 +74,19 @@ export function AtheraAiInput({
       {error ? <p className="error" style={{ marginBlockStart: 10 }}>{error}</p> : null}
       {answer ? <AiAnswerCard messages={messages} data={answer} /> : null}
 
+      {/* السبب يُعرض كما هو — لا سببٌ واحد يُفترض لكل إغلاق. */}
       {!loading && !modelEnabled ? (
         <div className="gate" style={{ marginBlockStart: 12 }}>
           <span aria-hidden="true">⏻</span>
           <span>
-            <strong>{t("ai.gateTitle")}</strong> {t("ai.gateBody")}
+            <strong>
+              {modelGateReason === "unreachable"
+                ? t("ai.gateUnreachableTitle")
+                : t("ai.gateTitle")}
+            </strong>{" "}
+            {modelGateReason === "unreachable"
+              ? t("ai.gateUnreachableBody")
+              : t("ai.gateBody")}
           </span>
         </div>
       ) : null}

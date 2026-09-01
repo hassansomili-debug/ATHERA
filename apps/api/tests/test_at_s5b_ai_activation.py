@@ -615,3 +615,48 @@ async def test_output_language_is_dictated_as_the_last_system_instruction(
     systems = [m.content for m in fake.seen[0].messages if m.role == "system"]
     assert needle in systems[-1], f"التوجيه ليس آخر تعليمة: {systems[-1][:60]}"
     http["a"].headers["Accept-Language"] = "ar"
+
+
+# ══════════ الوضعية: لا دعوى عن الخادم بلا سؤاله ══════════
+
+def test_the_ai_gate_distinguishes_unreachable_from_no_provider():
+    """كانت الشاشة تقول «المزوّد مضبوط على لا مزوّد» حين يفشل سؤال الوضعية.
+
+    ونداء `/settings/posture` يحتاج مصادقة، فجلسةٌ انتهت تُنتج 401 كان
+    يُبتلع بصمت — فيقرأ الباحث دعوى عن حالة الخادم **لم تُفحَص قط**، والمنصّة
+    تعمل ومزوّدها مهيّأ.
+
+    والبوابة تبقى مغلقة عند الشك — الافتراض الآمن لم يتغيّر. المتغيّر هو أن
+    السبب صار يُقال كما هو.
+    """
+    import pathlib
+
+    web = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web"
+    posture = (web / "src" / "lib" / "posture.ts").read_text(encoding="utf-8")
+
+    assert "ModelGateReason" in posture
+    assert '"ready" | "provider" | "unreachable"' in posture
+    # الفشل لم يعد يُبتلع بلا أثر.
+    assert "setReachable(false)" in posture
+    assert "modelEnabled: reachable && declared" in posture
+
+    gate = (web / "src" / "components" / "AtheraAiInput.tsx").read_text(encoding="utf-8")
+    assert 'modelGateReason === "unreachable"' in gate
+    assert "ai.gateUnreachableTitle" in gate
+
+    import json as _json
+    for lang in ("ar", "en"):
+        catalog = _json.loads((web / "messages" / f"{lang}.json").read_text(encoding="utf-8"))
+        assert "gateUnreachableTitle" in catalog["ai"]
+        assert "gateUnreachableBody" in catalog["ai"]
+
+
+def test_the_gate_stays_closed_when_posture_cannot_be_read():
+    """الافتراض الآمن: قدرةٌ لا نعرف حالها تبقى مغلقة."""
+    import pathlib
+
+    web = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web"
+    posture = (web / "src" / "lib" / "posture.ts").read_text(encoding="utf-8")
+    assert "modelEnabled: reachable && declared" in posture
+    # ولا افتراض بالفتح عند الفشل.
+    assert "modelEnabled: true" not in posture
