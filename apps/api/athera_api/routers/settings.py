@@ -21,6 +21,7 @@ from ..config import get_settings
 from ..deps import Principal, get_principal, get_session
 from ..i18n.catalog import SUPPORTED_LOCALES
 from ..models.identity import Tenant
+from ..services import storage
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
@@ -84,15 +85,16 @@ async def posture(
         PostureItem(
             key="storage",
             label=_pick(locale, "تخزين ملفات البحث", "Research file storage"),
-            value=settings.storage_provider,
+            # القيمة تصف الحال لا الاسم المكتوب في الإعداد.
+            value=settings.storage_provider if storage.is_configured() else "not_configured",
             detail=_pick(
                 locale,
                 "التخزين مُهيّأ: الرفع والتنزيل يعملان. والملفات خاصة — لا رابط عام."
-                if settings.storage_provider != "none" else
-                "لا تخزين مُهيّأ: الرفع معطّل حتى تُضبط بيانات المزوّد.",
+                if storage.is_configured() else
+                "لا تخزين مُهيّأ: الرفع معطّل حتى تُضبط بيانات المزوّد على الخادم.",
                 "Storage is configured: upload and download work. Files stay private — no public URL."
-                if settings.storage_provider != "none" else
-                "No storage configured: upload is disabled until provider credentials are set.",
+                if storage.is_configured() else
+                "No storage configured: upload is disabled until provider credentials are set on the server.",
             ),
         ),
         PostureItem(
