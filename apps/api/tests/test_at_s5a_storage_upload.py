@@ -264,7 +264,8 @@ async def test_storage_failure_is_never_reported_as_success(tolerant_client, mon
     def explode(*args, **kwargs):
         raise RuntimeError("storage down")
 
-    monkeypatch.setattr(store, "put", explode)
+    # المسار يبثّ، فالحقن على العملية التي يستعملها فعلًا.
+    monkeypatch.setattr(store, "put_stream", explode)
     response = await _upload(tolerant_client, PDF, "paper.pdf", "application/pdf")
     assert response.status_code >= 500
 
@@ -310,3 +311,47 @@ async def test_each_supported_type_round_trips(clients, data, name, ctype):
     assert uploaded.status_code == 201, uploaded.text
     got = await http.get(f"/api/v1/files/{uploaded.json()['id']}/content")
     assert got.content == data
+
+
+# ══════════ البثّ: الذاكرة لا تتناسب مع حجم الملف ══════════
+
+async def test_upload_streams_in_chunks_and_never_reads_the_whole_file(clients, monkeypatch):
+    """أكبر من مقطع واحد بكثير ← قراءات متعددة محدودة، لا قراءة واحدة كاملة.
+
+    هذا هو الفرق بين ملف بنصف جيجابايت يمرّ، وآلة بنصف جيجابايت ذاكرة تسقط.
+    """
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+
+    from athera_api.routers import files as files_router
+
+    payload = b"%PDF-1.7\n" + b"z" * (5 * 1024 * 1024)  # خمسة أضعاف المقطع
+    sizes: list[int | None] = []
+    original = StarletteUploadFile.read
+
+    async def spy(self, size: int = -1):
+        sizes.append(size)
+        return await original(self, size)
+
+    monkeypatch.setattr(StarletteUploadFile, "read", spy)
+    response = await _upload(clients["a"], payload, "big.pdf", "application/pdf")
+    assert response.status_code == 201, response.text
+
+    assert sizes, "لم تُقرأ أي مقاطع"
+    # لا قراءة بلا حدّ: كل استدعاء محدود بمقطع.
+    assert all(s == files_router.CHUNK_BYTES for s in sizes), sizes
+    # وعدد المقاطع يوازي الحجم — دليل أن القراءة تدريجية لا دفعة واحدة.
+    assert len(sizes) >= 5
+
+    body = response.json()
+    assert body["size_bytes"] == len(payload)
+    assert body["checksum_sha256"] == storage.sha256_of(payload)
+
+    got = await clients["a"].get(f"/api/v1/files/{body['id']}/content")
+    assert got.content == payload
+
+
+async def test_oversize_is_rejected_mid_stream_not_after_full_receipt(clients, monkeypatch):
+    """السقف يُفحص أثناء البثّ: يُوقَف عند تجاوزه لا بعد استقباله كاملًا."""
+    monkeypatch.setattr(storage, "MAX_DATASET_BYTES", 64 * 1024)
+    response = await _upload(clients["a"], b"a,b\n" + b"1,2\n" * 40_000, "big.csv", "text/csv")
+    assert response.status_code == 413

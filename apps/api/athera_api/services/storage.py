@@ -15,7 +15,7 @@ import hashlib
 import re
 import uuid
 from functools import lru_cache
-from typing import Final
+from typing import BinaryIO, Final
 
 from ..config import get_settings
 from ..errors import AtheraError
@@ -78,6 +78,10 @@ class ObjectStore(abc.ABC):
     def put(self, key: str, data: bytes, content_type: str) -> None: ...
 
     @abc.abstractmethod
+    def put_stream(self, key: str, fileobj: BinaryIO, content_type: str) -> None:
+        """رفع من كائن ملفّي بلا تحميل المحتوى في الذاكرة."""
+
+    @abc.abstractmethod
     def get(self, key: str) -> bytes: ...
 
     @abc.abstractmethod
@@ -114,6 +118,16 @@ class S3ObjectStore(ObjectStore):
         # لا ACL عامة إطلاقًا: الدلو خاص، والوصول بروابط موقّعة أو ببثّ مصادق.
         self._client.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type)
 
+    def put_stream(self, key: str, fileobj: BinaryIO, content_type: str) -> None:
+        """`upload_fileobj` تحميل مُدار: يقسّم تلقائيًا إلى أجزاء ويبثّ.
+
+        الذاكرة تتناسب مع حجم الجزء لا حجم الملف — وهذا الفرق بين ملف بحجم
+        نصف جيجابايت يمرّ، وآلة بنصف جيجابايت ذاكرة تسقط.
+        """
+        self._client.upload_fileobj(
+            fileobj, self._bucket, key, ExtraArgs={"ContentType": content_type}
+        )
+
     def get(self, key: str) -> bytes:
         return self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read()
 
@@ -144,6 +158,9 @@ class MemoryObjectStore(ObjectStore):
     def put(self, key: str, data: bytes, content_type: str) -> None:
         self._objects[key] = (data, content_type)
 
+    def put_stream(self, key: str, fileobj: BinaryIO, content_type: str) -> None:
+        self._objects[key] = (fileobj.read(), content_type)
+
     def get(self, key: str) -> bytes:
         if key not in self._objects:
             raise AtheraError("file.not_found", status_code=404)
@@ -169,6 +186,7 @@ class UnconfiguredStore(ObjectStore):
     name = "none"
 
     def put(self, key: str, data: bytes, content_type: str) -> None: raise StorageNotConfigured()
+    def put_stream(self, key: str, fileobj: BinaryIO, content_type: str) -> None: raise StorageNotConfigured()
     def get(self, key: str) -> bytes: raise StorageNotConfigured()
     def delete(self, key: str) -> None: raise StorageNotConfigured()
     def presign_get(self, key: str, *, expires_in: int) -> str: raise StorageNotConfigured()
@@ -231,6 +249,30 @@ def kind_for(content_type: str) -> str:
 
 def max_bytes_for(content_type: str) -> int:
     return MAX_DATASET_BYTES if kind_for(content_type) == "dataset" else MAX_DOCUMENT_BYTES
+
+
+def validate_type(content_type: str, filename: str | None = None) -> None:
+    """النوع والامتداد — يُفحصان **قبل** قراءة بايت واحد.
+
+    الرفض المبكر يمنع بثّ نصف جيجابايت من ملف مرفوض أصلًا.
+    """
+    if content_type not in ALLOWED_CONTENT_TYPES:
+        raise AtheraError("file.type_rejected", status_code=415, content_type=content_type)
+    if filename is not None:
+        allowed = DOCUMENT_TYPES.get(content_type) or DATASET_TYPES.get(content_type) or ()
+        lowered = safe_filename(filename).lower()
+        if not any(lowered.endswith(ext) for ext in allowed):
+            raise AtheraError("file.extension_mismatch", status_code=415,
+                              content_type=content_type)
+
+
+def validate_size(content_type: str, size_bytes: int) -> None:
+    if size_bytes <= 0:
+        raise AtheraError("file.empty", status_code=422)
+    limit = max_bytes_for(content_type)
+    if size_bytes > limit:
+        raise AtheraError("file.too_large", status_code=413,
+                          size_bytes=size_bytes, max_bytes=limit)
 
 
 def validate_upload(content_type: str, size_bytes: int, *, filename: str | None = None) -> None:

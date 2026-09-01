@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..deps import Principal, get_principal, get_session
-from ..errors import NotFound
+from ..errors import AtheraError, NotFound
 from ..models.audit import ProvenanceEvent
 from ..models.files import File, FileAccessLog
 from ..models.identity import ObjectGrant
@@ -27,6 +27,9 @@ from ..schemas.files import (
     FileResponse,
 )
 from ..services import audit, rbac, storage
+
+# مقطع الميجابايت: يوازن بين عدد الدورات وبصمة الذاكرة.
+CHUNK_BYTES = 1024 * 1024
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 settings = get_settings()
@@ -210,20 +213,45 @@ async def upload_file(
     يتيمًا يدّعي ملفًا لا وجود له، وفشل القاعدة يحذف الكائن قبل أن يُبلَّغ
     نجاح. ولا يُعاد «تم» إلا بعد تأكّد الاثنين.
     """
-    data = await upload.read()
     declared = upload.content_type or "application/octet-stream"
     filename = upload.filename or "file"
 
-    storage.validate_upload(declared, len(data), filename=filename)
-    storage.validate_content(declared, data[:8])
+    # النوع والامتداد أولًا: رفض مبكر قبل بثّ بايت واحد.
+    storage.validate_type(declared, filename)
+
+    # ── المرور الأول: تجزئة وعدّ وبصمة، مقطعًا مقطعًا ──
+    #
+    # لا `await upload.read()` هنا: نصف جيجابايت في الذاكرة على آلة بنصف
+    # جيجابايت هو نفاد ذاكرة لا بطء. وStarlette يفيض بالجسم إلى ملف مؤقت
+    # على القرص بعد ميجابايت واحد، فما يبقى في الذاكرة مقطعٌ واحد فقط.
+    #
+    # والسقف يُفحص **أثناء** البثّ لا بعده: ملف يتجاوز الحد يُوقَف عند
+    # تجاوزه لا بعد استقباله كاملًا.
+    limit = storage.max_bytes_for(declared)
+    digest = hashlib.sha256()
+    size = 0
+    head = b""
+    while chunk := await upload.read(CHUNK_BYTES):
+        if not head:
+            head = chunk[:8]
+        size += len(chunk)
+        if size > limit:
+            raise AtheraError("file.too_large", status_code=413,
+                              size_bytes=size, max_bytes=limit)
+        digest.update(chunk)
+
+    storage.validate_size(declared, size)
+    storage.validate_content(declared, head)
 
     file_id = uuid.uuid4()
     key = storage.build_storage_key(principal.tenant_id, file_id, filename,
                                     user_id=principal.user_id)
-    checksum = storage.sha256_of(data)
+    checksum = digest.hexdigest()
 
+    # ── المرور الثاني: بثّ إلى التخزين من بداية الملف المؤقت ──
+    await upload.seek(0)
     started = perf_counter()
-    storage.get_store().put(key, data, declared)
+    storage.get_store().put_stream(key, upload.file, declared)
     elapsed_ms = int((perf_counter() - started) * 1000)
 
     try:
@@ -233,7 +261,7 @@ async def upload_file(
             storage_key=key,
             original_filename=filename[:512],
             content_type=declared,
-            size_bytes=len(data),
+            size_bytes=size,
             checksum_sha256=checksum,
             classification=classification,
             is_untrusted_content=True,  # §33.3 — محتوى الملفات بيانات لا تعليمات.
@@ -263,7 +291,7 @@ async def upload_file(
             actor_user_id=principal.user_id,
             # لا محتوى ولا اسم كامل ولا مفتاح سرّي في السجل — وصفٌ لا بيانات.
             state_after={
-                "content_type": declared, "size_bytes": len(data),
+                "content_type": declared, "size_bytes": size,
                 "kind": storage.kind_for(declared), "classification": classification,
                 "storage_ms": elapsed_ms,
             },
