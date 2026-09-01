@@ -26,6 +26,12 @@ _KEY_BY_PROVIDER: Final[dict[str, str]] = {
     "anthropic": "anthropic_api_key",
 }
 
+# إعدادات إلزامية إضافية لكل مزوّد. Anthropic يحتاج اسم نموذج معلَنًا؛
+# والقائمة تتوسّع بسطر حين يحتاجها مزوّد آخر.
+_REQUIRED_BY_PROVIDER: Final[dict[str, tuple[tuple[str, str], ...]]] = {
+    "anthropic": (("anthropic_model", "model_missing"),),
+}
+
 # اسم الحزمة التي يحتاجها كل محوّل — تُفحص وجودًا لا تُستورد.
 _SDK_BY_PROVIDER: Final[dict[str, str]] = {
     "openai": "openai",
@@ -38,8 +44,11 @@ def build_provider() -> ModelProvider:
     if settings.model_provider == "anthropic":
         from .anthropic_adapter import AnthropicAdapter  # noqa: PLC0415
 
-        return AnthropicAdapter(api_key=settings.anthropic_api_key,
-                                workspace_id=settings.anthropic_workspace_id)
+        return AnthropicAdapter(
+            api_key=settings.anthropic_api_key,
+            default_model=settings.anthropic_model,
+            workspace_id=settings.anthropic_workspace_id,
+        )
     if settings.model_provider == "openai":
         from .openai_adapter import OpenAIAdapter  # noqa: PLC0415
 
@@ -78,6 +87,10 @@ def provider_readiness() -> tuple[str, bool, str]:
     # يفشل. ثالث صورة من عطب واحد: الاسم ليس دليل القدرة.
     if importlib.util.find_spec(_SDK_BY_PROVIDER[provider]) is None:
         return provider, False, "sdk_missing"
+
+    for setting, reason in _REQUIRED_BY_PROVIDER.get(provider, ()):
+        if not (getattr(settings, setting, "") or "").strip():
+            return provider, False, reason
 
     return provider, True, "ready"
 
