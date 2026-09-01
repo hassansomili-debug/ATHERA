@@ -2158,3 +2158,28 @@ def test_consent_labels_exist_in_both_languages():
     for key in ("stateAwaitingConsent", "stateLocalOnly", "consentExcluded",
                 "consentNotRecall", "consentLocalDone", "consentGranted"):
         assert ar[key] and en[key] and ar[key] != en[key], key
+
+
+def test_work_is_committed_before_it_is_scheduled():
+    """مهام الخلفية تعمل **قبل** إغلاق تبعيات الطلب — فمعاملته لم تُودَع بعد.
+
+    والمهمة تفتح جلستها الخاصة، فترى القاعدة كما كانت: بلا ملف وبلا سجل
+    رسالة، فتنسحب صامتة. وهذا ما وقع في الإنتاج حرفيًّا، وسجّله السطر:
+
+        document_intelligence: file … not visible to tenant …
+
+    وليس عيب عزل ولا صلاحيات: الصفّ لم يكن قد وُجد بعد. فكل مسار يجدول عملًا
+    يودِع أولًا.
+    """
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    for fn in (router_module.upload_thesis, router_module.reprocess,
+               router_module.decide_consent):
+        source = inspect.getsource(fn)
+        if "background.add_task" not in source:
+            continue
+        commit = source.index("await session.commit()")
+        schedule = source.index("background.add_task")
+        assert commit < schedule, f"{fn.__name__}: جُدولت المهمة قبل الإيداع"

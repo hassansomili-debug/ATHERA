@@ -245,6 +245,18 @@ async def upload_thesis(
         request_id=principal.request_id,
     )
 
+    # **الحفظ قبل الجدولة — لا بعدها.**
+    #
+    # مهام `BackgroundTasks` تعمل بعد إرسال الاستجابة و**قبل** إغلاق تبعيات
+    # الطلب، فمعاملة هذا الطلب لم تُودَع بعد حين تبدأ المهمة. والمهمة تفتح
+    # جلستها الخاصة، فترى القاعدة كما كانت: بلا ملف وبلا سجل رسالة — وتنسحب
+    # صامتة. وهذا ما وقع في الإنتاج حرفيًّا:
+    #
+    #     document_intelligence: file … not visible to tenant …
+    #
+    # وليس عيب RLS ولا عيب صلاحيات: العزل صحيح، والصفّ لم يكن قد وُجد بعد.
+    await session.commit()
+
     background.add_task(_process, principal.tenant_id, principal.user_id,
                         stored.id, principal.locale)
     return ExtractionStateResponse(
@@ -433,8 +445,13 @@ async def decide_consent(
 
     # الموافقة وحدها تبدأ المعالجة الخارجية — والرفض والسحب لا يشغّلان شيئًا.
     if payload.decision == "grant":
+        # الموافقة تُودَع قبل جدولة المعالجة، وإلا قرأتها المهمة غائبة
+        # فامتنعت عن الإرسال — وهو فشلٌ آمن، لكنه يخالف قرار الباحث.
+        view = await _consent_view(session, principal, thesis)
+        await session.commit()
         background.add_task(_process, principal.tenant_id, principal.user_id,
                             thesis.file_id, principal.locale)
+        return view
     return await _consent_view(session, principal, thesis)
 
 
@@ -636,6 +653,8 @@ async def reprocess(
         reason="reprocessing appends candidates; no human decision is ever overwritten",
         request_id=principal.request_id,
     )
+    # نفس القاعدة: ما تقرؤه المهمة يجب أن يكون مُودَعًا قبل جدولتها.
+    await session.commit()
     background.add_task(_process, principal.tenant_id, principal.user_id,
                         thesis.file_id, principal.locale)
     return ExtractionStateResponse(
