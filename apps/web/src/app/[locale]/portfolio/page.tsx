@@ -2,6 +2,8 @@
 
 import { use, useEffect, useState } from "react";
 
+import Link from "next/link";
+
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { stageKeyFor } from "@/lib/stages";
@@ -106,6 +108,16 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
                   {t("portfolio.targetJournal")}: {project.target_journal_name}
                 </span>
               ) : null}
+            </div>
+            {/* فرص النشر أداةُ مشروع — تُفتح من داخله لا من قائمة عامة (§1). */}
+            <div style={{ marginBlockStart: 10 }}>
+              <Link
+                className="action"
+                href={`/${locale}/portfolio/${project.id}/publication-opportunities`}
+              >
+                <strong>{t("publicationPlanning.title")}</strong>
+                <span>{t("publicationPlanning.subtitle")}</span>
+              </Link>
             </div>
           </article>
         ))}

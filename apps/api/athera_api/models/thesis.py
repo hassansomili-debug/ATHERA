@@ -151,8 +151,14 @@ class PublicationOpportunity(Base, TenantScoped, Timestamped):
     __tablename__ = "publication_opportunities"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    thesis_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("theses.id", ondelete="CASCADE"), nullable=False
+    # الرسالة **مصدرٌ** لا حدُّ مجال: فرصةٌ قد تأتي من مشروع بلا رسالة (S5D).
+    # وقيدٌ في القاعدة يشترط أحد المصدرين، فلا فرصة معلّقة بلا أصل.
+    thesis_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("theses.id", ondelete="CASCADE"), nullable=True
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("research_projects.id", ondelete="CASCADE"),
+        nullable=True
     )
     opportunity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     paper_kind: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -192,7 +198,38 @@ class PublicationOpportunity(Base, TenantScoped, Timestamped):
     )
 
     # discovered | analysed | rights_pending | ready_to_submit | converted | rejected
+    #
+    # **دورة حياة إنتاج الورقة** — لا قرار الباحث في اختيارها.
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="discovered")
+
+    # ── حالة التخطيط: قرار الباحث، ومحلّه عمودٌ آخر (S5D §17) ──
+    #
+    # ودمجها في `status` كان سيجعل «مرفوضة» تحتمل معنيين: ورقةٌ أُوقف
+    # إنتاجها، وفرصةٌ لم يخترها الباحث من بين ما اقتُرح. وهما حكمان مختلفان
+    # يقولهما شخصان في لحظتين، فلا يجمعهما عمود.
+    planning_status: Mapped[str] = mapped_column(String(16), nullable=False,
+                                                 default="proposed")
+    planning_decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    planning_decided_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # §14 — سجل الأدبيات مغلق، فالافتراض «معلّق» لا «مؤكَّد».
+    literature_validation_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="pending")
+    journal_validation_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="not_assessed")
+
+    # §15 — «كم هي جاهزة للتطوير من الأدلة الموجودة؟» لا «كم احتمال قبولها؟».
+    # ومستقلّة عن `readiness_score` القائم فلا تفسده.
+    evidence_readiness_score: Mapped[float | None] = mapped_column(
+        Numeric(5, 2), nullable=True)
+    generation_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("planning_runs.id", ondelete="SET NULL"),
+        nullable=True
+    )
     converted_project_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("research_projects.id", ondelete="SET NULL"), nullable=True
     )

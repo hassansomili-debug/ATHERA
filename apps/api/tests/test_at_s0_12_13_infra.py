@@ -87,8 +87,8 @@ def test_ci_asserts_the_acceptance_database_survives_the_drill():
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "the drill mutated the acceptance-test database" in workflow
     assert "status = 'unknown'" in workflow
-    # ورأس التدريب يُفحص صراحةً.
-    assert 'test "$head" = "0016"' in workflow
+    # ورأس التدريب يُفحص صراحةً — **بالمقارنة بالمشتقّ لا برقم محفوظ**.
+    assert 'test "$head" = "$expected"' in workflow
 
 
 def test_ci_never_clears_decisions_to_make_the_drill_pass():
@@ -120,3 +120,33 @@ def test_backup_restore_drill_is_documented():
     assert runbook.exists(), "AT-S0-12 requires a documented and executed restore drill"
     text_content = runbook.read_text(encoding="utf-8")
     assert "pg_restore" in text_content or "pg_dump" in text_content
+
+
+def test_ci_derives_the_expected_migration_head_instead_of_hardcoding_it():
+    """رقمٌ محفوظ في CI يقيس عمر الملف لا صحّة الترحيل.
+
+    كانت الخطوة تكتب `test "$head" = "0016"` حرفيًّا. فلمّا أُضيف 0017 سقط
+    الفحص — **والتدريب نفسه كان ناجحًا**: بلغ الرأس الصحيح، والتأكيد وحده
+    كان يقيس رقمًا قديمًا. وهذا الصنف يتكرّر مع كل ترحيل ويطلب تعديلًا
+    يدويًّا يُنسى.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    drill = workflow.split("Assert the drill reached")[1]
+
+    assert "alembic heads" in drill, "الرأس لا يُشتقّ"
+    assert 'test "$head" = "$expected"' in drill
+    # ولا رقم ترحيل مثبَّت في المقارنة.
+    import re
+
+    assert not re.search(r'test "\$head" = "0\d{3}"', drill), "رقم مثبَّت عاد"
+
+
+def test_no_ci_step_pins_a_migration_revision_number():
+    """الحارس أوسع من الخطوة الواحدة: لا مقارنة برقم ترحيل في أي مكان."""
+    import re
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    for line in workflow.splitlines():
+        if line.strip().startswith("#"):
+            continue
+        assert not re.search(r'=\s*"0\d{3}"', line), f"رقم ترحيل مثبَّت: {line.strip()}"

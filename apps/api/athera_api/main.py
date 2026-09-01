@@ -26,6 +26,7 @@ from .routers import health as health_router
 from .routers import inbox as inbox_router
 from .routers import literature as literature_router
 from .routers import memory as memory_router
+from .routers import planning as planning_router
 from .routers import portfolio as portfolio_router
 from .routers import profile as profile_router
 from .routers import publishing as publishing_router
@@ -116,6 +117,7 @@ async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
 
 
 app.include_router(health_router.router)
+
 app.include_router(auth_router.router)
 app.include_router(tenants_router.router)
 app.include_router(files_router.router)
@@ -125,6 +127,7 @@ app.include_router(profile_router.router)
 app.include_router(memory_router.router)
 app.include_router(brain_router.router)
 app.include_router(ai_router.router)
+app.include_router(planning_router.router)
 app.include_router(portfolio_router.router)
 app.include_router(team_router.router)
 app.include_router(settings_router.router)
