@@ -26,16 +26,21 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 WEB = REPO / "apps" / "web"
 
 # نصّ رسالة اصطناعي — نفس المادة التي تحقّق بها S5C.
+# **مفاتيح الفهرس الحقيقي وحدها.**
+#
+# كانت هنا أسماء مخترعة (`research_problem` و`main_findings` وأخواتهما) —
+# وهي نفس الأسماء التي انحرفت إليها خريطة الأدوار. فكانت البذرة تُطابق الخطأ
+# فيبدو كل شيء سليمًا. وأي اسم خارج الفهرس يسقط الآن، وهو ما يجب أن يقع.
 FACTS = {
-    "research_problem": "تدنّي مستوى مهارات التفكير الناقد لدى طلاب المرحلة الثانوية",
-    "research_questions": "ما أثر استراتيجيات التعلّم النشط في تنمية مهارات التفكير الناقد؟",
+    "problem": "تدنّي مستوى مهارات التفكير الناقد لدى طلاب المرحلة الثانوية",
+    "questions": "ما أثر استراتيجيات التعلّم النشط في تنمية مهارات التفكير الناقد؟",
     "objectives": "قياس أثر استراتيجيات التعلّم النشط في تنمية مهارات التفكير الناقد",
     "theoretical_framework": "النظرية البنائية الاجتماعية لفيجوتسكي وتصنيف بلوم المعدَّل",
     "design": "استخدمت الدراسة المنهج شبه التجريبي بتصميم المجموعتين غير المتكافئتين",
     "sample_size": "بلغت عينة الدراسة 120 طالبًا وُزّعوا بالتساوي على مجموعتين",
     "sampling": "استُخدمت العينة العشوائية العنقودية في اختيار المدارس",
     "analysis_methods": "اختبار (ت) للعينات المستقلة وتحليل التباين الأحادي ومربع إيتا",
-    "main_findings": "بلغ حجم الأثر مربع إيتا 0.42 وهو حجم أثر كبير وفق معايير كوهين",
+    "primary_findings": "بلغ حجم الأثر مربع إيتا 0.42 وهو حجم أثر كبير وفق معايير كوهين",
     "limitations": "اقتصرت الدراسة على طلاب المرحلة الثانوية في سياق واحد",
 }
 
@@ -68,11 +73,11 @@ def _context(*roles) -> ctx.ResearchContext:
     )
 
 
-FULL_ROLES = (("problem", "research_problem"), ("question", "research_questions"),
+FULL_ROLES = (("problem", "problem"), ("question", "questions"),
               ("objective", "objectives"), ("theory", "theoretical_framework"),
               ("methodology", "design"), ("sample", "sample_size"),
               ("sample", "sampling"),
-              ("analysis", "analysis_methods"), ("result", "main_findings"),
+              ("analysis", "analysis_methods"), ("result", "primary_findings"),
               ("limitation", "limitations"))
 
 
@@ -214,7 +219,7 @@ def _now():
 
 def test_insufficient_evidence_is_detected_deterministically():
     """§39.17 — أدلةٌ ناقصة تُكشف قبل أي نداء، بحسابٍ لا بنموذج."""
-    thin = _context(("problem", "research_problem"))
+    thin = _context(("problem", "problem"))
     assert not thin.sufficient
     assert thin.missing_roles
 
@@ -247,7 +252,7 @@ async def test_insufficient_evidence_causes_zero_provider_calls(two_tenants):
     tid, uid = tenant["tenant_id"], tenant["user_id"]
     # مشروع بدليل واحد فقط — لا يكفي.
     project_id, _memory_id, _file_id = await _seed_project_with_memory(
-        tid, uid, facts={"research_problem": FACTS["research_problem"]})
+        tid, uid, facts={"problem": FACTS["problem"]})
     principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
                           mfa_satisfied=True, locale="ar")
 
@@ -363,7 +368,7 @@ def test_the_old_readiness_engine_is_untouched():
 
 
 def test_a_thin_context_scores_lower_than_a_complete_one():
-    thin = _context(("problem", "research_problem"), ("question", "research_questions"))
+    thin = _context(("problem", "problem"), ("question", "questions"))
     full = _context(*FULL_ROLES)
     low = scoring.compute(thin, _proposal(evidence_roles=["problem"]))
     high = scoring.compute(full, _proposal())
@@ -382,7 +387,7 @@ def test_the_design_is_read_from_evidence_not_guessed():
     assert full.sampling_strategy == "cluster_random"
     assert full.sample_size == 120
 
-    blind = method_from_evidence(_context(("problem", "research_problem")))
+    blind = method_from_evidence(_context(("problem", "problem")))
     assert blind.design_family is None
     assert blind.sampling_strategy is None
 
@@ -561,7 +566,7 @@ async def test_changed_evidence_makes_an_old_planning_consent_stale(two_tenants)
         # دليل جديد موثق يغيّر اللقطة.
         session.add(ResearcherMemory(
             tenant_id=tid, memory_category="verified_evidence",
-            statement_ar="نتيجة إضافية موثقة", value={"field_key": "main_findings"},
+            statement_ar="نتيجة إضافية موثقة", value={"field_key": "primary_findings"},
             source_type="upload", source_file_id=file_id, source_locator="§نتائج ¶9",
             source_quote="نتيجة إضافية موثقة", verification_status="verified",
             verified_by=uid, verified_at=_now(),
@@ -661,7 +666,7 @@ def test_no_secret_can_reach_the_provider_payload():
 
 
 def test_the_evidence_view_truncates_and_carries_no_identifiers():
-    item = ctx.EvidenceItem(uuid.uuid4(), "result", "main_findings", "ن" * 900,
+    item = ctx.EvidenceItem(uuid.uuid4(), "result", "primary_findings", "ن" * 900,
                             "verified_evidence", uuid.uuid4(), "§نتائج ¶22", "ق" * 900)
     view = item.as_model_view()
     assert set(view) == {"role", "fact", "locator", "quote"}
@@ -1271,3 +1276,93 @@ async def test_a_verified_memory_without_a_candidate_stays_eligible(two_tenants)
     assert all(i.field_key is None for i in context.items)
     # وما لا تدلّ فئته يُستبعَد بلا ادّعاء دور.
     assert "سياق مؤقت" not in " ".join(i.statement for i in context.items)
+
+
+# ══════════ 13. خريطة الأدوار مشتقّة من الفهرس لا مكتوبة بجانبه ══════════
+
+def test_every_catalogue_field_resolves_to_a_known_role():
+    """§6 — لا حقل في فهرس S5C بلا دور.
+
+    كانت الخريطة مكتوبة يدويًّا فانحرفت: ثمانية عشر مفتاحًا حقيقيًّا بلا دور،
+    ومنها كل حقول النتائج — فصار دور `result` غير قابل للبلوغ، وهو مجموعة
+    تشترطها بوابة الكفاية. فتسقط دائمًا مهما كانت الأدلة.
+    """
+    from athera_api.services.document_intelligence.fields import FIELD_CATALOGUE
+
+    known = {"problem", "question", "objective", "theory", "methodology", "sample",
+             "analysis", "result", "limitation", "other"}
+    unmapped = []
+    for spec in FIELD_CATALOGUE:
+        role = ctx.role_for_field(spec.key)
+        if role is None or role not in known:
+            unmapped.append((spec.key, role))
+    assert not unmapped, f"حقول بلا دور معروف: {unmapped}"
+    assert len(ctx.ROLE_BY_FIELD) == len(FIELD_CATALOGUE)
+
+
+def test_only_metadata_fields_are_intentionally_other():
+    """«أخرى» قصدٌ لا سهو: بيانات الرسالة تعريفٌ لا دليل تخطيط."""
+    from athera_api.services.document_intelligence.fields import BY_KEY, Section
+
+    others = [k for k, v in ctx.ROLE_BY_FIELD.items() if v == "other"]
+    assert others, "لا حقل «أخرى» — هل تغيّر الفهرس؟"
+    for key in others:
+        assert BY_KEY[key].section is Section.METADATA, (
+            f"{key} صار «أخرى» وليس من بيانات الرسالة")
+
+
+def test_no_override_names_a_field_that_does_not_exist():
+    """§7 — `ROLE_BY_FIELD['main_findings']` صنفٌ من العيوب يصير مستحيلًا.
+
+    كل مفتاح استثناء يجب أن يوجد في الفهرس، وإلا فهو اسمٌ مخترَع يوهم بأنه
+    مُغطّى وهو لا يطابق شيئًا.
+    """
+    from athera_api.services.document_intelligence.fields import BY_KEY
+
+    ghosts = [k for k in ctx._ROLE_OVERRIDES if k not in BY_KEY]
+    assert not ghosts, f"استثناءات لأسماء لا وجود لها: {ghosts}"
+    # والأسماء التي انحرفت سابقًا لا تُطابق شيئًا الآن.
+    for invented in ("main_findings", "research_problem", "research_questions",
+                     "hypothesis_outcomes", "research_gap", "study_type"):
+        assert ctx.role_for_field(invented) is None, invented
+
+
+def test_the_override_table_holds_exceptions_only_not_a_second_catalogue():
+    """§5 — استثناءات القسم الواحد، لا فهرس ثانٍ."""
+    from athera_api.services.document_intelligence.fields import FIELD_CATALOGUE
+
+    assert len(ctx._ROLE_OVERRIDES) < len(FIELD_CATALOGUE) / 3
+    # وكل استثناء يخالف فعلًا دور قسمه — وإلا فهو تكرار بلا سبب.
+    from athera_api.services.document_intelligence.fields import BY_KEY
+
+    for key, role in ctx._ROLE_OVERRIDES.items():
+        section_role = ctx._ROLE_BY_SECTION[BY_KEY[key].section]
+        assert role != section_role, f"{key} استثناء لا يخالف قسمه"
+
+
+def test_every_required_role_is_reachable_from_a_real_field():
+    """§8 — مجموعةٌ مشترطة لا يبلغها حقل حقيقي تعني بوابة لا تُفتح أبدًا.
+
+    والاختبار يسقط إن غيّر تعديلٌ لاحقٌ في الفهرس هذه الحقيقة.
+    """
+    from athera_api.services.document_intelligence.fields import FIELD_CATALOGUE
+
+    produced = {ctx.role_for_field(s.key) for s in FIELD_CATALOGUE}
+    for group in ctx.REQUIRED_ROLE_GROUPS:
+        reachable = [r for r in group if r in produced]
+        assert reachable, f"مجموعة لا يبلغها أي حقل: {group}"
+    # والنتائج بالتحديد — وهي التي كانت مقطوعة.
+    assert ctx.role_for_field("primary_findings") == "result"
+    assert ctx.role_for_field("hypothesis_results") == "result"
+
+
+def test_the_role_map_is_derived_not_hand_written():
+    """§2 — مصدر حقيقة واحد: الفهرس."""
+    import inspect
+
+    source = inspect.getsource(ctx)
+    assert "for spec in FIELD_CATALOGUE" in source
+    assert "_ROLE_BY_SECTION[spec.section]" in source
+    # ولا قاموس مكتوب يدويًّا يربط كل مفتاح بدوره.
+    assert '"primary_findings": "result"' not in source
+    assert '"limitations": "limitation"' not in source

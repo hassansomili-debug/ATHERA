@@ -24,37 +24,64 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.research import FactCandidate, ResearcherMemory
+from ..document_intelligence.fields import BY_KEY, FIELD_CATALOGUE, Section
 
 # ── تصنيف الأدلة ──
 #
-# مفاتيح حقول S5C تُقابَل بأدوارها في التخطيط. والمقابلة صريحة لا مخمَّنة:
-# حقلٌ لا يُعرف دوره يدخل «أخرى» ولا يُدَّعى له معنى.
-ROLE_BY_FIELD: Final[dict[str, str]] = {
-    "research_problem": "problem",
-    "background": "problem",
-    "research_gap": "problem",
-    "objectives": "objective",
-    "research_questions": "question",
-    "hypotheses": "question",
-    "theoretical_framework": "theory",
-    "constructs": "theory",
-    "design": "methodology",
-    "study_type": "methodology",
+# **يُشتقّ من فهرس S5C، ولا يُكتب بجانبه.**
+#
+# كانت هنا خريطة مكتوبة يدويًّا بأسماء حقول — فانحرفت عن الفهرس بلا أن ينبّه
+# أحد: ستة أسماء لا وجود لها (`main_findings` و`research_problem` وأخواتهما)،
+# وثمانية عشر مفتاحًا حقيقيًّا بلا دور. وأخطرها أن دور `result` صار غير قابل
+# للبلوغ، وهو مجموعة تشترطها بوابة الكفاية — فتسقط دائمًا مهما كانت الأدلة.
+#
+# والقسم في `FieldSpec` معلومة بنيوية موجودة أصلًا، فهو الأساس. والاستثناءات
+# وحدها تُكتب: قسمٌ واحد يضمّ حقولًا بأدوار مختلفة (المنهجية تضمّ التصميم
+# والعينة والتحليل معًا). ولا قائمة ثانية كاملة.
+
+_ROLE_BY_SECTION: Final[dict[Section, str]] = {
+    Section.PROBLEM: "problem",
+    Section.QUESTIONS: "question",
+    Section.THEORY: "theory",
+    Section.METHODOLOGY: "methodology",
+    Section.FINDINGS: "result",
+    Section.LIMITS: "limitation",
+    # بيانات الرسالة تعريفٌ لا دليل تخطيط: العنوان والجامعة والمشرفون لا
+    # تُبنى عليها فرصة نشر. تبقى «أخرى» **قصدًا**، ولا تُستبعَد خطأً.
+    Section.METADATA: "other",
+}
+
+# استثناءات داخل القسم الواحد — ولا شيء غيرها.
+#
+# وكل مفتاح هنا **يجب أن يوجد في الفهرس**؛ اختبارٌ يفشل إن لم يوجد، فلا
+# يعود ممكنًا أن يحمل هذا الجدول اسمًا مخترعًا كما حمل من قبل.
+_ROLE_OVERRIDES: Final[dict[str, str]] = {
+    # المنهجية تضمّ ثلاثة أدوار: التصميم، والعينة، والتحليل.
     "population": "sample",
     "sample_size": "sample",
     "sampling": "sample",
-    "instruments": "methodology",
-    "validity": "methodology",
-    "reliability": "methodology",
     "analysis_methods": "analysis",
     "software": "analysis",
-    "main_findings": "result",
-    "hypothesis_outcomes": "result",
-    "qualitative_themes": "result",
-    "limitations": "limitation",
-    "recommendations": "limitation",
-    "future_research": "limitation",
+    # ومشكلة الدراسة تضمّ الهدف، وهو دور مستقل في التخطيط.
+    "objectives": "objective",
 }
+
+
+def role_for_field(field_key: str | None) -> str | None:
+    """دور حقلٍ من فهرس S5C — أو `None` إن لم يكن منه."""
+    if not field_key:
+        return None
+    spec = BY_KEY.get(field_key)
+    if spec is None:
+        return None
+    return _ROLE_OVERRIDES.get(field_key, _ROLE_BY_SECTION[spec.section])
+
+
+#: خريطة كاملة مشتقّة — تُبنى من الفهرس فلا تنحرف عنه أبدًا.
+ROLE_BY_FIELD: Final[dict[str, str]] = {
+    spec.key: role_for_field(spec.key) or "other" for spec in FIELD_CATALOGUE
+}
+
 
 # ── عتبة الكفاية ──
 #
@@ -149,13 +176,14 @@ def _role_for(memory: ResearcherMemory, field_key: str | None = None) -> str:
     يوجد منذ §7.4، ويصل الذاكرة بالمرشّح الذي أنتجها. فلا يُنسخ حقلٌ ولا
     يُخترع عمود.
     """
-    if field_key and field_key in ROLE_BY_FIELD:
-        return ROLE_BY_FIELD[field_key]
+    derived = role_for_field(field_key)
+    if derived and derived != "other":
+        return derived
     # الاحتياطي بفئة الذاكرة — و`verified_evidence` نتائج بحكم §S5C.
     value = memory.value if isinstance(memory.value, dict) else {}
-    inline = value.get("field_key")
-    if inline and inline in ROLE_BY_FIELD:
-        return ROLE_BY_FIELD[inline]
+    inline = role_for_field(value.get("field_key"))
+    if inline and inline != "other":
+        return inline
     return {"verified_evidence": "result", "analysis_result": "analysis"}.get(
         memory.memory_category, "other")
 
