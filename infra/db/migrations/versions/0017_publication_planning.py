@@ -129,7 +129,6 @@ def upgrade() -> None:
         sa.Column("capability", sa.String(64), nullable=False),
         # بصمة لقطة الأدلة — لا محتواها.
         sa.Column("context_fingerprint", sa.String(64), nullable=False),
-        sa.Column("memory_ids", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
         sa.Column("evidence_summary", JSONB, nullable=False,
                   server_default=sa.text("'{}'::jsonb")),
         sa.Column("agent_run_id", PgUUID(as_uuid=True), nullable=True),
@@ -145,6 +144,31 @@ def upgrade() -> None:
                            name="ck_planning_run_fingerprint"),
     )
     op.create_index("ix_planning_runs_project", "planning_runs", ["project_id"])
+
+    # عضوية اللقطة — **بمفتاح أجنبي لا بمصفوفة معرّفات**.
+    #
+    # سؤالٌ يجب أن يبقى قابلًا للإجابة: «أي ذاكرات موثقة بالضبط وُلّدت منها
+    # هذه الفرص؟» ومصفوفة JSON تُجيب اليوم وتكذب غدًا: تُحذف ذاكرة فيبقى
+    # معرّفها معلّقًا بلا أن ينبّه أحد. والمفتاح الأجنبي يمنع ذلك أو يعلنه.
+    op.create_table(
+        "planning_run_evidence",
+        sa.Column("id", PgUUID(as_uuid=True), primary_key=True,
+                  server_default=sa.text("gen_random_uuid()")),
+        sa.Column("tenant_id", PgUUID(as_uuid=True),
+                  sa.ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False),
+        sa.Column("created_at", TS, server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", TS, server_default=sa.text("now()"), nullable=False),
+        sa.Column("run_id", PgUUID(as_uuid=True),
+                  sa.ForeignKey("planning_runs.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("memory_id", PgUUID(as_uuid=True),
+                  sa.ForeignKey("researcher_memories.id", ondelete="RESTRICT"),
+                  nullable=False),
+        sa.Column("evidence_role", sa.String(24), nullable=False),
+        sa.CheckConstraint(_in("evidence_role", EVIDENCE_ROLES),
+                           name="ck_planning_run_evidence_role"),
+        sa.UniqueConstraint("run_id", "memory_id", name="uq_planning_run_evidence"),
+    )
+    op.create_index("ix_planning_run_evidence_run", "planning_run_evidence", ["run_id"])
     op.create_foreign_key("fk_opportunity_generation_run", "publication_opportunities",
                           "planning_runs", ["generation_run_id"], ["id"],
                           ondelete="SET NULL")
@@ -220,7 +244,7 @@ def upgrade() -> None:
     op.create_index("ix_manuscript_outlines_opportunity", "manuscript_outlines",
                     ["opportunity_id"])
 
-    for table in ("planning_runs", "opportunity_evidence_links",
+    for table in ("planning_runs", "planning_run_evidence", "opportunity_evidence_links",
                   "thread_element_evidence", "manuscript_outlines"):
         _tenant_rls(table)
 
@@ -247,6 +271,9 @@ def downgrade() -> None:
     والتشغيلات والروابط والهياكل تُحذف: هي مخرجات نموذج قابلة لإعادة
     التوليد، لا أحكامًا بشرية.
     """
+    # **كل الفحوص أولًا، ثم التعديل.** وكان الفحص الثاني بعد حذف الجداول،
+    # فرفضٌ في حالة «فرصة بلا رسالة» كان يترك القاعدة نصف مُنزَّلة: الجداول
+    # ذهبت والأعمدة باقية والإصدار لم يتغيّر. ورفضٌ يخرّب أسوأ من تنازل يتمّ.
     bind = op.get_bind()
     decided = bind.execute(sa.text(
         "SELECT count(*) FROM publication_opportunities "
@@ -261,8 +288,22 @@ def downgrade() -> None:
             "مستبعَدة). حذف العمود يمحو القرار — احسمها أو صدّرها أولًا."
         )
 
+    # `thesis_id` يعود إلزاميًّا — ولا يُخترع له قيمة.
+    #
+    # وصفٌّ بلا رسالة (فرصة S5D خالصة) يمنع العودة: يُقال ذلك ولا يُحذف الصفّ.
+    orphans = bind.execute(sa.text(
+        "SELECT count(*) FROM publication_opportunities WHERE thesis_id IS NULL"
+    )).scalar_one()
+    if orphans:
+        raise RuntimeError(
+            f"downgrade refused: {orphans} opportunity/opportunities have no thesis_id "
+            "and would violate the restored NOT NULL. They are project-derived (S5D). "
+            "Remove or re-source them deliberately first. | "
+            f"التنازل مرفوض: {orphans} فرصة بلا رسالة مصدر."
+        )
+
     for table in ("manuscript_outlines", "thread_element_evidence",
-                  "opportunity_evidence_links"):
+                  "opportunity_evidence_links", "planning_run_evidence"):
         op.drop_table(table)
     op.drop_constraint("fk_opportunity_generation_run", "publication_opportunities",
                        type_="foreignkey")
@@ -285,17 +326,4 @@ def downgrade() -> None:
                    "project_id"):
         op.drop_column("publication_opportunities", column)
 
-    # `thesis_id` يعود إلزاميًّا — ولا يُخترع له قيمة.
-    #
-    # وصفٌّ بلا رسالة (فرصة S5D خالصة) يمنع العودة: يُقال ذلك ولا يُحذف الصفّ.
-    orphans = bind.execute(sa.text(
-        "SELECT count(*) FROM publication_opportunities WHERE thesis_id IS NULL"
-    )).scalar_one()
-    if orphans:
-        raise RuntimeError(
-            f"downgrade refused: {orphans} opportunity/opportunities have no thesis_id "
-            "and would violate the restored NOT NULL. They are project-derived (S5D). "
-            "Remove or re-source them deliberately first. | "
-            f"التنازل مرفوض: {orphans} فرصة بلا رسالة مصدر."
-        )
     op.alter_column("publication_opportunities", "thesis_id", nullable=False)

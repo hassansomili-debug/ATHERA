@@ -32,7 +32,6 @@ class PlanningRun(Base, TenantScoped, Timestamped):
     )
     capability: Mapped[str] = mapped_column(String(64), nullable=False)
     context_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
-    memory_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     evidence_summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     agent_run_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     # running | insufficient_evidence | completed | failed
@@ -42,6 +41,31 @@ class PlanningRun(Base, TenantScoped, Timestamped):
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+
+
+class PlanningRunEvidence(Base, TenantScoped, Timestamped):
+    """عضوية لقطة الأدلة — **بمفتاح أجنبي لا بمصفوفة معرّفات**.
+
+    «أي ذاكرات وُلّدت منها هذه الفرص؟» سؤالٌ يجب أن يبقى قابلًا للإجابة
+    بيقين. ومصفوفة JSON تُجيب اليوم وتكذب غدًا: تُحذف ذاكرة فيبقى معرّفها
+    معلّقًا بلا أن ينبّه أحد.
+    """
+
+    __tablename__ = "planning_run_evidence"
+    __table_args__ = (
+        UniqueConstraint("run_id", "memory_id", name="uq_planning_run_evidence"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("planning_runs.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    memory_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("researcher_memories.id", ondelete="RESTRICT"),
+        nullable=False
+    )
+    evidence_role: Mapped[str] = mapped_column(String(24), nullable=False)
 
 
 class OpportunityEvidenceLink(Base, TenantScoped, Timestamped):
@@ -113,4 +137,4 @@ class ManuscriptOutline(Base, TenantScoped, Timestamped):
 
 
 __all__ = ["ManuscriptOutline", "OpportunityEvidenceLink", "PlanningRun",
-           "ThreadElementEvidence"]
+           "PlanningRunEvidence", "ThreadElementEvidence"]

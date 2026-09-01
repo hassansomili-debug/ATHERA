@@ -29,6 +29,7 @@ from .planning import (
     ManuscriptOutline,
     OpportunityEvidenceLink,
     PlanningRun,
+    PlanningRunEvidence,
     ThreadElementEvidence,
 )
 from .portfolio import ProjectDecision, ProjectMember, ResearchProgram, ResearchProject
@@ -108,6 +109,7 @@ __all__ = [
     "ManuscriptOutline",
     "OpportunityEvidenceLink",
     "PlanningRun",
+    "PlanningRunEvidence",
     "ThreadElementEvidence",
     "Base", "Tenant", "Organization", "User", "Role", "Permission", "RolePermission",
     "Membership", "ObjectGrant", "RefreshToken", "MfaFactor",

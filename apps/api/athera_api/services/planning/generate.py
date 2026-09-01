@@ -15,7 +15,11 @@ from typing import Final
 
 from sqlalchemy import select
 
-from ...models.planning import OpportunityEvidenceLink, PlanningRun
+from ...models.planning import (
+    OpportunityEvidenceLink,
+    PlanningRun,
+    PlanningRunEvidence,
+)
 from ...models.thesis import PublicationOpportunity
 from ..thesis import overlap as overlap_engine
 from . import scoring
@@ -132,11 +136,17 @@ async def open_run(session, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
     run = PlanningRun(
         tenant_id=tenant_id, project_id=project_id, capability=capability,
         context_fingerprint=context.fingerprint,
-        memory_ids=context.memory_ids, evidence_summary=context.summary(),
+        evidence_summary=context.summary(),
         status="running", started_at=dt.datetime.now(dt.UTC),
     )
     session.add(run)
     await session.flush()
+    # عضوية اللقطة تُحفظ صفوفًا مرتبطة — فتبقى قابلة للتتبّع بعد شهور.
+    for item in context.items:
+        session.add(PlanningRunEvidence(
+            tenant_id=tenant_id, run_id=run.id, memory_id=item.memory_id,
+            evidence_role=item.role,
+        ))
     return run.id
 
 
