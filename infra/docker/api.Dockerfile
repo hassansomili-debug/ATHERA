@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     && rm -rf /var/lib/apt/lists/*
 
 COPY apps/api/pyproject.toml apps/api/pyproject.toml
-RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -e apps/api
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -e "apps/api[providers]"
 
 COPY apps/api apps/api
 COPY infra/db infra/db

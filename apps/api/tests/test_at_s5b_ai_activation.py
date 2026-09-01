@@ -52,25 +52,33 @@ def clean_rate_limit():
 # ══════════ جهوزية المزوّد: الاسم ليس دليلًا ══════════
 
 @pytest.mark.parametrize(
-    ("provider", "openai_key", "anthropic_key", "ready", "reason"),
+    ("provider", "openai_key", "anthropic_key", "sdk_present", "ready", "reason"),
     [
-        ("null", "", "", False, "provider_disabled"),
-        ("openai", "", "", False, "missing_api_key"),
-        ("openai", "sk-real", "", True, "ready"),
-        ("anthropic", "", "", False, "missing_api_key"),
-        ("anthropic", "", "key", True, "ready"),
-        ("mystery", "k", "k", False, "provider_unknown"),
+        ("null", "", "", True, False, "provider_disabled"),
+        ("openai", "", "", True, False, "missing_api_key"),
+        ("openai", "sk-real", "", True, True, "ready"),
+        ("anthropic", "", "", True, False, "missing_api_key"),
+        ("anthropic", "", "key", True, True, "ready"),
+        ("mystery", "k", "k", True, False, "provider_unknown"),
+        # مفتاح موجود وحزمة غائبة: الجهوزية تعرفه ولا تعد بما لا يعمل.
+        ("anthropic", "", "key", False, False, "sdk_missing"),
     ],
 )
-def test_readiness_requires_a_credential_not_just_a_name(
-    monkeypatch, provider, openai_key, anthropic_key, ready, reason
+def test_readiness_requires_credential_and_sdk_not_just_a_name(
+    monkeypatch, provider, openai_key, anthropic_key, sdk_present, ready, reason
 ):
+    import importlib.util
+
     from athera_api.config import get_settings
 
     settings = get_settings()
     monkeypatch.setattr(settings, "model_provider", provider, raising=False)
     monkeypatch.setattr(settings, "openai_api_key", openai_key, raising=False)
     monkeypatch.setattr(settings, "anthropic_api_key", anthropic_key, raising=False)
+    if not sdk_present:
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    else:
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
 
     name, is_ready, why = gateway.provider_readiness()
     assert (name, is_ready, why) == (provider, ready, reason)
@@ -152,12 +160,19 @@ async def clients(two_tenants):
 
 
 def _use_fake(monkeypatch, provider):
-    """يُفعّل مزوّدًا وهميًا دون لمس أي مفتاح حقيقي."""
+    """يُفعّل مزوّدًا وهميًا دون لمس أي مفتاح حقيقي ولا تثبيت أي حزمة.
+
+    وتُزيَّف نتيجة `find_spec` أيضًا: الجهوزية صارت تفحص وجود حزمة المزوّد،
+    وCI لا يثبّتها عمدًا — فالاختبار يصف بيئةً مُهيّأة بلا أن يفرض تثبيتًا.
+    """
+    import importlib.util
+
     from athera_api.config import get_settings
 
     settings = get_settings()
     monkeypatch.setattr(settings, "model_provider", "openai", raising=False)
     monkeypatch.setattr(settings, "openai_api_key", "test-only-not-a-real-key", raising=False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(gateway, "build_provider", lambda: provider)
     return provider
 
@@ -516,10 +531,13 @@ async def test_health_endpoints_expose_ai_configured(clients, monkeypatch, path)
     اختبارٌ يفحص الاستجابة كما يراها العميل — لا كما يظنّها الكود — كان
     سيكشفه قبل النشر. وهذا ما يفعله هذا الاختبار.
     """
+    import importlib.util
+
     from athera_api.config import get_settings
 
     http, _ = clients
     settings = get_settings()
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
 
     monkeypatch.setattr(settings, "model_provider", "null", raising=False)
     body = (await http["a"].get(path)).json()

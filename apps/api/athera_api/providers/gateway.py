@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+import importlib.util
 from time import perf_counter
 from typing import Final
 
@@ -23,6 +24,12 @@ from .null_provider import NullProvider
 _KEY_BY_PROVIDER: Final[dict[str, str]] = {
     "openai": "openai_api_key",
     "anthropic": "anthropic_api_key",
+}
+
+# اسم الحزمة التي يحتاجها كل محوّل — تُفحص وجودًا لا تُستورد.
+_SDK_BY_PROVIDER: Final[dict[str, str]] = {
+    "openai": "openai",
+    "anthropic": "anthropic",
 }
 
 
@@ -63,6 +70,14 @@ def provider_readiness() -> tuple[str, bool, str]:
 
     if not (getattr(settings, _KEY_BY_PROVIDER[provider], "") or "").strip():
         return provider, False, "missing_api_key"
+
+    # **والحزمة نفسها.** المحوّل يستوردها استيرادًا كسولًا داخل الدالة — وهو
+    # مقصود ليبقى المزوّد خارج مسار الاستيراد العام — لكن أثره أن غيابها لا
+    # يظهر إلا عند أول استدعاء حقيقي. فتُعلن الجهوزية `ready` بينما كل طلب
+    # يفشل. ثالث صورة من عطب واحد: الاسم ليس دليل القدرة.
+    if importlib.util.find_spec(_SDK_BY_PROVIDER[provider]) is None:
+        return provider, False, "sdk_missing"
+
     return provider, True, "ready"
 
 
