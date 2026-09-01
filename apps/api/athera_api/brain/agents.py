@@ -229,6 +229,33 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             gate=None,
         ),
         AgentSpec(
+            # مخطِّط النشر (S5D) — يقترح فرصًا من **معرفة موثقة** اعتمدها
+            # الباحث بنفسه، ولا يقرّر شيئًا.
+            #
+            # ولا أدوات له إطلاقًا: سياقه الوحيد الأدلة الممرَّرة إليه، فلا
+            # ذاكرة يخلط بها، ولا بحث أدبيات يستورد منه جدّةً لا يملكها —
+            # والسجل مغلق أصلًا. وإضافةُ أداةٍ هنا تفتح بابًا لادّعاء لا
+            # يسنده دليل.
+            key="publication_planner",
+            name_ar="مخطِّط النشر", name_en="Publication Planner",
+            responsibility_ar="اقتراح فرص نشر متمايزة من المعرفة الموثقة وحدها",
+            responsibility_en="Propose distinct publication opportunities from verified knowledge only",
+            constraint_ar=(
+                "لا يدّعي جدةً ولا فجوةً مؤكدة ولا ملاءمة مجلة ولا احتمال قبول؛ "
+                "ولا يخترع رقمًا ولا نتيجة ولا مرجعًا؛ ولا يقوّي اللغة السببية "
+                "فوق ما يسمح به التصميم الموثق"
+            ),
+            constraint_en=(
+                "Claims no novelty, confirmed gap, journal fit or acceptance likelihood; "
+                "invents no number, finding or reference; and never strengthens causal "
+                "language beyond what the verified design supports"
+            ),
+            allowed_tools=frozenset(),
+            guards=BASE_GUARDS,
+            reads_memory=frozenset(),
+            gate=None,
+        ),
+        AgentSpec(
             key="thesis_miner",
             name_ar="منقّب الرسائل", name_en="Thesis Miner",
             responsibility_ar="استخراج فرص النشر من الرسائل",
