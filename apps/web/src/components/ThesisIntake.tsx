@@ -29,7 +29,7 @@ type Phase =
   | "awaiting_review"
   | "verified"
   | "parse_failed"
-  | "extraction_failed";
+  | "extract_failed";
 
 interface ExtractionState {
   thesis_id: string;
@@ -42,7 +42,7 @@ interface ExtractionState {
 }
 
 const TERMINAL: ReadonlySet<string> = new Set([
-  "awaiting_review", "verified", "parse_failed", "extraction_failed",
+  "awaiting_review", "verified", "parse_failed", "extract_failed",
 ]);
 
 const STATE_KEY: Record<string, string> = {
@@ -53,7 +53,7 @@ const STATE_KEY: Record<string, string> = {
   awaiting_review: "theses.stateAwaitingReview",
   verified: "theses.stateVerified",
   parse_failed: "theses.stateParseFailed",
-  extraction_failed: "theses.stateExtractionFailed",
+  extract_failed: "theses.stateExtractionFailed",
 };
 
 const ACCEPT = ".pdf,.docx,.doc,.txt";
@@ -141,7 +141,7 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
     }
   }
 
-  const failed = phase === "parse_failed" || phase === "extraction_failed";
+  const failed = phase === "parse_failed" || phase === "extract_failed";
 
   return (
     <section className="card" style={{ display: "grid", gap: 10 }}>

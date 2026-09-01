@@ -59,6 +59,30 @@ def test_state_lives_on_the_run_not_the_file():
     assert "parse_failed" not in str(File.__table__.c.status.type)
 
 
+def test_every_status_fits_its_column():
+    """قيمةٌ لا تسع في عمودها حالةٌ **غير قابلة للكتابة**.
+
+    `extraction_failed` كانت سبعة عشر حرفًا في `VARCHAR(16)`، فحالة الفشل
+    الوحيدة التي تصف انهيار الاستخراج تُرفض عند الحفظ — فيُبتلع الفشل الذي
+    وُجدت لتَرويه. ولم يكشفها اختبارٌ لأن الاستخراج الحتمي يُنتج مرشّحًا
+    دائمًا، فلا يُبلَغ ذلك الفرع إلا بانهيار حقيقي.
+    """
+    from athera_api.models.research import ExtractionRun
+
+    width = ExtractionRun.__table__.c.status.type.length
+    assert width, "العمود بلا عرض معلن — الفحص نفسه بلا معنى"
+    too_long = [s.value for s in Status if len(s.value) > width]
+    assert not too_long, f"حالات لا تسع في VARCHAR({width}): {too_long}"
+
+
+def test_candidate_decision_values_fit_their_column():
+    from athera_api.models.research import FactCandidate
+
+    width = FactCandidate.__table__.c.status.type.length
+    too_long = [v for v in ("unverified", "approved", "rejected", "unknown") if len(v) > width]
+    assert not too_long, f"قرارات لا تسع في VARCHAR({width}): {too_long}"
+
+
 def test_parse_failure_and_extraction_failure_are_distinct():
     assert Status.PARSE_FAILED != Status.EXTRACTION_FAILED
     assert Status.PARSED in STATE_FLOW[Status.PARSING]
@@ -1517,3 +1541,99 @@ async def test_the_application_role_cannot_alter_the_status_constraint(two_tenan
                 "DROP CONSTRAINT ck_fact_candidates_ck_candidate_status"
             ))
     assert "must be owner" in str(err.value)
+
+
+# ══════════ 16. الفشل في الخلفية يُروى ولا يُبتلع ══════════
+
+def test_background_processing_records_a_run_before_the_risky_work():
+    """أول تشغيلة إنتاجية سقطت بلا أثر: لا صفّ، ولا سجل، ولا حالة.
+
+    السبب معاملةٌ واحدة تلفّ كل شيء — فالانهيار أرجعها، ومنها صفّ
+    `extraction_runs` الذي كان سيروي الانهيار. فبقي الملف عند «لم تبدأ
+    القراءة» وقد بدأت وسقطت.
+
+    والعلاج فصل المعاملات: تشغيلةٌ تُحفظ أولًا، ثم يجري العمل، ثم يُسجَّل
+    الفشل إن وقع.
+    """
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module._process)
+    # ثلاث معاملات مستقلة لا واحدة.
+    assert source.count("async with tenant_session(tenant_id, actor_id) as session:") == 3
+    assert "run_id=run_id" in source
+    assert "Status.EXTRACTION_FAILED.value" in source
+    assert "logger.exception" in source
+
+
+def test_failure_logging_carries_ids_not_document_content():
+    """§17 — المعرّفات تكفي للتشخيص، ومحتوى الرسالة لا يخصّ سجلًّا تشغيليًّا."""
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module._process)
+    logged = [line for line in source.splitlines() if "logger." in line]
+    assert logged
+    for line in logged:
+        for leak in ("data", "record.original_filename", "chunk.text", "payload"):
+            assert leak not in line, line
+
+
+def test_a_resumed_run_is_reused_not_duplicated():
+    """`run_id` يُتابِع تشغيلة قائمة — ولا يترك صفَّين لعملٍ واحد."""
+    import inspect
+
+    source = inspect.getsource(pipeline.run_extraction)
+    assert "if run_id is not None:" in source
+    assert "ExtractionRun.id == run_id" in source
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_crash_mid_processing_leaves_a_visible_failed_run(two_tenants, monkeypatch):
+    """أثقل ما في هذا القسم: ينهار التخزين، فيرى الباحث «تعذّر» لا «لم تبدأ».
+
+    وهذا هو الانحدار الإنتاجي بعينه، مُعادًا إنتاجه: قبل الإصلاح كان
+    الانهيار يترك صفر صفوف.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+    from athera_api.models.identity import ObjectGrant
+    from athera_api.models.research import ExtractionRun
+    from athera_api.routers import document_intelligence as di
+    from athera_api.services import storage as storage_module
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+
+    async with tenant_session(tid, uid) as session:
+        record = File(
+            tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
+            original_filename="thesis.txt", content_type="text/plain", size_bytes=10,
+            classification="C2", is_untrusted_content=True, status="stored", uploaded_by=uid,
+        )
+        session.add(record)
+        await session.flush()
+        session.add(ObjectGrant(tenant_id=tid, object_type="file", object_id=record.id,
+                                user_id=uid, grant_level="owner", granted_by=uid))
+        file_id = record.id
+
+    class _BrokenStore:
+        def get(self, key):
+            raise RuntimeError("storage unreachable")
+
+    monkeypatch.setattr(storage_module, "get_store", lambda: _BrokenStore())
+    await di._process(tid, uid, file_id, "ar")
+
+    async with tenant_session(tid, uid) as session:
+        runs = (await session.execute(
+            select(ExtractionRun).where(ExtractionRun.file_id == file_id)
+        )).scalars().all()
+        assert len(runs) == 1, "الانهيار لم يترك أثرًا — العيب الإنتاجي عاد"
+        assert runs[0].status == Status.EXTRACTION_FAILED.value
+        assert "storage unreachable" in (runs[0].error or "")
+        assert runs[0].finished_at is not None

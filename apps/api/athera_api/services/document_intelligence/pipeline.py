@@ -126,18 +126,29 @@ async def run_extraction(
     data: bytes,
     orchestrator,
     locale: str = "ar",
+    run_id: uuid.UUID | None = None,
 ) -> PipelineResult:
     """التشغيلة كاملة — وكل فشل يُسمّى بسببه ولا يُبتلع.
 
     وفشل قسم لا يُسقط ما نجح: الأقسام الستة الأخرى تبقى، ويُبلَّغ عن الفاشل
     باسمه (§29). فرسالةٌ استُخرج منها ستة أقسام من سبعة أنفع من لا شيء.
+
+    و`run_id` يسمح بمتابعة تشغيلة **أُنشئت وحُفظت قبل هذه المعاملة**. وذلك
+    لا ترفٌ: انهيارٌ هنا يُرجِع المعاملة كلها، ومنها الصفّ الذي كان سيروي
+    الانهيار — فيبقى الملف عند «لم تبدأ القراءة» وقد بدأت وسقطت.
     """
-    run = ExtractionRun(
-        tenant_id=tenant_id, file_id=file_record.id, extractor="document_intelligence",
-        status=Status.PARSING.value, chunks_parsed=0, candidates_proposed=0,
-        candidates_rejected_unquoted=0, started_at=dt.datetime.now(dt.UTC),
-    )
-    session.add(run)
+    run = None
+    if run_id is not None:
+        run = (
+            await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+        ).scalar_one_or_none()
+    if run is None:
+        run = ExtractionRun(
+            tenant_id=tenant_id, file_id=file_record.id, extractor="document_intelligence",
+            status=Status.PARSING.value, chunks_parsed=0, candidates_proposed=0,
+            candidates_rejected_unquoted=0, started_at=dt.datetime.now(dt.UTC),
+        )
+        session.add(run)
     await session.flush()
 
     # ── التفكيك ──

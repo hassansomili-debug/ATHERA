@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File as FormFile, UploadFile, status
@@ -31,6 +33,8 @@ from ..services.document_intelligence import pipeline
 from ..services.document_intelligence.contracts import STATUS_EXTRACTED, ExtractionBatch
 from ..services.document_intelligence.states import Status
 from .files import upload_file
+
+logger = logging.getLogger("athera.document_intelligence")
 
 router = APIRouter(prefix="/api/v1/theses", tags=["thesis"])
 
@@ -110,19 +114,46 @@ async def _model_reader(session, *, tenant_id, actor_user_id, locale):
 
 async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID,
                    locale: str) -> None:
+    """القراءة كاملة — **وثلاث معاملات لا واحدة.**
+
+    الأولى تُنشئ التشغيلة وتحفظها. والثانية تعمل. والثالثة تُسجّل الفشل إن
+    وقع. ولولا الفصل لابتلع الانهيارُ روايتَه: معاملةٌ واحدة تُرجِع كل شيء
+    عند أول استثناء — ومنه صفُّ `extraction_runs` الذي كان سيقول ما جرى.
+    فيبقى الملف عند «لم تبدأ القراءة» وقد بدأت وسقطت، ولا أثر في القاعدة
+    ولا في السجل. وهذا ما وقع فعلًا في أول تشغيلة إنتاجية.
+    """
+    # ── 1. تشغيلة مرئية قبل أي عمل قد يسقط ──
     async with tenant_session(tenant_id, actor_id) as session:
         record = (
             await session.execute(select(File).where(File.id == file_id))
         ).scalar_one_or_none()
         if record is None:
+            logger.warning("document_intelligence: file %s not visible to tenant %s",
+                           file_id, tenant_id)
             return
-        data = storage.get_store().get(record.storage_key)
-        reader = await _model_reader(session, tenant_id=tenant_id,
-                                     actor_user_id=actor_id, locale=locale)
-        result = await pipeline.run_extraction(
-            session, tenant_id=tenant_id, actor_user_id=actor_id,
-            file_record=record, data=data, orchestrator=reader, locale=locale,
+        run = ExtractionRun(
+            tenant_id=tenant_id, file_id=file_id, extractor="document_intelligence",
+            status=Status.PARSING.value, chunks_parsed=0, candidates_proposed=0,
+            candidates_rejected_unquoted=0, started_at=dt.datetime.now(dt.UTC),
         )
+        session.add(run)
+        await session.flush()
+        run_id = run.id
+
+    # ── 2. العمل ──
+    try:
+        async with tenant_session(tenant_id, actor_id) as session:
+            record = (
+                await session.execute(select(File).where(File.id == file_id))
+            ).scalar_one()
+            data = storage.get_store().get(record.storage_key)
+            reader = await _model_reader(session, tenant_id=tenant_id,
+                                         actor_user_id=actor_id, locale=locale)
+            result = await pipeline.run_extraction(
+                session, tenant_id=tenant_id, actor_user_id=actor_id,
+                file_record=record, data=data, orchestrator=reader, locale=locale,
+                run_id=run_id,
+            )
         # ما استُبعد يُسجَّل عددًا لا نصًّا: «حُجبت ثلاثة مقاطع لوجود معرّفات
         # شخصية» معلومةٌ للباحث وللتدقيق، ومحتواها ليس كذلك.
         await audit.record(
@@ -137,6 +168,18 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
             },
             reason="document read and structured proposals recorded; nothing verified yet",
         )
+    except Exception as exc:  # noqa: BLE001 — الفشل يُروى ولا يُبتلع
+        # **لا نصّ مستند هنا.** نوع الاستثناء ورسالته ومعرّفات التشغيل تكفي
+        # للتشخيص؛ ومحتوى الرسالة لا يخصّ سجلًّا تشغيليًّا.
+        logger.exception("document_intelligence: run %s failed on file %s", run_id, file_id)
+        async with tenant_session(tenant_id, actor_id) as session:
+            failed_run = (
+                await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+            ).scalar_one_or_none()
+            if failed_run is not None:
+                failed_run.status = Status.EXTRACTION_FAILED.value
+                failed_run.error = f"{type(exc).__name__}: {exc}"[:500]
+                failed_run.finished_at = dt.datetime.now(dt.UTC)
 
 
 # ──────────────────────────────── المسارات ────────────────────────────────
