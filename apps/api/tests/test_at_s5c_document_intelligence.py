@@ -285,7 +285,7 @@ def test_candidates_are_born_unverified():
     """`extracted` وصف قراءة، و`unverified` حالة قرار — ولا يُخلطان."""
     import inspect
 
-    source = inspect.getsource(pipeline.run_extraction)
+    source = inspect.getsource(pipeline.prepare)
     assert 'status="unverified"' in source
     assert "status=field.status" not in source
     assert '"extraction_status"' in source
@@ -355,14 +355,14 @@ def test_pipeline_counts_rejected_unquoted_candidates():
     """الرفض يُعدّ لا يُبتلع — العدد مؤشر اختلاق مباشر."""
     import inspect
 
-    source = inspect.getsource(pipeline.run_extraction)
+    source = inspect.getsource(pipeline.absorb)
     assert "candidates_rejected_unquoted += 1" in source
 
 
 def test_pipeline_stores_no_row_for_an_absent_field():
     import inspect
 
-    source = inspect.getsource(pipeline.run_extraction)
+    source = inspect.getsource(pipeline.absorb)
     assert "attempted.add(field.field_key)" in source
     assert 'quote=""' not in source
 
@@ -380,7 +380,7 @@ def test_a_failing_section_does_not_kill_the_successful_ones():
 def test_partial_success_is_reported_as_partial():
     import inspect
 
-    source = inspect.getsource(pipeline.run_extraction)
+    source = inspect.getsource(pipeline.finalize)
     assert '"partial: "' in source
 
 
@@ -482,7 +482,10 @@ def test_background_task_opens_its_own_tenant_session():
     from athera_api.routers import document_intelligence as router_module
 
     source = inspect.getsource(router_module._process)
-    assert "tenant_session(tenant_id, actor_id)" in source
+    assert "_tenant_session_maker(tenant_id, actor_id)" in source
+    # وصانع الجلسات يفتح `tenant_session` فعلًا — لا شيئًا آخر.
+    maker = inspect.getsource(router_module._tenant_session_maker)
+    assert "tenant_session(tenant_id, actor_id)" in maker
 
 
 # ══════════ 12. الأثر: كل قرار مسجَّل ══════════
@@ -524,8 +527,13 @@ def test_structured_run_logs_no_raw_research_text():
 
     from athera_api.brain.orchestrator import Orchestrator
 
+    # البصمة تُبنى في `_new_agent_run` — ويستعملها المساران: القصير
+    # (`run_structured`) والمفصول (`run_structured_detached`).
+    assert "_input_fingerprint(payload, spec)" in inspect.getsource(
+        Orchestrator._new_agent_run)
+    for path in (Orchestrator.run_structured, Orchestrator.run_structured_detached):
+        assert "_new_agent_run(" in inspect.getsource(path)
     source = inspect.getsource(Orchestrator.run_structured)
-    assert "_input_fingerprint(payload, spec)" in source
     assert "input_summary=payload" not in source
 
 
@@ -589,7 +597,6 @@ async def test_end_to_end_upload_read_extract_review_approve(two_tenants):
     from athera_api.models.files import File
     from athera_api.models.research import DocumentChunk, FactCandidate
     from athera_api.services import memory as memory_service
-    from athera_api.services.document_intelligence import pipeline as pl
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
@@ -622,10 +629,11 @@ async def test_end_to_end_upload_read_extract_review_approve(two_tenants):
             ]
         }])
 
-        result = await pl.run_extraction(
-            session, tenant_id=tid, actor_user_id=uid, file_record=record,
-            data=THESIS_TEXT.encode(), orchestrator=stub, locale="ar",
-        )
+    # التهيئة تُودَع بإغلاق الكتلة — فيراها اتصالٌ جديد، كما في الإنتاج.
+
+    result = await _extract(tid, uid, record.id, stub)
+
+    async with tenant_session(tid, uid) as session:
 
         # 1. تفكيك بمواضع
         chunks = (await session.execute(
@@ -697,7 +705,6 @@ async def test_reprocessing_preserves_the_approved_value(two_tenants):
     from athera_api.models.files import File
     from athera_api.models.research import FactCandidate
     from athera_api.services import memory as memory_service
-    from athera_api.services.document_intelligence import pipeline as pl
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
@@ -719,9 +726,11 @@ async def test_reprocessing_preserves_the_approved_value(two_tenants):
         session.add(record)
         await session.flush()
 
-        await pl.run_extraction(session, tenant_id=tid, actor_user_id=uid,
-                                file_record=record, data=THESIS_TEXT.encode(),
-                                orchestrator=_StubModel([dict(batch)]), locale="ar")
+    # التهيئة تُودَع بإغلاق الكتلة — فيراها اتصالٌ جديد، كما في الإنتاج.
+
+    await _extract(tid, uid, record.id, _StubModel([dict(batch)]))
+
+    async with tenant_session(tid, uid) as session:
         first = (await session.execute(
             select(FactCandidate).where(FactCandidate.file_id == record.id,
                                         FactCandidate.field_key == "title_ar")
@@ -738,9 +747,11 @@ async def test_reprocessing_preserves_the_approved_value(two_tenants):
             "quote": "عنوان الرسالة: أثر التعلم النشط في تحصيل طلاب المرحلة الثانوية",
             "extraction_confidence": 0.6,
         }]}
-        await pl.run_extraction(session, tenant_id=tid, actor_user_id=uid,
-                                file_record=record, data=THESIS_TEXT.encode(),
-                                orchestrator=_StubModel([second_batch]), locale="ar")
+    # التهيئة تُودَع بإغلاق الكتلة — فيراها اتصالٌ جديد، كما في الإنتاج.
+
+    await _extract(tid, uid, record.id, _StubModel([second_batch]))
+
+    async with tenant_session(tid, uid) as session:
 
         rows = (await session.execute(
             select(FactCandidate).where(FactCandidate.file_id == record.id,
@@ -761,7 +772,6 @@ async def test_another_tenant_cannot_read_extracted_candidates(two_tenants):
     from athera_api.db import tenant_session
     from athera_api.models.files import File
     from athera_api.models.research import DocumentChunk
-    from athera_api.services.document_intelligence import pipeline as pl
 
     a, b = two_tenants["a"], two_tenants["b"]
 
@@ -775,10 +785,10 @@ async def test_another_tenant_cannot_read_extracted_candidates(two_tenants):
         session.add(record)
         await session.flush()
         file_id = record.id
-        await pl.run_extraction(session, tenant_id=a["tenant_id"],
-                                actor_user_id=a["user_id"], file_record=record,
-                                data=THESIS_TEXT.encode(),
-                                orchestrator=_StubModel([]), locale="ar")
+    # التهيئة تُودَع بإغلاق الكتلة — فيراها اتصالٌ جديد، كما في الإنتاج.
+
+    await _extract(a["tenant_id"], a["user_id"], file_id, _StubModel([]))
+
 
     async with tenant_session(b["tenant_id"], b["user_id"]) as session:
         rows = (await session.execute(
@@ -827,15 +837,16 @@ async def test_review_and_decide_through_the_real_endpoints(two_tenants):
                                                           file_id=record.id)
         assert created and thesis.title_ar is None and thesis.degree is None
 
-        await pl.run_extraction(
-            session, tenant_id=tid, actor_user_id=uid, file_record=record,
-            data=THESIS_TEXT.encode(), locale="ar",
-            orchestrator=_StubModel([{"fields": [{
-                "field_key": "sample_size", "status": "extracted", "value": "120",
-                "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
-                "extraction_confidence": 0.8,
-            }]}]),
-        )
+    # التهيئة تُودَع بإغلاق الكتلة — فيراها اتصالٌ جديد، كما في الإنتاج.
+
+    await _extract(tid, uid, record.id, _StubModel([{"fields": [{
+            "field_key": "sample_size", "status": "extracted", "value": "120",
+            "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
+            "extraction_confidence": 0.8,
+        }]}]),
+    )
+
+    async with tenant_session(tid, uid) as session:
 
         # 1. الفهرس كامل، والغائب معلَن لا مخفيّ
         view = await di.review(thesis.id, principal=principal, session=session)
@@ -893,7 +904,6 @@ async def test_a_tenant_cannot_decide_on_another_tenants_candidate(two_tenants):
     from athera_api.models.research import FactCandidate
     from athera_api.routers import document_intelligence as di
     from athera_api.schemas.document_intelligence import CandidateDecision
-    from athera_api.services.document_intelligence import pipeline as pl
     from sqlalchemy import select
 
     a, b = two_tenants["a"], two_tenants["b"]
@@ -911,15 +921,16 @@ async def test_a_tenant_cannot_decide_on_another_tenants_candidate(two_tenants):
             tenant_id=a["tenant_id"], object_type="file", object_id=record.id,
             user_id=a["user_id"], grant_level="owner", granted_by=a["user_id"],
         ))
-        await pl.run_extraction(
-            session, tenant_id=a["tenant_id"], actor_user_id=a["user_id"],
-            file_record=record, data=THESIS_TEXT.encode(), locale="ar",
-            orchestrator=_StubModel([{"fields": [{
-                "field_key": "sample_size", "status": "extracted", "value": "120",
-                "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
-                "extraction_confidence": 0.8,
-            }]}]),
-        )
+    # التهيئة تُودَع بإغلاق الكتلة — فيراها اتصالٌ جديد، كما في الإنتاج.
+
+    await _extract(a["tenant_id"], a["user_id"], record.id, _StubModel([{"fields": [{
+            "field_key": "sample_size", "status": "extracted", "value": "120",
+            "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
+            "extraction_confidence": 0.8,
+        }]}]),
+    )
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
         candidate_id = (await session.execute(
             select(FactCandidate.id).where(FactCandidate.field_key == "sample_size",
                                            FactCandidate.file_id == record.id)
@@ -1213,35 +1224,107 @@ def test_unknown_labels_exist_in_both_languages():
     assert "Reject" not in en["thesisReview"]["statusUnknown"]
 
 
-async def _one_candidate(session, tid, uid, *, field_key="sample_size"):
-    """مرشّح واحد مؤصَّل — أرضيةٌ مشتركة لاختبارات دورة القرار."""
+# ─────────────────────── أدوات مشتركة للتشغيل الحقيقي ───────────────────────
+#
+# الاختبارات تستدعي خط الأنابيب **بشكله الإنتاجي**: صانع جلسات لا جلسة، وإيداعٌ
+# قبل التشغيل. ولو مرّرت جلسةً مفتوحة لاختبرت طوبولوجيا لم تعد موجودة — وهي
+# بالضبط الطوبولوجيا التي سبّبت العطب الإنتاجي.
+
+def _maker(tid, uid):
+    from athera_api.db import tenant_session
+
+    def _make():
+        return tenant_session(tid, uid)
+    return _make
+
+
+async def _commit(session, tid, uid):
+    """يودِع ما هيّأه الاختبار ثم يعيد ضبط سياق RLS.
+
+    وهذا ما تفعله المسارات الإنتاجية حرفيًّا: تُودِع قبل أن تُسلّم العمل إلى
+    من يفتح اتصالًا آخر. ولولا الإيداع لما رأى خطُّ الأنابيب الملفَ أصلًا —
+    وهو العطب الإنتاجي الذي سُجّل بسطر «file … not visible to tenant …».
+
+    وإعادة الضبط لازمة لأن `SET LOCAL` يموت مع المعاملة، فالجملة التالية في
+    هذه الجلسة تبدأ معاملةً بلا سياق مستأجر — فترى صفرًا من الصفوف.
+    """
+    from sqlalchemy import text
+
+    await session.commit()
+    await session.execute(text("SELECT set_config('app.tenant_id', :t, true)"),
+                          {"t": str(tid)})
+    await session.execute(text("SELECT set_config('app.actor_id', :a, true)"),
+                          {"a": str(uid)})
+
+
+async def _seed_file(tid, uid, *, filename="thesis.txt", grant_owner=True):
+    """ملف مُودَع فعلًا — يراه اتصالٌ جديد، كما في الإنتاج."""
+    from athera_api.db import tenant_session
     from athera_api.models.files import File
     from athera_api.models.identity import ObjectGrant
-    from athera_api.models.research import FactCandidate
     from athera_api.services.document_intelligence import pipeline as pl
+
+    async with tenant_session(tid, uid) as session:
+        record = File(
+            tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
+            original_filename=filename, content_type="text/plain", size_bytes=10,
+            classification="C2", is_untrusted_content=True, status="stored",
+            uploaded_by=uid,
+        )
+        session.add(record)
+        await session.flush()
+        if grant_owner:
+            session.add(ObjectGrant(tenant_id=tid, object_type="file",
+                                    object_id=record.id, user_id=uid,
+                                    grant_level="owner", granted_by=uid))
+        thesis, _ = await pl.ensure_thesis_for_file(session, tenant_id=tid,
+                                                    file_id=record.id)
+        # معرّفات لا كائنات: الكائنات لا تعبر حدود المعاملات.
+        return record.id, thesis.id
+
+
+async def _extract(tid, uid, file_id, batches, *, data=None, **kw):
+    from athera_api.services.document_intelligence import pipeline as pl
+
+    return await pl.run_extraction(
+        _maker(tid, uid), tenant_id=tid, actor_user_id=uid, file_id=file_id,
+        data=data if data is not None else THESIS_TEXT.encode(),
+        model_call=_StubModel(batches) if not callable(batches) else batches,
+        locale="ar", **kw,
+    )
+
+
+_SAMPLE_BATCH = [{"fields": [{
+    "field_key": "sample_size", "status": "extracted", "value": "120",
+    "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
+    "extraction_confidence": 0.8,
+}]}]
+
+
+async def _one_candidate(session, tid, uid, *, field_key="sample_size"):
+    """مرشّح واحد مؤصَّل — أرضيةٌ مشتركة لاختبارات دورة القرار.
+
+    التشغيل يجري بصانع جلسات مستقل (كما في الإنتاج)، ثم يُقرأ الصفّ في
+    الجلسة التي مرّرها المستدعي.
+    """
+    from athera_api.models.files import File
+    from athera_api.models.research import FactCandidate
     from sqlalchemy import select
 
-    record = File(
-        tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
-        original_filename="thesis.txt", content_type="text/plain", size_bytes=10,
-        classification="C2", is_untrusted_content=True, status="stored", uploaded_by=uid,
-    )
-    session.add(record)
-    await session.flush()
-    session.add(ObjectGrant(tenant_id=tid, object_type="file", object_id=record.id,
-                            user_id=uid, grant_level="owner", granted_by=uid))
-    thesis, _ = await pl.ensure_thesis_for_file(session, tenant_id=tid, file_id=record.id)
-    await pl.run_extraction(
-        session, tenant_id=tid, actor_user_id=uid, file_record=record,
-        data=THESIS_TEXT.encode(), locale="ar",
-        orchestrator=_StubModel([{"fields": [{
-            "field_key": field_key, "status": "extracted", "value": "120",
-            "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
-            "extraction_confidence": 0.8,
-        }]}]),
-    )
+    file_id, thesis_id = await _seed_file(tid, uid)
+    batch = [{"fields": [{
+        "field_key": field_key, "status": "extracted", "value": "120",
+        "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
+        "extraction_confidence": 0.8,
+    }]}]
+    await _extract(tid, uid, file_id, batch)
+
+    record = (await session.execute(select(File).where(File.id == file_id))).scalar_one()
+    from athera_api.models.thesis import Thesis
+    thesis = (await session.execute(
+        select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
     row = (await session.execute(
-        select(FactCandidate).where(FactCandidate.file_id == record.id,
+        select(FactCandidate).where(FactCandidate.file_id == file_id,
                                     FactCandidate.field_key == field_key)
     )).scalar_one()
     return record, thesis, row
@@ -1332,10 +1415,8 @@ async def test_reextraction_never_silently_overwrites_unknown(two_tenants):
     from athera_api.deps import Principal
     from athera_api.routers import document_intelligence as di
     from athera_api.schemas.document_intelligence import CandidateDecision
-    from athera_api.services.document_intelligence import pipeline as pl
     from sqlalchemy import select
 
-    from athera_api.models.files import File
     from athera_api.models.research import FactCandidate
 
     tenant = two_tenants["a"]
@@ -1348,31 +1429,28 @@ async def test_reextraction_never_silently_overwrites_unknown(two_tenants):
         await di.decide(row.id, CandidateDecision(decision="unknown"),
                         principal=principal, session=session)
         assert row.status == "unknown"
+        file_id, thesis_id, row_id = record.id, thesis.id, row.id
+    # القرار يُودَع بإغلاق الكتلة، فتراه القراءة الثانية بجلستها المستقلّة.
 
-        # قراءة ثانية تقترح قيمة مختلفة بنفس الاقتباس الموجود فعلًا.
-        stored = (await session.execute(select(File).where(File.id == record.id))).scalar_one()
-        await pl.run_extraction(
-            session, tenant_id=tid, actor_user_id=uid, file_record=stored,
-            data=THESIS_TEXT.encode(), locale="ar",
-            orchestrator=_StubModel([{"fields": [{
-                "field_key": "sample_size", "status": "extracted", "value": "999",
-                "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
-                "extraction_confidence": 0.5,
-            }]}]),
-        )
-        await session.flush()
+    # قراءة ثانية تقترح قيمة مختلفة بنفس الاقتباس الموجود فعلًا.
+    await _extract(tid, uid, file_id, [{"fields": [{
+        "field_key": "sample_size", "status": "extracted", "value": "999",
+        "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
+        "extraction_confidence": 0.5,
+    }]}])
 
+    async with tenant_session(tid, uid) as session:
         rows = (await session.execute(
-            select(FactCandidate).where(FactCandidate.file_id == record.id,
+            select(FactCandidate).where(FactCandidate.file_id == file_id,
                                         FactCandidate.field_key == "sample_size")
         )).scalars().all()
         assert len(rows) == 2, "القراءة الثانية عدّلت الصفّ بدل أن تضيف"
         kept = next(r for r in rows if r.status == "unknown")
-        assert kept.id == row.id
+        assert kept.id == row_id
         assert kept.decided_by == uid, "قرار الباحث مُحي"
 
         # والشاشة تعرض «لا أعرف» ومعها التعارض — لا القيمة الجديدة مكانها.
-        view = await di.review(thesis.id, principal=principal, session=session)
+        view = await di.review(thesis_id, principal=principal, session=session)
         shown = {f.field_key: f for g in view.sections for f in g.fields}["sample_size"]
         assert shown.status == "unknown"
         assert shown.conflict_with == "999"
@@ -1561,8 +1639,8 @@ def test_background_processing_records_a_run_before_the_risky_work():
     from athera_api.routers import document_intelligence as router_module
 
     source = inspect.getsource(router_module._process)
-    # ثلاث معاملات مستقلة لا واحدة.
-    assert source.count("async with tenant_session(tenant_id, actor_id) as session:") == 3
+    # معاملات قصيرة مستقلة لا واحدة طويلة — وكلٌّ تُغلق قبل التالية.
+    assert source.count("async with session_maker() as session:") >= 3
     assert "run_id=run_id" in source
     assert "Status.EXTRACTION_FAILED.value" in source
     assert "logger.exception" in source
@@ -1586,7 +1664,7 @@ def test_a_resumed_run_is_reused_not_duplicated():
     """`run_id` يُتابِع تشغيلة قائمة — ولا يترك صفَّين لعملٍ واحد."""
     import inspect
 
-    source = inspect.getsource(pipeline.run_extraction)
+    source = inspect.getsource(pipeline.prepare)
     assert "if run_id is not None:" in source
     assert "ExtractionRun.id == run_id" in source
 
@@ -1856,11 +1934,11 @@ def test_pipeline_sends_scoped_chunks_never_the_whole_file():
     """§5 و§13.9 — لا يُرسل الملف كاملًا في مطالبة واحدة."""
     import inspect
 
-    source = inspect.getsource(pipeline.run_extraction)
-    assert "select_chunks_for(spec, views)" in source
-    assert "build_prompt(section, chunk_list, specs)" in source
+    source = inspect.getsource(pipeline.plan_sections)
+    assert "select_chunks_for(spec, list(views))" in source
+    assert "build_prompt(section, list(chunk_list), specs)" in source
     # ولا `data` الخام يصل المطالبة.
-    assert "payload=data" not in source
+    assert "payload=data" not in inspect.getsource(pipeline.run_extraction)
     prompt = inspect.getsource(pipeline.build_prompt)
     assert "c.text[:1800]" in prompt
 
@@ -1888,7 +1966,6 @@ async def test_without_consent_local_extraction_runs_and_nothing_is_sent(two_ten
     from athera_api.models.files import File
     from athera_api.models.identity import ObjectGrant
     from athera_api.models.research import DocumentChunk, ExtractionRun, FactCandidate
-    from athera_api.services.document_intelligence import pipeline as pl
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
@@ -1909,12 +1986,12 @@ async def test_without_consent_local_extraction_runs_and_nothing_is_sent(two_ten
         session.add(ObjectGrant(tenant_id=tid, object_type="file", object_id=record.id,
                                 user_id=uid, grant_level="owner", granted_by=uid))
 
-        result = await pl.run_extraction(
-            session, tenant_id=tid, actor_user_id=uid, file_record=record,
-            data=THESIS_TEXT.encode(), locale="ar",
-            orchestrator=_must_not_be_called,
-            external_allowed=False, consent_state="absent",
-        )
+    # التهيئة تُودَع بإغلاق الكتلة — فيراها اتصالٌ جديد، كما في الإنتاج.
+
+    result = await _extract(tid, uid, record.id, _must_not_be_called,
+        external_allowed=False, consent_state="absent")
+
+    async with tenant_session(tid, uid) as session:
 
         assert not calls, "استُدعي النموذج رغم غياب الموافقة"
         assert result.status is Status.AWAITING_CONSENT
@@ -1944,7 +2021,6 @@ async def test_declining_is_recorded_as_local_only_not_failed(two_tenants):
     from athera_api.db import tenant_session
     from athera_api.models.files import File
     from athera_api.services import consent as consent_service
-    from athera_api.services.document_intelligence import pipeline as pl
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
@@ -1967,11 +2043,13 @@ async def test_declining_is_recorded_as_local_only_not_failed(two_tenants):
         assert await consent_service.authorization_for(
             session, tenant_id=tid, file_id=record.id) is None
 
-        result = await pl.run_extraction(
-            session, tenant_id=tid, actor_user_id=uid, file_record=record,
-            data=THESIS_TEXT.encode(), locale="ar", orchestrator=_StubModel([]),
-            external_allowed=False, consent_state=consent_service.DECLINED,
-        )
+    # التهيئة تُودَع بإغلاق الكتلة — فيراها اتصالٌ جديد، كما في الإنتاج.
+
+    result = await _extract(tid, uid, record.id, _StubModel([]),
+        external_allowed=False, consent_state=consent_service.DECLINED,
+    )
+
+    async with tenant_session(tid, uid) as session:
         assert result.status is Status.LOCAL_ONLY
         assert result.error is None
 
@@ -2221,3 +2299,197 @@ def test_every_database_write_in_the_background_task_sits_inside_a_transaction()
         assert any(start <= call.lineno <= end for start, end in blocks), (
             f"audit.record عند السطر {call.lineno} خارج كتلة معاملة"
         )
+
+
+# ══════════ 18. التزامن: لا معاملة تمتدّ عبر نداء خارجي ══════════
+#
+# هذا القسم يعيد إنتاج العطب الإنتاجي بمزوّد بطيء مزيَّف — بلا شبكة حقيقية.
+# ولو عادت الطوبولوجيا القديمة (معاملة واحدة تلفّ الأقسام السبعة) لسقط كلّ
+# اختبار هنا: كتابةٌ لنفس المستأجر كانت تنتظر انتهاء النموذج، ولوُجدت جلسة
+# `idle in transaction` طوال الانتظار.
+
+async def _idle_in_transaction_count(session) -> int:
+    """جلسات معلّقة داخل معاملة — المؤشّر المباشر على العطب."""
+    from sqlalchemy import text
+
+    return (await session.execute(text(
+        "SELECT count(*) FROM pg_stat_activity "
+        "WHERE datname = current_database() AND state = 'idle in transaction' "
+        "AND pid <> pg_backend_pid()"
+    ))).scalar_one()
+
+
+async def _advisory_locks_held(session) -> int:
+    from sqlalchemy import text
+
+    return (await session.execute(text(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'"
+    ))).scalar_one()
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_slow_model_call_never_blocks_another_write_for_the_same_tenant(two_tenants):
+    """§9 — الكتابة الأخرى تمرّ بينما النموذج ما يزال «يفكّر».
+
+    وكان هذا يستحيل في الطوبولوجيا القديمة: المعاملة الواحدة تمسك قفل سلسلة
+    التدقيق للمستأجر، فتقف كتاباته خلفها حتى ينتهي النموذج أو تنتهي مهلة
+    التنفيذ. رُصد في الإنتاج: اتصالٌ علِق 254 ثانية، وكتابةٌ استغرقت 120
+    ثانية ثم تمّت في 6.2 حين أُفرج عنه.
+    """
+    import asyncio
+    import time
+
+    from athera_api.db import tenant_session
+    from athera_api.services import audit as audit_service
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    file_id, _thesis_id = await _seed_file(tid, uid)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    observations: dict = {}
+
+    async def slow_model(*, question, schema, classification, locale):
+        """يقف عند أول قسم حتى نقيس حال القاعدة أثناء الانتظار."""
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        return {"fields": [{
+            "field_key": "sample_size", "status": "extracted", "value": "120",
+            "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
+            "extraction_confidence": 0.8,
+        }]}
+
+    extraction = asyncio.create_task(_extract(tid, uid, file_id, slow_model))
+    await asyncio.wait_for(entered.wait(), timeout=30)
+
+    # النموذج «ينتظر» الآن. نقيس، ثم نكتب.
+    async with tenant_session(tid, uid) as session:
+        observations["idle_in_transaction"] = await _idle_in_transaction_count(session)
+        observations["advisory_locks"] = await _advisory_locks_held(session)
+
+        started = time.perf_counter()
+        await audit_service.record(
+            session, tenant_id=tid, action="test.concurrent_write",
+            object_type="file", object_id=file_id, actor_user_id=uid,
+            reason="write attempted while the model call is still pending",
+        )
+        observations["latency_s"] = time.perf_counter() - started
+
+    release.set()
+    result = await asyncio.wait_for(extraction, timeout=60)
+
+    # 1. الكتابة لم ترث زمن النموذج.
+    assert observations["latency_s"] < 5.0, (
+        f"الكتابة انتظرت {observations['latency_s']:.1f}ث — المعاملة تمتدّ عبر النداء"
+    )
+    # 2. ولا جلسة معلّقة داخل معاملة أثناء الانتظار.
+    assert observations["idle_in_transaction"] == 0, (
+        f"وُجدت {observations['idle_in_transaction']} جلسة `idle in transaction`"
+    )
+    # 3. ولا قفل سلسلة تدقيق مُمسَك أثناء الانتظار.
+    assert observations["advisory_locks"] == 0, "قفل التدقيق مُمسَك أثناء نداء خارجي"
+    # 4. والاستخراج أتمّ عمله رغم ذلك.
+    assert result.status is Status.AWAITING_REVIEW
+    assert result.candidates >= 1
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_failing_slow_model_leaves_no_poisoned_transaction(two_tenants):
+    """§10 — ينتظر ثم يفشل: الفشل يُسجَّل، ولا معاملة مسمومة تبقى."""
+    import asyncio
+    import time
+
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import ExtractionRun
+    from athera_api.services import audit as audit_service
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    file_id, _thesis_id = await _seed_file(tid, uid)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    measured: dict = {}
+
+    async def slow_then_fail(*, question, schema, classification, locale):
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        raise RuntimeError("provider unavailable")
+
+    extraction = asyncio.create_task(_extract(tid, uid, file_id, slow_then_fail))
+    await asyncio.wait_for(entered.wait(), timeout=30)
+
+    async with tenant_session(tid, uid) as session:
+        measured["idle"] = await _idle_in_transaction_count(session)
+        started = time.perf_counter()
+        await audit_service.record(
+            session, tenant_id=tid, action="test.concurrent_write_during_failure",
+            object_type="file", object_id=file_id, actor_user_id=uid,
+            reason="write attempted while the failing model call is still pending",
+        )
+        measured["latency_s"] = time.perf_counter() - started
+
+    release.set()
+    result = await asyncio.wait_for(extraction, timeout=60)
+
+    assert measured["idle"] == 0, "جلسة معلّقة أثناء انتظار مزوّد سيفشل"
+    assert measured["latency_s"] < 5.0
+
+    # الفشل سُجّل باسمه، ولم يُسقط ما نجح محليًّا.
+    assert any("RuntimeError" in name for name in result.failed_sections)
+    async with tenant_session(tid, uid) as session:
+        run = (await session.execute(
+            select(ExtractionRun).where(ExtractionRun.id == result.run_id))).scalar_one()
+        assert run.error and "RuntimeError" in run.error
+        assert run.finished_at is not None
+        # ولا معاملة بقيت بعد انتهاء كل شيء.
+        assert await _idle_in_transaction_count(session) == 0
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_no_transaction_is_open_while_the_provider_is_called(two_tenants):
+    """§2 — الفحص المباشر: لا معاملة مفتوحة لحظة النداء.
+
+    الحارس هنا اختباري لا إنتاجي: يفحص من **داخل** النداء المزيَّف أن عدد
+    الجلسات المعلّقة صفر، فلا يعتمد على قياس زمن قد يخدع.
+    """
+    from athera_api.db import tenant_session
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    file_id, _thesis_id = await _seed_file(tid, uid)
+    seen: list[int] = []
+
+    async def watching_model(*, question, schema, classification, locale):
+        async with tenant_session(tid, uid) as probe:
+            seen.append(await _idle_in_transaction_count(probe))
+        return {"fields": []}
+
+    await _extract(tid, uid, file_id, watching_model)
+    assert seen, "لم يُستدعَ النموذج"
+    assert set(seen) == {0}, f"معاملة مفتوحة أثناء النداء: {seen}"
+
+
+def test_fly_keeps_one_machine_while_the_fix_is_being_verified():
+    """§13 — إجراء سلامة مؤقّت، معلَنٌ بتكلفته لا مدسوس.
+
+    الإصلاح المعماري تمّ، لكن تعليق الآلة ما يزال يقطع عملًا في الخلفية.
+    فتبقى آلة واحدة حتى يُتحقّق من الإصلاح إنتاجيًّا — ثم تكون العودة إلى
+    الصفر قرارًا تشغيليًّا مستقلًّا.
+    """
+    fly = (pathlib.Path(__file__).resolve().parents[3] / "fly.toml").read_text(encoding="utf-8")
+    assert "min_machines_running = 1" in fly
+    # والتعليق يبقى: لا سبب لتغييره.
+    assert 'auto_stop_machines = "suspend"' in fly
+    # ولا توسّع في العدد لأجل عطب.
+    assert "min_machines_running = 2" not in fly
+    # والتكلفة مذكورة صراحةً.
+    assert "التكلفة:" in fly

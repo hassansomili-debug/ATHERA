@@ -101,12 +101,27 @@ def _t(locale: str, ar: str, en: str) -> str:
 # في `pipeline.run_extraction` لا هنا.
 
 
-async def _model_reader(session, *, tenant_id, actor_user_id, locale, grant):
-    """محوّل بين خط الأنابيب والمنسّق — والنداء يمرّ بالمنسّق حصرًا."""
+def _tenant_session_maker(tenant_id: uuid.UUID, actor_id: uuid.UUID):
+    """دالةٌ تُنشئ جلسةً جديدة عند كل نداء — لا جلسةٌ تُمرَّر.
+
+    وهذا هو الفرق كلّه: الجلسة الممرَّرة تحمل معاملةً حيّة، فتبقى مفتوحة ما
+    دام المستدعي يعمل. والدالة تفتح معاملةً قصيرة وتغلقها، ثم تفتح أخرى.
+    """
+    def _make():
+        return tenant_session(tenant_id, actor_id)
+    return _make
+
+
+async def _model_reader(session_maker, *, tenant_id, actor_user_id, locale, grant):
+    """محوّل بين خط الأنابيب والمنسّق — والنداء يمرّ بالمنسّق حصرًا.
+
+    ويستعمل `run_structured_detached`: معاملة قصيرة تفتح سجل التشغيلة، ثم
+    الشبكة **بلا معاملة**، ثم معاملة قصيرة تُسجّل النتيجة.
+    """
 
     async def call(*, question: str, schema: dict, classification: str, locale: str = locale):
-        batch, _run_id = await Orchestrator().run_structured(
-            session,
+        batch, _run_id = await Orchestrator().run_structured_detached(
+            session_maker,
             tenant_id=tenant_id,
             actor_user_id=actor_user_id,
             agent_key="document_reader",
@@ -127,16 +142,20 @@ async def _model_reader(session, *, tenant_id, actor_user_id, locale, grant):
 
 async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID,
                    locale: str) -> None:
-    """القراءة كاملة — **وثلاث معاملات لا واحدة.**
+    """القراءة كاملة — **ومعاملات قصيرة لا واحدة طويلة.**
 
-    الأولى تُنشئ التشغيلة وتحفظها. والثانية تعمل. والثالثة تُسجّل الفشل إن
-    وقع. ولولا الفصل لابتلع الانهيارُ روايتَه: معاملةٌ واحدة تُرجِع كل شيء
-    عند أول استثناء — ومنه صفُّ `extraction_runs` الذي كان سيقول ما جرى.
-    فيبقى الملف عند «لم تبدأ القراءة» وقد بدأت وسقطت، ولا أثر في القاعدة
-    ولا في السجل. وهذا ما وقع فعلًا في أول تشغيلة إنتاجية.
+    كل كتابة في معاملتها، وكل نداء خارجي بلا معاملة أصلًا. ولولا ذلك لبقيت
+    معاملة واحدة مفتوحة من التفكيك إلى آخر قسم: دقائق يظهر فيها الاتصال
+    `idle in transaction`، ويُمسَك فيها قفل سلسلة التدقيق للمستأجر فتقف
+    كتاباته كلها خلفه حتى تنتهي مهلة التنفيذ.
+
+    وأول معاملة تُنشئ التشغيلة وتُودعها، فيبقى للفشل صوتٌ: انهيارٌ بعدها
+    يجد صفًّا يكتب فيه سببه، ولا يمحو روايته معه.
     """
-    # ── 1. تشغيلة مرئية قبل أي عمل قد يسقط ──
-    async with tenant_session(tenant_id, actor_id) as session:
+    session_maker = _tenant_session_maker(tenant_id, actor_id)
+
+    # ── معاملة (1): تشغيلة مرئية قبل أي عمل قد يسقط ──
+    async with session_maker() as session:
         record = (
             await session.execute(select(File).where(File.id == file_id))
         ).scalar_one_or_none()
@@ -144,6 +163,7 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
             logger.warning("document_intelligence: file %s not visible to tenant %s",
                            file_id, tenant_id)
             return
+        storage_key = record.storage_key
         run = ExtractionRun(
             tenant_id=tenant_id, file_id=file_id, extractor="document_intelligence",
             status=Status.PARSING.value, chunks_parsed=0, candidates_proposed=0,
@@ -153,48 +173,36 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
         await session.flush()
         run_id = run.id
 
-    # ── 2. العمل ──
     try:
-        async with tenant_session(tenant_id, actor_id) as session:
-            record = (
-                await session.execute(select(File).where(File.id == file_id))
-            ).scalar_one()
-            data = storage.get_store().get(record.storage_key)
-
-            # **الموافقة تُقرأ من القاعدة قبل أي إرسال** — ولا تُستنتج من رفعٍ
-            # ولا دخولٍ ولا توفّر مزوّد. وغيابها لا يُعطّل القراءة المحلية.
+        # ── معاملة (2): الإذن يُقرأ ويُحمَل قيمةً لا كائنًا ──
+        async with session_maker() as session:
             grant = await consent.authorization_for(
                 session, tenant_id=tenant_id, file_id=file_id)
             consent_state = await consent.state(
                 session, tenant_id=tenant_id, file_id=file_id)
 
-            reader = await _model_reader(session, tenant_id=tenant_id,
-                                         actor_user_id=actor_id, locale=locale,
-                                         grant=grant)
-            result = await pipeline.run_extraction(
-                session, tenant_id=tenant_id, actor_user_id=actor_id,
-                file_record=record, data=data, orchestrator=reader, locale=locale,
-                run_id=run_id,
-                external_allowed=grant is not None,
-                consent_state=consent_state,
-            )
+        # ── بلا معاملة: جلب الملف من التخزين (شبكة أيضًا) ──
+        data = storage.get_store().get(storage_key)
 
-            # **داخل المعاملة، لا بعدها.**
-            #
-            # كان هذا النداء خارج `async with` بمسافة بادئة واحدة، فيُنفَّذ
-            # على جلسةٍ أُغلق سياقها: المعاملة أُودعت، و`SET LOCAL
-            # app.tenant_id` زال معها — فيسقط الإدراج بصمت ولا يُكتب الحدث.
-            # والنتيجة أن سجل «ما أُذن به وما استُبعد» لم يوجد قط، وشاشة
-            # الإذن تعرض «مستبعَد: لا شيء» دائمًا وهي لا تعرف.
-            #
-            # ولم يكشفه اختبار لأن الاختبارات تستدعي `run_extraction` مباشرة
-            # لا `_process`، فالسطر لم يُنفَّذ فيها أصلًا.
-            #
-            # وما استُبعد يُسجَّل عددًا لا نصًّا: «حُجبت ثلاثة مقاطع لوجود
-            # معرّفات شخصية» معلومةٌ للباحث وللتدقيق، ومحتواها ليس كذلك.
+        reader = await _model_reader(session_maker, tenant_id=tenant_id,
+                                     actor_user_id=actor_id, locale=locale,
+                                     grant=grant)
+        result = await pipeline.run_extraction(
+            session_maker, tenant_id=tenant_id, actor_user_id=actor_id,
+            file_id=file_id, data=data, model_call=reader, locale=locale,
+            run_id=run_id,
+            external_allowed=grant is not None,
+            consent_state=consent_state,
+        )
+
+        # ── معاملة (أخيرة): سجل ما جرى ──
+        #
+        # وما استُبعد يُسجَّل عددًا لا نصًّا: «حُجبت ثلاثة مقاطع لوجود معرّفات
+        # شخصية» معلومةٌ للباحث وللتدقيق، ومحتواها ليس كذلك.
+        async with session_maker() as session:
             await audit.record(
                 session, tenant_id=tenant_id, action="thesis.extraction_completed",
-                object_type="file", object_id=record.id, actor_user_id=actor_id,
+                object_type="file", object_id=file_id, actor_user_id=actor_id,
                 state_after={
                     "status": result.status.value, "chunks": result.chunks,
                     "candidates": result.candidates,
@@ -212,8 +220,10 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
     except Exception as exc:  # noqa: BLE001 — الفشل يُروى ولا يُبتلع
         # **لا نصّ مستند هنا.** نوع الاستثناء ورسالته ومعرّفات التشغيل تكفي
         # للتشخيص؛ ومحتوى الرسالة لا يخصّ سجلًّا تشغيليًّا.
+        #
+        # ومعاملةٌ جديدة مستقلّة: تسجيل الفشل لا يعتمد على معاملةٍ سقطت.
         logger.exception("document_intelligence: run %s failed on file %s", run_id, file_id)
-        async with tenant_session(tenant_id, actor_id) as session:
+        async with session_maker() as session:
             failed_run = (
                 await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
             ).scalar_one_or_none()
@@ -221,9 +231,6 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
                 failed_run.status = Status.EXTRACTION_FAILED.value
                 failed_run.error = f"{type(exc).__name__}: {exc}"[:500]
                 failed_run.finished_at = dt.datetime.now(dt.UTC)
-
-
-# ──────────────────────────────── المسارات ────────────────────────────────
 
 
 @router.post("/upload", response_model=ExtractionStateResponse,

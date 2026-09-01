@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AtheraError
@@ -130,6 +131,30 @@ def _input_fingerprint(question: str, spec: AgentSpec) -> dict[str, object]:
         "sha256": hashlib.sha256(question.encode("utf-8")).hexdigest(),
     }
 
+
+
+def _structured_request(spec: AgentSpec, *, instruction: str, payload: str,
+                        contract: type[BaseModel], locale: str,
+                        classification: str) -> ModelRequest:
+    """الطلب المهيكل — بناءٌ واحد يستعمله المساران فلا يفترقان بصمت."""
+    return ModelRequest(
+        messages=[
+            Message(role="system", content=SYSTEM_TEMPLATE.format(
+                name_ar=spec.name_ar, name_en=spec.name_en,
+                responsibility_ar=spec.responsibility_ar,
+                constraint_ar=spec.constraint_ar, constraint_en=spec.constraint_en,
+            )),
+            Message(role="system", content=instruction),
+            # لغة المخرَج آخر رسالة نظام — موضعها جزء من العقد (S5B).
+            Message(role="system",
+                    content=_OUTPUT_LANGUAGE.get(locale, _OUTPUT_LANGUAGE["ar"])),
+            # محتوى المستند في دور `user` وحده — وهو بيانات لا تعليمات.
+            Message(role="user", content=payload),
+        ],
+        schema=contract.model_json_schema(),
+        temperature=0.0,
+        classification=classification,
+    )
 
 
 class Orchestrator:
@@ -342,6 +367,112 @@ class Orchestrator:
             context_items=len(context_items), tool_calls=len(requested), model_run_id=model_run.id,
         )
 
+    # ─────────────────── مساعدان يشتركان بين المسارين ───────────────────
+
+    @staticmethod
+    def _new_agent_run(spec: AgentSpec, *, tenant_id, actor_user_id, payload, trace_id):
+        run = AgentRun(
+            tenant_id=tenant_id, agent_key=spec.key, status="running",
+            started_at=dt.datetime.now(dt.UTC),
+            # بصمة لا نصّ: طول ومعرّف وتجزئة — ولا سطر من المستند (S5B).
+            input_summary=_input_fingerprint(payload, spec),
+        )
+        run.trace_id = trace_id
+        run.requested_by = actor_user_id
+        run.gate = spec.gate
+        return run
+
+    async def run_structured_detached(
+        self,
+        session_maker,
+        *,
+        tenant_id: uuid.UUID,
+        actor_user_id: uuid.UUID,
+        agent_key: str,
+        contract: type[BaseModel],
+        instruction: str,
+        payload: str,
+        input_classification: str,
+        trace_id: uuid.UUID | None = None,
+        output_locale: str = "ar",
+        grant: object | None = None,
+    ) -> tuple[BaseModel, uuid.UUID]:
+        """نفس عقد `run_structured` — **لكن بلا معاملة أثناء النداء**.
+
+        ثلاث خطوات: معاملة قصيرة تفتح سجل التشغيلة وتُودَع، ثم النداء
+        الخارجي **بلا أي معاملة مفتوحة**، ثم معاملة قصيرة تُسجّل النتيجة.
+
+        و`session_maker` دالةٌ تُنشئ جلسةً جديدة بسياق المستأجر عند كل نداء —
+        لا جلسةٌ تُمرَّر: تمريرُ جلسةٍ يعني معاملةً حيّة، وهو بالضبط ما نتجنّبه.
+        وسياق RLS يُضبط بـ`SET LOCAL` فيموت مع كل معاملة ويُعاد ضبطه مع
+        التالية؛ لذلك لا يجوز حمل كائنات ORM عبر الحدود، وتُحمَل المعرّفات
+        وحدها ويُعاد تحميل الصفوف عند الحاجة.
+        """
+        spec: AgentSpec = get_agent(agent_key)
+        trace_id = trace_id or uuid.uuid4()
+        request = _structured_request(spec, instruction=instruction, payload=payload,
+                                      contract=contract, locale=output_locale,
+                                      classification=input_classification)
+
+        # ── معاملة (1): التشغيلة تصير مرئية قبل أي انتظار ──
+        async with session_maker() as session:
+            run = self._new_agent_run(spec, tenant_id=tenant_id,
+                                      actor_user_id=actor_user_id,
+                                      payload=payload, trace_id=trace_id)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        # ── بلا معاملة: الإذن ثم الشبكة ──
+        #
+        # `authorize` قد ترفع `provider.disabled_for_classification`؛ وهو فشل
+        # يستحق التسجيل مثل أي فشل آخر، فيُلتقط ويُسجَّل في معاملة (2).
+        call = None
+        authorization_error: BaseException | None = None
+        try:
+            self._gateway.authorize(request, grant)
+        except Exception as exc:  # noqa: BLE001
+            authorization_error = exc
+        if authorization_error is None:
+            call = await self._gateway.invoke(request)
+
+        # ── معاملة (2): التسجيل، نجح النداء أم فشل ──
+        async with session_maker() as session:
+            run = (
+                await session.execute(select(AgentRun).where(AgentRun.id == run_id))
+            ).scalar_one()
+            if authorization_error is not None:
+                run.status = "failed"
+                run.error = f"{type(authorization_error).__name__}: {authorization_error}"[:500]
+                run.finished_at = dt.datetime.now(dt.UTC)
+                raise authorization_error
+
+            model_run = await self._gateway.record(
+                session, tenant_id=tenant_id, call=call, agent_run_id=run_id)
+            if call.exception is not None:
+                run.status = "failed"
+                run.error = f"{type(call.exception).__name__}: {call.exception}"[:500]
+                run.finished_at = dt.datetime.now(dt.UTC)
+                raise call.exception
+
+            try:
+                parsed = parse_contract(contract, call.response.structured)
+            except ContractViolation as exc:
+                run.status = "failed"
+                run.error = str(exc)[:500]
+                run.finished_at = dt.datetime.now(dt.UTC)
+                await audit.record(
+                    session, tenant_id=tenant_id, action="brain.contract_violation",
+                    object_type="agent_run", object_id=run_id, actor_user_id=actor_user_id,
+                    reason=str(exc)[:500], agent_run_id=run_id, model_run_id=model_run.id,
+                )
+                raise
+
+            run.status = "completed"
+            run.finished_at = dt.datetime.now(dt.UTC)
+            run.output_summary = {"contract": contract.__name__}
+        return parsed, run_id
+
     async def run_structured(
         self,
         session: AsyncSession,
@@ -379,34 +510,14 @@ class Orchestrator:
         spec: AgentSpec = get_agent(agent_key)
         trace_id = trace_id or uuid.uuid4()
 
-        run = AgentRun(
-            tenant_id=tenant_id, agent_key=spec.key, status="running",
-            started_at=dt.datetime.now(dt.UTC),
-            input_summary=_input_fingerprint(payload, spec),
-        )
-        run.trace_id = trace_id
-        run.requested_by = actor_user_id
-        run.gate = spec.gate
+        run = self._new_agent_run(spec, tenant_id=tenant_id, actor_user_id=actor_user_id,
+                                  payload=payload, trace_id=trace_id)
         session.add(run)
         await session.flush()
 
-        request = ModelRequest(
-            messages=[
-                Message(role="system", content=SYSTEM_TEMPLATE.format(
-                    name_ar=spec.name_ar, name_en=spec.name_en,
-                    responsibility_ar=spec.responsibility_ar,
-                    constraint_ar=spec.constraint_ar, constraint_en=spec.constraint_en,
-                )),
-                Message(role="system", content=instruction),
-                Message(role="system",
-                        content=_OUTPUT_LANGUAGE.get(output_locale, _OUTPUT_LANGUAGE["ar"])),
-                # محتوى المستند في دور `user` وحده — وهو بيانات لا تعليمات.
-                Message(role="user", content=payload),
-            ],
-            schema=contract.model_json_schema(),
-            temperature=0.0,
-            classification=input_classification,
-        )
+        request = _structured_request(spec, instruction=instruction, payload=payload,
+                                      contract=contract, locale=output_locale,
+                                      classification=input_classification)
         try:
             response, model_run = await self._gateway.generate_structured(
                 session, tenant_id=tenant_id, request=request, agent_run_id=run.id,
