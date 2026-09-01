@@ -58,7 +58,7 @@ def clean_rate_limit():
         ("openai", "", "", True, False, "missing_api_key"),
         ("openai", "sk-real", "", True, True, "ready"),
         ("anthropic", "", "", True, False, "missing_api_key"),
-        ("anthropic", "", "key", True, True, "ready"),
+        ("anthropic", "", "key", True, True, "ready"),  # مع نموذج مضبوط أدناه
         ("mystery", "k", "k", True, False, "provider_unknown"),
         # مفتاح موجود وحزمة غائبة: الجهوزية تعرفه ولا تعد بما لا يعمل.
         ("anthropic", "", "key", False, False, "sdk_missing"),
@@ -75,10 +75,12 @@ def test_readiness_requires_credential_and_sdk_not_just_a_name(
     monkeypatch.setattr(settings, "model_provider", provider, raising=False)
     monkeypatch.setattr(settings, "openai_api_key", openai_key, raising=False)
     monkeypatch.setattr(settings, "anthropic_api_key", anthropic_key, raising=False)
-    if not sdk_present:
-        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
-    else:
-        monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    # Anthropic يشترط اسم نموذج معلَنًا أيضًا — يُضبط هنا ليُفحص شرط المفتاح وحده.
+    monkeypatch.setattr(settings, "anthropic_model", "claude-test", raising=False)
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        (lambda name: None) if not sdk_present else (lambda name: object()),
+    )
 
     name, is_ready, why = gateway.provider_readiness()
     assert (name, is_ready, why) == (provider, ready, reason)
@@ -547,6 +549,7 @@ async def test_health_endpoints_expose_ai_configured(clients, monkeypatch, path)
 
     monkeypatch.setattr(settings, "model_provider", "anthropic", raising=False)
     monkeypatch.setattr(settings, "anthropic_api_key", "test-only-not-a-real-key", raising=False)
+    monkeypatch.setattr(settings, "anthropic_model", "claude-test", raising=False)
     body = (await http["a"].get(path)).json()
     assert body["provider"] == "anthropic"
     assert body["ai_configured"] is True
@@ -568,3 +571,22 @@ async def test_app_readiness_survives_a_named_provider_without_a_key(clients, mo
     body = response.json()
     assert body["status"] == "ready"
     assert body["ai_configured"] is False
+
+
+async def test_readyz_stays_healthy_when_the_model_is_not_configured(clients, monkeypatch):
+    """إعداد ذكاء ناقص لا يُسقط التطبيق — التخزين والمكتبة تعملان."""
+    import importlib.util
+
+    from athera_api.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(settings, "model_provider", "anthropic", raising=False)
+    monkeypatch.setattr(settings, "anthropic_api_key", "key", raising=False)
+    monkeypatch.setattr(settings, "anthropic_model", "", raising=False)
+
+    http, _ = clients
+    body = (await http["a"].get("/readyz")).json()
+    assert body["status"] == "ready"
+    assert body["ai_configured"] is False
+    assert body["provider"] == "anthropic"

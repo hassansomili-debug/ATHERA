@@ -16,7 +16,6 @@ from .base import ModelProvider, ModelRequest, ModelResponse, ModelUsage
 
 # أحدث عائلة نماذج Claude. النسخة صريحة لا «الأحدث»: تغيّر النموذج تحت
 # التحليل نفسه يجعل نتيجتين غير قابلتين للمقارنة بلا أن يتغيّر شيء ظاهر.
-DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_EMBEDDING_NOTE = (
     "Anthropic لا يقدّم واجهة تضمين؛ التضمين يأتي من مزوّد مستقل (§32.4)."
 )
@@ -60,10 +59,16 @@ def _text(response) -> str:
 class AnthropicAdapter(ModelProvider):
     name = "anthropic"
 
-    def __init__(self, api_key: str, default_model: str = DEFAULT_MODEL,
-                 workspace_id: str = "") -> None:
+    def __init__(self, api_key: str, default_model: str, workspace_id: str = "") -> None:
+        """النموذج معامل إلزامي بلا قيمة افتراضية — عمدًا.
+
+        قيمة افتراضية في المُحوّل تعني اسم نموذج مخبوءًا في الكود: ترقيته
+        تحتاج إعادة نشر، وخطأ في الإعداد يُبتلع بصمت بدل أن يُعلَن.
+        """
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY is required for the anthropic provider")
+        if not default_model:
+            raise ValueError("ANTHROPIC_MODEL is required for the anthropic provider")
         self._api_key = api_key
         self._default_model = default_model
         self._workspace_id = workspace_id or ""

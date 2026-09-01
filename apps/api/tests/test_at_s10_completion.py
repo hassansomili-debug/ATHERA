@@ -205,7 +205,7 @@ def test_anthropic_adapter_refuses_to_fake_embeddings():
         AnthropicEmbeddingUnsupported,
     )
 
-    adapter = AnthropicAdapter(api_key="sk-test-not-used")
+    adapter = AnthropicAdapter(api_key="sk-test-not-used", default_model="m")
     with pytest.raises(AnthropicEmbeddingUnsupported):
         asyncio.run(adapter.embed(["نص"]))
 
@@ -214,7 +214,7 @@ def test_anthropic_adapter_requires_a_key():
     from athera_api.providers.anthropic_adapter import AnthropicAdapter
 
     with pytest.raises(ValueError):
-        AnthropicAdapter(api_key="")
+        AnthropicAdapter(api_key="", default_model="m")
 
 
 # --------------------------------------------------------------------------
