@@ -1366,3 +1366,158 @@ def test_the_role_map_is_derived_not_hand_written():
     # ولا قاموس مكتوب يدويًّا يربط كل مفتاح بدوره.
     assert '"primary_findings": "result"' not in source
     assert '"limitations": "limitation"' not in source
+
+
+# ══════════ 14. سجل الأجنتات: لا مفتاح يُكتب بلا تسجيل ══════════
+
+@requires_db
+@pytest.mark.asyncio
+async def test_generation_reaches_the_provider_through_the_real_orchestrator(
+        two_tenants, monkeypatch):
+    """§7 — المسار الحقيقي حتى `get_agent`، بلا تزييف للمنسّق.
+
+    كل اختبارات التوليد كانت تُبدّل `run_structured_detached` بمزيّف، فلا
+    تبلغ `get_agent` أصلًا. أي أن **مفتاح الأجنت لم يُنفَّذ قط** — لا في
+    اختبار ولا في CI — حتى سقط في الإنتاج بـ`UnknownAgent`.
+
+    فالتزييف هنا عند **حدٍّ أدنى**: المزوّد نفسه. فيمرّ الطلب بالمنسّق
+    والسجل والبوابة فعلًا، ولا شبكة تُلمس.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.deps import Principal
+    from athera_api.providers.base import ModelResponse, ModelUsage
+    from athera_api.routers import planning
+    from athera_api.services import consent
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    project_id, context = await _authorized_project(tid, uid)
+    principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
+                          mfa_satisfied=True, locale="ar")
+
+    seen: dict = {}
+
+    class _FakeProvider:
+        name = "anthropic"
+
+        async def generate_structured(self, request):
+            # نلتقط ما وصل فعلًا: النموذج يُستدعى بعد المنسّق والسجل.
+            seen["classification"] = request.classification
+            seen["messages"] = len(request.messages)
+            return ModelResponse(
+                content="", provider="anthropic", model="fake-model",
+                structured=_batch_json(),
+                usage=ModelUsage(input_tokens=10, output_tokens=10, latency_ms=1),
+            )
+
+        async def embed(self, texts): ...
+        async def stream(self, request): ...
+        async def tool_call(self, request): ...
+
+    from athera_api.providers import gateway as gateway_module
+
+    monkeypatch.setattr(gateway_module, "build_provider", lambda: _FakeProvider())
+    # السقف يُرفع بالإذن لا بالإعداد — والإذن ممنوح في `_authorized_project`.
+    listing = await planning.generate_opportunities(project_id, principal=principal)
+
+    assert seen.get("classification") == "C2", "لم يبلغ الطلب المزوّد"
+    assert listing.opportunities, "لم تُحفظ فرصة"
+
+    # والأجنت المستعمل مسجَّل فعلًا — وهذا ما سقط في الإنتاج.
+    from athera_api.brain.agents import get_agent
+
+    assert get_agent("publication_planner").key == "publication_planner"
+
+    async with tenant_session(tid, uid) as session:
+        state = await consent.planning_state(
+            session, tenant_id=tid, project_id=project_id,
+            context_fingerprint=context.fingerprint)
+    assert state == consent.GRANTED
+
+
+def test_every_agent_key_used_by_application_code_is_registered():
+    """§8 — الحارس الذي يمنع صنف العيب كله.
+
+    `agent_key="publication_planner"` كُتب في الراوتر ولم يُسجَّل، فسقط
+    الإنتاج بـ`UnknownAgent`. والفحص هنا بنيوي (AST) لا نصّي: يمسح كل
+    استدعاء توليد في شيفرة التطبيق، ويستخرج مفتاح الأجنت الحرفي، ويشترط
+    وجوده في السجل القانوني.
+
+    ونطاقه شيفرة التطبيق وحدها — فمفتاحٌ خاطئ **مقصود** في اختبار لا يُعدّ
+    مفتاح إنتاج.
+    """
+    import ast
+
+    from athera_api.brain.agents import AGENTS
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "athera_api"
+    calls = {"run_structured", "run_structured_detached", "run_agent"}
+    offenders, found = [], []
+
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "attr", None)
+            if name not in calls:
+                continue
+            for kw in node.keywords:
+                if kw.arg != "agent_key":
+                    continue
+                if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                    key = kw.value.value
+                    found.append((path.name, key))
+                    if key not in AGENTS:
+                        offenders.append(f"{path.relative_to(root)}:{node.lineno} → {key!r}")
+
+    assert found, "لم يُعثر على أي استدعاء بمفتاح حرفي — هل تغيّر الشكل؟"
+    assert not offenders, f"مفاتيح أجنتات غير مسجَّلة: {offenders}"
+
+
+def test_the_registry_is_the_only_source_of_agents():
+    """§10 — `UnknownAgent` يبقى يفشل مغلقًا، ولا التفاف عليه."""
+    import inspect
+
+    from athera_api.brain import agents as registry
+    from athera_api.brain.orchestrator import Orchestrator
+
+    source = inspect.getsource(registry.get_agent)
+    assert "raise UnknownAgent(key)" in source
+    # ولا افتراضي يُستعمل عند الجهل.
+    assert "AGENTS.get(" not in source
+    assert "research_manager" not in source
+
+    for path in (Orchestrator.run_structured, Orchestrator.run_structured_detached):
+        body = inspect.getsource(path)
+        assert "get_agent(agent_key)" in body
+        assert "except UnknownAgent" not in body
+
+    # ولا راوتر يبني مواصفة أجنت في مكانه أو ينادي البوابة مباشرة.
+    router = (pathlib.Path(__file__).resolve().parents[1] / "athera_api" / "routers"
+              / "planning.py").read_text(encoding="utf-8")
+    assert "AgentSpec(" not in router
+    assert "ModelGateway(" not in router
+
+
+def test_registered_agents_without_a_caller_are_reported_not_failed():
+    """§9 — أجنتٌ مسجَّل بلا مستدعٍ معلومةٌ لا عطب.
+
+    والغرض إظهار الانحراف في الاتجاه الآخر بلا إسقاط البناء.
+    """
+    import ast
+
+    from athera_api.brain.agents import AGENTS
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "athera_api"
+    used = set()
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == "agent_key" and isinstance(kw.value, ast.Constant):
+                        used.add(kw.value.value)
+    unused = sorted(set(AGENTS) - used)
+    # معلومة تُطبع ولا تُسقط: السجل يصف المنظومة كاملة، والمراحل تأتي تباعًا.
+    print(f"\nأجنتات مسجَّلة بلا مستدعٍ ({len(unused)}): {', '.join(unused)}")
+    assert set(used) <= set(AGENTS)

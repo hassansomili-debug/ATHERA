@@ -28,7 +28,11 @@ SPEC_AGENTS = {
 # عملًا لأيٍّ من الستة عشر: `thesis_miner` مسؤوليته فرص النشر وقيده منع
 # التجزئة، وتشغيل الاستخراج تحته يجعل تعليمات النظام تصف عملًا غير الذي
 # يجري. والبديل — استدعاء البوابة مباشرة — يخرج من المنسّق أصلًا.
-PLATFORM_AGENTS = {"document_reader"}
+# أجنتات المنصّة — تُعلَن هنا صراحةً ولا تختلط بستة عشر المواصفة.
+#
+#   document_reader     — قراءة المستندات (S5C)
+#   publication_planner — تخطيط النشر من المعرفة الموثقة (S5D)
+PLATFORM_AGENTS = {"document_reader", "publication_planner"}
 
 
 def test_all_sixteen_agents_from_spec_are_registered():
@@ -51,7 +55,9 @@ def test_every_agent_declares_a_constraint_in_both_languages():
 # `document_reader` مصدره الوحيد المقاطع المُمرَّرة إليه في نصّ الطلب. ومنحه
 # أداة بحثٍ في الذاكرة يفتح بابًا لأن يعيد ما ليس في الملف على أنه مستخرَج
 # منه — وهو بالضبط الاختلاق الذي بُني ليمنعه. فخلوّه من الأدوات قيدٌ لا نقص.
-TOOLLESS_BY_DESIGN = {"document_reader"}
+# بلا أدوات **قصدًا**: سياقهما الوحيد ما يُمرَّر إليهما، فلا ذاكرة يخلطان
+# بها ولا بحث يستوردان منه ما ليس في المصدر.
+TOOLLESS_BY_DESIGN = {"document_reader", "publication_planner"}
 
 
 def test_every_agent_declares_at_least_one_tool_and_nothing_unknown():
