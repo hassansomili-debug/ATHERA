@@ -23,7 +23,7 @@ from typing import Final
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models.research import ResearcherMemory
+from ...models.research import FactCandidate, ResearcherMemory
 
 # ── تصنيف الأدلة ──
 #
@@ -135,13 +135,27 @@ class ResearchContext:
                 for role in order for i in self.items if i.role == role]
 
 
-def _role_for(memory: ResearcherMemory) -> str:
-    """دور الدليل — من حقله إن عُرف، وإلا من فئة ذاكرته."""
-    value = memory.value if isinstance(memory.value, dict) else {}
-    field_key = value.get("field_key")
+def _role_for(memory: ResearcherMemory, field_key: str | None = None) -> str:
+    """دور الدليل — من حقله إن عُرف، وإلا من فئة ذاكرته.
+
+    **و`field_key` يأتي من المرشّح لا من `value`.**
+
+    كان يُقرأ من `memory.value`، وهو خطأ كشفه الإنتاج: `field_key` عمودٌ في
+    `fact_candidates` ولا يُنسخ إلى `value` عند الاعتماد — فيقرأ هذا عدمًا،
+    ويسقط كل دليل إلى «أخرى» فيُستبعَد. أي أن S5D لم يكن يستطيع استهلاك
+    مخرجات S5C إطلاقًا.
+
+    والرابط القائم `fact_candidates.resulting_memory_id` هو الطريق الصحيح:
+    يوجد منذ §7.4، ويصل الذاكرة بالمرشّح الذي أنتجها. فلا يُنسخ حقلٌ ولا
+    يُخترع عمود.
+    """
     if field_key and field_key in ROLE_BY_FIELD:
         return ROLE_BY_FIELD[field_key]
     # الاحتياطي بفئة الذاكرة — و`verified_evidence` نتائج بحكم §S5C.
+    value = memory.value if isinstance(memory.value, dict) else {}
+    inline = value.get("field_key")
+    if inline and inline in ROLE_BY_FIELD:
+        return ROLE_BY_FIELD[inline]
     return {"verified_evidence": "result", "analysis_result": "analysis"}.get(
         memory.memory_category, "other")
 
@@ -179,24 +193,30 @@ async def build(
     **ولا استعلام يقرأ `fact_candidates` هنا.** المرشّح ليس دليلًا مهما كانت
     ثقته؛ ما لم يمرّ بمسار الاعتماد البشري لا يدخل التخطيط.
     """
+    # الذاكرة الموثقة، ومعها حقلُ المرشّح الذي أنتجها عبر الرابط القائم.
+    #
+    # و`outerjoin` لا `join`: ذاكرةٌ لا مرشّح لها (أُدخلت بمسار آخر من مسارات
+    # §7.4) تبقى مؤهَّلة، ويُحدَّد دورها بفئتها.
     rows = (
         await session.execute(
-            select(ResearcherMemory).where(
+            select(ResearcherMemory, FactCandidate.field_key)
+            .outerjoin(FactCandidate,
+                       FactCandidate.resulting_memory_id == ResearcherMemory.id)
+            .where(
                 ResearcherMemory.tenant_id == tenant_id,
                 # الحارس الأول: الموثق وحده.
                 ResearcherMemory.verification_status == "verified",
             ).order_by(ResearcherMemory.created_at.asc())
         )
-    ).scalars().all()
+    ).all()
 
     items: list[EvidenceItem] = []
-    for memory in rows:
-        role = _role_for(memory)
+    for memory, field_key in rows:
+        role = _role_for(memory, field_key)
         if role == "other":
             continue
-        value = memory.value if isinstance(memory.value, dict) else {}
         items.append(EvidenceItem(
-            memory_id=memory.id, role=role, field_key=value.get("field_key"),
+            memory_id=memory.id, role=role, field_key=field_key,
             statement=(memory.statement_ar or memory.statement_en or "").strip(),
             category=memory.memory_category,
             source_file_id=memory.source_file_id,

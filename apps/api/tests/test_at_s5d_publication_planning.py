@@ -91,10 +91,20 @@ def test_the_context_query_never_reads_candidates():
     tree = ast.parse(inspect.getsource(ctx.build).strip())
     fn = tree.body[0]
     body = ast.unparse(ast.Module(body=fn.body[1:], type_ignores=[]))
-    assert "FactCandidate" not in body
-    assert "fact_candidates" not in body
-    # والحارس صريح في الاستعلام.
+
+    # الحارس صريح: الموثق وحده يدخل.
     assert "verification_status == 'verified'" in body
+
+    # **والمرشّح لا يدخل دليلًا.** يُذكر في موضع واحد فقط: انضمامٌ عبر
+    # `resulting_memory_id` لقراءة **دور** ذاكرةٍ اعتُمدت أصلًا — وهو رابط
+    # لا يوجد إلا للمرشّح الذي مرّ بمسار §7.4. ولا حقل نصّي يُؤخذ منه.
+    assert "FactCandidate.resulting_memory_id == ResearcherMemory.id" in body
+    assert "FactCandidate.field_key" in body
+    for taken_from_memory in ("FactCandidate.statement", "FactCandidate.quote",
+                              "FactCandidate.value", "FactCandidate.locator"):
+        assert taken_from_memory not in body, taken_from_memory
+    # ولا استعلام يقرأ المرشّحات بحالتها.
+    assert "FactCandidate.status" not in body
 
 
 def test_only_verified_status_passes_the_guard():
@@ -180,7 +190,10 @@ async def _seed_project_with_memory(tid, uid, *, facts=None):
                 tenant_id=tid, extraction_run_id=run.id, file_id=record.id,
                 chunk_id=chunk.id, memory_category="project_decision",
                 field_key=field_key, statement_ar=text,
-                value={"value": text, "field_key": field_key},
+                # **كما ينتجه S5C حرفيًّا** — `field_key` عمودٌ لا مفتاح في
+                # `value`. وكانت البذرة تضعه في `value` فتختبر نفسها لا
+                # المنتج، وتخفي أن الدور لا يُقرأ في الإنتاج.
+                value={"value": text, "extraction_status": "extracted"},
                 quote=text, locator=f"§قسم ¶{seq}", status="unverified",
             )
             session.add(candidate)
@@ -1150,3 +1163,111 @@ def test_the_existing_namespaces_are_untouched():
     assert ar["review"]["title"] == "المراجعة والتحكيم"
     assert ar["thesisReview"]["title"] == "راجع ما استخرجته أثيرا"
     assert "publicationPlanning" in ar and ar["publicationPlanning"]["title"] == "فرص النشر"
+
+
+# ══════════ 12. الدور يُقرأ من المرشّح لا من `value` ══════════
+
+def test_the_role_is_read_through_the_candidate_link_not_from_value():
+    """عيبٌ كشفه الإنتاج: `field_key` عمودٌ في `fact_candidates` ولا يُنسخ
+    إلى `value` عند الاعتماد.
+
+    فكان `_role_for` يقرأ عدمًا، ويسقط كل دليل إلى «أخرى» فيُستبعَد — أي أن
+    S5D لم يكن يستطيع استهلاك مخرجات S5C إطلاقًا. والاختبارات مرّت لأن
+    بذرتها كانت تضع المفتاح في `value` يدويًّا، فتختبر البذرة لا المنتج.
+    """
+    import inspect
+
+    source = inspect.getsource(ctx.build)
+    assert "FactCandidate.resulting_memory_id == ResearcherMemory.id" in source
+    # `outerjoin` لا `join`: ذاكرةٌ بلا مرشّح تبقى مؤهَّلة.
+    assert ".outerjoin(" in source
+    assert "_role_for(memory, field_key)" in source
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_evidence_approved_through_the_real_path_gets_a_usable_role(two_tenants):
+    """التحقق السلوكي: ذاكرةٌ اعتُمدت بمسار S5C الحقيقي تُصنَّف بدورها.
+
+    ولو عاد العيب لعادت كل الأدوار «أخرى» ولسقطت بوابة الكفاية على مشروع
+    أدلته كاملة.
+    """
+    from athera_api.db import tenant_session
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    project_id, _memory_id, _file_id = await _seed_project_with_memory(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        context = await ctx.build(session, tenant_id=tid, project_id=project_id,
+                                  capability="publication_planning_external_c2")
+
+    roles = {i.role for i in context.items}
+    assert "other" not in roles, f"أدوار غير مصنّفة: {roles}"
+    # والأدوار الثلاثة التي تشترطها بوابة الكفاية موجودة.
+    assert roles & {"problem", "question", "objective"}
+    assert roles & {"methodology", "sample", "analysis"}
+    assert "result" in roles
+    assert context.sufficient, f"الكفاية سقطت رغم اكتمال الأدلة · {context.missing_roles}"
+    # وكل عنصر يحمل حقله من المرشّح.
+    assert all(i.field_key for i in context.items)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_verified_memory_without_a_candidate_stays_eligible(two_tenants):
+    """§2 — الانضمام خارجي عمدًا: S5D ليس حكرًا على استخراج الرسائل.
+
+    ذاكرةٌ موثقة أُدخلت بمسار آخر من مسارات §7.4 لا مرشّح لها، فلا `field_key`.
+    ولو كان الانضمام داخليًّا لسقطت من اللقطة كأنها غير موثقة — وهي موثقة.
+    فتبقى مؤهَّلة، ويُحدَّد دورها بفئتها، فإن تعذّر بقيت «أخرى» بلا ادّعاء.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+    from athera_api.models.portfolio import ResearchProject
+    from athera_api.models.research import ResearcherMemory
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+
+    async with tenant_session(tid, uid) as session:
+        project = ResearchProject(tenant_id=tid, working_title_ar="مشروع بلا استخراج")
+        session.add(project)
+        record = File(
+            tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
+            original_filename="notes.txt", content_type="text/plain", size_bytes=10,
+            classification="C2", is_untrusted_content=True, status="stored",
+            uploaded_by=uid,
+        )
+        session.add(record)
+        await session.flush()
+        # موثقة، بلا مرشّح، وفئتها تدلّ على نتيجة.
+        session.add(ResearcherMemory(
+            tenant_id=tid, memory_category="verified_evidence",
+            statement_ar="نتيجة موثقة أُدخلت بمسار آخر",
+            value={"value": "نتيجة", "extraction_status": "extracted"},
+            source_type="upload", source_file_id=record.id,
+            source_locator="§نتائج ¶3", source_quote="نتيجة موثقة",
+            verification_status="verified", verified_by=uid, verified_at=_now(),
+        ))
+        # وأخرى فئتها لا تدلّ على دور — تبقى «أخرى» بلا ادّعاء.
+        session.add(ResearcherMemory(
+            tenant_id=tid, memory_category="temporary_context",
+            statement_ar="سياق مؤقت",
+            value={"value": "سياق", "extraction_status": "extracted"},
+            source_type="upload", source_file_id=record.id,
+            source_locator="§ملاحظات ¶1", source_quote="سياق مؤقت",
+            verification_status="verified", verified_by=uid, verified_at=_now(),
+        ))
+        await session.flush()
+        project_id = project.id
+
+    async with tenant_session(tid, uid) as session:
+        context = await ctx.build(session, tenant_id=tid, project_id=project_id,
+                                  capability="publication_planning_external_c2")
+
+    # لم تسقط الذاكرة التي لا مرشّح لها — دورها جاء من فئتها.
+    assert "result" in {i.role for i in context.items}
+    assert all(i.field_key is None for i in context.items)
+    # وما لا تدلّ فئته يُستبعَد بلا ادّعاء دور.
+    assert "سياق مؤقت" not in " ".join(i.statement for i in context.items)
