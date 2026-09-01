@@ -19,6 +19,7 @@ from .routers import ai as ai_router
 from .routers import audit as audit_router
 from .routers import auth as auth_router
 from .routers import brain as brain_router
+from .routers import document_intelligence as document_intelligence_router
 from .routers import files as files_router
 from .routers import golden_thread as golden_thread_router
 from .routers import health as health_router
@@ -129,6 +130,7 @@ app.include_router(team_router.router)
 app.include_router(settings_router.router)
 app.include_router(literature_router.router)
 app.include_router(golden_thread_router.router)
+app.include_router(document_intelligence_router.router)
 app.include_router(thesis_router.router)
 app.include_router(publishing_router.router)
 app.include_router(analysis_router.router)

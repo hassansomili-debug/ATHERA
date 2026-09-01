@@ -4,6 +4,7 @@
 انحراف أي طبقة عن اللغتين معًا.
 """
 import json
+import re
 import pathlib
 
 import pytest
@@ -70,6 +71,52 @@ def test_web_message_catalogs_have_identical_key_sets():
         f"web catalogs diverged — only in ar: {sorted(ar_keys - en_keys)}, "
         f"only in en: {sorted(en_keys - ar_keys)}"
     )
+
+
+def test_every_translation_key_the_web_app_uses_actually_resolves():
+    """كل `t("...")` في الواجهة له مدخل في الكتالوجين.
+
+    **ولماذا لا يكفي تطابق المفاتيح؟** لأن التطابق يقارن الكتالوجين ببعضهما
+    لا بما تستعمله الشاشات. ومساحةٌ كُتبت فوق مساحة قائمة تبقى «متطابقة»
+    تمامًا بينما صفحةٌ كاملة صارت تعرض نصّ صفحة أخرى — وهو ما وقع فعلًا:
+    مساحة `review` للمراجعة والتحكيم استُبدلت بمساحة مراجعة استخراج الرسالة،
+    فصار عنوان الأولى عنوان الثانية، ومرّ الفحص.
+
+    وهذا الاختبار يقارن بالاستعمال: مفتاحٌ يُطلب ولا يوجد يسقط هنا.
+    """
+    if not MESSAGES_DIR.exists():
+        pytest.skip("web messages not present")
+
+    web_src = MESSAGES_DIR.parent / "src"
+    if not web_src.exists():
+        pytest.skip("web source not present")
+
+    catalogs = {
+        locale: json.loads((MESSAGES_DIR / f"{locale}.json").read_text(encoding="utf-8"))
+        for locale in SUPPORTED_LOCALES
+    }
+
+    def resolve(catalog, path):
+        node = catalog
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return None
+            node = node[part]
+        return node if isinstance(node, str) else None
+
+    # المفاتيح الحرفية وحدها؛ المركَّبة (`theses.${x}`) تُترك للأنواع.
+    used = set()
+    pattern = re.compile(r't\(\s*"([a-zA-Z][a-zA-Z0-9_.]*)"\s*\)')
+    for source in web_src.rglob("*.tsx"):
+        used |= set(pattern.findall(source.read_text(encoding="utf-8")))
+
+    assert used, "لم يُعثر على أي مفتاح — تعبير الفحص نفسه معطوب"
+
+    missing = {
+        locale: sorted(key for key in used if resolve(catalog, key) is None)
+        for locale, catalog in catalogs.items()
+    }
+    assert not any(missing.values()), f"مفاتيح تُستعمل ولا توجد: {missing}"
 
 
 def test_bilingual_columns_exist_on_user_facing_models():

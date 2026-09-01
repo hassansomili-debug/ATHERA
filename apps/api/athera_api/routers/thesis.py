@@ -17,7 +17,7 @@ from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.files import File
 from ..models.portfolio import ResearchProject
-from ..models.research import ResearcherProfile
+from ..models.research import ExtractionRun, ResearcherProfile
 from ..models.thesis import (
     AuthorshipParty,
     CreditRoleAssignment,
@@ -72,7 +72,12 @@ DEFAULT_THRESHOLDS = {
 }
 
 
-def _pick(locale: str, arabic: str, english: str | None) -> str:
+def _pick(locale: str, arabic: str | None, english: str | None) -> str | None:
+    """`None` تمرّ كما هي — لا تُستبدل بنصّ يوحي بقيمة.
+
+    سجلٌّ قيد المعالجة بلا عنوان بعد؛ وإرجاع سلسلة فارغة أو شرطة يجعله يبدو
+    كرسالة بلا عنوان بدل رسالة لم تُقرأ بعد.
+    """
     return (english or arabic) if locale == "en" else arabic
 
 
@@ -583,6 +588,20 @@ async def list_theses(
     rows = (
         await session.execute(select(Thesis).order_by(Thesis.created_at.desc()))
     ).scalars().all()
+
+    # حالة أحدث تشغيلة قراءة لكل ملف — تُقرأ دفعةً واحدة لا استعلامًا لكل صفّ.
+    file_ids = [t.file_id for t in rows if t.file_id is not None]
+    processing: dict[uuid.UUID, str] = {}
+    if file_ids:
+        runs = (
+            await session.execute(
+                select(ExtractionRun).where(ExtractionRun.file_id.in_(file_ids))
+                .order_by(ExtractionRun.started_at.asc())
+            )
+        ).scalars().all()
+        for run in runs:
+            processing[run.file_id] = run.status  # الأحدث يغلب لأن الترتيب تصاعدي
+
     out: list[ThesisResponse] = []
     for thesis in rows:
         sections = (
@@ -602,5 +621,6 @@ async def list_theses(
             data_collected_on=thesis.data_collected_on, rights_basis=thesis.rights_basis,
             parsed_at=thesis.parsed_at, sections_extracted=len(sections),
             opportunities_found=len(opportunities),
+            processing_status=processing.get(thesis.file_id) if thesis.file_id else None,
         ))
     return out

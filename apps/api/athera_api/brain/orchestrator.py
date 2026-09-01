@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AtheraError
@@ -340,3 +341,95 @@ class Orchestrator:
             agent_run_id=run.id, trace_id=trace_id, status="completed", answer=answer,
             context_items=len(context_items), tool_calls=len(requested), model_run_id=model_run.id,
         )
+
+    async def run_structured(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: uuid.UUID,
+        actor_user_id: uuid.UUID,
+        agent_key: str,
+        contract: type[BaseModel],
+        instruction: str,
+        payload: str,
+        input_classification: str,
+        trace_id: uuid.UUID | None = None,
+        output_locale: str = "ar",
+    ) -> tuple[BaseModel, uuid.UUID]:
+        """تشغيلة تُعيد **عقدًا محدَّدًا** لا إجابة نثرية.
+
+        **ولماذا لا `run_agent`؟** لأنه يفرض `BrainAnswer`: نصّ وإسنادات
+        وثغرات أدلة. والاستخراج ليس إجابة على سؤال — هو جدول حقول لكل حقل
+        منها اقتباسه وموضعه. وحشر ذلك الجدول داخل `answer_ar` كسلسلة JSON
+        يجعل العقد وهميًّا: ما يُتحقق منه هو غلاف نصّي، والبنية تُقرأ بعد
+        ذلك بلا تحقق.
+
+        **وما الذي لا يتغيّر؟** كل ما يجعل المسار مسارًا واحدًا: `AgentRun`
+        يُنشأ ويُنهى، والمدخل يُبصَم ولا يُحفظ نصّه، والنداء يمرّ بالبوابة
+        وحدها فيخضع لسقف التصنيف ويُسجَّل في `model_runs`، والأجنت يُقرأ من
+        السجل فلا يُخترع مفتاحه. المتغيّر هو شكل المخرَج لا سياسته.
+
+        **وأين ذهبت الحواجز؟** حواجز §8 تفحص نثرًا: إسنادًا يُدّعى، وضمانَ
+        قبول يُوعَد به. ولا نثر هنا. وحاجز هذا المسار مكانه بعد العودة:
+        اقتباسٌ لا يوجد حرفيًّا في مقطعه يُرفض مرشّحه ويُعدّ مؤشر اختلاق
+        (`candidates_rejected_unquoted`). فالتأصيل يُفحص على المصدر نفسه،
+        لا على نصّ يصفه.
+        """
+        spec: AgentSpec = get_agent(agent_key)
+        trace_id = trace_id or uuid.uuid4()
+
+        run = AgentRun(
+            tenant_id=tenant_id, agent_key=spec.key, status="running",
+            started_at=dt.datetime.now(dt.UTC),
+            input_summary=_input_fingerprint(payload, spec),
+        )
+        run.trace_id = trace_id
+        run.requested_by = actor_user_id
+        run.gate = spec.gate
+        session.add(run)
+        await session.flush()
+
+        request = ModelRequest(
+            messages=[
+                Message(role="system", content=SYSTEM_TEMPLATE.format(
+                    name_ar=spec.name_ar, name_en=spec.name_en,
+                    responsibility_ar=spec.responsibility_ar,
+                    constraint_ar=spec.constraint_ar, constraint_en=spec.constraint_en,
+                )),
+                Message(role="system", content=instruction),
+                Message(role="system",
+                        content=_OUTPUT_LANGUAGE.get(output_locale, _OUTPUT_LANGUAGE["ar"])),
+                # محتوى المستند في دور `user` وحده — وهو بيانات لا تعليمات.
+                Message(role="user", content=payload),
+            ],
+            schema=contract.model_json_schema(),
+            temperature=0.0,
+            classification=input_classification,
+        )
+        try:
+            response, model_run = await self._gateway.generate_structured(
+                session, tenant_id=tenant_id, request=request, agent_run_id=run.id
+            )
+        except Exception as exc:
+            run.status = "failed"
+            run.error = f"{type(exc).__name__}: {exc}"[:500]
+            run.finished_at = dt.datetime.now(dt.UTC)
+            raise
+
+        try:
+            parsed = parse_contract(contract, response.structured)
+        except ContractViolation as exc:
+            run.status = "failed"
+            run.error = str(exc)[:500]
+            run.finished_at = dt.datetime.now(dt.UTC)
+            await audit.record(
+                session, tenant_id=tenant_id, action="brain.contract_violation",
+                object_type="agent_run", object_id=run.id, actor_user_id=actor_user_id,
+                reason=str(exc)[:500], agent_run_id=run.id, model_run_id=model_run.id,
+            )
+            raise
+
+        run.status = "completed"
+        run.finished_at = dt.datetime.now(dt.UTC)
+        run.output_summary = {"contract": contract.__name__}
+        return parsed, run.id

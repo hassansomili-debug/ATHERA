@@ -44,9 +44,11 @@ class Thesis(Base, TenantScoped, Timestamped):
     __tablename__ = "theses"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    title_ar: Mapped[str] = mapped_column(Text, nullable=False)
+    # `None` = «لم يُستخرَج بعد» لسجلّ أنشأه النظام عند الرفع (S5C، ترحيل 0015).
+    # ولا يُملأ باسم ملف ولا بتخمين — المفقود يُعلَن مفقودًا.
+    title_ar: Mapped[str | None] = mapped_column(Text, nullable=True)
     title_en: Mapped[str | None] = mapped_column(Text, nullable=True)
-    degree: Mapped[str] = mapped_column(String(24), nullable=False)  # masters | phd
+    degree: Mapped[str | None] = mapped_column(String(24), nullable=True)  # masters | phd
     defended_on: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     data_collected_on: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     institution_ar: Mapped[str | None] = mapped_column(String(255), nullable=True)

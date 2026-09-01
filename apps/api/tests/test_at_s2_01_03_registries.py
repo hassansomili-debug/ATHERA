@@ -22,9 +22,20 @@ SPEC_AGENTS = {
 }
 
 
+# أجنتات أضافتها مراحل لاحقة خارج §8 — تُذكر بأسمائها لا تُبتلع في عدّ.
+#
+# `document_reader` (S5C): قارئ المستندات. أُضيف لأن الاستخراج المهيكل ليس
+# عملًا لأيٍّ من الستة عشر: `thesis_miner` مسؤوليته فرص النشر وقيده منع
+# التجزئة، وتشغيل الاستخراج تحته يجعل تعليمات النظام تصف عملًا غير الذي
+# يجري. والبديل — استدعاء البوابة مباشرة — يخرج من المنسّق أصلًا.
+PLATFORM_AGENTS = {"document_reader"}
+
+
 def test_all_sixteen_agents_from_spec_are_registered():
-    assert set(registry.AGENTS) == SPEC_AGENTS
-    assert len(registry.AGENTS) == 16
+    """الستة عشر باقية كما هي — والإضافات تُعلَن ولا تختلط بها."""
+    assert SPEC_AGENTS <= set(registry.AGENTS)
+    assert len(SPEC_AGENTS) == 16
+    assert set(registry.AGENTS) == SPEC_AGENTS | PLATFORM_AGENTS
 
 
 def test_every_agent_declares_a_constraint_in_both_languages():
@@ -35,12 +46,28 @@ def test_every_agent_declares_a_constraint_in_both_languages():
         assert spec.guards, f"{key} declares no guardrails"
 
 
+# أجنت بلا أدوات — بإعلان وسبب، لا بإهمال.
+#
+# `document_reader` مصدره الوحيد المقاطع المُمرَّرة إليه في نصّ الطلب. ومنحه
+# أداة بحثٍ في الذاكرة يفتح بابًا لأن يعيد ما ليس في الملف على أنه مستخرَج
+# منه — وهو بالضبط الاختلاق الذي بُني ليمنعه. فخلوّه من الأدوات قيدٌ لا نقص.
+TOOLLESS_BY_DESIGN = {"document_reader"}
+
+
 def test_every_agent_declares_at_least_one_tool_and_nothing_unknown():
     known = set(tool_registry.all_tools())
     for key, spec in registry.AGENTS.items():
-        assert spec.allowed_tools, f"{key} has no tools and cannot do anything useful"
+        if key not in TOOLLESS_BY_DESIGN:
+            assert spec.allowed_tools, f"{key} has no tools and cannot do anything useful"
         unknown = spec.allowed_tools - known
         assert not unknown, f"{key} references unregistered tools: {unknown}"
+
+
+def test_the_toolless_agent_really_has_no_tools():
+    """الإعفاء يُثبَت لا يُدّعى: لو مُنح أداةً لاحقًا فليسقط هذا."""
+    for key in TOOLLESS_BY_DESIGN:
+        assert registry.AGENTS[key].allowed_tools == frozenset()
+        assert registry.AGENTS[key].reads_memory == frozenset()
 
 
 def test_base_guards_apply_to_every_agent():

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Final
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +36,19 @@ class MemoryPromotionError(AtheraError):
         super().__init__(code, status_code=422, **context)
 
 
+# الحالات التي يجوز اتخاذ قرار جديد عليها (S5C §6).
+#
+# `unverified` لم تُراجَع بعد، و`unknown` راجعها الباحث ولم يستطع الحكم —
+# فعودته إليها بحكمٍ صريح تقدُّمٌ لا تراجع. أما `approved` و`rejected` فحكمٌ
+# قيل، ولا يُقلَب بنداءٍ ثانٍ صامت.
+REVISABLE: Final = frozenset({"unverified", "unknown"})
+
+
+def _require_revisable(candidate: FactCandidate) -> None:
+    if candidate.status not in REVISABLE:
+        raise MemoryPromotionError("memory.already_decided", status=candidate.status)
+
+
 async def approve_candidate(
     session: AsyncSession,
     *,
@@ -49,8 +63,7 @@ async def approve_candidate(
     ).scalar_one_or_none()
     if candidate is None:
         raise NotFound("memory.candidate_not_found")
-    if candidate.status != "unverified":
-        raise MemoryPromotionError("memory.already_decided", status=candidate.status)
+    _require_revisable(candidate)
 
     # إعادة التحقق من التأصيل عند الاعتماد، لا عند الاستخراج فقط: المقطع قد
     # يكون تغيّر، والاعتماد هو اللحظة التي تكتسب فيها المعلومة صفة رسمية.
@@ -68,6 +81,7 @@ async def approve_candidate(
     if source_type not in PROMOTION_PATHS:  # pragma: no cover — حارس ضد تعديل لاحق
         raise MemoryPromotionError("memory.invalid_source_path", source_type=source_type)
 
+    previous_status = candidate.status
     now = dt.datetime.now(dt.UTC)
     profile = (
         await session.execute(
@@ -135,7 +149,7 @@ async def approve_candidate(
         object_type="researcher_memory",
         object_id=memory.id,
         actor_user_id=actor_user_id,
-        state_before={"candidate_status": "unverified"},
+        state_before={"candidate_status": previous_status},
         state_after={
             "candidate_status": "approved",
             "memory_category": candidate.memory_category,
@@ -161,9 +175,9 @@ async def reject_candidate(
     ).scalar_one_or_none()
     if candidate is None:
         raise NotFound("memory.candidate_not_found")
-    if candidate.status != "unverified":
-        raise MemoryPromotionError("memory.already_decided", status=candidate.status)
+    _require_revisable(candidate)
 
+    before = candidate.status
     candidate.status = "rejected"
     candidate.decided_by = actor_user_id
     candidate.decided_at = dt.datetime.now(dt.UTC)
@@ -176,8 +190,63 @@ async def reject_candidate(
         object_type="fact_candidate",
         object_id=candidate.id,
         actor_user_id=actor_user_id,
-        state_before={"status": "unverified"},
+        # الحالة السابقة كما كانت: «لا أعرف» ثم «مرفوض» مسارٌ مختلف عن
+        # «غير مراجَع» ثم «مرفوض»، والسجل يحفظ الفرق.
+        state_before={"status": before},
         state_after={"status": "rejected"},
+        reason=reason,
+    )
+    return candidate
+
+
+async def mark_candidate_unknown(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    reason: str | None = None,
+) -> FactCandidate:
+    """«لا أعرف» قرارٌ ثالث — لا اعتماد ولا رفض (S5C §13).
+
+    **ولماذا لا يكفي الرفض؟** لأن الرفض يقول «هذا خطأ»، و«لا أعرف» تقول
+    «لا أستطيع الحكم». وخلطهما يفسد الإشارة: إعادة قراءة لاحقة تحتاج أن
+    تميّز ما حكم عليه الباحث بالبطلان عمّا تركه معلّقًا.
+
+    **والحالة أولى في العمود لا مشتقّة من `value`.** ترحيل 0016 وسّع
+    `ck_candidate_status` ليقبل `unknown`، فلا يحتاج عميلٌ أن يستنتجها من
+    `rejected` + علامة في JSON. والعمود هو المرجع.
+
+    ولا ذاكرة تُنتَج منه — مثل الرفض تمامًا، ولنفس السبب: `verified` لا
+    يُبلَغ إلا بتأكيد صريح عبر أحد مسارات §7.4. والقاعدة تحرسه أيضًا:
+    `ck_candidate_memory_only_when_approved` يمنع `resulting_memory_id` على
+    غير المعتمَد.
+
+    **ولا نهاية له:** الباحث قد يعود فيحسم. `REVISABLE` تسمح بذلك صراحةً،
+    ولا تسمح بقلب حكمٍ قيل.
+    """
+    candidate = (
+        await session.execute(select(FactCandidate).where(FactCandidate.id == candidate_id))
+    ).scalar_one_or_none()
+    if candidate is None:
+        raise NotFound("memory.candidate_not_found")
+    _require_revisable(candidate)
+
+    before = candidate.status
+    candidate.status = "unknown"
+    candidate.decided_by = actor_user_id
+    candidate.decided_at = dt.datetime.now(dt.UTC)
+    candidate.decision_reason = reason
+
+    await audit.record(
+        session,
+        tenant_id=tenant_id,
+        action="memory.fact_marked_unknown",
+        object_type="fact_candidate",
+        object_id=candidate.id,
+        actor_user_id=actor_user_id,
+        state_before={"status": before},
+        state_after={"status": "unknown"},
         reason=reason,
     )
     return candidate

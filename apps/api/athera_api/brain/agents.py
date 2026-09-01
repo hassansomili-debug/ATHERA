@@ -213,6 +213,22 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             gate="G12",
         ),
         AgentSpec(
+            # قارئ المستندات — يستخرج ما هو **مكتوب** ولا يفسّره (S5C §12).
+            #
+            # ولا أدوات له إطلاقًا: مصدره الوحيد المقاطع الممرَّرة إليه، فلا
+            # ذاكرة يخلط بها ولا بحث يستورد منه ما ليس في الملف.
+            key="document_reader",
+            name_ar="قارئ المستندات", name_en="Document Reader",
+            responsibility_ar="استخراج بيانات الرسالة من نصّ الملف كما وردت",
+            responsibility_en="Extract thesis information from the document text as written",
+            constraint_ar="لا يقترح قيمة بلا اقتباس حرفي من المقطع، ولا يستنتج ما لم يُكتب",
+            constraint_en="Proposes no value without a verbatim quote from the chunk, and infers nothing unwritten",
+            allowed_tools=frozenset(),
+            guards=BASE_GUARDS,
+            reads_memory=frozenset(),
+            gate=None,
+        ),
+        AgentSpec(
             key="thesis_miner",
             name_ar="منقّب الرسائل", name_en="Thesis Miner",
             responsibility_ar="استخراج فرص النشر من الرسائل",
