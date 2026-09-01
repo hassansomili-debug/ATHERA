@@ -87,8 +87,8 @@ def test_ci_asserts_the_acceptance_database_survives_the_drill():
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "the drill mutated the acceptance-test database" in workflow
     assert "status = 'unknown'" in workflow
-    # ورأس التدريب يُفحص صراحةً.
-    assert 'test "$head" = "0016"' in workflow
+    # ورأس التدريب يُفحص صراحةً — **بالمقارنة بالمشتقّ لا برقم محفوظ**.
+    assert 'test "$head" = "$expected"' in workflow
 
 
 def test_ci_never_clears_decisions_to_make_the_drill_pass():
