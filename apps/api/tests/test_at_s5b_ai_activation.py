@@ -505,3 +505,48 @@ async def test_global_classification_ceiling_is_unchanged(clients, monkeypatch):
     assert response.status_code == 200
     # والسقف كما كان بعد الطلب.
     assert get_settings().model_external_send_max_classification == "C1"
+
+
+# ══════════ عقد الصحة: الحقل يُصرَّح لا يُمرَّر ══════════
+
+@pytest.mark.parametrize("path", ["/healthz", "/readyz"])
+async def test_health_endpoints_expose_ai_configured(clients, monkeypatch, path):
+    """الحقل كان يُمرَّر إلى نموذج لا يعلنه، فيبتلعه Pydantic بصمت.
+
+    اختبارٌ يفحص الاستجابة كما يراها العميل — لا كما يظنّها الكود — كان
+    سيكشفه قبل النشر. وهذا ما يفعله هذا الاختبار.
+    """
+    from athera_api.config import get_settings
+
+    http, _ = clients
+    settings = get_settings()
+
+    monkeypatch.setattr(settings, "model_provider", "null", raising=False)
+    body = (await http["a"].get(path)).json()
+    assert "ai_configured" in body, "الحقل غائب عن الاستجابة"
+    assert body["ai_configured"] is False
+    assert body["provider"] == "null"
+
+    monkeypatch.setattr(settings, "model_provider", "anthropic", raising=False)
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-only-not-a-real-key", raising=False)
+    body = (await http["a"].get(path)).json()
+    assert body["provider"] == "anthropic"
+    assert body["ai_configured"] is True
+    # ولا شيء من المفتاح في الاستجابة.
+    assert "test-only-not-a-real-key" not in str(body)
+
+
+async def test_app_readiness_survives_a_named_provider_without_a_key(clients, monkeypatch):
+    """مزوّد مُسمّى بلا سرّ لا يُسقط صحة التطبيق — التخزين والمكتبة تعملان."""
+    from athera_api.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "model_provider", "anthropic", raising=False)
+    monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
+
+    http, _ = clients
+    response = await http["a"].get("/readyz")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["ai_configured"] is False
