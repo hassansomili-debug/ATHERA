@@ -401,3 +401,107 @@ async def test_raw_research_text_is_never_persisted_anywhere(clients, monkeypatc
     assert summary.get("intent")
     assert model_runs, "لم تُسجَّل أي تشغيلة نموذج"
     assert model_runs[0].provider and model_runs[0].latency_ms is not None
+
+
+# ══════════ المعمارية: المسار يمرّ بالمنسّق فعلًا ══════════
+
+ORCH_MARKER = "ORCHESTRATION-PROOF-MARKER-5521"
+
+
+async def test_ai_ask_traverses_the_orchestrator(clients, monkeypatch):
+    """أثرٌ جانبي حقيقي للمنسّق — لا تأكيد غير مباشر.
+
+    `/ai/ask` كان يستدعي البوابة مباشرةً، فلا `AgentRun` ولا حواجز ولا أثر.
+    الدليل هنا ليس أن الرد وصل، بل أن **صفّ تشغيل أجنت كُتب**، وأن نيّته
+    مسجّلة، وأن بصمة المدخل محفوظة، وأن تشغيلة النموذج مرتبطة به.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.runs import AgentRun, ModelRun
+
+    fake = _use_fake(monkeypatch, FakeProvider())
+    http, tenants = clients
+    tenant = tenants["a"]
+    question = f"{ORCH_MARKER} — أريد دراسة أثر الذكاء الاصطناعي في الاتصال التسويقي."
+
+    response = await http["a"].post("/api/v1/ai/ask", json={"question": question})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "ok"
+
+    async with tenant_session(tenant["tenant_id"], tenant["user_id"]) as session:
+        runs = (await session.execute(select(AgentRun))).scalars().all()
+        model_runs = (await session.execute(select(ModelRun))).scalars().all()
+
+    # ① صفّ تشغيل أجنت وُجد — وهو ما لم يكن يوجد قبل هذا التصحيح.
+    assert len(runs) == 1, f"عدد تشغيلات الأجنت: {len(runs)}"
+    run = runs[0]
+    assert run.agent_key == "research_manager"
+    assert run.status == "completed"
+
+    # ② البصمة محفوظة والنصّ غائب.
+    summary = run.input_summary or {}
+    assert summary["intent"] == "research_manager"
+    assert summary["chars"] == len(question)
+    assert len(summary["sha256"]) == 64
+    assert ORCH_MARKER not in str(summary)
+
+    # ③ تشغيلة النموذج مرتبطة بصفّ الأجنت لا معلّقة.
+    assert len(model_runs) == 1
+    assert model_runs[0].agent_run_id == run.id
+    assert model_runs[0].max_classification_sent == "C1"
+
+    # ④ النصّ وصل المزوّد — وإلا لأثبت الاختبار العدم.
+    assert any(ORCH_MARKER in m.content for m in fake.seen[0].messages)
+
+
+async def test_exactly_one_model_call_per_request(clients, monkeypatch):
+    """الموجّه لا يمسّ البوابة، والمنسّق وحده يستدعيها — فنداء واحد لا اثنان."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.runs import ModelRun
+
+    fake = _use_fake(monkeypatch, FakeProvider())
+    http, tenants = clients
+    await http["a"].post("/api/v1/ai/ask", json={"question": "سؤال بحثي كافٍ الطول للاختبار."})
+
+    assert len(fake.seen) == 1, f"استُدعي المزوّد {len(fake.seen)} مرة"
+    tenant = tenants["a"]
+    async with tenant_session(tenant["tenant_id"], tenant["user_id"]) as session:
+        runs = (await session.execute(select(ModelRun))).scalars().all()
+    assert len(runs) == 1
+
+
+async def test_s5b_request_uses_no_tools_at_all(clients, monkeypatch):
+    """لا ذاكرة، ولا ملفات، ولا بحث خارجي، ولا سياق مستأجر — بلا أداة واحدة.
+
+    والسبب ليس تبسيطًا: أداة الذاكرة تصنيفها C2 وسقف الإرسال C1، فاستدعاؤها
+    كان يعني رفع السقف — إضعافًا عامًّا — أو إرسال محتوى حسّاس.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.runs import ToolRun
+
+    _use_fake(monkeypatch, FakeProvider())
+    http, tenants = clients
+    await http["a"].post("/api/v1/ai/ask", json={"question": "سؤال بحثي كافٍ الطول للاختبار."})
+
+    tenant = tenants["a"]
+    async with tenant_session(tenant["tenant_id"], tenant["user_id"]) as session:
+        tool_runs = (await session.execute(select(ToolRun))).scalars().all()
+    assert tool_runs == [], f"استُدعيت أدوات: {[t.tool_key for t in tool_runs]}"
+
+
+async def test_global_classification_ceiling_is_unchanged(clients, monkeypatch):
+    """السقف لم يُرفع: المسار مرّ بإعلان C1 صادق، لا بتوسيع الحدّ."""
+    from athera_api.config import get_settings
+
+    _use_fake(monkeypatch, FakeProvider())
+    http, _ = clients
+    response = await http["a"].post("/api/v1/ai/ask", json={"question": "سؤال بحثي كافٍ الطول."})
+    assert response.status_code == 200
+    # والسقف كما كان بعد الطلب.
+    assert get_settings().model_external_send_max_classification == "C1"

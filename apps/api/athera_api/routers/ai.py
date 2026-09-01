@@ -19,14 +19,16 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..brain import guardrails
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.files import File
-from ..providers.base import Message, ModelRequest
-from ..providers.gateway import ModelGateway, provider_readiness
+from ..brain.orchestrator import Orchestrator
+from ..providers.gateway import provider_readiness
 from ..schemas.ai import AiAskRequest, AiAskResponse
 from ..services import ai_policy, ai_rate_limit, audit
+
+# الأجنت الذي ينفّذ نيّة S5B النصّية. الاسم داخلي ولا يظهر للباحث.
+S5B_AGENT = "research_manager"
 
 router = APIRouter(prefix="/api/v1/ai", tags=["athera-ai"])
 
@@ -90,30 +92,33 @@ async def ask(
             )],
         )
 
-    # ── الاستدعاء عبر البوابة: سقف التصنيف والتكلفة والزمن تُفرض هناك ──
+    # ── الاستدعاء عبر المنسّق: هو الطبقة المعمارية، والبوابة تحته ──
+    #
+    # **بلا أدوات في هذه المرحلة.** والقرار ليس تبسيطًا: أداة الذاكرة تصنيفها
+    # C2، وسقف الإرسال الخارجي C1. فاستدعاؤها هنا كان يعني إمّا رفع السقف —
+    # وهو إضعاف عام مرفوض — أو إرسال محتوى بحثي حسّاس. وS5B نصّي فقط: لا
+    # ذاكرة موثقة، ولا ملفات، ولا بحث خارجي، ولا سياق مستأجر آخر.
+    #
+    # ونداء نموذج **واحد**: الموجّه لا يمسّ البوابة، والمنسّق وحده يستدعيها.
     notice = ai_policy.capability_notice(locale, literature_online=literature_online)
-    messages = [Message(role="system", content=ai_policy.system_prompt(locale))]
+    policy = ai_policy.system_prompt(locale)
     if notice:
-        messages.append(Message(role="system", content=notice))
-    # محتوى المستخدم في دور `user` وحده — لا مسار يرفعه إلى `system`.
-    messages.append(Message(role="user", content=payload.question))
+        policy = f"{policy}\n\n{notice}"
 
-    gateway = ModelGateway()
     try:
-        response, run = await gateway.generate_structured(
+        result = await Orchestrator().run_agent(
             session,
             tenant_id=principal.tenant_id,
-            # §36 — سؤال حرّ يكتبه الباحث = **C1** بنصّ مصفوفة التصنيف:
-            # «مسودات عناوين، ملاحظات عمل». وC2 لأعيان أخرى — مخطوطة غير
-            # منشورة، رسالة قبل النشر — وسقفها يبقى كما هو: تفعيل صريح لكل
-            # مستأجر. فالذكاء يعمل تحت السقف الافتراضي بلا رفعه، ومحتوى
-            # الملفات (C2 فأعلى) لا يمرّ من هنا أصلًا في هذه المرحلة.
-            request=ModelRequest(messages=messages, classification="C1", locale=locale),
+            actor_user_id=principal.user_id,
+            agent_key=S5B_AGENT,
+            question=payload.question,
+            tool_calls=[],
+            input_classification="C1",
+            extra_system=policy,
         )
     except AtheraError:
         raise
     except Exception as exc:  # noqa: BLE001 — يُترجم لا يُسرَّب
-        # لا أثر مكدّس ولا رسالة مزوّد خام تصل المستخدم، ولا نصّ مُختلق يحلّ محلها.
         await audit.record(
             session, tenant_id=principal.tenant_id, action="ai.provider_failed",
             object_type="ai_request", object_id=uuid.uuid4(),
@@ -133,31 +138,29 @@ async def ask(
             recommended_next_actions=[_t(locale, "أعد المحاولة بعد قليل.", "Try again shortly.")],
         )
 
-    capabilities.append("model_reasoning")
-    text = response.content
+    answer = result.answer
+    if answer is None:
+        return AiAskResponse(
+            answer=_t(locale, "لم تُنتَج إجابة.", "No answer was produced."),
+            status="provider_error", evidence_state="none", limitations=limitations,
+        )
 
-    # ── حواجز النزاهة على المخرَج، لا على النية ──
-    # سياق فارغ عمدًا: لا دليل مخزَّن ولا تشغيلة تحليل في هذه المرحلة،
-    # فأي استشهاد أو رقم في المخرَج يقع خارج ما هو مسنود — وهذا ما تكشفه.
-    ctx = guardrails.GuardContext()
-    violations = guardrails.run_guards(
-        frozenset({"citations_must_be_grounded", "no_acceptance_guarantee",
-                   "no_self_verification", "authorship_needs_human"}),
-        text, ctx,
-    )
-    for violation in violations:
-        limitations.append(_t(locale, violation.detail_ar, violation.detail_en))
+    capabilities.append("model_reasoning")
+
+    # ما لم يجد النموذج له سندًا يُعلَن حدًّا لا يُبتلع في النصّ.
+    limitations.extend(answer.unsupported_claims)
+    limitations.extend(answer.evidence_gaps)
 
     return AiAskResponse(
-        answer=text,
+        answer=(answer.answer_en or answer.answer_ar) if locale == "en" else answer.answer_ar,
         status="ok",
-        # اقتراح نموذج — ليس دليلًا، ولا يدخل الذاكرة الموثقة (§7.4).
-        evidence_state="model_suggestion",
+        # بلا أدوات فلا استشهاد مسنود: اقتراح نموذج، لا دليل (§7.4).
+        evidence_state="verified" if answer.citations else "model_suggestion",
         capabilities_used=capabilities,
         limitations=limitations,
         recommended_next_actions=[
             _t(locale, "راجع الاقتراح واعتمد ما تريد إدخاله في مشروعك.",
                "Review the proposal and approve what you want to enter into your project."),
         ],
-        model_run_id=run.id,
+        model_run_id=result.model_run_id,
     )
