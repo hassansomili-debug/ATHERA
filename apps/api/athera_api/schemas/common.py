@@ -26,3 +26,7 @@ class Health(BaseModel):
     locale: str
     supported_locales: list[str]
     provider: str = Field(description="Active model provider (§32)")
+    ai_configured: bool = Field(
+        default=False,
+        description="Provider named AND credential present — never the credential itself",
+    )
