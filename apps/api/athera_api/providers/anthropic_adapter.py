@@ -60,18 +60,26 @@ def _text(response) -> str:
 class AnthropicAdapter(ModelProvider):
     name = "anthropic"
 
-    def __init__(self, api_key: str, default_model: str = DEFAULT_MODEL) -> None:
+    def __init__(self, api_key: str, default_model: str = DEFAULT_MODEL,
+                 workspace_id: str = "") -> None:
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY is required for the anthropic provider")
         self._api_key = api_key
         self._default_model = default_model
+        self._workspace_id = workspace_id or ""
         self._client = None
 
     def _get_client(self):
         if self._client is None:
             from anthropic import AsyncAnthropic  # noqa: PLC0415 — استيراد كسول مقصود
 
-            self._client = AsyncAnthropic(api_key=self._api_key)
+            # مفتاح مرتبط بهوية يتطلب `anthropic-workspace-id`؛ ومفتاح مرتبط
+            # بمساحة عمل لا يحتاجها. الترويسة تُرسل إن ضُبطت وحدها، فيعمل
+            # النوعان بلا فرض إعداد لا يلزم أحدهما.
+            #
+            # وهي تفصيل مزوّد بحت، فموضعها هنا لا في المنسّق ولا في الموجّه.
+            headers = {"anthropic-workspace-id": self._workspace_id} if self._workspace_id else None
+            self._client = AsyncAnthropic(api_key=self._api_key, default_headers=headers)
         return self._client
 
     async def generate_structured(self, request: ModelRequest) -> ModelResponse:
