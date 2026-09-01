@@ -163,36 +163,45 @@ async def planning_consent(
 async def generate_opportunities(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> OpportunityList:
     """يولّد الفرص — **حتميٌّ أولًا، ثم نداء بلا معاملة، ثم حفظ** (§33).
 
     وبوابة الكفاية تسبق كل شيء: أدلةٌ لا تكفي تعني **صفر نداء** — لا مقترحات
     تُخترع من فراغ ولا رموز تُنفَق على سؤال لا جواب له.
-    """
-    project = await _project(session, principal, project_id)
-    thesis_id = project.id and None
-    tenant_id, actor_id, locale = principal.tenant_id, principal.user_id, principal.locale
 
-    # ── معاملة (1): اللقطة والإذن والتشغيلة ──
-    context = await _build_context(session, principal, project_id)
-    if not context.sufficient:
-        raise AtheraError("planning.insufficient_evidence", status_code=422,
-                          missing=list(context.missing_roles),
-                          evidence_count=len(context.items))
-    grant = await consent.planning_authorization(
-        session, tenant_id=tenant_id, project_id=project_id,
-        context_fingerprint=context.fingerprint)
-    if grant is None:
-        raise AtheraError("planning.consent_required", status_code=403,
-                          capability=consent.PLANNING_CAPABILITY,
-                          fingerprint=context.fingerprint)
-    run_id = await generate.open_run(session, tenant_id=tenant_id, project_id=project_id,
-                                     context=context, capability=grant.capability)
-    await session.commit()
+    **ولا تبعية `get_session` هنا — وذلك مقصود.**
+
+    تلك التبعية تفتح معاملةً تبقى مفتوحة طوال الطلب، ونحن ننتظر مزوّدًا
+    خارجيًّا داخله. فتعود العلّة التي أصلحها S5C: اتصالٌ `idle in
+    transaction` عبر انتظارٍ شبكي. فتُدار الجلسات هنا صراحةً: قصيرةٌ قبل
+    النداء، وقصيرةٌ بعده، ولا شيء مفتوح أثناءه.
+    """
+    tenant_id, actor_id = principal.tenant_id, principal.user_id
+    maker = _maker(tenant_id, actor_id)
+
+    # ── معاملة (1): اللقطة والإذن والتشغيلة — ثم تُغلق ──
+    async with maker() as opening:
+        await _project(opening, principal, project_id)
+        context = await _build_context(opening, principal, project_id)
+        if not context.sufficient:
+            raise AtheraError("planning.insufficient_evidence", status_code=422,
+                              missing=list(context.missing_roles),
+                              evidence_count=len(context.items))
+        grant = await consent.planning_authorization(
+            opening, tenant_id=tenant_id, project_id=project_id,
+            context_fingerprint=context.fingerprint)
+        if grant is None:
+            raise AtheraError("planning.consent_required", status_code=403,
+                              capability=consent.PLANNING_CAPABILITY,
+                              fingerprint=context.fingerprint)
+        run_id = await generate.open_run(
+            opening, tenant_id=tenant_id, project_id=project_id,
+            context=context, capability=grant.capability)
+
+    locale = principal.locale
+    thesis_id = None
 
     # ── بلا معاملة: النداء الخارجي ──
-    maker = _maker(tenant_id, actor_id)
     try:
         batch, agent_run_id = await Orchestrator().run_structured_detached(
             maker, tenant_id=tenant_id, actor_user_id=actor_id,
@@ -235,7 +244,8 @@ async def generate_opportunities(
             reason="model proposals generated from verified evidence; nothing verified",
             request_id=principal.request_id,
         )
-    return await list_opportunities(project_id, principal=principal, session=session)
+    async with maker() as reading:
+        return await list_opportunities(project_id, principal=principal, session=reading)
 
 
 def _maker(tenant_id: uuid.UUID, actor_id: uuid.UUID):
