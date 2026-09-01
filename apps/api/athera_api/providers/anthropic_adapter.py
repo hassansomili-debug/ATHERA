@@ -87,6 +87,14 @@ class AnthropicAdapter(ModelProvider):
 
         الطلب النصي بالالتزام بمخطط يفشل صامتًا فيعيد نصًّا يشبه JSON؛ وأداة
         بمخطط إمّا تنجح وإمّا تفشل صراحةً.
+
+        **ولا `temperature` هنا.** أزالته واجهة Anthropic في 1.x، وحتمية
+        الإخراج المهيكل لا تأتي منه أصلًا: تأتي من أداة إجبارية بمخطط
+        (`tool_choice`)، ومن التحقق من العقد بعدها في `parse_contract`. فحذفه
+        اتباعٌ للواجهة المدعومة، لا تنازل عن ضبط.
+
+        والحقل باقٍ في `ModelRequest` لأنه محايد تجاه المزوّد ومزودون آخرون
+        ما زالوا يقبلونه — لا يُرسل إلى هذا المزوّد وحده.
         """
         started = perf_counter()
         client = self._get_client()
@@ -96,7 +104,6 @@ class AnthropicAdapter(ModelProvider):
         kwargs: dict = {
             "model": model,
             "messages": turns,
-            "temperature": request.temperature,
             "max_tokens": request.max_output_tokens or 4096,
         }
         if system:
@@ -137,7 +144,6 @@ class AnthropicAdapter(ModelProvider):
         kwargs: dict = {
             "model": model,
             "messages": turns,
-            "temperature": request.temperature,
             "max_tokens": request.max_output_tokens or 4096,
             "tools": request.tools,
         }
@@ -166,7 +172,6 @@ class AnthropicAdapter(ModelProvider):
         kwargs: dict = {
             "model": model,
             "messages": turns,
-            "temperature": request.temperature,
             "max_tokens": request.max_output_tokens or 4096,
         }
         if system:
