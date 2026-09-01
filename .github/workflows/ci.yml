@@ -37,7 +37,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -e "apps/api[dev]"
+      # **حزم المزودين تُثبَّت أيضًا** — بلا مفتاح وبلا شبكة.
+      #
+      # `test_at_s5b_anthropic_contract.py` يقرأ توقيع الـSDK المثبَّت
+      # ويقابله بما يبنيه المحوّل. وبغياب الحزمة كان يُتخطّى بأكمله —
+      # فيصمت الاختبار الوحيد الذي يلتقط الانحدار الذي أوقف الإنتاج فعلًا:
+      # `anthropic` 1.x أزالت `temperature`، وكل الاختبارات الأخرى تتحدث
+      # إلى مزوّد وهمي يقبل كل شيء.
+      #
+      # ولا يغيّر هذا سلوك التشغيل: `MODEL_PROVIDER=null` كما هو، ولا
+      # بيانات اعتماد. وجود الحزمة يسمح بقراءة عقدها لا باستدعائها.
+      - run: pip install -e "apps/api[dev,providers]"
       - name: Migrate (RLS + append-only audit)
         run: cd infra/db && alembic upgrade head
       - name: Lint
