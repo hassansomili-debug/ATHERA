@@ -117,27 +117,63 @@ def build_prompt(section: Section, chunks: list[ChunkView], specs) -> str:
     )
 
 
-async def run_extraction(
+@dataclass(frozen=True, slots=True)
+class SectionPlan:
+    """قسمٌ جاهز للإرسال — **بيانات في الذاكرة لا كائنات ORM**.
+
+    يعبر حدود المعاملات، ولذلك لا يحمل صفًّا ولا جلسة: نصوص المقاطع
+    ومعرّفاتها ومواضعها وحدها. فلا `DetachedInstanceError` ولا استعلام
+    كسول يفتح معاملةً من حيث لا نحتسب.
+    """
+
+    section: Section
+    prompt: str
+    chunks: tuple[ChunkView, ...]
+    field_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Prepared:
+    """حصيلة العمل المحلي — يُودَع قبل أن يبدأ أي انتظار خارجي."""
+
+    run_id: uuid.UUID
+    file_id: uuid.UUID
+    status: Status
+    chunks: int
+    candidates: int
+    excluded: dict
+    views: tuple[ChunkView, ...]
+    error: str | None = None
+
+
+async def prepare(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     file_record: File,
     data: bytes,
-    orchestrator,
-    locale: str = "ar",
-) -> PipelineResult:
-    """التشغيلة كاملة — وكل فشل يُسمّى بسببه ولا يُبتلع.
+    run_id: uuid.UUID | None = None,
+    external_allowed: bool = True,
+    consent_state: str = "granted",
+) -> Prepared:
+    """كل ما لا يحتاج شبكة — في معاملة واحدة قصيرة تُودَع فورًا.
 
-    وفشل قسم لا يُسقط ما نجح: الأقسام الستة الأخرى تبقى، ويُبلَّغ عن الفاشل
-    باسمه (§29). فرسالةٌ استُخرج منها ستة أقسام من سبعة أنفع من لا شيء.
+    التفكيك، والمقاطع بمواضعها، والاستخراج الحتمي. وبعدها تُغلق المعاملة
+    فلا يبقى اتصالٌ مفتوح أثناء انتظار المزوّد.
     """
-    run = ExtractionRun(
-        tenant_id=tenant_id, file_id=file_record.id, extractor="document_intelligence",
-        status=Status.PARSING.value, chunks_parsed=0, candidates_proposed=0,
-        candidates_rejected_unquoted=0, started_at=dt.datetime.now(dt.UTC),
-    )
-    session.add(run)
+    run = None
+    if run_id is not None:
+        run = (
+            await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+        ).scalar_one_or_none()
+    if run is None:
+        run = ExtractionRun(
+            tenant_id=tenant_id, file_id=file_record.id, extractor="document_intelligence",
+            status=Status.PARSING.value, chunks_parsed=0, candidates_proposed=0,
+            candidates_rejected_unquoted=0, started_at=dt.datetime.now(dt.UTC),
+        )
+        session.add(run)
     await session.flush()
 
     # ── التفكيك ──
@@ -147,10 +183,11 @@ async def run_extraction(
         run.status = Status.PARSE_FAILED.value
         run.error = str(exc)[:500]
         run.finished_at = dt.datetime.now(dt.UTC)
-        return PipelineResult(run.id, Status.PARSE_FAILED, 0, 0, {}, [], str(exc)[:200])
+        return Prepared(run.id, file_record.id, Status.PARSE_FAILED, 0, 0, {}, (),
+                        str(exc)[:200])
 
     run.chunks_parsed = len(rows)
-    run.status = Status.EXTRACTING.value
+    run.status = Status.EXTRACTING.value if external_allowed else Status.PARSED.value
     views = _views(rows)
     excluded = excluded_report(views)
 
@@ -171,26 +208,180 @@ async def run_extraction(
         ))
         candidates += 1
 
-    # ── النموذج، قسمًا قسمًا، على المقاطع المختارة وحدها ──
-    failed: list[str] = []
-    # حقول فُحصت ولم تُوجد — تُعدّ ولا تُخزَّن صفوفًا بلا اقتباس.
-    attempted: set[str] = set()
+    # ── بلا إذن: يقف الخط عند المحلي، ولا يُعدّ ذلك فشلًا ──
+    #
+    # الاستخراج الحتمي تمّ، والمقاطع محفوظة بمواضعها، والمراجعة ممكنة على ما
+    # استُخرج. وما لم يقع هو **الإرسال الخارجي وحده** — فيُقال باسمه.
+    if not external_allowed:
+        run.candidates_proposed = candidates
+        run.status = (Status.LOCAL_ONLY.value if consent_state == "declined"
+                      else Status.AWAITING_CONSENT.value)
+        run.finished_at = dt.datetime.now(dt.UTC)
+
+    return Prepared(run.id, file_record.id, Status(run.status), len(rows), candidates,
+                    excluded, tuple(views))
+
+
+def plan_sections(views) -> list[SectionPlan]:
+    """اختيار المقاطع وبناء المطالبات — **دالة خالصة، بلا قاعدة ولا شبكة**."""
+    plans: list[SectionPlan] = []
     for section in _BATCH_SECTIONS:
         specs = [f for f in MODEL_FIELDS if f.section is section]
         if not specs:
             continue
         picked: dict[str, ChunkView] = {}
         for spec in specs:
-            for chunk in select_chunks_for(spec, views):
+            for chunk in select_chunks_for(spec, list(views)):
                 picked[chunk.chunk_id] = chunk
         if not picked:
             continue
+        chunk_list = tuple(sorted(picked.values(), key=lambda c: c.seq))
+        plans.append(SectionPlan(
+            section=section,
+            prompt=build_prompt(section, list(chunk_list), specs),
+            chunks=chunk_list,
+            field_keys=tuple(f.key for f in specs),
+        ))
+    return plans
 
-        spec_by_key = {f.key: f for f in specs}
-        chunk_list = sorted(picked.values(), key=lambda c: c.seq)
+
+async def absorb(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    run_id: uuid.UUID,
+    file_id: uuid.UUID,
+    plan: SectionPlan,
+    batch: ExtractionBatch,
+) -> tuple[int, int, set[str]]:
+    """يحفظ مرشّحات قسم واحد — معاملة قصيرة بعد أن انتهت الشبكة.
+
+    ويعيد: كم قُبل، وكم رُفض لعدم التأصيل، وأي حقول فُحصت فلم تُوجد.
+    """
+    spec_by_key = {k: f for k in plan.field_keys
+                   for f in MODEL_FIELDS if f.key == k}
+    run = (
+        await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+    ).scalar_one()
+
+    accepted = rejected = 0
+    attempted: set[str] = set()
+    for field in batch.fields:
+        if field.status == STATUS_NOT_FOUND:
+            # **الغياب لا يُسجَّل صفًّا.** `fact_candidates` يشترط اقتباسًا
+            # بقيد في القاعدة (`ck_candidate_quote_required`)، والمفقود لا
+            # اقتباس له — فصفٌّ باقتباس فارغ يخالف القيد، وصفٌّ باقتباس
+            # مستعار من مقطع لا يحوي الحقل هو اختلاق الموضع بعينه.
+            #
+            # والغياب يبقى مرئيًّا في المراجعة بلا صفّ: الشاشة تعرض فهرس
+            # الحقول كاملًا، وما لا مرشّح له يُعلَن «لم يُستخرَج».
+            attempted.add(field.field_key)
+            continue
+
+        # ── حاجز الاختلاق ──
+        #
+        # قيمة باقتباس لا يوجد في أي مقطع مُرسَل **تُرفض**. ولا مقطع
+        # احتياطي يُسنَد إليه: إسناد اقتباسٍ مختلَق إلى أول مقطع يجعل
+        # الاختلاق يمرّ **وقد اكتسب موضعًا**، وهو أسوأ من مروره عاريًا —
+        # لأن الباحث سيرى مصدرًا يبدو صحيحًا فيثق به.
+        #
+        # والفحص هو `quote_is_grounded` نفسه الذي يستعمله الاعتماد في
+        # §7.4. واختلافهما كان سيجعل مرشّحًا يُقبل هنا ويُرفض عند
+        # الاعتماد — طريقٌ مسدود أمام الباحث بلا سبب مفهوم.
+        quote = (field.quote or "").strip()
+        source = next((c for c in plan.chunks if quote_is_grounded(quote, c.text)), None)
+        if source is None:
+            run.candidates_rejected_unquoted += 1
+            rejected += 1
+            continue
+
+        session.add(FactCandidate(
+            tenant_id=tenant_id, extraction_run_id=run_id, file_id=file_id,
+            chunk_id=uuid.UUID(source.chunk_id),
+            memory_category=memory_category_for(spec_by_key[field.field_key])
+            if field.field_key in spec_by_key else "researcher_fact",
+            field_key=field.field_key,
+            statement_ar=str(field.value) if field.value is not None else "",
+            value={"value": field.value, "extraction_status": field.status},
+            quote=quote[:2000], locator=source.locator,
+            confidence=field.extraction_confidence, status="unverified",
+        ))
+        accepted += 1
+
+    run.candidates_proposed += accepted
+    return accepted, rejected, attempted
+
+
+async def finalize(
+    session: AsyncSession, *, run_id: uuid.UUID, failed: list[str],
+) -> ExtractionRun:
+    """إغلاق التشغيلة — معاملة قصيرة أخيرة."""
+    run = (
+        await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+    ).scalar_one()
+    run.status = Status.AWAITING_REVIEW.value
+    run.finished_at = dt.datetime.now(dt.UTC)
+    if failed:
+        # فشل قسم لا يُسقط ما نجح: الأقسام الأخرى تبقى، ويُبلَّغ عن الفاشل
+        # باسمه (§29). فرسالةٌ استُخرج منها ستة أقسام من سبعة أنفع من لا شيء.
+        run.error = ("partial: " + "; ".join(failed))[:500]
+    return run
+
+
+async def run_extraction(
+    session_maker,
+    *,
+    tenant_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    file_id: uuid.UUID,
+    data: bytes,
+    model_call,
+    locale: str = "ar",
+    run_id: uuid.UUID | None = None,
+    external_allowed: bool = True,
+    consent_state: str = "granted",
+) -> PipelineResult:
+    """التشغيلة كاملة — **ولا معاملة مفتوحة أثناء أي نداء خارجي**.
+
+    الشكل: معاملة قصيرة للعمل المحلي، ثم لكل قسم نداءٌ **بلا معاملة** يليه
+    معاملة قصيرة تحفظ نتيجته، ثم معاملة أخيرة تُغلق التشغيلة.
+
+    وكان هذا كله معاملةً واحدة تمتدّ من التفكيك إلى آخر قسم — فتبقى مفتوحة
+    دقائق أثناء سبعة نداءات خارجية، ويظهر الاتصال `idle in transaction`،
+    ويُمسَك قفل سلسلة التدقيق للمستأجر فتقف كتاباته خلفه. رُصد ذلك في
+    الإنتاج: اتصالٌ علِق 254 ثانية، وكتابةٌ استغرقت 120 ثانية ثم تمّت في 6.2
+    حين أُفرج عنه.
+
+    و`session_maker` دالةٌ تُنشئ جلسةً جديدة عند كل نداء — لا جلسةٌ تُمرَّر:
+    الجلسة الممرَّرة تعني معاملةً حيّة، وهي ما نتجنّب.
+    """
+    async with session_maker() as session:
+        record = (
+            await session.execute(select(File).where(File.id == file_id))
+        ).scalar_one()
+        prepared = await prepare(
+            session, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            file_record=record, data=data, run_id=run_id,
+            external_allowed=external_allowed, consent_state=consent_state,
+        )
+
+    if prepared.status is Status.PARSE_FAILED:
+        return PipelineResult(prepared.run_id, Status.PARSE_FAILED, 0, 0, {}, [],
+                              prepared.error, ())
+    if not external_allowed:
+        return PipelineResult(prepared.run_id, prepared.status, prepared.chunks,
+                              prepared.candidates, prepared.excluded, [], None, ())
+
+    # ── الأقسام: نداءٌ بلا معاملة، ثم حفظٌ في معاملة قصيرة ──
+    plans = plan_sections(prepared.views)
+    failed: list[str] = []
+    candidates = prepared.candidates
+    attempted: set[str] = set()
+    for plan in plans:
         try:
-            result = await orchestrator(
-                question=build_prompt(section, chunk_list, specs),
+            # **لا جلسة هنا.** ولو بقيت معاملة مفتوحة لعاد العطب نفسه.
+            result = await model_call(
+                question=plan.prompt,
                 schema=ExtractionBatch.model_json_schema(),
                 # §7 — محتوى بحثي غير منشور: C2، والبوابة تحكم الإرسال.
                 classification="C2",
@@ -198,63 +389,23 @@ async def run_extraction(
             )
             batch = ExtractionBatch.model_validate(result)
         except Exception as exc:  # noqa: BLE001 — قسم يسقط ولا يُسقط غيره
-            failed.append(f"{section.value}:{type(exc).__name__}")
+            failed.append(f"{plan.section.value}:{type(exc).__name__}")
             continue
 
-        for field in batch.fields:
-            if field.status == STATUS_NOT_FOUND:
-                # **الغياب لا يُسجَّل صفًّا.** `fact_candidates` يشترط اقتباسًا
-                # بقيد في القاعدة (`ck_candidate_quote_required`)، والمفقود لا
-                # اقتباس له — فصفٌّ باقتباس فارغ يخالف القيد، وصفٌّ باقتباس
-                # مستعار من مقطع لا يحوي الحقل هو اختلاق الموضع بعينه.
-                #
-                # والغياب يبقى مرئيًّا في المراجعة بلا صفّ: الشاشة تعرض فهرس
-                # الحقول كاملًا، وما لا مرشّح له يُعلَن «لم يُستخرَج».
-                attempted.add(field.field_key)
-                continue
+        async with session_maker() as session:
+            accepted, _rejected, missing = await absorb(
+                session, tenant_id=tenant_id, run_id=prepared.run_id,
+                file_id=prepared.file_id, plan=plan, batch=batch,
+            )
+        candidates += accepted
+        attempted |= missing
 
-            # ── حاجز الاختلاق ──
-            #
-            # قيمة باقتباس لا يوجد في أي مقطع مُرسَل **تُرفض**. ولا مقطع
-            # احتياطي يُسنَد إليه: إسناد اقتباسٍ مختلَق إلى أول مقطع يجعل
-            # الاختلاق يمرّ **وقد اكتسب موضعًا**، وهو أسوأ من مروره عاريًا —
-            # لأن الباحث سيرى مصدرًا يبدو صحيحًا فيثق به.
-            #
-            # والفحص هو `quote_is_grounded` نفسه الذي يستعمله الاعتماد في
-            # §7.4. واختلافهما كان سيجعل مرشّحًا يُقبل هنا ويُرفض عند
-            # الاعتماد — طريقٌ مسدود أمام الباحث بلا سبب مفهوم.
-            quote = (field.quote or "").strip()
-            source = next((c for c in chunk_list if quote_is_grounded(quote, c.text)), None)
-            if source is None:
-                run.candidates_rejected_unquoted += 1
-                continue
+    async with session_maker() as session:
+        run = await finalize(session, run_id=prepared.run_id, failed=failed)
+        status = Status(run.status)
 
-            session.add(FactCandidate(
-                tenant_id=tenant_id, extraction_run_id=run.id, file_id=file_record.id,
-                chunk_id=uuid.UUID(source.chunk_id),
-                memory_category=memory_category_for(spec_by_key[field.field_key])
-                if field.field_key in spec_by_key else "researcher_fact",
-                field_key=field.field_key,
-                statement_ar=str(field.value) if field.value is not None else "",
-                value={"value": field.value, "extraction_status": field.status},
-                quote=quote[:2000], locator=source.locator,
-                confidence=field.extraction_confidence, status="unverified",
-            ))
-            candidates += 1
-
-    run.candidates_proposed = candidates
-    run.finished_at = dt.datetime.now(dt.UTC)
-    if failed and candidates == 0:
-        run.status = Status.EXTRACTION_FAILED.value
-        run.error = "; ".join(failed)[:500]
-        return PipelineResult(run.id, Status.EXTRACTION_FAILED, len(rows), 0, excluded, failed,
-                              run.error, tuple(sorted(attempted)))
-
-    run.status = Status.AWAITING_REVIEW.value
-    if failed:
-        run.error = "partial: " + "; ".join(failed)[:400]
-    return PipelineResult(run.id, Status.AWAITING_REVIEW, len(rows), candidates, excluded,
-                          failed, run.error, tuple(sorted(attempted)))
+    return PipelineResult(prepared.run_id, status, prepared.chunks, candidates,
+                          prepared.excluded, failed, None, tuple(sorted(attempted)))
 
 
 async def ensure_thesis_for_file(

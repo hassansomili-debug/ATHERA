@@ -308,7 +308,15 @@
       "methodology": "Methodology",
       "findings": "Findings",
       "limits": "Limits and recommendations"
-    }
+    },
+    "consentPending": "Awaiting your authorization",
+    "consentGranted": "You authorized external processing",
+    "consentDeclined": "You did not authorize external processing",
+    "consentExcluded": "Chunks that will not be sent (appendices or personal identifiers)",
+    "consentNotRecall": "Withdrawing stops future processing; it cannot recall what was already sent.",
+    "consentLocalDone": "Local reading and deterministic extraction are done — neither leaves the server.",
+    "stateAwaitingConsent": "Local reading complete · awaiting your authorization",
+    "stateLocalOnly": "Local reading complete · no external processing"
   },
   "opportunities": {
     "title": "Publication map",
