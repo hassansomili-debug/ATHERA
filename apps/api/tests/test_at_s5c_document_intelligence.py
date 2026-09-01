@@ -415,13 +415,13 @@ def test_duplicate_upload_reuses_the_same_thesis_record():
 
 # ══════════ 10. إعادة المعالجة: ما اعتمده الإنسان لا يُمحى ══════════
 
-def test_reprocess_never_overwrites_approved_values():
+def test_reprocess_never_overwrites_a_decided_candidate():
     import inspect
 
     from athera_api.routers import document_intelligence as router_module
 
     source = inspect.getsource(router_module.reprocess)
-    assert "approved_preserved" in source
+    assert "decisions_preserved" in source
     # لا حذف ولا تحديث للمرشّحات المحسومة.
     assert "delete(" not in source and "update(" not in source
 
@@ -433,7 +433,7 @@ def test_review_surfaces_a_conflict_instead_of_replacing():
 
     source = inspect.getsource(router_module.review)
     assert "conflicts" in source
-    assert 'current.status == "approved"' in source
+    assert "if current.status in decided_states:" in source
 
 
 # ══════════ 11. التنفيذ في الخلفية: الآلية مُعلنة وحدّها مُعلن ══════════
@@ -655,9 +655,11 @@ async def test_end_to_end_upload_read_extract_review_approve(two_tenants):
             session, tenant_id=tid, candidate_id=degree.id, actor_user_id=uid,
             reason="لست متأكدًا",
         )
-        assert degree.status == "rejected"          # ما يقبله قيد القاعدة
-        assert degree.value["human_decision"] == "unknown"   # وما قاله الباحث
+        # الحالة أولى في العمود بعد ترحيل 0016 — لا مشتقّة من علامة في JSON.
+        assert degree.status == "unknown"
+        assert "human_decision" not in (degree.value or {})
         assert degree.resulting_memory_id is None
+        assert degree.decided_by == uid and degree.decided_at is not None
 
 
 @requires_db
@@ -987,34 +989,34 @@ def test_intake_surfaces_the_real_failure_reason():
 
 
 def test_review_screen_shows_provenance_for_every_value():
-    assert "review.provenanceQuestion" in REVIEW_PAGE
+    assert "thesisReview.provenanceQuestion" in REVIEW_PAGE
     assert "field.quote" in REVIEW_PAGE
-    assert "review.locatorLabel" in REVIEW_PAGE
+    assert "thesisReview.locatorLabel" in REVIEW_PAGE
 
 
 def test_review_screen_explains_what_confidence_means():
     """رقمٌ عارٍ يُقرأ حكمًا على جودة البحث — فيُكتب معناه تحته."""
-    assert "review.confidenceMeaning" in REVIEW_PAGE
+    assert "thesisReview.confidenceMeaning" in REVIEW_PAGE
 
 
 def test_review_screen_offers_all_four_decisions():
-    for key in ("review.approve", "review.edit", "review.reject", "review.unknown"):
+    for key in ("thesisReview.approve", "thesisReview.edit", "thesisReview.reject", "thesisReview.unknown"):
         assert key in REVIEW_PAGE, key
 
 
 def test_review_screen_declares_proposals_are_not_facts():
-    assert "review.subtitle" in REVIEW_PAGE
+    assert "thesisReview.subtitle" in REVIEW_PAGE
     # الملاحظة تأتي من الخادم مع الاستجابة — فلا تتفرّع النسختان.
     assert "{review.note}" in REVIEW_PAGE
 
 
 def test_review_screen_shows_absent_fields_instead_of_hiding_them():
-    assert "review.notExtracted" in REVIEW_PAGE
+    assert "thesisReview.notExtracted" in REVIEW_PAGE
     assert 'extraction_status === "not_found"' in REVIEW_PAGE
 
 
 def test_review_screen_surfaces_conflicts():
-    assert "review.conflictTitle" in REVIEW_PAGE
+    assert "thesisReview.conflictTitle" in REVIEW_PAGE
     assert "field.conflict_with" in REVIEW_PAGE
 
 
@@ -1027,7 +1029,7 @@ def test_web_catalogs_carry_every_new_key_in_both_languages():
     for key in ("uploadTitle", "noOcr", "stateAwaitingReview", "reviewCta", "noTitleYet"):
         assert ar["theses"][key] and en["theses"][key], key
         assert ar["theses"][key] != en["theses"][key], key
-    assert set(ar["review"]) == set(en["review"])
+    assert set(ar["thesisReview"]) == set(en["thesisReview"])
     assert set(ar["theses"]["sectionLabels"]) == {s.value for s in catalogue.Section}
 
 
@@ -1037,3 +1039,481 @@ def test_browser_never_talks_to_a_model_provider():
         lowered = source.lower()
         for vendor in ("anthropic", "openai", "api.claude", "x-api-key"):
             assert vendor not in lowered, vendor
+
+
+# ══════════ 15. «لا أعرف» حالةً أولى (ترحيل 0016) ══════════
+
+MIGRATION_0016 = (
+    pathlib.Path(__file__).resolve().parents[3]
+    / "infra" / "db" / "migrations" / "versions" / "0016_unknown_decision_state.py"
+).read_text(encoding="utf-8")
+
+
+def test_migration_0016_uses_the_real_constraint_name():
+    """الاسم فُحص في القاعدة لا خُمِّن من النموذج."""
+    assert "ck_fact_candidates_ck_candidate_status" in MIGRATION_0016
+    # الاسم الساذج — الذي كانت الاتفاقية ستضاعف بادئته — لا يُستعمل.
+    assert 'CONSTRAINT = "ck_candidate_status"' not in MIGRATION_0016
+
+
+def test_migration_0016_allows_exactly_four_values():
+    """يتّسع بقيمة معلومة، ولا ينفتح على نصّ حرّ."""
+    assert "'unverified','approved','rejected','unknown'" in MIGRATION_0016
+    for loosened in ("DROP CONSTRAINT ck_fact_candidates_ck_candidate_status;\n", "status IS NOT NULL"):
+        assert loosened not in MIGRATION_0016
+
+
+def test_migration_0016_performs_no_backfill():
+    """§3 — لا إعادة تصنيف لصفوف قائمة بالتخمين."""
+    upgrade = MIGRATION_0016.split("def upgrade")[1].split("def downgrade")[0]
+    assert "UPDATE" not in upgrade.upper().replace("UPDATED", "")
+    assert "INSERT" not in upgrade.upper()
+
+
+def test_migration_0016_downgrade_refuses_instead_of_mapping():
+    """§4 — لا `unknown → rejected` ولا `unknown → unverified` صامتًا."""
+    downgrade = MIGRATION_0016.split("def downgrade")[1]
+    assert "raise RuntimeError" in downgrade
+    assert "downgrade refused" in downgrade
+    assert "SET status" not in downgrade.upper()
+
+
+def test_unknown_is_a_declared_api_status():
+    """§8 — العميل يقرأ `unknown` ولا يستنتجها من `rejected` + علامة."""
+    from athera_api.schemas.document_intelligence import CandidateResponse
+
+    pattern = CandidateResponse.model_fields["status"].metadata[0].pattern
+    assert pattern == "^(unverified|approved|rejected|unknown)$"
+
+
+def test_review_response_separates_all_four_tallies():
+    """§10 — «لا أعرف» لا تُدمج في الرفض ولا في الانتظار."""
+    from athera_api.schemas.document_intelligence import ReviewResponse
+
+    for field in ("approved", "rejected", "unknown", "pending"):
+        assert field in ReviewResponse.model_fields, field
+
+
+def test_service_no_longer_smuggles_unknown_through_value():
+    """الحيلة أُزيلت: الحالة في العمود، لا علامة في JSON تناقضه."""
+    import inspect
+
+    from athera_api.services import memory as memory_service
+
+    source = inspect.getsource(memory_service.mark_candidate_unknown)
+    assert 'candidate.status = "unknown"' in source
+    assert "human_decision" not in source
+
+
+def test_router_reads_status_from_the_column_not_from_value():
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module._view)
+    assert "status=row.status" in source
+    assert "human_decision" not in source
+
+
+def test_unknown_is_revisable_but_a_settled_verdict_is_not():
+    """§6 — العودة إلى «لا أعرف» بحكم صريح مسموحة؛ قلب حكمٍ قيل ليس كذلك."""
+    from athera_api.services.memory import REVISABLE
+
+    assert REVISABLE == frozenset({"unverified", "unknown"})
+
+
+def test_unknown_is_distinct_from_a_field_that_was_never_extracted():
+    """§11 — تردّد الإنسان غير غياب الحقل عن الملف.
+
+    الأول حالة قرار على صفّ قائم، والثاني لا صفّ له أصلًا — فلا يمكن أن
+    يُقرأ أحدهما مكان الآخر.
+    """
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module.review)
+    assert 'extraction_status="not_found"' in source
+    assert 'status="unverified"' in source  # الحقل الغائب يُعرض غير محسوم
+
+
+def test_reprocessing_preserves_every_human_decision_not_only_approved():
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module.reprocess)
+    assert '("approved", "rejected", "unknown")' in source
+    assert "decisions_preserved" in source
+
+
+def test_review_holds_every_decided_state_against_a_newer_proposal():
+    """§7 — اقتراح أحدث لا يزيح «لا أعرف» لمجرد أنه أحدث."""
+    import inspect
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = inspect.getsource(router_module.review)
+    assert 'decided_states = ("approved", "rejected", "unknown")' in source
+    assert "if current.status in decided_states:" in source
+
+
+def test_review_ui_renders_unknown_neutrally_and_keeps_it_revisitable():
+    """§9 — «لا أعرف» لا تُعرض «مرفوض»، ولا تُلوَّن لون الخطأ."""
+    assert "thesisReview.statusUnknown" in REVIEW_PAGE
+    assert "isUnknown" in REVIEW_PAGE
+    assert "thesisReview.statusUnknownHint" in REVIEW_PAGE
+    # المحسوم نهائيًّا يخفي الأزرار؛ «لا أعرف» ليست منه.
+    assert 'const settled = field.status === "approved" || field.status === "rejected";' in REVIEW_PAGE
+    assert ") : settled ? null : (" in REVIEW_PAGE
+
+
+def test_review_ui_shows_four_separate_tallies():
+    assert "thesisReview.tallyLine" in REVIEW_PAGE
+    for counter in ("review.approved", "review.rejected", "review.unknown", "review.pending"):
+        assert f"String({counter})" in REVIEW_PAGE, counter
+
+
+def test_unknown_labels_exist_in_both_languages():
+    import json
+
+    ar = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
+    en = json.loads((WEB / "messages" / "en.json").read_text(encoding="utf-8"))
+    assert ar["thesisReview"]["statusUnknown"] == "لا أعرف"
+    assert en["thesisReview"]["statusUnknown"] == "I don't know"
+    assert ar["thesisReview"]["unknown"] == "لا أعرف"
+    assert en["thesisReview"]["unknown"] == "I don't know"
+    # ولا تسرّب لفظ الرفض إلى تسمية «لا أعرف».
+    assert "مرفوض" not in ar["thesisReview"]["statusUnknown"]
+    assert "Reject" not in en["thesisReview"]["statusUnknown"]
+
+
+async def _one_candidate(session, tid, uid, *, field_key="sample_size"):
+    """مرشّح واحد مؤصَّل — أرضيةٌ مشتركة لاختبارات دورة القرار."""
+    from athera_api.models.files import File
+    from athera_api.models.identity import ObjectGrant
+    from athera_api.models.research import FactCandidate
+    from athera_api.services.document_intelligence import pipeline as pl
+    from sqlalchemy import select
+
+    record = File(
+        tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
+        original_filename="thesis.txt", content_type="text/plain", size_bytes=10,
+        classification="C2", is_untrusted_content=True, status="stored", uploaded_by=uid,
+    )
+    session.add(record)
+    await session.flush()
+    session.add(ObjectGrant(tenant_id=tid, object_type="file", object_id=record.id,
+                            user_id=uid, grant_level="owner", granted_by=uid))
+    thesis, _ = await pl.ensure_thesis_for_file(session, tenant_id=tid, file_id=record.id)
+    await pl.run_extraction(
+        session, tenant_id=tid, actor_user_id=uid, file_record=record,
+        data=THESIS_TEXT.encode(), locale="ar",
+        orchestrator=_StubModel([{"fields": [{
+            "field_key": field_key, "status": "extracted", "value": "120",
+            "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
+            "extraction_confidence": 0.8,
+        }]}]),
+    )
+    row = (await session.execute(
+        select(FactCandidate).where(FactCandidate.file_id == record.id,
+                                    FactCandidate.field_key == field_key)
+    )).scalar_one()
+    return record, thesis, row
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_unverified_to_unknown_and_no_verified_memory(two_tenants):
+    """§12.3 و§12.4 — الانتقال يعمل، ولا ذاكرة تُنتَج منه."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import ResearcherMemory
+    from athera_api.services import memory as memory_service
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+
+    async with tenant_session(tid, uid) as session:
+        _, _, row = await _one_candidate(session, tid, uid)
+        assert row.status == "unverified"
+
+        before = len((await session.execute(
+            select(ResearcherMemory).where(ResearcherMemory.tenant_id == tid)
+        )).scalars().all())
+
+        await memory_service.mark_candidate_unknown(
+            session, tenant_id=tid, candidate_id=row.id, actor_user_id=uid,
+            reason="لا أستطيع الحكم",
+        )
+        await session.flush()
+        assert row.status == "unknown"
+        assert row.resulting_memory_id is None
+
+        after = len((await session.execute(
+            select(ResearcherMemory).where(ResearcherMemory.tenant_id == tid)
+        )).scalars().all())
+        assert after == before, "«لا أعرف» أنتجت ذاكرة موثقة"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_unknown_can_later_be_approved_or_rejected(two_tenants):
+    """§12.8 و§12.9 — الباحث يعود فيحسم، بحكمٍ صريح لا بصمت."""
+    from athera_api.db import tenant_session
+    from athera_api.deps import Principal
+    from athera_api.routers import document_intelligence as di
+    from athera_api.schemas.document_intelligence import CandidateDecision
+    from athera_api.services import memory as memory_service
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
+                          mfa_satisfied=True, locale="ar")
+
+    async with tenant_session(tid, uid) as session:
+        # «لا أعرف» ← «معتمَد»
+        _, _, row = await _one_candidate(session, tid, uid)
+        await di.decide(row.id, CandidateDecision(decision="unknown"),
+                        principal=principal, session=session)
+        assert row.status == "unknown"
+        decided = await di.decide(row.id, CandidateDecision(decision="approve"),
+                                  principal=principal, session=session)
+        assert decided.status == "approved"
+        assert row.resulting_memory_id is not None
+
+        # «لا أعرف» ← «مرفوض»
+        _, _, other = await _one_candidate(session, tid, uid, field_key="design")
+        await di.decide(other.id, CandidateDecision(decision="unknown"),
+                        principal=principal, session=session)
+        rejected = await di.decide(other.id, CandidateDecision(decision="reject",
+                                                               reason="غير صحيح"),
+                                   principal=principal, session=session)
+        assert rejected.status == "rejected"
+        assert other.resulting_memory_id is None
+
+        # وحكمٌ قيل لا يُقلَب بنداء ثانٍ
+        with pytest.raises(memory_service.MemoryPromotionError):
+            await di.decide(other.id, CandidateDecision(decision="approve"),
+                            principal=principal, session=session)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_reextraction_never_silently_overwrites_unknown(two_tenants):
+    """§7 و§12.10 — قراءة أحدث لا تزيح «لا أعرف» لمجرد أنها أحدث."""
+    from athera_api.db import tenant_session
+    from athera_api.deps import Principal
+    from athera_api.routers import document_intelligence as di
+    from athera_api.schemas.document_intelligence import CandidateDecision
+    from athera_api.services.document_intelligence import pipeline as pl
+    from sqlalchemy import select
+
+    from athera_api.models.files import File
+    from athera_api.models.research import FactCandidate
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
+                          mfa_satisfied=True, locale="ar")
+
+    async with tenant_session(tid, uid) as session:
+        record, thesis, row = await _one_candidate(session, tid, uid)
+        await di.decide(row.id, CandidateDecision(decision="unknown"),
+                        principal=principal, session=session)
+        assert row.status == "unknown"
+
+        # قراءة ثانية تقترح قيمة مختلفة بنفس الاقتباس الموجود فعلًا.
+        stored = (await session.execute(select(File).where(File.id == record.id))).scalar_one()
+        await pl.run_extraction(
+            session, tenant_id=tid, actor_user_id=uid, file_record=stored,
+            data=THESIS_TEXT.encode(), locale="ar",
+            orchestrator=_StubModel([{"fields": [{
+                "field_key": "sample_size", "status": "extracted", "value": "999",
+                "quote": "استخدمت الدراسة المنهج شبه التجريبي على عينة قوامها 120 طالبًا.",
+                "extraction_confidence": 0.5,
+            }]}]),
+        )
+        await session.flush()
+
+        rows = (await session.execute(
+            select(FactCandidate).where(FactCandidate.file_id == record.id,
+                                        FactCandidate.field_key == "sample_size")
+        )).scalars().all()
+        assert len(rows) == 2, "القراءة الثانية عدّلت الصفّ بدل أن تضيف"
+        kept = next(r for r in rows if r.status == "unknown")
+        assert kept.id == row.id
+        assert kept.decided_by == uid, "قرار الباحث مُحي"
+
+        # والشاشة تعرض «لا أعرف» ومعها التعارض — لا القيمة الجديدة مكانها.
+        view = await di.review(thesis.id, principal=principal, session=session)
+        shown = {f.field_key: f for g in view.sections for f in g.fields}["sample_size"]
+        assert shown.status == "unknown"
+        assert shown.conflict_with == "999"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_unknown_is_counted_apart_from_rejected(two_tenants):
+    """§10 و§12.7 — أربع فئات، ولا دمج."""
+    from athera_api.db import tenant_session
+    from athera_api.deps import Principal
+    from athera_api.routers import document_intelligence as di
+    from athera_api.schemas.document_intelligence import CandidateDecision
+    from athera_api.services.document_intelligence import fields as cat
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
+                          mfa_satisfied=True, locale="ar")
+
+    async with tenant_session(tid, uid) as session:
+        _, thesis, unknown_row = await _one_candidate(session, tid, uid)
+        await di.decide(unknown_row.id, CandidateDecision(decision="unknown"),
+                        principal=principal, session=session)
+
+        view = await di.review(thesis.id, principal=principal, session=session)
+        assert view.unknown == 1
+        assert view.rejected == 0
+        assert view.approved == 0
+        # ولا تُحسب انتظارًا: الباحث راجعها.
+        assert view.pending == len(cat.FIELD_CATALOGUE) - 1
+
+        shown = {f.field_key: f for g in view.sections for f in g.fields}
+        assert shown["sample_size"].status == "unknown"
+        # وحقلٌ لم يُستخرَج يبقى شيئًا آخر تمامًا (§11).
+        assert shown["title_en"].status == "unverified"
+        assert shown["title_en"].extraction_status == "not_found"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_database_accepts_unknown_and_rejects_a_fifth_state(two_tenants):
+    """§12.1 و§12.2 — على PostgreSQL 16 حقيقي، بمحاولة المخالفة لا بادّعائها."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from athera_api.db import tenant_session
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+
+    async with tenant_session(tid, uid) as session:
+        _, _, row = await _one_candidate(session, tid, uid)
+        await session.execute(
+            text("UPDATE fact_candidates SET status='unknown', decided_by=:u, "
+                 "decided_at=now() WHERE id=:i"),
+            {"u": uid, "i": row.id},
+        )
+        got = (await session.execute(
+            text("SELECT status FROM fact_candidates WHERE id=:i"), {"i": row.id}
+        )).scalar_one()
+        assert got == "unknown"
+
+    with pytest.raises(IntegrityError) as err:
+        async with tenant_session(tid, uid) as session:
+            _, _, row = await _one_candidate(session, tid, uid, field_key="design")
+            await session.execute(
+                text("UPDATE fact_candidates SET status='maybe', decided_by=:u, "
+                     "decided_at=now() WHERE id=:i"),
+                {"u": uid, "i": row.id},
+            )
+    assert "ck_fact_candidates_ck_candidate_status" in str(err.value)
+
+
+def _load_migration(name: str):
+    """يحمّل وحدة ترحيل بمسارها — الترحيلات ليست حزمة قابلة للاستيراد."""
+    import importlib.util
+
+    path = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "infra" / "db" / "migrations" / "versions" / name
+    )
+    spec = importlib.util.spec_from_file_location(f"_mig_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_downgrade_0016_refuses_while_unknown_rows_exist(two_tenants):
+    """§4 و§12.13 — التنازل يرفض ولا يحوّل قرارًا، على PostgreSQL حقيقي.
+
+    ويُفحص هنا شطران: أن الرفض يقع، وأن **لا شيء تغيّر** بعده — لا الحالة
+    ولا القيد. فرفضٌ يترك القاعدة نصف مُنزَّلة أسوأ من تنازلٍ يتمّ.
+
+    والشطر الثالث — نجاح التنازل بعد حسم الصفوف — يجري في تدريب الترحيل
+    بدور الترحيل، لا هنا: دور التطبيق لا يملك DDL على الجداول أصلًا، وهو
+    عزلٌ مقصود يُثبَت أدناه لا نقصٌ يُلتفّ عليه.
+    """
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import text
+
+    from athera_api.db import tenant_session
+    from athera_api.deps import Principal
+    from athera_api.routers import document_intelligence as di
+    from athera_api.schemas.document_intelligence import CandidateDecision
+
+    migration = _load_migration("0016_unknown_decision_state.py")
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
+                          mfa_satisfied=True, locale="ar")
+
+    def run_downgrade(sync_conn):
+        context = MigrationContext.configure(sync_conn)
+        with Operations.context(context):
+            migration.downgrade()
+
+    async def constraint_of(session):
+        return (await session.execute(text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname='ck_fact_candidates_ck_candidate_status'"
+        ))).scalar_one()
+
+    async with tenant_session(tid, uid) as session:
+        _, _, row = await _one_candidate(session, tid, uid)
+        await di.decide(row.id, CandidateDecision(decision="unknown"),
+                        principal=principal, session=session)
+        await session.flush()
+
+        raw = await session.connection()
+        savepoint = await session.begin_nested()
+        with pytest.raises(RuntimeError) as err:
+            await raw.run_sync(run_downgrade)
+        # الرسالة تقول العدد والسبب وما يجب فعله — بالعربية والإنجليزية.
+        assert "downgrade refused" in str(err.value)
+        assert "التنازل مرفوض" in str(err.value)
+        await savepoint.rollback()
+
+        still = (await session.execute(
+            text("SELECT status FROM fact_candidates WHERE id=:i"), {"i": row.id}
+        )).scalar_one()
+        assert still == "unknown", "التنازل المرفوض حوّل قرارًا بشريًّا"
+        assert "unknown" in await constraint_of(session)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_application_role_cannot_alter_the_status_constraint(two_tenants):
+    """العزل الذي جعل الشطر الثالث خارج الاختبار — يُثبَت لا يُدَّعى.
+
+    دور التطبيق يقرأ ويكتب صفوفًا ولا يملك DDL. فلا مسار في زمن التشغيل
+    يوسّع حالات القرار أو يضيّقها؛ ذلك حكرٌ على الترحيل.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import ProgrammingError
+
+    from athera_api.db import tenant_session
+
+    tenant = two_tenants["a"]
+    with pytest.raises(ProgrammingError) as err:
+        async with tenant_session(tenant["tenant_id"], tenant["user_id"]) as session:
+            await session.execute(text(
+                "ALTER TABLE fact_candidates "
+                "DROP CONSTRAINT ck_fact_candidates_ck_candidate_status"
+            ))
+    assert "must be owner" in str(err.value)

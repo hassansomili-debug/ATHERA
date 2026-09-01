@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Final
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +36,19 @@ class MemoryPromotionError(AtheraError):
         super().__init__(code, status_code=422, **context)
 
 
+# الحالات التي يجوز اتخاذ قرار جديد عليها (S5C §6).
+#
+# `unverified` لم تُراجَع بعد، و`unknown` راجعها الباحث ولم يستطع الحكم —
+# فعودته إليها بحكمٍ صريح تقدُّمٌ لا تراجع. أما `approved` و`rejected` فحكمٌ
+# قيل، ولا يُقلَب بنداءٍ ثانٍ صامت.
+REVISABLE: Final = frozenset({"unverified", "unknown"})
+
+
+def _require_revisable(candidate: FactCandidate) -> None:
+    if candidate.status not in REVISABLE:
+        raise MemoryPromotionError("memory.already_decided", status=candidate.status)
+
+
 async def approve_candidate(
     session: AsyncSession,
     *,
@@ -49,8 +63,7 @@ async def approve_candidate(
     ).scalar_one_or_none()
     if candidate is None:
         raise NotFound("memory.candidate_not_found")
-    if candidate.status != "unverified":
-        raise MemoryPromotionError("memory.already_decided", status=candidate.status)
+    _require_revisable(candidate)
 
     # إعادة التحقق من التأصيل عند الاعتماد، لا عند الاستخراج فقط: المقطع قد
     # يكون تغيّر، والاعتماد هو اللحظة التي تكتسب فيها المعلومة صفة رسمية.
@@ -68,6 +81,7 @@ async def approve_candidate(
     if source_type not in PROMOTION_PATHS:  # pragma: no cover — حارس ضد تعديل لاحق
         raise MemoryPromotionError("memory.invalid_source_path", source_type=source_type)
 
+    previous_status = candidate.status
     now = dt.datetime.now(dt.UTC)
     profile = (
         await session.execute(
@@ -135,7 +149,7 @@ async def approve_candidate(
         object_type="researcher_memory",
         object_id=memory.id,
         actor_user_id=actor_user_id,
-        state_before={"candidate_status": "unverified"},
+        state_before={"candidate_status": previous_status},
         state_after={
             "candidate_status": "approved",
             "memory_category": candidate.memory_category,
@@ -161,9 +175,9 @@ async def reject_candidate(
     ).scalar_one_or_none()
     if candidate is None:
         raise NotFound("memory.candidate_not_found")
-    if candidate.status != "unverified":
-        raise MemoryPromotionError("memory.already_decided", status=candidate.status)
+    _require_revisable(candidate)
 
+    before = candidate.status
     candidate.status = "rejected"
     candidate.decided_by = actor_user_id
     candidate.decided_at = dt.datetime.now(dt.UTC)
@@ -176,7 +190,9 @@ async def reject_candidate(
         object_type="fact_candidate",
         object_id=candidate.id,
         actor_user_id=actor_user_id,
-        state_before={"status": "unverified"},
+        # الحالة السابقة كما كانت: «لا أعرف» ثم «مرفوض» مسارٌ مختلف عن
+        # «غير مراجَع» ثم «مرفوض»، والسجل يحفظ الفرق.
+        state_before={"status": before},
         state_after={"status": "rejected"},
         reason=reason,
     )
@@ -197,25 +213,27 @@ async def mark_candidate_unknown(
     «لا أستطيع الحكم». وخلطهما يفسد الإشارة: إعادة قراءة لاحقة تحتاج أن
     تميّز ما حكم عليه الباحث بالبطلان عمّا تركه معلّقًا.
 
-    **والتمييز يسكن `value` لا `status`.** قيد القاعدة
-    `ck_candidate_status` يحصر العمود في `unverified | approved | rejected`،
-    وقيمة رابعة تحتاج ترحيلًا لم يُعتمد. فالعمود يأخذ `rejected` — وهو
-    الصحيح لغرضه: قرارٌ نهائي لا ينتج ذاكرة — و`value.human_decision`
-    يحمل التمييز، ويُعرَض في الواجهة «لا أعرف» لا «مرفوض».
+    **والحالة أولى في العمود لا مشتقّة من `value`.** ترحيل 0016 وسّع
+    `ck_candidate_status` ليقبل `unknown`، فلا يحتاج عميلٌ أن يستنتجها من
+    `rejected` + علامة في JSON. والعمود هو المرجع.
 
     ولا ذاكرة تُنتَج منه — مثل الرفض تمامًا، ولنفس السبب: `verified` لا
-    يُبلَغ إلا بتأكيد صريح عبر أحد مسارات §7.4.
+    يُبلَغ إلا بتأكيد صريح عبر أحد مسارات §7.4. والقاعدة تحرسه أيضًا:
+    `ck_candidate_memory_only_when_approved` يمنع `resulting_memory_id` على
+    غير المعتمَد.
+
+    **ولا نهاية له:** الباحث قد يعود فيحسم. `REVISABLE` تسمح بذلك صراحةً،
+    ولا تسمح بقلب حكمٍ قيل.
     """
     candidate = (
         await session.execute(select(FactCandidate).where(FactCandidate.id == candidate_id))
     ).scalar_one_or_none()
     if candidate is None:
         raise NotFound("memory.candidate_not_found")
-    if candidate.status != "unverified":
-        raise MemoryPromotionError("memory.already_decided", status=candidate.status)
+    _require_revisable(candidate)
 
-    candidate.status = "rejected"
-    candidate.value = {**(candidate.value or {}), "human_decision": "unknown"}
+    before = candidate.status
+    candidate.status = "unknown"
     candidate.decided_by = actor_user_id
     candidate.decided_at = dt.datetime.now(dt.UTC)
     candidate.decision_reason = reason
@@ -227,8 +245,8 @@ async def mark_candidate_unknown(
         object_type="fact_candidate",
         object_id=candidate.id,
         actor_user_id=actor_user_id,
-        state_before={"status": "unverified"},
-        state_after={"status": "rejected", "human_decision": "unknown"},
+        state_before={"status": before},
+        state_after={"status": "unknown"},
         reason=reason,
     )
     return candidate

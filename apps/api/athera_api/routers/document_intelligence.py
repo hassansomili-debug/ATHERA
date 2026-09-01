@@ -227,14 +227,13 @@ async def extraction_state(
 def _view(row: FactCandidate, locale: str, *, conflict: object = None) -> CandidateResponse:
     spec = catalogue.BY_KEY.get(row.field_key or "")
     payload = row.value or {}
-    # «لا أعرف» تُعرض كما قالها الباحث، لا «مرفوض»: العمود يحمل `rejected`
-    # لأن القيد يحصره، والتمييز محفوظ في `value.human_decision`.
-    shown = "unknown" if payload.get("human_decision") == "unknown" else row.status
     return CandidateResponse(
         id=row.id, field_key=row.field_key or "",
         label=_t(locale, spec.label_ar, spec.label_en) if spec else (row.field_key or ""),
         value=payload.get("value"),
-        status=shown,
+        # `status` هو المرجع بعد ترحيل 0016 — ولا عميل يستنتج «لا أعرف» من
+        # `rejected` وعلامةٍ في JSON.
+        status=row.status,
         extraction_status=payload.get("extraction_status"),
         extraction_confidence=float(row.confidence) if row.confidence is not None else None,
         quote=row.quote or None, locator=row.locator,
@@ -263,21 +262,31 @@ async def review(
         )
     ).scalars().all())
 
+    # **قرارُ الإنسان يعلو اقتراحَ النموذج — أيًّا كان القرار** (§6، §7).
+    #
+    # `approved` و`rejected` و`unknown` ثلاثتها أحكامٌ قالها الباحث بعد
+    # مراجعة. وقراءةٌ لاحقة تقترح غيرها لا تزيحها: تظهر **تعارضًا مجاورًا**.
+    # وكان الخطر هنا دقيقًا: صفٌّ `unknown` أقدم يزيحه اقتراحٌ `unverified`
+    # أحدث لأنه أحدث وحده — فيبدو أن الباحث لم يراجع الحقل قط.
+    decided_states = ("approved", "rejected", "unknown")
     chosen: dict[str, FactCandidate] = {}
     conflicts: dict[str, object] = {}
     for row in rows:
-        key = row.field_key or "unknown"
+        key = row.field_key or "_unmapped"
         current = chosen.get(key)
         if current is None:
             chosen[key] = row
             continue
-        if current.status == "approved":
-            # قيمة معتمَدة لا تُزاح. والاقتراح الأحدث المخالف يُعرض تعارضًا.
+        if current.status in decided_states:
             proposed = (row.value or {}).get("value")
-            if row.status == "unverified" and proposed not in (None, (current.value or {}).get("value")):
+            if (
+                row.status == "unverified"
+                and proposed is not None
+                and proposed != (current.value or {}).get("value")
+            ):
                 conflicts[key] = proposed
             continue
-        if row.status == "approved" or row.created_at >= current.created_at:
+        if row.status in decided_states or row.created_at >= current.created_at:
             chosen[key] = row
 
     # الفهرس كاملًا: ما لا مرشّح له يُعلَن «لم يُستخرَج» ولا يُخفى.
@@ -308,13 +317,21 @@ async def review(
         for section in catalogue.Section
         if groups.get(section.value)
     ]
-    approved = sum(1 for c in chosen.values() if c.status == "approved")
-    pending = len(catalogue.FIELD_CATALOGUE) - sum(
-        1 for c in chosen.values() if c.status in ("approved", "rejected")
-    )
+    # **أربع فئات لا تُدمج** (§10): «لا أعرف» ليست رفضًا، ودمجها فيه يضخّم
+    # عدّ المرفوضات ويخفي تردّدًا هو نفسه معلومة.
+    #
+    # وحقلٌ بلا مرشّح لا يُحسب محسومًا: غيابه عن الملف ليس قرارًا اتخذه أحد.
+    tally = {"approved": 0, "rejected": 0, "unknown": 0, "unverified": 0}
+    for row in chosen.values():
+        if row.status in tally:
+            tally[row.status] += 1
+    approved = tally["approved"]
+    decided = tally["approved"] + tally["rejected"] + tally["unknown"]
+    pending = len(catalogue.FIELD_CATALOGUE) - decided
     return ReviewResponse(
         thesis_id=thesis_id, sections=ordered,
         total=len(catalogue.FIELD_CATALOGUE), approved=approved, pending=pending,
+        rejected=tally["rejected"], unknown=tally["unknown"],
         note=_t(
             principal.locale,
             "هذه مقترحات استخرجتها أثيرا من ملفك، وليست حقائق معتمدة. "
@@ -407,19 +424,21 @@ async def reprocess(
     if thesis.file_id is None:
         raise AtheraError("thesis.no_file", status_code=422)
 
-    decided = [
-        row for row in (
-            await session.execute(
-                select(FactCandidate).where(FactCandidate.file_id == thesis.file_id)
-            )
-        ).scalars().all()
-        if row.status == "approved"
-    ]
+    rows = (
+        await session.execute(
+            select(FactCandidate).where(FactCandidate.file_id == thesis.file_id)
+        )
+    ).scalars().all()
+    # يُحصى كلّ قرار على حدة — و«لا أعرف» تُحفظ مثل «معتمَد» تمامًا (§7).
+    preserved = {
+        state: sum(1 for row in rows if row.status == state)
+        for state in ("approved", "rejected", "unknown")
+    }
     await audit.record(
         session, tenant_id=principal.tenant_id, action="thesis.reprocess_requested",
         object_type="thesis", object_id=thesis.id, actor_user_id=principal.user_id,
-        state_after={"approved_preserved": len(decided)},
-        reason="reprocessing appends candidates; approved values are never overwritten",
+        state_after={"decisions_preserved": preserved},
+        reason="reprocessing appends candidates; no human decision is ever overwritten",
         request_id=principal.request_id,
     )
     background.add_task(_process, principal.tenant_id, principal.user_id,
@@ -427,7 +446,9 @@ async def reprocess(
     return ExtractionStateResponse(
         thesis_id=thesis_id, file_id=thesis.file_id, status=Status.EXTRACTING.value,
         chunks=0, candidates=0,
-        message=_t(principal.locale,
-                   f"جارٍ إعادة القراءة · {len(decided)} قيمة معتمَدة محفوظة",
-                   f"Reprocessing · {len(decided)} approved values preserved"),
+        message=_t(
+            principal.locale,
+            f"جارٍ إعادة القراءة · {sum(preserved.values())} قرارًا محفوظًا",
+            f"Reprocessing · {sum(preserved.values())} decisions preserved",
+        ),
     )

@@ -46,6 +46,8 @@ interface Review {
   sections: SectionGroup[];
   total: number;
   approved: number;
+  rejected: number;
+  unknown: number;
   pending: number;
   note: string;
 }
@@ -111,31 +113,40 @@ export default function ReviewPage({
   }
 
   const statusLabel: Record<string, string> = {
-    approved: t("review.statusApproved"),
-    rejected: t("review.statusRejected"),
-    unknown: t("review.statusUnknown"),
-    unverified: t("review.statusPending"),
+    approved: t("thesisReview.statusApproved"),
+    rejected: t("thesisReview.statusRejected"),
+    unknown: t("thesisReview.statusUnknown"),
+    unverified: t("thesisReview.statusPending"),
   };
 
   return (
     <>
-      <h1>{t("review.title")}</h1>
-      <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("review.subtitle")}</p>
+      <h1>{t("thesisReview.title")}</h1>
+      <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("thesisReview.subtitle")}</p>
       <Link href={`/${locale}/theses`} style={{ color: "var(--athera-teal)" }}>
-        {t("review.backToTheses")}
+        {t("thesisReview.backToTheses")}
       </Link>
 
       {error ? <p className="error">{error}</p> : null}
       {review === null ? null : (
         <>
           <p className="metric-label" style={{ marginBlockStart: 16 }}>
-            {t("review.progress")
+            {t("thesisReview.progress")
               .replace("{approved}", String(review.approved))
               .replace("{total}", String(review.total))
               .replace("{pending}", String(review.pending))}
           </p>
+          {/* الفئات الأربع مفصولة (§10): دمج «لا أعرف» في الرفض يضخّم عدّ
+              المرفوضات ويخفي تردّدًا هو نفسه معلومة. */}
+          <p className="metric-label">
+            {t("thesisReview.tallyLine")
+              .replace("{approved}", String(review.approved))
+              .replace("{rejected}", String(review.rejected))
+              .replace("{unknown}", String(review.unknown))
+              .replace("{pending}", String(review.pending))}
+          </p>
 
-          {review.sections.length === 0 ? <p>{t("review.empty")}</p> : null}
+          {review.sections.length === 0 ? <p>{t("thesisReview.empty")}</p> : null}
 
           {review.sections.map((section) => (
             <section key={section.key} style={{ marginBlockStart: 24 }}>
@@ -143,7 +154,10 @@ export default function ReviewPage({
               <div style={{ display: "grid", gap: 10 }}>
                 {section.fields.map((field) => {
                   const absent = field.extraction_status === "not_found" || !field.quote;
-                  const decided = field.status !== "unverified";
+                  const isUnknown = field.status === "unknown";
+                  // «لا أعرف» حكمٌ لم يُحسم — فتبقى قابلة للعودة إليها، ولا
+                  // تُعامَل معاملة المحسوم نهائيًّا.
+                  const settled = field.status === "approved" || field.status === "rejected";
                   return (
                     <article className="card" key={field.id}>
                       <div
@@ -153,31 +167,49 @@ export default function ReviewPage({
                         }}
                       >
                         <strong>{field.label}</strong>
-                        <span className="metric-label">
+                        <span
+                          className="metric-label"
+                          style={
+                            isUnknown
+                              ? {
+                                  // محايد لا لون خطأ: التردّد ليس بطلانًا.
+                                  color: "var(--muted)",
+                                  border: "1px dashed var(--border)",
+                                  borderRadius: "var(--radius)",
+                                  padding: "2px 8px",
+                                }
+                              : undefined
+                          }
+                        >
                           {statusLabel[field.status] ?? field.status}
                         </span>
                       </div>
+                      {isUnknown ? (
+                        <p className="provenance-note" style={{ margin: "6px 0 0" }}>
+                          {t("thesisReview.statusUnknownHint")}
+                        </p>
+                      ) : null}
 
                       {absent ? (
                         <>
                           <p style={{ color: "var(--muted)", margin: "6px 0 0" }}>
-                            {t("review.notExtracted")}
+                            {t("thesisReview.notExtracted")}
                           </p>
                           <p className="provenance-note" style={{ margin: "2px 0 0" }}>
-                            {t("review.notExtractedHint")}
+                            {t("thesisReview.notExtractedHint")}
                           </p>
                         </>
                       ) : (
                         <>
                           <p style={{ margin: "6px 0 0" }}>{asText(field.value)}</p>
                           {field.edited_by_human ? (
-                            <span className="metric-label">{t("review.editedByHuman")}</span>
+                            <span className="metric-label">{t("thesisReview.editedByHuman")}</span>
                           ) : null}
 
                           {/* المصدر — لا خلف نقرة: الحكم يحتاج ما حُكم عليه. */}
                           <details style={{ marginBlockStart: 8 }} open>
                             <summary style={{ cursor: "pointer", color: "var(--muted)" }}>
-                              {t("review.provenanceQuestion")}
+                              {t("thesisReview.provenanceQuestion")}
                             </summary>
                             <blockquote
                               style={{
@@ -189,16 +221,16 @@ export default function ReviewPage({
                               {field.quote}
                             </blockquote>
                             <div className="metric-label" style={{ marginBlockStart: 4 }}>
-                              {t("review.locatorLabel")}: {field.locator}
+                              {t("thesisReview.locatorLabel")}: {field.locator}
                               {field.extraction_confidence !== null
-                                ? ` · ${t("review.confidenceLabel")}: ${Math.round(
+                                ? ` · ${t("thesisReview.confidenceLabel")}: ${Math.round(
                                     field.extraction_confidence * 100,
                                   )}%`
                                 : ""}
                             </div>
                             {field.extraction_confidence !== null ? (
                               <p className="provenance-note" style={{ margin: "2px 0 0" }}>
-                                {t("review.confidenceMeaning")}
+                                {t("thesisReview.confidenceMeaning")}
                               </p>
                             ) : null}
                           </details>
@@ -213,12 +245,12 @@ export default function ReviewPage({
                             border: "1px solid var(--athera-amber, #F59E0B)",
                           }}
                         >
-                          <strong style={{ fontSize: 14 }}>{t("review.conflictTitle")}</strong>
+                          <strong style={{ fontSize: 14 }}>{t("thesisReview.conflictTitle")}</strong>
                           <p style={{ margin: "4px 0 0", fontSize: 14 }}>
                             {asText(field.conflict_with)}
                           </p>
                           <p className="provenance-note" style={{ margin: "4px 0 0" }}>
-                            {t("review.conflictBody")}
+                            {t("thesisReview.conflictBody")}
                           </p>
                         </div>
                       ) : null}
@@ -228,12 +260,12 @@ export default function ReviewPage({
                           <input
                             value={draft}
                             onChange={(event) => setDraft(event.target.value)}
-                            placeholder={t("review.valuePlaceholder")}
+                            placeholder={t("thesisReview.valuePlaceholder")}
                           />
                           <input
                             value={reason}
                             onChange={(event) => setReason(event.target.value)}
-                            placeholder={t("review.reasonPlaceholder")}
+                            placeholder={t("thesisReview.reasonPlaceholder")}
                           />
                           <div style={{ display: "flex", gap: 8 }}>
                             <button
@@ -241,7 +273,7 @@ export default function ReviewPage({
                               disabled={busy === field.id || absent}
                               onClick={() => void decide(field, "approve", draft)}
                             >
-                              {t("review.save")}
+                              {t("thesisReview.save")}
                             </button>
                             <button
                               type="button"
@@ -255,16 +287,16 @@ export default function ReviewPage({
                                 padding: "8px 16px", font: "inherit", cursor: "pointer",
                               }}
                             >
-                              {t("review.cancel")}
+                              {t("thesisReview.cancel")}
                             </button>
                           </div>
                           {absent ? (
                             <p className="provenance-note" style={{ margin: 0 }}>
-                              {t("review.cannotApproveAbsent")}
+                              {t("thesisReview.cannotApproveAbsent")}
                             </p>
                           ) : null}
                         </div>
-                      ) : decided ? null : (
+                      ) : settled ? null : (
                         <div
                           style={{
                             display: "flex", gap: 8, marginBlockStart: 10, flexWrap: "wrap",
@@ -276,7 +308,7 @@ export default function ReviewPage({
                               disabled={busy === field.id}
                               onClick={() => void decide(field, "approve")}
                             >
-                              {t("review.approve")}
+                              {t("thesisReview.approve")}
                             </button>
                           )}
                           <button
@@ -291,7 +323,7 @@ export default function ReviewPage({
                               padding: "8px 16px", font: "inherit", cursor: "pointer",
                             }}
                           >
-                            {t("review.edit")}
+                            {t("thesisReview.edit")}
                           </button>
                           {absent ? null : (
                             <button
@@ -304,12 +336,12 @@ export default function ReviewPage({
                                 padding: "8px 16px", font: "inherit", cursor: "pointer",
                               }}
                             >
-                              {t("review.reject")}
+                              {t("thesisReview.reject")}
                             </button>
                           )}
                           <button
                             type="button"
-                            disabled={busy === field.id || absent}
+                            disabled={busy === field.id || absent || isUnknown}
                             onClick={() => void decide(field, "unknown")}
                             style={{
                               border: "1px solid var(--border)", background: "transparent",
@@ -317,7 +349,7 @@ export default function ReviewPage({
                               padding: "8px 16px", font: "inherit", cursor: "pointer",
                             }}
                           >
-                            {t("review.unknown")}
+                            {t("thesisReview.unknown")}
                           </button>
                         </div>
                       )}

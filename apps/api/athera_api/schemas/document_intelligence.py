@@ -29,8 +29,8 @@ class CandidateResponse(BaseModel):
     field_key: str
     label: str
     value: Any = None
-    # حالة قرار الإنسان: unverified | approved | rejected | unknown.
-    status: str
+    # حالة قرار الإنسان — أربع، وهي المرجع لا مشتقّة من حقل آخر (ترحيل 0016).
+    status: str = Field(pattern="^(unverified|approved|rejected|unknown)$")
     # حالة القراءة: extracted | not_found | ambiguous | needs_review.
     extraction_status: str | None = None
     # ثقة **الاستخراج** لا صحّة العلم (§16) — تُعرض بهذا المعنى في الواجهة.
@@ -53,7 +53,10 @@ class ReviewResponse(BaseModel):
     thesis_id: uuid.UUID
     sections: list[SectionGroup]
     total: int
+    # الفئات الأربع مفصولة (§10): «لا أعرف» لا تُعدّ رفضًا ولا انتظارًا.
     approved: int
+    rejected: int
+    unknown: int
     pending: int
     note: str
 
@@ -66,5 +69,6 @@ class CandidateDecision(BaseModel):
     """
 
     decision: str = Field(pattern="^(approve|reject|unknown)$")
+    """`approve` مع `value` = تعديل ثم اعتماد."""
     value: Any = None
     reason: str | None = Field(default=None, max_length=1000)
