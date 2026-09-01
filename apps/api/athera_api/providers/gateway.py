@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from time import perf_counter
+from typing import Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,13 @@ from ..errors import AtheraError
 from ..models.runs import ModelRun
 from .base import CLASSIFICATION_ORDER, ModelProvider, ModelRequest, ModelResponse
 from .null_provider import NullProvider
+
+
+# أي إعداد يحمل مفتاح كل مزوّد. الإضافة هنا سطر واحد، لا تغيير في المنطق.
+_KEY_BY_PROVIDER: Final[dict[str, str]] = {
+    "openai": "openai_api_key",
+    "anthropic": "anthropic_api_key",
+}
 
 
 def build_provider() -> ModelProvider:
@@ -34,6 +42,32 @@ def build_provider() -> ModelProvider:
         raise AtheraError("provider.unknown", status_code=500,
                           provider=settings.model_provider)
     return NullProvider()
+
+
+def provider_readiness() -> tuple[str, bool, str]:
+    """(اسم المزوّد، جاهز؟، سبب عدم الجهوزية) — بلا كشف أي سرّ.
+
+    **اسم المزوّد ليس دليل جهوزية.** ضبط `MODEL_PROVIDER=openai` بلا مفتاح
+    يجعل الإعلان يقول «الذكاء متاح» بينما أول طلب يفشل. وهذا نفس العطب
+    الذي أصلحناه في التخزين، ولا سبب لتكراره هنا.
+
+    ولا تُعاد قيمة المفتاح ولا طوله ولا بادئته — الجهوزية `bool` والسبب رمز.
+    """
+    settings = get_settings()
+    provider = settings.model_provider
+
+    if provider == "null":
+        return provider, False, "provider_disabled"
+    if provider not in _KEY_BY_PROVIDER:
+        return provider, False, "provider_unknown"
+
+    if not (getattr(settings, _KEY_BY_PROVIDER[provider], "") or "").strip():
+        return provider, False, "missing_api_key"
+    return provider, True, "ready"
+
+
+def provider_ready() -> bool:
+    return provider_readiness()[1]
 
 
 def classification_allowed(classification: str, ceiling: str) -> bool:

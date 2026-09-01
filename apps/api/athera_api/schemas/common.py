@@ -15,6 +15,13 @@ class BilingualText(BaseModel):
 
 
 class Health(BaseModel):
+    """جهوزية التطبيق منفصلة عن جهوزية الذكاء عمدًا.
+
+    عطلٌ عند مزوّد النموذج يجب ألّا يُسقط المكتبة والتخزين والفحوص الحتمية.
+    ولذلك `status` يصف الاتصال بالقاعدة وحده، و`ai_configured` يصف المزوّد
+    إخبارًا لا شرطًا.
+    """
+
     status: str
     locale: str
     supported_locales: list[str]

@@ -21,6 +21,7 @@ from ..config import get_settings
 from ..deps import Principal, get_principal, get_session
 from ..i18n.catalog import SUPPORTED_LOCALES
 from ..models.identity import Tenant
+from ..providers import gateway
 from ..services import storage
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
@@ -57,29 +58,27 @@ async def posture(
         await session.execute(select(Tenant).where(Tenant.id == principal.tenant_id))
     ).scalar_one_or_none()
 
-    provider = settings.model_provider
+    provider, ai_ready, _ai_reason = gateway.provider_readiness()
     registry = os.getenv("LITERATURE_REGISTRY", "offline")
     temporal = os.getenv("TEMPORAL_ENABLED", "0") == "1"
-    has_key = bool(
-        settings.anthropic_api_key if provider == "anthropic"
-        else settings.openai_api_key if provider == "openai"
-        else True
-    )
-
     items = [
         PostureItem(
             key="model_provider",
             label=_pick(locale, "مزوّد النموذج", "Model provider"),
-            value=provider,
+            # الحال لا الاسم: `openai` بلا مفتاح ليس «متاحًا».
+            value=provider if ai_ready else ("null" if provider == "null" else "not_configured"),
             detail=_pick(
                 locale,
                 "لا يُستدعى أي نموذج: المخرجات كلها من قواعد حتمية."
                 if provider == "null" else
-                ("المفتاح مضبوط." if has_key else "المفتاح غير مضبوط — الاستدعاء سيفشل."),
+                ("المزوّد جاهز: أثيرا AI تستدعي نموذجًا."
+                 if ai_ready else
+                 "المزوّد مُسمّى ولا مفتاح له — أثيرا AI معطّلة حتى يُضبط على الخادم."),
                 "No model is called: every output comes from deterministic rules."
                 if provider == "null" else
-                ("The key is configured." if has_key else
-                 "The key is not configured — calls will fail."),
+                ("The provider is ready: ATHERA AI calls a model."
+                 if ai_ready else
+                 "A provider is named but has no key — ATHERA AI stays disabled until it is set on the server."),
             ),
         ),
         PostureItem(

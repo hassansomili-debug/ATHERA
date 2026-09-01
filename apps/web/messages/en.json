@@ -498,7 +498,16 @@
     "intentJournal": "Find journals",
     "intentReview": "Review my paper",
     "deterministic": "What works today without a model",
-    "deterministicBody": "Deterministic extraction, the nine consistency checks, journal matching and readiness scoring — all run on rules, not on a model."
+    "deterministicBody": "Deterministic extraction, the nine consistency checks, journal matching and readiness scoring — all run on rules, not on a model.",
+    "thinking": "Thinking…",
+    "askFailed": "ATHERA AI could not be reached.",
+    "limitations": "Limits of this answer",
+    "nextActions": "Recommended next step",
+    "evidenceSuggestion": "Model suggestion — not evidence",
+    "evidenceVerified": "Backed by verified evidence",
+    "evidenceNone": "No evidence",
+    "status_disabled": "Execution not activated",
+    "status_provider_error": "Provider unreachable"
   },
   "stages": {
     "idea": "Idea",
