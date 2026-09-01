@@ -590,3 +590,28 @@ async def test_readyz_stays_healthy_when_the_model_is_not_configured(clients, mo
     assert body["status"] == "ready"
     assert body["ai_configured"] is False
     assert body["provider"] == "anthropic"
+
+
+# ══════════ لغة المخرَج تُملى لا تُستنتج ══════════
+
+@pytest.mark.parametrize(
+    ("locale", "needle"),
+    [("ar", "أجب بالعربية"), ("en", "Answer in clear scientific English")],
+)
+async def test_output_language_is_dictated_as_the_last_system_instruction(
+    clients, monkeypatch, locale, needle
+):
+    """طلب إنجليزي كان يُجاب بالعربية: القالب عربي الغلبة والنموذج يتبعه.
+
+    والتوجيه يُوضع **آخر** تعليمة عمدًا — التعليمة الأخيرة أرجح — ويُفحص
+    موضعُه لا وجودُه وحده.
+    """
+    fake = _use_fake(monkeypatch, FakeProvider())
+    http, _ = clients
+    http["a"].headers["Accept-Language"] = locale
+
+    await http["a"].post("/api/v1/ai/ask", json={"question": "A sufficiently long research question."})
+
+    systems = [m.content for m in fake.seen[0].messages if m.role == "system"]
+    assert needle in systems[-1], f"التوجيه ليس آخر تعليمة: {systems[-1][:60]}"
+    http["a"].headers["Accept-Language"] = "ar"

@@ -63,6 +63,19 @@ class AgentResult:
     model_run_id: uuid.UUID | None
 
 
+# لغة المخرَج تُملى صراحةً وتُوضع **آخر** تعليمة نظام.
+#
+# قالب الأجنت عربي الغلبة (المسؤولية والقيد والقواعد الخمس)، فطلبٌ إنجليزي
+# كان يُجاب بالعربية: النموذج يتبع اللغة الغالبة في التعليمات لا لغة السؤال.
+# وذلك يجعل الإنجليزية مواطنًا من الدرجة الثانية، وهو ما تنقضه §26.4.
+_OUTPUT_LANGUAGE = {
+    "ar": "أجب بالعربية العلمية الواضحة، وضع الإجابة في `answer_ar`.",
+    "en": (
+        "Answer in clear scientific English. Put the full English answer in `answer_en`, "
+        "and a one-sentence Arabic summary in `answer_ar`."
+    ),
+}
+
 SYSTEM_TEMPLATE = """أنت {name_ar} ({name_en}) داخل منصة ATHERA البحثية.
 
 مسؤوليتك: {responsibility_ar}
@@ -140,6 +153,8 @@ class Orchestrator:
         input_classification: str = "C1",
         # تعليمات نظام إضافية — سياسة نزاهة تُضاف إلى قيد الأجنت لا تحلّ محله.
         extra_system: str | None = None,
+        # لغة المخرَج المطلوبة — تُملى صراحةً لا تُستنتج من لغة السؤال.
+        output_locale: str = "ar",
     ) -> AgentResult:
         spec: AgentSpec = get_agent(agent_key)
         trace_id = trace_id or uuid.uuid4()
@@ -219,6 +234,8 @@ class Orchestrator:
                     constraint_ar=spec.constraint_ar, constraint_en=spec.constraint_en,
                 )),
                 *([Message(role="system", content=extra_system)] if extra_system else []),
+                Message(role="system",
+                        content=_OUTPUT_LANGUAGE.get(output_locale, _OUTPUT_LANGUAGE["ar"])),
                 # نصّ الباحث في دور `user` وحده — ولا مسار يرفعه إلى `system`.
                 Message(role="user", content=f"{question}\n\n{_render_context(context_items)}"),
             ],
