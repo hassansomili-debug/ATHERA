@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     model_provider: str = "null"
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    # مفتاح Anthropic المرتبط بهوية يتطلب ترويسة `anthropic-workspace-id`.
+    # اختياري: مفتاح مرتبط بمساحة عمل لا يحتاجه، ومفتاح الهوية يفشل بدونه
+    # برسالة صريحة من المزوّد — فالإعداد يُصرَّح ولا يُخمَّن.
+    anthropic_workspace_id: str = ""
     # §36.3 — القيمة الافتراضية هي الأشد تقييدًا.
     model_external_send_max_classification: str = "C1"
 

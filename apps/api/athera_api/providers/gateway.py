@@ -38,7 +38,8 @@ def build_provider() -> ModelProvider:
     if settings.model_provider == "anthropic":
         from .anthropic_adapter import AnthropicAdapter  # noqa: PLC0415
 
-        return AnthropicAdapter(api_key=settings.anthropic_api_key)
+        return AnthropicAdapter(api_key=settings.anthropic_api_key,
+                                workspace_id=settings.anthropic_workspace_id)
     if settings.model_provider == "openai":
         from .openai_adapter import OpenAIAdapter  # noqa: PLC0415
 
