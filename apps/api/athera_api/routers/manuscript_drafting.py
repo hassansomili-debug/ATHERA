@@ -395,13 +395,20 @@ async def draft_section(
                           section=section_key, error=type(exc).__name__) from exc
 
     grounded, dropped = generate.ground(draft, context)
+    # **الربط قبل التحقق.** قيمةٌ حقيقية علّق النموذج مخرَجها على ادعاءٍ آخر
+    # تُربط هنا بمخرَجها الصحيح — أو تُقتطع جملتها كما هي ادعاءً ذرّيًّا. وما
+    # يبقى بلا ربط بعد ذلك عطبٌ حقيقي، لا سوء تعليق.
+    derived = generate.bind_statistics(draft, context, grounded)
 
     # ── التحقق الحتمي **قبل الحفظ** (§25) ──
     #
     # كشوفات الاختلاق لا يصير نصّها مخطوطة ولو تحت «بانتظار المراجعة»:
     # رقمٌ لا مصدر له يُقرأ نتيجةً مهما كانت حال المراجعة. وبقية الكشوفات
     # تحذيرات على نصٍّ قائم يقرّر فيه الباحث.
-    issues = draft_checks.run(draft, context, known_memory_ids=context.memory_ids,
+    verified = draft.model_copy(update={"claims": [b.claim.model_copy(
+        update={"memory_ids": b.memory_ids, "analysis_output_ids": b.output_ids})
+        for b in grounded]})
+    issues = draft_checks.run(verified, context, known_memory_ids=context.memory_ids,
                               known_output_ids=context.output_ids)
     fabricated = draft_checks.fabrications(issues)
     if fabricated:
@@ -454,6 +461,7 @@ async def draft_section(
                          "context_fingerprint": context.fingerprint,
                          "evidence_count": len(context.items),
                          "dropped_unknown_references": len(dropped),
+                         "statistics_bound_from_section": derived,
                          "review_status": "needs_review", **stats},
             reason="model draft grounded in verified evidence; not approved",
             request_id=principal.request_id,

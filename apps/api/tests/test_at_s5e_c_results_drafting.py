@@ -616,3 +616,243 @@ def test_a_statistic_is_not_reported_twice_under_two_names():
     keys = [i.issue_key for i in issues]
     assert "statistic_without_analysis_output" in keys
     assert "unsupported_sample_number" not in keys
+
+
+# ══════════ 9. العطب الإنتاجي: قيمة حقيقية علّق النموذج مخرَجها في مكانٍ آخر ══════════
+#
+# المخرَج الحقيقي في مشروع التحقق يحمل `t = 3.738 · df = 118 · η² = 0.106`.
+# وكتب النموذج «η² = 0.106» في نصّ القسم، وعلّق معرّف المخرَج على ادعاءٍ آخر
+# لا يحمل هذه السلسلة. فرفضه الفحص بوصفه رقمًا بلا مخرَج — **وهو رقم حقيقي**.
+#
+# والعطب في الربط لا في العلم. ورسالة الرفض كانت تقول العكس.
+
+REAL_PAYLOAD = {
+    "test": "independent_samples_t", "t": 3.738, "df": 118, "eta_squared": 0.106,
+    "n_control": 60, "n_treatment": 60, "mean_control": 62.66, "mean_treatment": 68.9,
+    "sd_control": 9.05, "sd_treatment": 6.75,
+}
+
+
+def test_a_real_statistic_is_not_called_unsupported_when_the_claim_binding_is_elsewhere():
+    """العطب الإنتاجي حرفيًّا — ويجب أن يفشل قبل الإصلاح."""
+    from athera_api.services.publishing.drafting import checks
+
+    output = _output(REAL_PAYLOAD)
+    context = _context(_item("result", RESULT_FACT), outputs=[output])
+    prose = "بلغ حجم الأثر η² = 0.106."
+    # النموذج علّق المخرَج على ادعاءٍ لا يحمل السلسلة.
+    elsewhere = _claim("أظهرت المقارنة تفوّق المجموعة التجريبية",
+                       output_ids=[str(output.output_id)])
+    issues = checks.run(_draft(prose, [elsewhere]), context,
+                        known_memory_ids=context.memory_ids,
+                        known_output_ids=context.output_ids)
+    keys = _keys(issues)
+    # الرقم حقيقي: فلا يُقال إنه بلا مخرَج.
+    assert "statistic_without_analysis_output" not in keys, keys
+    # لكنه بلا إسناد بنيوي: ويُقال ذلك باسمه.
+    assert "statistic_without_claim_binding" in keys, keys
+
+
+def test_the_binder_creates_an_atomic_claim_from_the_exact_span():
+    """§6 — فهرسةُ نصٍّ قائم: الجملة تُقتطع كما هي، حرفًا بحرف."""
+    from athera_api.services.publishing.drafting import generate
+
+    output = _output(REAL_PAYLOAD)
+    context = _context(_item("result", RESULT_FACT), outputs=[output])
+    prose = "أظهرت النتائج تفوّق المجموعة التجريبية. وبلغ حجم الأثر η² = 0.106."
+    draft = _draft(prose, [_claim("تفوّق المجموعة التجريبية",
+                                  output_ids=[str(output.output_id)])])
+    bound, _dropped = generate.ground(draft, context)
+    created = generate.bind_statistics(draft, context, bound)
+
+    assert created == 1
+    atomic = bound[-1]
+    assert atomic.derived_from_section_span is True
+    assert atomic.output_ids == [str(output.output_id)]
+    # **حرفيًّا من النصّ** — ولا حرف زيد ولا نقص.
+    assert atomic.claim.text_ar in prose
+    assert "η² = 0.106" in atomic.claim.text_ar
+
+
+def test_binding_closes_the_production_false_negative():
+    """بعد الربط: لا كشف حاجب على قيمة حقيقية."""
+    from athera_api.services.publishing.drafting import checks, generate
+
+    output = _output(REAL_PAYLOAD)
+    context = _context(_item("result", RESULT_FACT), outputs=[output])
+    prose = "وبلغ حجم الأثر η² = 0.106."
+    draft = _draft(prose, [_claim("تفوّق المجموعة التجريبية",
+                                  output_ids=[str(output.output_id)])])
+    bound, _ = generate.ground(draft, context)
+    generate.bind_statistics(draft, context, bound)
+
+    verified = draft.model_copy(update={"claims": [
+        b.claim.model_copy(update={"memory_ids": b.memory_ids,
+                                   "analysis_output_ids": b.output_ids})
+        for b in bound]})
+    issues = checks.run(verified, context, known_memory_ids=context.memory_ids,
+                        known_output_ids=context.output_ids)
+    assert _keys(issues) == set(), [i.issue_key for i in issues]
+
+
+def test_an_existing_claim_carrying_the_statistic_is_reused_not_duplicated():
+    """§6 — إن وُجد ادعاءٌ يحمل القيمة فهو الأولى، ولا يُصنع ثانٍ."""
+    from athera_api.services.publishing.drafting import generate
+
+    output = _output(REAL_PAYLOAD)
+    context = _context(_item("result", RESULT_FACT), outputs=[output])
+    prose = "وبلغ حجم الأثر η² = 0.106."
+    draft = _draft(prose, [_claim("وبلغ حجم الأثر η² = 0.106")])
+    bound, _ = generate.ground(draft, context)
+    created = generate.bind_statistics(draft, context, bound)
+
+    assert created == 0, "أُنشئ ادعاء ذرّي مع وجود ادعاء يحمل القيمة"
+    assert bound[0].output_ids == [str(output.output_id)]
+
+
+def test_two_statistics_in_one_sentence_become_two_atomic_claims():
+    """§7 — مخرَجٌ واحد بعدة نتائج: ادعاءٌ ذرّي لكل قيمة، فلا يضعف الإسناد."""
+    from athera_api.services.publishing.drafting import generate
+
+    output = _output(REAL_PAYLOAD)
+    context = _context(_item("result", RESULT_FACT), outputs=[output])
+    prose = "بلغت قيمة t(118) = 3.738 وحجم الأثر η² = 0.106."
+    draft = _draft(prose, [])
+    bound, _ = generate.ground(draft, context)
+    created = generate.bind_statistics(draft, context, bound)
+
+    assert created == 2, [b.claim.text_ar for b in bound]
+    assert all(b.output_ids == [str(output.output_id)] for b in bound)
+
+
+# ══════════ 10. المطابقة بالنوع والأبعاد ══════════
+
+@pytest.mark.parametrize(("prose", "grounded"), [
+    ("η² = 0.106", True),
+    ("η² = 0.105", False),
+    ("η² = 0.11", False),
+    ("t(118) = 3.738", True),
+    ("t(118) = 3.739", False),
+    ("t(117) = 3.738", False),
+    ("M = 62.66", True),
+    ("SD = 6.75", True),
+])
+def test_exact_kind_value_and_dimension_matching(prose, grounded):
+    from athera_api.services.publishing.drafting import checks
+
+    output = _output(REAL_PAYLOAD)
+    context = _context(_item("result", RESULT_FACT), outputs=[output])
+    hit = __import__("athera_api.services.publishing.drafting.numbers",
+                     fromlist=["find"]).find(prose)[0]
+    assert bool(checks.outputs_carrying(hit, context)) is grounded
+
+
+def test_a_matching_decimal_of_another_metric_does_not_ground_the_statistic():
+    """§4 — `p = 0.106` ليس مسنَدًا لأن `η² = 0.106` موجود."""
+    from athera_api.services.publishing.drafting import checks, numbers
+
+    context = _context(_item("result", RESULT_FACT), outputs=[_output(REAL_PAYLOAD)])
+    hit = numbers.find("p = 0.106")[0]
+    assert checks.outputs_carrying(hit, context) == []
+
+
+def test_no_fabricated_p_value_even_with_a_real_t_statistic():
+    """§18 — النموذج لا يحسب الدلالة، والمخرَج لا يحمل قيمة p."""
+    context = _context(_item("result", RESULT_FACT), outputs=[_output(REAL_PAYLOAD)])
+    issues = _run(_draft("بلغت t(118) = 3.738 وكان الفرق دالًا عند p < .05"), context)
+    assert "statistic_without_analysis_output" in _keys(issues)
+
+
+# ══════════ 11. الغموض يفشل مغلقًا ══════════
+
+def test_two_outputs_carrying_the_same_statistic_fail_closed():
+    """§9 — لا يُختار أحدهما اعتباطًا: إسنادٌ غير محدَّد ليس إسنادًا."""
+    first = _output({"eta_squared": 0.106, "test": "anova_a"})
+    second = _output({"eta_squared": 0.106, "test": "anova_b"})
+    context = _context(_item("result", RESULT_FACT), outputs=[first, second])
+    issues = _run(_draft("وبلغ حجم الأثر η² = 0.106."), context)
+    assert "statistic_output_ambiguous" in _keys(issues)
+
+
+def test_the_binder_creates_nothing_when_provenance_is_ambiguous():
+    from athera_api.services.publishing.drafting import generate
+
+    first = _output({"eta_squared": 0.106})
+    second = _output({"eta_squared": 0.106})
+    context = _context(_item("result", RESULT_FACT), outputs=[first, second])
+    draft = _draft("وبلغ حجم الأثر η² = 0.106.")
+    bound, _ = generate.ground(draft, context)
+    assert generate.bind_statistics(draft, context, bound) == 0
+
+
+# ══════════ 12. تسرّب علامة الحجب الداخلية ══════════
+
+@pytest.mark.parametrize("marker", [
+    "[غير متاح]",
+    "[قيمة إحصائية غير متاحة بنيويًّا]",
+    "[دلالة إحصائية غير مسنَدة بمخرَج تحليل]",
+])
+def test_an_internal_marker_in_manuscript_prose_is_blocking(marker):
+    """§11 — لغةٌ بيننا وبين النموذج، لا نصٌّ يُنشر."""
+    from athera_api.services.publishing.drafting import checks
+
+    context = _context(_item("result", RESULT_FACT))
+    issues = _run(_draft(f"أظهرت النتائج وجود فروق {marker} لصالح التجريبية"), context)
+    assert "internal_redaction_marker_leak" in _keys(issues)
+    assert "internal_redaction_marker_leak" in checks.FABRICATION_ISSUES
+
+
+def test_the_marker_is_not_silently_stripped():
+    """تنظيفه صامتًا يجعلنا ندّعي أن المخرَج مرّ كما هو."""
+    import inspect
+
+    from athera_api.routers import manuscript_drafting as drafting
+
+    source = inspect.getsource(drafting.draft_section)
+    assert ".replace(" not in source, "المسودة تُنظَّف بدل أن تُرفض"
+
+
+# ══════════ 13. المسار السردي لا ينكسر ══════════
+
+def test_a_narrative_result_needs_no_analysis_output():
+    """§16 — لا تُدفع كل جملة نتائج عبر محرّك التحليل."""
+    item = _item("result", RESULT_FACT)
+    context = _context(item, outputs=[])
+    issues = _run(_draft("أظهرت النتائج وجود فروق بين المجموعتين",
+                         [_claim("وجود فروق بين المجموعتين",
+                                 memory_ids=[str(item.memory_id)])]), context)
+    assert _keys(issues) == set(), [i.issue_key for i in issues]
+
+
+@pytest.mark.parametrize("sample_text", [
+    "بلغت عينة الدراسة 120 طالبًا",
+    "شارك 60 طالبًا في كل مجموعة",
+])
+def test_sample_counts_are_not_read_as_statistics(sample_text):
+    """§17 — رقمُ عيّنة ليس مخرَج تحليل، ولا يُطالَب بسنده."""
+    from athera_api.services.publishing.drafting import numbers
+
+    assert numbers.find(sample_text) == []
+
+
+@pytest.mark.parametrize("decimal", ["0.106", "0,106", "٠٫١٠٦"])
+def test_every_decimal_separator_is_read_as_one_value(decimal):
+    """§17 — النقطة والفاصلة والفاصلة العربية تمثيلاتٌ لقيمة واحدة."""
+    from athera_api.services.publishing.drafting import numbers
+
+    hits = numbers.find(f"η² = {decimal}")
+    assert hits and hits[0].value.replace(",", ".") in ("0.106", ".106")
+
+
+def test_a_grounded_decimal_is_not_reported_as_an_invented_sample_number():
+    """`3.738` ليست عيّنةً من 738 مشاركًا — ولا تُحسب كشفًا مرتين."""
+    from athera_api.services.publishing.drafting import checks
+
+    output = _output(REAL_PAYLOAD)
+    context = _context(_item("result", RESULT_FACT), outputs=[output])
+    issues = checks.run(_draft("بلغت قيمة t(118) = 3.738",
+                               [_claim("بلغت قيمة t(118) = 3.738",
+                                       output_ids=[str(output.output_id)])]),
+                        context, known_memory_ids=context.memory_ids,
+                        known_output_ids=context.output_ids)
+    assert "unsupported_sample_number" not in _keys(issues), [i.excerpt for i in issues]

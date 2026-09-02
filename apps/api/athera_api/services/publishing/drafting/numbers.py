@@ -27,22 +27,26 @@ def normalise(text: str) -> str:
 #
 # وكلٌّ بمفتاحه فيُقال للباحث **أي** قيمة بلا سند لا «ثمة قيمة».
 STATISTIC_TOKENS: Final[dict[str, re.Pattern[str]]] = {
-    "p_value": re.compile(r"\bp\s*[=<>≤≥]\s*(-?0?\.\d+)", re.IGNORECASE),
-    "t_statistic": re.compile(r"\bt\s*\(\s*\d+(?:\.\d+)?\s*\)\s*=\s*(-?\d+(?:\.\d+)?)"),
-    "f_statistic": re.compile(r"\bF\s*\(\s*\d+\s*,\s*\d+\s*\)\s*=\s*(-?\d+(?:\.\d+)?)"),
-    "beta": re.compile(r"[βΒ]\s*=\s*(-?\d*\.?\d+)"),
-    "r_squared": re.compile(r"\bR\s*[²2]\s*=\s*(-?\d*\.?\d+)", re.IGNORECASE),
-    "correlation": re.compile(r"\br\s*=\s*(-?0?\.\d+)"),
+    "p_value": re.compile(r"\bp\s*[=<>≤≥]\s*(-?0?[.,]\d+)", re.IGNORECASE),
+    # وتلتقط درجات الحرية كذلك: `t(118)=3.738` ليست `t(117)=3.738`، والبُعد
+    # جزءٌ من هوية القيمة لا زينة حولها.
+    "t_statistic": re.compile(
+        r"\bt\s*\(\s*(?P<df>\d+(?:[.,]\d+)?)\s*\)\s*=\s*(-?\d+(?:[.,]\d+)?)"),
+    "f_statistic": re.compile(
+        r"\bF\s*\(\s*(?P<df1>\d+)\s*,\s*(?P<df2>\d+)\s*\)\s*=\s*(-?\d+(?:[.,]\d+)?)"),
+    "beta": re.compile(r"[βΒ]\s*=\s*(-?\d*[.,]?\d+)"),
+    "r_squared": re.compile(r"\bR\s*[²2]\s*=\s*(-?\d*[.,]?\d+)", re.IGNORECASE),
+    "correlation": re.compile(r"\br\s*=\s*(-?0?[.,]\d+)"),
     "eta_squared": re.compile(
-        r"(?:مربع\s+إيتا|η\s*[²2]|eta[\s-]*squared)\s*[=:]?\s*(-?\d*\.?\d+)",
+        r"(?:مربع\s+إيتا|η\s*[²2]|eta[\s-]*squared)\s*[=:]?\s*(-?\d*[.,]?\d+)",
         re.IGNORECASE),
-    "cohen_d": re.compile(r"\b(?:cohen'?s\s+)?d\s*=\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE),
-    "mean": re.compile(r"\b(?:M|المتوسط(?:\s+الحسابي)?)\s*[=:]\s*(-?\d+(?:\.\d+)?)"),
-    "std_dev": re.compile(r"\b(?:SD|الانحراف\s+المعياري)\s*[=:]\s*(-?\d+(?:\.\d+)?)"),
+    "cohen_d": re.compile(r"\b(?:cohen'?s\s+)?d\s*=\s*(-?\d+(?:[.,]\d+)?)", re.IGNORECASE),
+    "mean": re.compile(r"\b(?:M|المتوسط(?:\s+الحسابي)?)\s*[=:]\s*(-?\d+(?:[.,]\d+)?)"),
+    "std_dev": re.compile(r"\b(?:SD|الانحراف\s+المعياري)\s*[=:]\s*(-?\d+(?:[.,]\d+)?)"),
     "confidence_interval": re.compile(
-        r"\b(?:CI|فترة\s+الثقة)\s*[^\d\-]{0,12}(-?\d+(?:\.\d+)?)"),
-    "composite_reliability": re.compile(r"\b(?:AVE|CR|HTMT)\s*=\s*(-?\d+(?:\.\d+)?)"),
-    "percentage": re.compile(r"(\d+(?:\.\d+)?)\s*(?:%|في\s+المئة|بالمئة)"),
+        r"\b(?:CI|فترة\s+الثقة)\s*[^\d\-]{0,12}(-?\d+(?:[.,]\d+)?)"),
+    "composite_reliability": re.compile(r"\b(?:AVE|CR|HTMT)\s*=\s*(-?\d+(?:[.,]\d+)?)"),
+    "percentage": re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:%|في\s+المئة|بالمئة)"),
 }
 
 # صيغ الدلالة بلا رقم — ادّعاءٌ إحصائي كامل ولو خلا من قيمة.
@@ -63,15 +67,28 @@ SIGNIFICANCE_CLAIMS: Final[tuple[re.Pattern[str], ...]] = (
 
 @dataclass(frozen=True, slots=True)
 class StatisticHit:
-    """قيمة إحصائية وُجدت في نصّ — بنوعها ومقتطفها وقيمتها."""
+    """قيمة إحصائية وُجدت في نصّ — بنوعها ومقتطفها وقيمتها وأبعادها.
+
+    و`dims` ليست زينة: `t(118)=3.738` و`t(117)=3.738` نتيجتان مختلفتان،
+    ومطابقةٌ تنظر إلى العدد وحده تخلط بينهما.
+    """
 
     kind: str
     excerpt: str
     value: str | None
+    dims: tuple[tuple[str, str], ...] = ()
+    start: int = -1
+    end: int = -1
 
     @property
     def is_bare_significance(self) -> bool:
         return self.value is None
+
+    @property
+    def identity(self) -> tuple:
+        """هوية القيمة: نوعُها وقيمتُها وأبعادُها — لا رقمها وحده."""
+        return (self.kind, _canonical(self.value or ""),
+                tuple(sorted((k, _canonical(v)) for k, v in self.dims)))
 
 
 def find(text: str) -> list[StatisticHit]:
@@ -80,13 +97,18 @@ def find(text: str) -> list[StatisticHit]:
     hits: list[StatisticHit] = []
     for kind, pattern in STATISTIC_TOKENS.items():
         for match in pattern.finditer(body):
+            groups = match.groupdict()
+            # المجموعة الأخيرة غير المسمّاة هي القيمة؛ والمسمّاة أبعادها.
+            value = match.group(match.lastindex) if match.lastindex else None
+            dims = tuple((name, found) for name, found in groups.items() if found)
             hits.append(StatisticHit(kind=kind, excerpt=match.group(0).strip(),
-                                     value=match.group(1)))
+                                     value=value, dims=dims,
+                                     start=match.start(), end=match.end()))
     for pattern in SIGNIFICANCE_CLAIMS:
         match = pattern.search(body)
         if match:
             hits.append(StatisticHit(kind="significance", excerpt=match.group(0),
-                                     value=None))
+                                     value=None, start=match.start(), end=match.end()))
             break
     return hits
 
@@ -116,9 +138,14 @@ def _values_in(payload) -> set[str]:
 
 
 def _canonical(value: str) -> str:
-    """`.05` و`0.05` و`0.050` قيمة واحدة — و`0.047` ليست منها."""
+    """`.05` و`0.05` و`0.050` و`0,05` قيمة واحدة — و`0.047` ليست منها.
+
+    والفاصلة اللاتينية تُقبل فاصلةً عشرية **بين رقمين**: الباحث يكتب بلوحة
+    عربية أو لاتينية، ومطابقةٌ تعرف تمثيلًا واحدًا تفوّت نصف الحالات. ولا
+    تُترجم في النصّ كله — فـ`F(1, 118)` فاصلتها فاصلُ أبعاد لا كسر.
+    """
     try:
-        return f"{float(value):.10g}"
+        return f"{float(value.replace(',', '.')):.10g}"
     except ValueError:
         return value
 
@@ -169,5 +196,125 @@ def redact(text: str) -> tuple[str, list[str]]:
     return body, removed
 
 
-__all__ = ["SIGNIFICANCE_CLAIMS", "STATISTIC_TOKENS", "StatisticHit", "find",
-           "normalise", "redact", "supports"]
+
+
+
+# ══════════ حقائق المخرَج: النوع والقيمة والأبعاد ══════════
+#
+# **المطابقة بالنوع لا بالعدد.** حمولةٌ تحمل `n_control = 60` و`p = 0.106`
+# لا تجعل «مربع إيتا = 0.106» مسنَدًا: تطابقُ الكسر العشري صدفةٌ لا سند.
+#
+# ومفاتيح الحمولة يكتبها الباحث بأسماء متعدّدة للمعنى الواحد، فتُقابَل
+# بمرادفاتها المعروفة — وما لا يُعرف اسمه لا يُخمَّن له نوع.
+_KEY_KINDS: Final[dict[str, str]] = {
+    "p": "p_value", "p_value": "p_value", "pvalue": "p_value", "sig": "p_value",
+    "significance": "p_value",
+    "t": "t_statistic", "t_value": "t_statistic", "t_statistic": "t_statistic",
+    "f": "f_statistic", "f_value": "f_statistic", "f_statistic": "f_statistic",
+    "beta": "beta", "b": "beta",
+    "r_squared": "r_squared", "r2": "r_squared", "rsquared": "r_squared",
+    "r": "correlation", "correlation": "correlation",
+    "eta_squared": "eta_squared", "eta2": "eta_squared",
+    "partial_eta_squared": "eta_squared", "eta_sq": "eta_squared",
+    "d": "cohen_d", "cohens_d": "cohen_d", "cohen_d": "cohen_d",
+    "mean": "mean", "m": "mean", "average": "mean",
+    "sd": "std_dev", "std": "std_dev", "std_dev": "std_dev",
+    "standard_deviation": "std_dev",
+    "percent": "percentage", "percentage": "percentage", "pct": "percentage",
+    "ave": "composite_reliability", "cr": "composite_reliability",
+    "htmt": "composite_reliability",
+    "ci_lower": "confidence_interval", "ci_upper": "confidence_interval",
+    "ci": "confidence_interval",
+}
+
+# مفاتيح تحمل أبعادًا لا نتائج — تُقيّد المطابقة ولا تُطابَق وحدها.
+_DIMENSION_KEYS: Final[dict[str, str]] = {
+    "df": "df", "degrees_of_freedom": "df", "df1": "df1", "df2": "df2",
+}
+
+# لكل نوع، أي أبعاد يجب أن تتفق إن وُجدت في الطرفين.
+_REQUIRED_DIMS: Final[dict[str, tuple[str, ...]]] = {
+    "t_statistic": ("df",),
+    "f_statistic": ("df1", "df2"),
+}
+
+
+# لواحق تصف **أي مجموعة** لا نوع الإحصاء: `mean_control` متوسطٌ كذلك.
+_GROUP_SUFFIXES: Final[tuple[str, ...]] = (
+    "_control", "_treatment", "_experimental", "_pre", "_post", "_group",
+    "_1", "_2", "_a", "_b",
+)
+
+
+def _base_key(key: str) -> str:
+    for suffix in _GROUP_SUFFIXES:
+        if key.endswith(suffix):
+            return key[: -len(suffix)]
+    return key
+
+
+@dataclass(frozen=True, slots=True)
+class StatisticFact:
+    """واقعة إحصائية كما خزّنها التحليل."""
+
+    kind: str
+    value: str
+    dims: tuple[tuple[str, str], ...] = ()
+
+
+def facts(payload) -> list[StatisticFact]:
+    """يستخرج الوقائع الإحصائية المعروفة من حمولة مخرَج.
+
+    ويجمع الأبعاد على مستوى الكائن الذي وردت فيه: `{"t": 3.738, "df": 118}`
+    واقعةٌ واحدة بدرجات حريتها، لا رقمان منفصلان.
+    """
+    found: list[StatisticFact] = []
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            dims = tuple(
+                (_DIMENSION_KEYS[k.lower()], _canonical(str(v)))
+                for k, v in node.items()
+                if k.lower() in _DIMENSION_KEYS and isinstance(v, (int, float, str))
+                and not isinstance(v, bool)
+            )
+            for key, value in node.items():
+                lowered = key.lower()
+                if isinstance(value, (dict, list)):
+                    walk(value)
+                    continue
+                if isinstance(value, bool) or value is None:
+                    continue
+                kind = _KEY_KINDS.get(lowered) or _KEY_KINDS.get(_base_key(lowered))
+                if kind is None:
+                    continue
+                found.append(StatisticFact(kind=kind, value=_canonical(str(value)),
+                                           dims=dims))
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return found
+
+
+def fact_supports(hit: StatisticHit, fact: StatisticFact) -> bool:
+    """هل تسند هذه الواقعة ذلك المقتطف؟ نوعًا وقيمةً وبُعدًا.
+
+    والأبعاد تُقارَن **حين تتوفّر في الطرفين**: مخرَجٌ لا يسجّل درجات الحرية
+    لا يُرفض لأجل ما لم يسجّله؛ لكنه إن سجّلها ولم تتفق، فهي نتيجة أخرى.
+    """
+    if hit.kind != fact.kind or hit.value is None:
+        return False
+    if _canonical(hit.value) != fact.value:
+        return False
+    stated = dict(hit.dims)
+    stored = dict(fact.dims)
+    for dim in _REQUIRED_DIMS.get(hit.kind, ()):
+        if dim in stated and dim in stored and _canonical(stated[dim]) != stored[dim]:
+            return False
+    return True
+
+
+__all__ = ["SIGNIFICANCE_CLAIMS", "STATISTIC_TOKENS", "StatisticFact", "StatisticHit",
+           "fact_supports", "facts", "find", "normalise", "redact", "supports"]

@@ -185,7 +185,7 @@ def test_an_invented_memory_id_is_dropped_not_repaired():
     draft = _draft("نصّ", [_claim("ادعاء", memory_ids=[str(item.memory_id), invented])])
 
     grounded, dropped = generate.ground(draft, context)
-    assert grounded[0][1] == [str(item.memory_id)]
+    assert grounded[0].memory_ids == [str(item.memory_id)]
     assert dropped == [invented]
 
 
