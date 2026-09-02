@@ -23,19 +23,16 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from urllib.parse import unquote, urlparse
 
-# مضيفات قواعد الاختبار المعروفة: التطوير المحلي وخدمات docker وCI.
-ALLOWED_HOSTS = frozenset({
-    "localhost", "127.0.0.1", "::1", "", "postgres", "db", "athera-postgres",
-})
+from athera_api.dbtarget import LOCAL_HOSTS, MANAGED_HOST_MARKERS
+from athera_api.dbtarget import parse as parse_target
+
+# مضيفات قواعد الاختبار المعروفة — من المصنّف المشترك لا من نسخة ثانية:
+# نسختان تفترقان بأول تعديل، وأول موضع ينسى التعديل يصير ثغرة.
+ALLOWED_HOSTS = LOCAL_HOSTS
 
 # أسماء قواعد الاختبار المعروفة في هذا المستودع.
 ALLOWED_DATABASES = frozenset({"athera", "athera_test", "athera_migration"})
-
-# بصمات استضافة مدارة — قاعدة الإنتاج عليها.
-MANAGED_HOST_MARKERS = ("supabase.com", "supabase.co", "supabase.in",
-                        "pooler.", "rds.amazonaws.com", "neon.tech")
 
 # اسم قاعدة Supabase الافتراضي — ليس اسم قاعدة اختبار بحال.
 FORBIDDEN_DATABASES = frozenset({"postgres", "template1"})
@@ -56,17 +53,11 @@ class Target:
 
 def parse(variable: str, url: str) -> Target | None:
     """يفكّك الرابط، ويعدّ ما لا يُفكَّك **هدفًا مرفوضًا** لا هدفًا غائبًا."""
-    if not url:
+    target = parse_target(url)
+    if target is None:
         return None
-    # `postgresql+asyncpg://` → `postgresql://` كي يفهمه urlparse.
-    scheme, _, rest = url.partition("://")
-    parsed = urlparse(f"{scheme.split('+')[0]}://{rest}")
-    return Target(
-        variable=variable,
-        host=(parsed.hostname or "").lower(),
-        database=unquote((parsed.path or "").lstrip("/")).lower(),
-        username=unquote(parsed.username or ""),
-    )
+    return Target(variable=variable, host=target.host,
+                  database=target.database, username=target.username)
 
 
 def reasons_to_refuse(target: Target) -> list[str]:

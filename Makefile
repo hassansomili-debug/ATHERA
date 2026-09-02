@@ -10,8 +10,22 @@ dev: ## تشغيل المنظومة كاملة | run the full stack
 down: ## إيقاف | stop
 	$(COMPOSE) down
 
-migrate: ## تطبيق الترحيلات | apply migrations
+migrate: ## تطبيق الترحيلات محليًّا | apply migrations locally
 	cd infra/db && alembic upgrade head
+
+migrate-prod: ## ترحيل الإنتاج بنيّة موجبة | production migration, explicit intent
+	@# **المدخل الوحيد لاعتماد الترحيل المميَّز.**
+	@#
+	@# ذلك الاعتماد يملك الجداول ويتجاوز عزل المستأجرين، وكان يعيش في `.env`
+	@# العام فيُحمَّل ضمنًا مع كل أمر من جذر المستودع — وهكذا بلغت تشغيلة
+	@# `pytest` قاعدة الإنتاج. صار الآن في `.env.production.migration` الذي
+	@# لا يقرؤه شيء تلقائيًّا، ولا يُحمَّل إلا بهذا الأمر.
+	@#
+	@#   make migrate-prod CONFIRM=<project-ref>
+	@test -n "$(CONFIRM)" || { \
+	  echo "CONFIRM=<project-ref> is required — a production migration is never a typo"; \
+	  exit 1; }
+	python3 scripts/migrate_production.py --confirm "$(CONFIRM)"
 
 migrate-down: ## التراجع خطوة | rollback one revision
 	cd infra/db && alembic downgrade -1

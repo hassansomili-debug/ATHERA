@@ -17,8 +17,39 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.sql import text
 
 from .config import get_settings
+from .dbtarget import parse as parse_target
 
 _settings = get_settings()
+
+
+def _refuse_production_outside_production() -> None:
+    """يمنع بيئةً غير إنتاجية من فتح محرّك على قاعدة إنتاج.
+
+    **الحادثة التي أوجدت هذا الفحص:** `pytest` من جذر المستودع حمّل `.env`
+    الذي يحمل اعتماد الإنتاج، فكتبت الاختبارات مئة وأربعة مستأجرين اصطناعيين
+    في قاعدة حيّة. وحارس الاختبارات وحده لا يكفي: تشغيل الـAPI محليًّا بسياق
+    صدفةٍ منسيّ يبلغ القاعدة نفسها.
+
+    والقاعدة بسيطة: **قاعدة الإنتاج للإنتاج وحده.** فإن كان `APP_ENV` غير
+    `production` والهدف مُدارًا، يُرفض الإقلاع — ويُذكر السبب بمضيفٍ واسم
+    قاعدة، بلا رابط ولا كلمة. والإنتاج يمرّ لأن `APP_ENV=production` معلَن
+    في `fly.toml`.
+    """
+    if _settings.app_env.strip().lower() == "production":
+        return
+    target = parse_target(_settings.database_url)
+    if target is None or not target.looks_managed:
+        return
+    raise RuntimeError(
+        f"refusing to start: APP_ENV={_settings.app_env!r} but DATABASE_URL points at "
+        f"a managed database ({target.describe()}). A non-production process must not "
+        "open a connection to the production database. Set APP_ENV=production for the "
+        "real deployment, or point DATABASE_URL at a local database."
+    )
+
+
+_refuse_production_outside_production()
+
 
 def _connect_args() -> dict:
     """يعطّل ذاكرة العبارات المهيّأة خلف مجمّع بوضع المعاملة.
