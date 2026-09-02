@@ -959,3 +959,39 @@ async def test_an_approved_section_keeps_its_provenance_across_versions(two_tena
     assert [link.claim_id for link in links] == [claim_id], "ضاع إسناد قسمٍ معتمَد"
     # والادعاء لم يُستنسخ — كيانٌ واحد مرتبط بنسختين.
     assert total_claims == 1
+
+
+# ══════════ 15. بوابة الجاهزية ترفض علامة التحكّم الداخلية ══════════
+
+def test_readiness_refuses_an_internal_marker_in_any_section():
+    """**حارس التوليد وحده لا يكفي.**
+
+    نسخةٌ قديمة تحمل العلامة تمرّ إلى بوابة النشر بلا أن تمرّ بالتوليد مرة
+    أخرى. وقد وقع ذلك: ثلاثة أقسام محفوظة في الإنتاج تحملها، وكلها كُتبت
+    قبل أن يوجد حارس التوليد.
+    """
+    from athera_api.services.publishing import manuscript
+
+    for marker in ("[غير متاح]", "[قيمة إحصائية غير متاحة بنيويًّا]"):
+        result = manuscript.evaluate([manuscript.SectionState(
+            section_key="results", text=f"أظهرت النتائج فروقًا {marker} لصالح التجريبية")])
+        keys = {i.issue_key for i in result.issues}
+        assert "internal_redaction_marker" in keys, marker
+        assert result.can_pass_g9 is False
+
+
+def test_clean_prose_still_passes_the_marker_check():
+    """الحارس الذي يعاقب النصّ السليم أسوأ من الحارس الذي يفوّت علامة."""
+    from athera_api.services.publishing import manuscript
+
+    result = manuscript.evaluate([manuscript.SectionState(
+        section_key="method", text="استخدمت الدراسة المنهج شبه التجريبي")])
+    assert "internal_redaction_marker" not in {i.issue_key for i in result.issues}
+
+
+def test_the_marker_vocabulary_has_one_home():
+    """مفردةٌ واحدة تقرؤها الصياغة والبوابة — لا نسختان تفترقان."""
+    from athera_api.services.publishing import vocab
+    from athera_api.services.publishing.drafting import checks
+
+    assert checks.INTERNAL_MARKERS is vocab.INTERNAL_MARKERS

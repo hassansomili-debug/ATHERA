@@ -19,6 +19,7 @@ from typing import Final
 
 from ...golden_thread import language
 from ..manuscript import _STATISTICS
+from ..vocab import INTERNAL_MARKERS
 from . import numbers
 
 # مفردات منهجية لا يجوز ادّعاؤها بلا سند — وكلٌّ بصنفه فيُقال للباحث **أي**
@@ -87,20 +88,6 @@ _CITATION_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"(?:وآخرون|وزملاؤه)\s*\(\s*(?:19|20)\d{2}\s*\)"),
 )
 
-
-# علاماتُ الحجب الداخلية — **لا تظهر في نصّ مخطوطة أبدًا**.
-#
-# نضعها في الأدلة المُرسَلة لنقول للنموذج «هذه القيمة غير متاحة»، وهي لغةٌ
-# بيننا وبينه لا نصٌّ يُنشر. وظهورها في المسودة يعني أن النموذج نسخ تعليماتنا
-# إلى الورقة — وتنظيفها صامتًا يجعلنا ندّعي أن المخرَج مرّ كما هو.
-INTERNAL_MARKERS: Final[tuple[str, ...]] = (
-    "[غير متاح]",
-    "[قيمة إحصائية غير متاحة بنيويًّا]",
-    "[دلالة إحصائية غير مسنَدة بمخرَج تحليل]",
-    "غير متاح بنيوي",
-    "[unavailable]",
-    "[not structurally available]",
-)
 
 # أقسامٌ وصفية: تقول ما لوحظ ولا تفسّره (§2).
 _DESCRIPTIVE_SECTIONS: Final[frozenset[str]] = frozenset({"results"})
