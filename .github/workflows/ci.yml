@@ -70,10 +70,12 @@ jobs:
             -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'athera_test_bypass') THEN CREATE ROLE athera_test_bypass LOGIN PASSWORD 'athera_test_bypass_pw' BYPASSRLS; END IF; END \$\$;" \
             -c "GRANT USAGE ON SCHEMA public TO athera_test_bypass" \
             -c "GRANT athera_app TO athera_test_bypass"
+          # `boolean || text` يعطي 'true'/'false' لا 't'/'f' — وتلك الأخيرة
+          # طريقة **عرض** psql لعمود منطقي، لا قيمته النصّية.
           posture=$(psql -h localhost -U athera_owner -d athera -tAc \
-            "SELECT rolsuper || '/' || rolbypassrls FROM pg_roles WHERE rolname='athera_test_bypass'")
-          echo "athera_test_bypass super/bypassrls: $posture"
-          test "$posture" = "f/t" || { echo "::error::the test role is not a plain BYPASSRLS role"; exit 1; }
+            "SELECT rolsuper::text || '/' || rolbypassrls::text FROM pg_roles WHERE rolname='athera_test_bypass'")
+          echo "athera_test_bypass rolsuper/rolbypassrls: $posture"
+          test "$posture" = "false/true" || { echo "::error::the test role is not a plain BYPASSRLS role (got '$posture')"; exit 1; }
 
       - name: Lint
         run: cd apps/api && ruff check .
