@@ -440,9 +440,14 @@ async def _seed_analysis(tid, uid, *, reproducible: bool):
                              name_ar="بيانات اصطناعية", classification="C3")
         session.add(dataset)
         await session.flush()
+        # §17.3 — التجميد له معرّف وفاعل وتاريخ، أو ليس تجميدًا. والقاعدة
+        # تفرضه بقيد، فالبذرة تحترمه ولا تلتفّ عليه.
+        frozen = dt.datetime.now(dt.UTC) if reproducible else None
         version = DatasetVersionRow(
             tenant_id=tid, dataset_id=dataset.id, state="cleaned", label="v1",
-            checksum="a" * 64, freeze_id="frz-test" if reproducible else None)
+            checksum="a" * 64,
+            freeze_id="frz-test" if reproducible else None,
+            frozen_at=frozen, frozen_by=uid if reproducible else None)
         session.add(version)
         await session.flush()
         plan = AnalysisPlanRow(tenant_id=tid, project_id=project.id, version_label="v1",
