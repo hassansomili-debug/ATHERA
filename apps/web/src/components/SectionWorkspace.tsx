@@ -100,6 +100,8 @@ export function SectionWorkspace({
   copy: string;
   /** النتائج وحدها: تعرض مخرجات التحليل وما حُجب من الأدلة. */
   strict?: boolean;
+  /** يُنادى بعد كل فعلٍ يغيّر حال القسم — فتتبعه نظرة المخطوطة. */
+  onChanged?: () => void | Promise<void>;
 }) {
   const t = translator(getMessages(locale));
   // **مُخزَّنة كـ`t` نفسها.** دالةٌ تُنشأ عند كل عرض داخل مكوّن يستعمل
@@ -111,6 +113,8 @@ export function SectionWorkspace({
   const [section, setSection] = useState<SectionView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draftText, setDraftText] = useState("");
 
   const base = `/api/v1/manuscripts/${manuscriptId}/sections/${sectionKey}`;
 
@@ -141,17 +145,40 @@ export function SectionWorkspace({
           ...(body ? { body: JSON.stringify(body) } : {}),
         });
         await load();
+        // ونظرة المخطوطة تتبع القسم: حالٌ تغيّرت هنا تغيّر عدّ المعتمَد
+        // وعوائق الورقة هناك، وشاشةٌ تعرض حالين متناقضين أسوأ من واحدة.
+        await onChanged?.();
       } catch (err) {
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
       } finally {
         setBusy(false);
       }
     },
-    [load, locale, t],
+    [load, locale, onChanged, t],
   );
 
   const consent = context?.consent_state ?? "absent";
   const approved = section?.review_status === "approved";
+
+  // تحرير الباحث — والنصّ يُرسل كما كتبه، ويُعاد الفحص عليه.
+  const saveEdit = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(base, {
+        method: "PUT",
+        locale,
+        body: JSON.stringify({ text_ar: draftText }),
+      });
+      setEditing(false);
+      await load();
+      await onChanged?.();
+    } catch (err) {
+      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }, [base, draftText, load, locale, onChanged, t]);
 
   return (
     <main className="page">
@@ -285,7 +312,39 @@ export function SectionWorkspace({
         {section?.text_ar ? (
           <>
             <p>{section.note}</p>
-            <article>{section.text_ar}</article>
+            {editing ? (
+              <>
+                {/* §21 — التحرير يُلغي الاعتماد ويعيد الفحص، ويُقال ذلك قبله */}
+                <p>{t("studio.editNote")}</p>
+                <label htmlFor="section-text">{t("studio.edit")}</label>
+                <textarea
+                  id="section-text"
+                  value={draftText}
+                  onChange={(event) => setDraftText(event.target.value)}
+                  rows={12}
+                />
+                <button type="button" onClick={saveEdit} disabled={busy}>
+                  {t("studio.save")}
+                </button>
+                <button type="button" onClick={() => setEditing(false)} disabled={busy}>
+                  {t("studio.cancel")}
+                </button>
+              </>
+            ) : (
+              <>
+                <article>{section.text_ar}</article>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftText(section.text_ar ?? "");
+                    setEditing(true);
+                  }}
+                  disabled={busy}
+                >
+                  {t("studio.edit")}
+                </button>
+              </>
+            )}
 
             <h3>{c("claims")}</h3>
             <ul>
