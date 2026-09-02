@@ -101,15 +101,16 @@ def test_workspace_error_codes_all_have_translations():
 
 # ──────────────────────── اختبارات تمسّ القاعدة ────────────────────────
 
-async def _seed_file(tid: uuid.UUID, name: str) -> uuid.UUID:
+async def _seed_file(tid: uuid.UUID, uid: uuid.UUID, name: str) -> uuid.UUID:
     from athera_api.db import tenant_session
     from athera_api.models.files import File
 
-    async with tenant_session(tid) as session:
+    async with tenant_session(tid, uid) as session:
         file = File(
             tenant_id=tid, storage_key=f"t/{uuid.uuid4()}", original_filename=name,
             content_type="application/pdf", size_bytes=1024,
-            sha256_hex="0" * 64, classification="C2", status="stored")
+            checksum_sha256="0" * 64, classification="C2", status="stored",
+            uploaded_by=uid)
         session.add(file)
         await session.flush()
         return file.id
@@ -138,7 +139,7 @@ async def test_project_file_link_is_invisible_to_the_other_tenant(two_tenants):
 
     a, b = two_tenants["a"], two_tenants["b"]
     project_a = await _seed_project(a["tenant_id"], "بحث المستأجر أ")
-    file_a = await _seed_file(a["tenant_id"], "أ.pdf")
+    file_a = await _seed_file(a["tenant_id"], a["user_id"], "أ.pdf")
 
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
         session.add(ProjectFile(
@@ -304,7 +305,7 @@ async def test_the_same_file_may_serve_two_projects(two_tenants):
     a = two_tenants["a"]
     one = await _seed_project(a["tenant_id"], "بحث أول")
     two = await _seed_project(a["tenant_id"], "بحث ثانٍ")
-    file_id = await _seed_file(a["tenant_id"], "بياناتٌ مشتركة.csv")
+    file_id = await _seed_file(a["tenant_id"], a["user_id"], "بياناتٌ مشتركة.csv")
 
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
         for project_id in (one, two):
@@ -328,7 +329,7 @@ async def test_a_file_cannot_be_linked_to_one_project_twice(two_tenants):
 
     a = two_tenants["a"]
     project_id = await _seed_project(a["tenant_id"], "بحثٌ لا يقبل التكرار")
-    file_id = await _seed_file(a["tenant_id"], "مكرَّر.pdf")
+    file_id = await _seed_file(a["tenant_id"], a["user_id"], "مكرَّر.pdf")
 
     with pytest.raises(IntegrityError):
         async with tenant_session(a["tenant_id"], a["user_id"]) as session:
@@ -351,7 +352,7 @@ async def test_removing_a_file_from_a_project_never_deletes_the_file(two_tenants
 
     a = two_tenants["a"]
     project_id = await _seed_project(a["tenant_id"], "بحثٌ يُزال منه ملف")
-    file_id = await _seed_file(a["tenant_id"], "باقٍ.pdf")
+    file_id = await _seed_file(a["tenant_id"], a["user_id"], "باقٍ.pdf")
 
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
         session.add(ProjectFile(
