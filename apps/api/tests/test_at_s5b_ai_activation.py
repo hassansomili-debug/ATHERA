@@ -245,8 +245,15 @@ async def test_offline_literature_is_announced_not_faked(clients, monkeypatch):
                for m in fake.seen[0].messages if m.role == "system")
 
 
-async def test_attached_file_is_acknowledged_but_never_read(clients, monkeypatch):
-    """S5B: الملف يُخزَّن ويُذكر — ولا بايت من محتواه يصل المزوّد."""
+async def test_an_unprocessed_attachment_is_never_read(clients, monkeypatch):
+    """**ولا بايت من محتوى المستند يصل المزوّد — قبل المعالجة ولا بعدها.**
+
+    كان الملف يُخزَّن ويُذكر ولا يُقرأ. وصار يُقرأ — لكن من **معرفته
+    المعتمَدة** لا من نصّه: ذاكرةٌ راجعها الباحث واعتمدها، بإذنٍ مسمّى.
+
+    وملفٌ لم يُعالَج ليس له معرفة معتمَدة، فلا شيء يُرسل منه — ويُقال ذلك
+    للباحث مع الفعل التالي بدل إجابةٍ مخترَعة.
+    """
     import io
 
     from athera_api.services import storage
@@ -268,9 +275,14 @@ async def test_attached_file_is_acknowledged_but_never_read(clients, monkeypatch
         "question": "حلّل هذا الملف من فضلك.", "attachment_file_id": file_id,
     })).json()
 
-    assert any("معالجة محتواه" in limit for limit in body["limitations"])
+    # يُقال بصدق إنه لم يُقرأ، ويُعطى الفعل التالي.
+    assert any("لم تُقرأ محتوياته" in limit for limit in body["limitations"])
+    assert any("معالجة المستند" in action
+               for action in body["recommended_next_actions"])
     everything_sent = " ".join(m.content for m in fake.seen[0].messages)
     assert "CONFIDENTIAL-PARTICIPANT-DATA-XYZ" not in everything_sent
+    # ولا رفع سقف: بلا معرفة معتمَدة يبقى النداء C1.
+    assert fake.seen[0].classification == "C1"
     storage.reset_store_cache()
 
 
