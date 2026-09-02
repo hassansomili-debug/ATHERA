@@ -166,11 +166,21 @@ def test_the_methods_section_is_not_redacted():
     assert "دالة إحصائيًا" in context.model_context()[0]["statement_ar"]
 
 
-def test_the_redaction_policy_names_the_sections_it_applies_to():
-    """الحجب معلَنٌ بقسمه، لا سلوكٌ عامّ يفاجئ من يقرأ."""
-    from athera_api.services.publishing.drafting import context as ctx
+def test_the_redaction_policy_follows_the_evidence_that_flows_in():
+    """الحجب يتبع الأدلة: كل قسمٍ تصله أدلةُ نتائج يُحجب عنه الادعاء
+    الإحصائي الذي لا يسنده مخرَج.
 
-    assert ctx.REDACT_STATISTICS_IN == frozenset({"results"})
+    وكان مقصورًا على «النتائج» وحدها، فحُجبت الخاتمة في الإنتاج بعد أن
+    أعادت الادعاء نفسه من الدليل نفسه.
+    """
+    from athera_api.services.publishing.drafting import context as ctx
+    from athera_api.services.publishing.drafting import policy
+
+    assert "results" in ctx.REDACT_STATISTICS_IN
+    assert "conclusion" in ctx.REDACT_STATISTICS_IN
+    assert "method" not in ctx.REDACT_STATISTICS_IN
+    assert ctx.REDACT_STATISTICS_IN == frozenset(
+        key for key, spec in policy.POLICIES.items() if "result" in spec.roles)
 
 
 # ══════════ 4. الرفض الصارم ══════════

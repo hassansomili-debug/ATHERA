@@ -52,8 +52,6 @@ class SectionPolicy:
 
     # ── الأرقام ──
     statistics: Statistics = "forbidden"
-    # هل تُحجب القيم الإحصائية من الأدلة **قبل إرسالها** إلى النموذج؟
-    redact_statistics: bool = False
 
     # ── طبيعة المحتوى (§5، §14) ──
     allow_inference: bool = False
@@ -74,10 +72,6 @@ class SectionPolicy:
             raise ValueError(
                 f"section policy {self.key!r} is not in MANUSCRIPT_SECTIONS; "
                 "the manuscript vocabulary is the single authority for section keys")
-        if self.redact_statistics and self.statistics == "forbidden":
-            raise ValueError(
-                f"{self.key}: redacting statistics is meaningless where none may appear")
-
     @property
     def roles(self) -> tuple[str, ...]:
         """أدوار الأدلة — **من الهيكل** ثم ما أُعلن زيادةً عليه."""
@@ -87,6 +81,21 @@ class SectionPolicy:
     @property
     def allows_statistics(self) -> bool:
         return self.statistics != "forbidden"
+
+    @property
+    def redact_statistics(self) -> bool:
+        """أيُحجب الادعاء الإحصائي من الأدلة **قبل إرسالها**؟ (§21)
+
+        **مشتقٌّ لا معلَن.** القاعدة: كل قسم تصله أدلةُ نتائج. فذاكرةٌ موثقة
+        تقول «فروق دالة إحصائيًّا عند مستوى 0.05» ولا مخرَج يسندها، وإرسالها
+        كما هي **دعوةٌ للنموذج أن يعيدها** — ثم يرفضها المدقّق. فيبدو الحارس
+        تعسّفًا، ويُغرى المستخدم بتعطيله.
+
+        وكان الحجب مقصورًا على «النتائج» وحدها، فحُجبت الخاتمة في الإنتاج
+        بعد أن كتبت الادعاء نفسه من الدليل نفسه. والقسم الذي **لا** يجوز أن
+        يحمل إحصاءً أولى بالحجب من الذي يجوز.
+        """
+        return "result" in self.roles
 
 
 _OUTLINE_ROLES: Final[dict[str, tuple[str, ...]]] = {
@@ -101,6 +110,10 @@ _OUTLINE_ROLES: Final[dict[str, tuple[str, ...]]] = {
 _POLICIES: Final[tuple[SectionPolicy, ...]] = (
     SectionPolicy(
         key="title", enabled=True,
+        # §4 — العنوان يُشتقّ من مشكلة الدراسة وسؤالها وهدفها، لا من الفراغ.
+        # (والهيكل لا يمنحه أدوارًا، فتُعلَن هنا.)
+        extra_roles=("problem", "question", "objective"),
+        required_any=("problem", "question"),
         # العنوان يسمّي ما فعلته الدراسة، ولا يَعِد بما لم تفعله.
         forbidden_claims=("causal_language_beyond_design", "generalization"),
         purpose_note_ar="يسمّي ما تفعله الورقة فعلًا، بلغةٍ لا تتجاوز تصميمها.",
@@ -125,6 +138,8 @@ _POLICIES: Final[tuple[SectionPolicy, ...]] = (
     ),
     SectionPolicy(
         key="theory", enabled=True,
+        # §7 — يقول ما ثبت في الإطار الموثق، ولا يبني نظرية.
+        extra_roles=("theory", "problem"),
         required_any=("theory",),
         thread_types=("theory",),
         literature="pending",
@@ -149,7 +164,7 @@ _POLICIES: Final[tuple[SectionPolicy, ...]] = (
         extra_roles=("sample",),
         required_any=("result",),
         thread_types=("question", "hypothesis", "result"),
-        statistics="grounded", redact_statistics=True,
+        statistics="grounded",
         descriptive_only=True,
         purpose_note_ar="ما وُجد فعلًا — ولا قيمة هنا بلا مخرَج تحليل يحملها.",
     ),
