@@ -349,6 +349,64 @@ async def process_stored_file(
     )
 
 
+@router.get("/files/{file_id}/chat-consent")
+@router.post("/files/{file_id}/chat-consent")
+async def document_chat_consent(
+    file_id: uuid.UUID,
+    decision: str | None = None,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """إذن أن تُجيب أثيرا عن هذا المستند — **قدرةٌ رابعة مستقلة**.
+
+    وإذن قراءة المستند لا يُغني عنها: ذاك أذن باستخراج بياناته لتُراجَع،
+    وهذا يأذن بإرسال ما اعتمده الباحث منها ليُجيب عن سؤاله. غرضان يقرّهما
+    مرتين — والقدرة لا تأذن لأختها.
+
+    **وما يُرسل هو المعتمَد وحده**: لا مقاطع، ولا نصّ المستند، ولا ما لم
+    يراجعه الباحث بعد.
+    """
+    record = (
+        await session.execute(select(File).where(
+            File.id == file_id, File.tenant_id == principal.tenant_id))
+    ).scalar_one_or_none()
+    if record is None:
+        raise NotFound("file.not_found")
+
+    approved = (await session.execute(
+        select(FactCandidate).where(
+            FactCandidate.tenant_id == principal.tenant_id,
+            FactCandidate.file_id == file_id,
+            FactCandidate.status == "approved")
+    )).scalars().all()
+
+    if decision in ("grant", "decline"):
+        from ..providers.gateway import active_model, provider_readiness  # noqa: PLC0415
+
+        provider, _ready, _reason = provider_readiness()
+        await consent.record_chat_decision(
+            session, tenant_id=principal.tenant_id, file_id=file_id,
+            actor_user_id=principal.user_id, granted=decision == "grant",
+            provider=provider, model=active_model(), fact_count=len(approved),
+            request_id=principal.request_id)
+
+    state = await consent.chat_state(session, tenant_id=principal.tenant_id,
+                                     file_id=file_id)
+    return {
+        "file_id": str(file_id),
+        "state": state,
+        "capability": consent.CHAT_CAPABILITY,
+        "approved_facts": len(approved),
+        "what_is_sent": _t(
+            principal.locale,
+            f"{len(approved)} معلومة اعتمدتَها من هذا المستند — لا نصّه ولا "
+            "مقاطعه ولا ما لم تراجعه.",
+            f"{len(approved)} facts you approved from this document — not its text, "
+            "not its excerpts, and nothing you have not reviewed.",
+        ),
+    }
+
+
 async def _guard(session: AsyncSession, principal: Principal, thesis_id: uuid.UUID) -> Thesis:
     thesis = (
         await session.execute(select(Thesis).where(
