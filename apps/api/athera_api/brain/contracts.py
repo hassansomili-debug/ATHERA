@@ -36,38 +36,47 @@ class BrainAnswer(BaseModel):
     evidence_gaps: list[str] = Field(default_factory=list)
 
 
-# أغلفة نقل يضعها المزوّد أحيانًا حول وسائط الأداة — ليست محتوى.
+# غلافُ نقلٍ يضعه المزوّد أحيانًا حول وسائط الأداة — ليس محتوى.
 #
-# **ولا يُخلط هذا بالترميم.** الترميم يخترع قيمةً ناقصة؛ وهذا يزيل غلافًا
-# لا يحمل معلومة أصلًا، ثم يُطبَّق العقد كاملًا على ما بداخله. ولا يُزال
-# الغلاف إن كان العقد نفسه يعلن حقلًا بهذا الاسم — فالمحتوى يسبق الغلاف.
-_ENVELOPES: tuple[str, ...] = ("parameters", "arguments", "input")
+# **والقاعدة بنيوية لا بالاسم.** أول علاج كان قائمة أسماء معروفة
+# (`parameters`, `arguments`, `input`)، فجاء الإنتاج باسمٍ رابع: `answer_ar`
+# — وهو اسم حقلٍ في عقدٍ آخر. وقائمةُ أسماء تلاحق سلوكًا غير حتمي تخسر
+# السباق دائمًا.
+#
+# فالسؤال صار: هل الداخل **هو العقد** والخارج ليس كذلك؟ فإن كان، فالخارج
+# غلافٌ مهما كان اسمه. ولا اختلاق في ذلك: لا يُقبل الداخل إلا إن اجتاز
+# العقد كاملًا، ولا يُصحَّح فيه شيء.
 
 
-def _unwrap(model: type[BaseModel], payload: dict) -> dict:
-    """يزيل غلافًا واحدًا لا أكثر، وبشرطين لا ثالث لهما.
+def _envelope(model: type[BaseModel], payload: dict):
+    """يفتح غلافًا واحدًا **متى كان ما بداخله عقدًا صالحًا وما خارجه ليس**.
 
-    **من أين جاء هذا؟** نداءٌ إنتاجي حقيقي أعاد `{"parameters": {...}}` —
-    والمحتوى بداخله مطابق للعقد تمامًا. والنداء التالي بالمدخلات نفسها أعاد
-    الشكل المتوقّع. فالسلوك غير حتمي: تشغيلةٌ من كل بضع تشغيلات تسقط بـ502
-    على مخرَجٍ سليم.
-
-    فالشرطان: مفتاحٌ واحد فقط في المخرَج، واسمه من الأغلفة المعروفة، وليس
-    حقلًا في العقد. وأي شكل آخر يمرّ كما هو ويُحاسَب على العقد.
+    وثلاثة شروط: مفتاحٌ واحد فقط، وقيمته قاموس، وليس اسمه حقلًا في العقد
+    (فالمحتوى يسبق الغلاف). ثم يُجرَّب الداخل — فإن سقط، سقط الطلب كما لو
+    لم يُفتح شيء، ورسالةُ الخطأ عن العقد لا عن الغلاف.
     """
     if len(payload) != 1:
-        return payload
+        return None
     name = next(iter(payload))
-    if name not in _ENVELOPES or name in model.model_fields:
-        return payload
+    if name in model.model_fields:
+        return None
     inner = payload[name]
-    return inner if isinstance(inner, dict) else payload
+    if not isinstance(inner, dict):
+        return None
+    try:
+        return model.model_validate(inner)
+    except ValidationError:
+        return None
 
 
 def parse_contract(model: type[BaseModel], payload: dict | None):
     if payload is None:
         raise ContractViolation("model returned no structured payload")
     try:
-        return model.model_validate(_unwrap(model, payload))
+        return model.model_validate(payload)
     except ValidationError as exc:
+        # المخرَج لا يطابق العقد — أهو غلافُ نقلٍ حول عقدٍ صالح؟
+        unwrapped = _envelope(model, payload)
+        if unwrapped is not None:
+            return unwrapped
         raise ContractViolation(f"structured output does not match contract: {exc}") from exc

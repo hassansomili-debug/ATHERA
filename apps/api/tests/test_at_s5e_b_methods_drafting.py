@@ -856,17 +856,17 @@ def test_every_declared_capability_can_actually_leave_the_gateway():
 
 # ══════════ 10. ما كشفه أول نداء إنتاجي حقيقي ══════════
 
-def test_a_transport_envelope_is_unwrapped_not_rejected():
-    """نداءٌ إنتاجي أعاد `{"parameters": {...}}` والمحتوى بداخله مطابق تمامًا.
+def test_a_transport_envelope_is_unwrapped_whatever_its_name():
+    """نداءٌ إنتاجي أعاد `{"parameters": {...}}` ثم آخر أعاد `{"answer_ar": {...}}`.
 
-    والنداء التالي بالمدخلات نفسها أعاد الشكل المتوقّع — فالسلوك غير حتمي،
-    وتشغيلةٌ من كل بضع تشغيلات كانت تسقط بـ502 على مخرَجٍ سليم.
+    والقاعدة بنيوية لا بالاسم: قائمةُ أسماء تلاحق سلوكًا غير حتمي تخسر
+    السباق. فالسؤال: هل الداخل هو العقد والخارج ليس كذلك؟
     """
     from athera_api.brain.contracts import parse_contract
     from athera_api.services.publishing.drafting.contracts import SectionDraft
 
     inner = {"section_text_ar": "نصّ المنهجية", "claims": [], "missing_evidence": []}
-    for envelope in ("parameters", "arguments", "input"):
+    for envelope in ("parameters", "arguments", "input", "answer_ar", "result", "خلاصة"):
         parsed = parse_contract(SectionDraft, {envelope: inner})
         assert parsed.section_text_ar == "نصّ المنهجية", envelope
 
@@ -880,12 +880,12 @@ def test_unwrapping_never_becomes_repair():
     with pytest.raises(ContractViolation):
         parse_contract(SectionDraft, {"parameters": {"section_text_ar": "نصّ"},
                                       "extra": 1})
-    # اسم غير معروف: يمرّ كما هو ويُحاسَب على العقد.
-    with pytest.raises(ContractViolation):
-        parse_contract(SectionDraft, {"payload": {"section_text_ar": "نصّ"}})
     # وغلافٌ فارغ لا يصير محتوى.
     with pytest.raises(ContractViolation):
         parse_contract(SectionDraft, {"parameters": {}})
+    # وغلافٌ حول محتوى لا يطابق العقد يسقط، ورسالة الخطأ عن العقد.
+    with pytest.raises(ContractViolation, match="does not match contract"):
+        parse_contract(SectionDraft, {"parameters": {"wrong_field": 1}})
 
 
 def test_an_envelope_name_that_is_a_real_field_is_never_stripped():
