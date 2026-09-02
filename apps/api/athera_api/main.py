@@ -25,6 +25,7 @@ from .routers import golden_thread as golden_thread_router
 from .routers import health as health_router
 from .routers import inbox as inbox_router
 from .routers import literature as literature_router
+from .routers import manuscript_drafting as manuscript_drafting_router
 from .routers import memory as memory_router
 from .routers import planning as planning_router
 from .routers import portfolio as portfolio_router
@@ -136,5 +137,6 @@ app.include_router(golden_thread_router.router)
 app.include_router(document_intelligence_router.router)
 app.include_router(thesis_router.router)
 app.include_router(publishing_router.router)
+app.include_router(manuscript_drafting_router.router)
 app.include_router(analysis_router.router)
 app.include_router(trends_router.router)

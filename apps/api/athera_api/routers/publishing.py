@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.literature import Journal, JournalIndexingRecord
+from ..models.portfolio import ResearchProject
 from ..models.publishing import (
     JournalMatchRow,
     JournalPolicyCheck,
@@ -67,8 +68,8 @@ def _pick(locale: str, arabic: str, english: str | None) -> str:
     return (english or arabic) if locale == "en" else arabic
 
 
-async def _manuscript(session: AsyncSession, principal: Principal,
-                      manuscript_id: uuid.UUID) -> Manuscript:
+async def manuscript_for_tenant(session: AsyncSession, principal: Principal,
+                                manuscript_id: uuid.UUID) -> Manuscript:
     """**البوابة القانونية لملكية المخطوطة** — بالمعرّف والمستأجر معًا (S5E §21).
 
     درس حادثة P0 يُطبَّق هنا من البداية لا بعد تسريب: RLS خاصيةُ قاعدة،
@@ -110,6 +111,18 @@ async def create_manuscript(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ManuscriptResponse:
+    # **ملكية المشروع تُفحص صراحةً.** فحصُ المفتاح الأجنبي يجري بصلاحيات
+    # النظام ولا يمرّ بـRLS، فمشروع مستأجرٍ آخر كان يُقبل مرجعًا لمخطوطة.
+    project = (
+        await session.execute(
+            select(ResearchProject).where(
+                ResearchProject.id == payload.project_id,
+                ResearchProject.tenant_id == principal.tenant_id)
+        )
+    ).scalar_one_or_none()
+    if project is None:
+        raise NotFound("publishing.project_not_found")
+
     record = Manuscript(
         tenant_id=principal.tenant_id, project_id=payload.project_id,
         title_ar=payload.title_ar, title_en=payload.title_en, language=payload.language,
@@ -149,7 +162,7 @@ async def upsert_section(
     if payload.section_key not in vocab.MANUSCRIPT_SECTIONS:
         raise AtheraError("publishing.unknown_section", status_code=422,
                           section=payload.section_key)
-    await _manuscript(session, principal, manuscript_id)
+    await manuscript_for_tenant(session, principal, manuscript_id)
     version = await _current_version(session, principal, manuscript_id)
     if version is None:
         raise NotFound("publishing.manuscript_not_found")
@@ -188,7 +201,7 @@ async def _readiness(
     session: AsyncSession, principal: Principal, manuscript_id: uuid.UUID,
     supported: dict[str, set[str]] | None = None,
 ) -> manuscript.ManuscriptReadiness:
-    await _manuscript(session, principal, manuscript_id)
+    await manuscript_for_tenant(session, principal, manuscript_id)
     version = await _current_version(session, principal, manuscript_id)
     if version is None:
         raise NotFound("publishing.manuscript_not_found")
@@ -282,7 +295,7 @@ async def approve_g9(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ManuscriptResponse:
-    record = await _manuscript(session, principal, manuscript_id)
+    record = await manuscript_for_tenant(session, principal, manuscript_id)
     result = await _readiness(session, principal, manuscript_id)
     snapshot = {
         "can_pass_g9": result.can_pass_g9,
@@ -639,7 +652,8 @@ async def apply_patch(
     patch.decided_at = dt.datetime.now(dt.UTC)
     patch.applied_in_version_id = new_version.id
 
-    manuscript_row = await _manuscript(session, principal, round_row.manuscript_id)
+    manuscript_row = await manuscript_for_tenant(
+        session, principal, round_row.manuscript_id)
     manuscript_row.current_version_id = new_version.id
     # النسخة الجديدة تُلغي اعتماد G9 السابق: الاعتماد كان على نص آخر.
     manuscript_row.g9_approved_at = None
@@ -666,7 +680,7 @@ async def submission_package(
     session: AsyncSession = Depends(get_session),
 ) -> SubmissionPackageResponse:
     """§22.1 — يبني الحزمة مما هو موجود فعلًا ويسمّي الناقص."""
-    await _manuscript(session, principal, manuscript_id)
+    await manuscript_for_tenant(session, principal, manuscript_id)
     version = await _current_version(session, principal, manuscript_id)
     if version is None:
         raise NotFound("publishing.manuscript_not_found")

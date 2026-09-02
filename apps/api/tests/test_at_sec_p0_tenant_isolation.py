@@ -1190,6 +1190,6 @@ def test_the_manuscript_gate_checks_both_id_and_tenant():
 
     from athera_api.routers import publishing
 
-    source = inspect.getsource(publishing._manuscript)
+    source = inspect.getsource(publishing.manuscript_for_tenant)
     assert "Manuscript.id == manuscript_id" in source
     assert "Manuscript.tenant_id == principal.tenant_id" in source

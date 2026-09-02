@@ -116,8 +116,9 @@ def classification_allowed(classification: str, ceiling: str) -> bool:
 # ولا تُوسَّع بقدرة عامة: «كل شيء» ليس قدرة، وإضافة اسم هنا قرار سياسة يُرى
 # في المراجعة لا إعداد يمرّ.
 _CAPABILITY_CEILINGS: Final[dict[str, str]] = {
-    "document_intelligence_external_c2": "C2",
-    "publication_planning_external_c2": "C2",
+    "document_intelligence_external_c2": "C2",   # S5C — قراءة مستند
+    "publication_planning_external_c2": "C2",    # S5D — بناء مقترحات نشر
+    "manuscript_drafting_external_c2": "C2",     # S5E — صياغة نصّ ورقة
 }
 
 
