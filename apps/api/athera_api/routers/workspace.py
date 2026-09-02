@@ -21,7 +21,7 @@ from ..models.files import File
 from ..models.literature import Source
 from ..models.portfolio import ProjectFile, ProjectSource, ResearchProject
 from ..models.publishing import Manuscript
-from ..models.research import ResearcherMemory
+from ..models.research import FactCandidate, ResearcherMemory
 from ..schemas.workspace import (
     BrainEntryView,
     ImpactView,
@@ -63,10 +63,19 @@ async def _summary(session: AsyncSession, principal: Principal,
             ProjectSource.tenant_id == tid, ProjectSource.project_id == row.id,
             ProjectSource.use_state != "excluded")
     )).scalar_one()
+    # المعرفة الموثقة **لهذا البحث** لا للمستأجر كله: العدد يُعرض على بطاقة
+    # بحثٍ بعينه، ورقمٌ يعمّ المستأجر يقرأه الباحث حصيلةَ هذا البحث فيصدّقه.
     facts = (await session.execute(
-        select(func.count(ResearcherMemory.id)).where(
-            ResearcherMemory.tenant_id == tid,
-            ResearcherMemory.verification_status == "verified")
+        select(func.count(func.distinct(ResearcherMemory.id)))
+        .join(FactCandidate,
+              FactCandidate.resulting_memory_id == ResearcherMemory.id)
+        .join(ProjectFile, ProjectFile.file_id == FactCandidate.file_id)
+        .where(ResearcherMemory.tenant_id == tid,
+               ResearcherMemory.verification_status == "verified",
+               FactCandidate.tenant_id == tid,
+               ProjectFile.tenant_id == tid,
+               ProjectFile.project_id == row.id,
+               ProjectFile.state == "active")
     )).scalar_one()
     manuscripts = (await session.execute(
         select(func.count(Manuscript.id)).where(

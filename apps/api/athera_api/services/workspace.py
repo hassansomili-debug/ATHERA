@@ -263,11 +263,20 @@ async def research_brain(session: AsyncSession, *, tenant_id: uuid.UUID,
     """
     from ..services.planning.context import ROLE_BY_FIELD
 
+    # **ولا يُبحث في بحثٍ آخر بصمت.** `researcher_memories` لا تحمل
+    # `project_id`، فأول صياغة قرأت ذاكرة المستأجر كلها — فكان دماغ بحثٍ
+    # يعرض معرفةً استُخرجت من بحثٍ غيره، والباحث لا يرى الفرق. فيُقيَّد
+    # بالسلسلة التي تثبت الانتماء: ملفات هذا البحث ← مرشّحوها ← ذاكرتها.
     rows = (await session.execute(
         select(ResearcherMemory, FactCandidate.field_key, FactCandidate.status)
-        .outerjoin(FactCandidate,
-                   FactCandidate.resulting_memory_id == ResearcherMemory.id)
-        .where(ResearcherMemory.tenant_id == tenant_id)
+        .join(FactCandidate,
+              FactCandidate.resulting_memory_id == ResearcherMemory.id)
+        .join(ProjectFile, ProjectFile.file_id == FactCandidate.file_id)
+        .where(ResearcherMemory.tenant_id == tenant_id,
+               FactCandidate.tenant_id == tenant_id,
+               ProjectFile.tenant_id == tenant_id,
+               ProjectFile.project_id == project_id,
+               ProjectFile.state == "active")
     )).all()
 
     by_role: dict[str, list[tuple[str, str]]] = {}

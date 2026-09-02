@@ -403,3 +403,67 @@ async def test_research_brain_reports_missing_without_inventing_a_percentage(two
     assert {entry.state for entry in brain} <= {"known", "needs_review",
                                                 "missing", "conflicting"}
     assert all(entry.label_ar for entry in brain)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_one_project_never_shows_another_projects_knowledge(two_tenants):
+    """**ولا يُبحث في بحثٍ آخر بصمت.**
+
+    `researcher_memories` لا تحمل `project_id`، فقراءة ذاكرة المستأجر كلها
+    تجعل دماغ بحثٍ يعرض معرفةً استُخرجت من بحثٍ غيره — والباحث لا يرى
+    الفرق، فيبني على ما ليس من بحثه.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectFile
+    from athera_api.models.research import (
+        DocumentChunk,
+        ExtractionRun,
+        FactCandidate,
+        ResearcherMemory,
+    )
+    from athera_api.services.workspace import research_brain
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    owner = await _seed_project(tid, "البحث صاحب المعرفة")
+    stranger = await _seed_project(tid, "بحثٌ لا يملك شيئًا")
+    file_id = await _seed_file(tid, uid, "أدلّة.pdf")
+
+    async with tenant_session(tid, uid) as session:
+        session.add(ProjectFile(tenant_id=tid, project_id=owner, file_id=file_id,
+                                state="active", added_by=uid))
+        memory = ResearcherMemory(
+            tenant_id=tid, memory_category="methodology",
+            statement_ar="المنهج شبه تجريبي بمجموعتين",
+            source_type="document_extraction", source_file_id=file_id,
+            source_locator="p.4", source_quote="المنهج شبه تجريبي بمجموعتين",
+            verification_status="verified", verified_by=uid, verified_at=_now())
+        session.add(memory)
+        chunk = DocumentChunk(tenant_id=tid, file_id=file_id, seq=0,
+                              text="المنهج شبه تجريبي بمجموعتين",
+                              locator="p.4", char_count=29)
+        session.add(chunk)
+        run = ExtractionRun(tenant_id=tid, file_id=file_id, extractor="rules",
+                            status="succeeded", started_at=_now())
+        session.add(run)
+        await session.flush()
+        session.add(FactCandidate(
+            tenant_id=tid, extraction_run_id=run.id, file_id=file_id,
+            chunk_id=chunk.id, memory_category="methodology",
+            field_key="design",
+            statement_ar="المنهج شبه تجريبي بمجموعتين",
+            quote="المنهج شبه تجريبي بمجموعتين", locator="p.4",
+            status="verified", decided_by=uid, decided_at=_now(),
+            resulting_memory_id=memory.id))
+        await session.flush()
+
+    async with tenant_session(tid, uid) as session:
+        mine = await research_brain(session, tenant_id=tid, project_id=owner)
+        theirs = await research_brain(session, tenant_id=tid, project_id=stranger)
+
+    method_mine = next(e for e in mine if e.key == "method")
+    method_theirs = next(e for e in theirs if e.key == "method")
+    assert method_mine.state == "known", "البحث المالك لا يرى معرفته"
+    assert method_theirs.state == "missing", (
+        "بحثٌ آخر رأى معرفةً ليست من ملفاته — البحث الصامت في بحثٍ غيره")
