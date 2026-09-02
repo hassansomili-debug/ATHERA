@@ -90,6 +90,9 @@ _CITATION_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
+# أقسامٌ يصف نصّها إجراءً منهجيًّا — وفيها وحدها تُفحص مفردات المنهج.
+_METHOD_BEARING_SECTIONS: Final[frozenset[str]] = frozenset({"method"})
+
 # أقسامٌ وصفية: تقول ما لوحظ ولا تفسّره (§2) — **من السجلّ لا بجانبه**.
 _DESCRIPTIVE_SECTIONS: Final[frozenset[str]] = frozenset(
     key for key, policy in POLICIES.items() if policy.descriptive_only)
@@ -319,7 +322,15 @@ def run(draft, context, *, known_memory_ids: frozenset[str],
     # في الأدلة، فكان «المنهج الوصفي» يمرّ لأن الأدلة تذكر «شبه التجريبي»
     # — وكلاهما يطابق نمط التصاميم نفسه. أي أن الحارس كان يتحقق من أن
     # الأدلة تذكر **تصميمًا ما**، لا التصميم المكتوب.
-    for kind, patterns in _METHOD_TERMS.items():
+    #
+    # **وفي أقسام المنهج وحدها.** الحارس وُضع ليمنع قسم المنهجية من اختراع
+    # أداةٍ أو أسلوب معاينة. وتطبيقه على المناقشة والخاتمة يُنتج ضجيجًا من
+    # مشتركات اللفظ: «في حدود الأدلة **المتاحة**» تُقرأ عيّنةً متاحة،
+    # و«**مقياس** لحجم الأثر» تُقرأ أداةَ دراسة. وقد وقع الاثنان في الإنتاج.
+    #
+    # وحارسٌ يكثر ضجيجه يُتجاهَل، ثم لا يحرس شيئًا.
+    for kind, patterns in (_METHOD_TERMS.items()
+                           if section in _METHOD_BEARING_SECTIONS else ()):
         flagged = False
         for pattern in patterns:
             for found in pattern.finditer(text):
