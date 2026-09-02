@@ -531,3 +531,47 @@ def test_the_redaction_marker_does_not_describe_what_it_hides():
         assert leak not in body, leak
     # وما حُجب يبقى معروفًا للباحث.
     assert removed and "0.05" in removed[0]
+
+
+# ══════════ 10. المخرجات تُرسل فعلًا ══════════
+
+def test_eligible_outputs_reach_the_model():
+    """كانت تُحمَّل وتُبصَم ويُتحقَّق منها — **ولا تُرسل**.
+
+    فكان النموذج يُحاسَب على رقمٍ لم يُعطَ سبيلًا إليه، ويكتب أن القيمة غير
+    متاحة وهي بين يدي المنظومة. وأول تشغيلة إنتاجية بمخرَج حقيقي كشفت ذلك:
+    مخرَجٌ مؤهَّل قائم، والمسودة تقول إن القيمة لم ترد.
+    """
+    import json
+
+    from athera_api.services.publishing.drafting import generate
+
+    output = _output({"t": 4.21, "df": 118, "p": 0.003})
+    context = _context(_item("result", RESULT_FACT), outputs=[output])
+    payload = json.loads(generate.build_prompt(context))
+
+    assert "analysis_outputs" in payload
+    assert payload["allowed_analysis_output_ids"] == [str(output.output_id)]
+    sent = payload["analysis_outputs"][0]
+    assert sent["analysis_output_id"] == str(output.output_id)
+    assert sent["payload"]["t"] == 4.21
+
+
+def test_no_outputs_means_no_output_block_content():
+    import json
+
+    from athera_api.services.publishing.drafting import generate
+
+    context = _context(_item("result", RESULT_FACT))
+    payload = json.loads(generate.build_prompt(context))
+    assert payload["analysis_outputs"] == []
+    assert payload["allowed_analysis_output_ids"] == []
+
+
+def test_the_rules_forbid_copying_the_redaction_marker():
+    """العلامة أداةٌ داخلية — ولا موضع لها في نصّ ورقة."""
+    from athera_api.services.publishing.drafting import generate
+
+    rules = generate.SECTION_RULES["results"]
+    assert "لا تنسخ العلامة [غير متاح]" in rules
+    assert "فاذكرها" in rules and "ولا تقرّبها" in rules
