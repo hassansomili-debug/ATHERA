@@ -155,13 +155,17 @@ def redact(text: str) -> tuple[str, list[str]]:
 
         return _replace
 
+    # **والعلامة محايدة تجاه النموذج.** «[دلالة إحصائية محجوبة]» تُخبره أن
+    # ثمة نتيجة دلالة، فيعيد بناءها من عنده — وهو ما وقع في أول نداء إنتاجي.
+    # فالعلامة تقول «غير متاح» ولا تصف ما حُجب. والباحث يرى التفصيل في
+    # `redacted_statistics`، وهو صاحب البيانات.
     for pattern in STATISTIC_TOKENS.values():
-        body = pattern.sub(_mask("[قيمة إحصائية غير متاحة بنيويًّا]"), body)
+        body = pattern.sub(_mask("[غير متاح]"), body)
     # **وادّعاء الدلالة يُحجب كذلك.** «فروق دالة إحصائيًّا» يقرّر نتيجة اختبار
     # فرضية ولو خلا من رقم؛ وإرساله كما هو دعوةٌ لإعادته، ثم يرفضه المدقّق.
     # ويبقى ما يسنده الدليل: وجود فرق، واتجاهه.
     for pattern in SIGNIFICANCE_CLAIMS:
-        body = pattern.sub(_mask("[دلالة إحصائية غير مسنَدة بمخرَج تحليل]"), body)
+        body = pattern.sub(_mask("[غير متاح]"), body)
     return body, removed
 
 

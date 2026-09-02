@@ -155,7 +155,7 @@ def test_an_unsupported_statistic_is_withheld_from_the_model():
     sent = context.model_context()
     assert len(sent) == 1
     assert "دالة إحصائيًا" not in sent[0]["statement_ar"]
-    assert "غير مسنَدة بمخرَج تحليل" in sent[0]["statement_ar"]
+    assert "[غير متاح]" in sent[0]["statement_ar"]
     # والمعنى الذي يسنده الدليل باقٍ.
     assert "لصالح المجموعة التجريبية" in sent[0]["statement_ar"]
 
@@ -489,3 +489,45 @@ async def _seed_analysis(tid, uid, *, reproducible: bool):
         session.add(output)
         await session.flush()
         return project.id, output.id
+
+
+# ══════════ 9. التعليمات: النقص الصادق مخرَجٌ مقبول ══════════
+
+def test_the_results_rules_are_added_not_substituted():
+    """قواعد القسم تُضاف إلى العامة — فلا يسقط منعُ الاختلاق بفتح قسم."""
+    from athera_api.services.publishing.drafting import generate
+
+    assert generate.instruction_for("method") == generate.INSTRUCTION
+    results = generate.instruction_for("results")
+    assert results.startswith(generate.INSTRUCTION)
+    assert len(results) > len(generate.INSTRUCTION)
+
+
+def test_the_results_rules_forbid_reconstructing_withheld_values():
+    """أول نداء إنتاجي أعاد بناء دلالةٍ حُجبت — فالمنع صار مكتوبًا."""
+    from athera_api.services.publishing.drafting import generate
+
+    rules = generate.SECTION_RULES["results"]
+    assert "[غير متاح]" in rules
+    assert "لا تعِد بناءه" in rules
+    # ولا يشتقّ رقمًا بالحساب.
+    assert "60 في كل مجموعة" in rules
+    # والنقص الصادق مخرَجٌ مقبول (§26).
+    assert "قسمٌ ناقص صادق" in rules
+
+
+def test_the_redaction_marker_does_not_describe_what_it_hides():
+    """علامةٌ تصف المحجوب تُخبر النموذج بما يعيد بناءه.
+
+    أول نداء إنتاجي وضع «[دلالة إحصائية غير مسنَدة]»، فأعاد النموذج بناء
+    ادّعاء الدلالة من عنده. والباحث يرى التفصيل في `redacted_statistics`،
+    وهو صاحب البيانات.
+    """
+    from athera_api.services.publishing.drafting import numbers
+
+    body, removed = numbers.redact(RESULT_FACT)
+    assert "[غير متاح]" in body
+    for leak in ("دلالة", "إحصائي", "0.05"):
+        assert leak not in body, leak
+    # وما حُجب يبقى معروفًا للباحث.
+    assert removed and "0.05" in removed[0]
