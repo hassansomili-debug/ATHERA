@@ -55,7 +55,11 @@ _METHOD_TERMS: Final[dict[str, tuple[re.Pattern[str], ...]]] = {
 
 # أرقامٌ ذات معنى منهجي — حجم عينة أو عدد أدوات. والسنوات تُستثنى: تاريخٌ
 # مذكور في اقتباس ليس ادّعاء عيّنة.
-_SAMPLE_NUMBER = re.compile(r"(?<![\d.])(\d{2,6})(?![\d.])")
+# كسرٌ عشري بأي فاصلة — عربية أو لاتينية أو نقطة. يُنزع كاملًا قبل البحث عن
+# أرقام العيّنة: جزؤه الكسري ليس عددَ مشاركين، والكلّ إمّا قيمة إحصائية
+# يفحصها فحصها الخاص، أو ليس حجمَ عيّنة بحال.
+_DECIMAL = re.compile(r"\d+\s*[.,٫٬]\s*\d+")
+_SAMPLE_NUMBER = re.compile(r"(?<![\d.,])(\d{2,6})(?![\d.,])")
 _YEARS = re.compile(r"^(?:1[89]|20)\d{2}$")
 
 # صيغ استشهاد — لا مرجع يُختلق والسجل مغلق (§23).
@@ -144,6 +148,9 @@ def _sample_numbers(text: str) -> set[str]:
     body = numbers.normalise(text)
     for hit in numbers.find(body):
         body = body.replace(hit.excerpt, " ")
+    # ثم كل كسرٍ عشري بقي — بأي فاصلة. فأول علاج نزع القيم المعروفة وحدها،
+    # وبقيت `0,003` تُقرأ «003» لأن الفاصلة اللاتينية ليست في نظرة الخلف.
+    body = _DECIMAL.sub(" ", body)
     return {m for m in _SAMPLE_NUMBER.findall(body) if not _YEARS.match(m)}
 
 
