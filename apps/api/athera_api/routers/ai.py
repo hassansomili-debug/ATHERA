@@ -97,8 +97,13 @@ async def ask(
             # §10 — يُقال بصدق، ويُعطى الفعل التالي.
             limitations.append(_t(
                 locale,
-                "هذا الملف لم تُقرأ محتوياته بعد. اطلب «معالجة المستند» من مكتبتك أولًا.",
-                "This file has not been read yet. Ask for “Process document” in your library first.",
+                "هذا الملف لم تُقرأ محتوياته بعد.",
+                "This file has not been read yet.",
+            ))
+            # §10 — ويُعطى الفعل التالي، لا يُترك الباحث أمام «لا أستطيع».
+            actions.append(_t(
+                locale, "اطلب «معالجة المستند» من مكتبتك البحثية أولًا.",
+                "Ask for “Process document” in your research library first.",
             ))
         elif not document_context:
             limitations.append(_t(
