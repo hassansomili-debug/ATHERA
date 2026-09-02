@@ -2508,3 +2508,55 @@ def test_fly_keeps_one_machine_while_the_fix_is_being_verified():
     assert "min_machines_running = 2" not in fly
     # والتكلفة مذكورة صراحةً.
     assert "التكلفة:" in fly
+
+
+# ══════════ معالجة ملفٍ مرفوعٍ سلفًا — بلا رفعٍ ثانٍ ══════════
+
+def test_processing_a_stored_file_reuses_the_one_pipeline():
+    """**الحلقة الناقصة في المنتج.**
+
+    الرفع من المكتبة يُنتج ملفًا في التخزين وصفًّا في القاعدة، ثم يقف: لم
+    يكن ثمّة مسار يقول «اقرأ هذا الملف بعينه». والمسار الوحيد للقراءة كان
+    `POST /theses/upload` — أي **رفعٌ جديد**. فمن رفع ملفه من المكتبة كان
+    عليه أن يرفعه مرة أخرى ليُقرأ، فيصير في القاعدة ملفان وكائنان في
+    التخزين لمستندٍ واحد.
+
+    ولا خط أنابيب ثانٍ: نفس `_process` ونفس `ensure_thesis_for_file`.
+    """
+    import inspect
+
+    from athera_api.routers import document_intelligence as di
+
+    source = inspect.getsource(di.process_stored_file)
+    assert "pipeline.ensure_thesis_for_file" in source
+    assert "background.add_task(_process" in source
+    # ولا رفع ولا صفّ ملف جديد.
+    assert "upload_file(" not in source and "File(" not in source
+    # وترتيب الإيداع قبل الجدولة — الدرس المسجَّل في الرفع.
+    assert source.index("await session.commit()") < source.index("background.add_task")
+
+
+def test_processing_checks_ownership_and_readability_before_promising():
+    """ملكية، ثم حالة الحفظ، ثم قابلية القراءة — قبل أي وعد."""
+    import inspect
+
+    from athera_api.routers import document_intelligence as di
+
+    source = inspect.getsource(di.process_stored_file)
+    assert "File.tenant_id == principal.tenant_id" in source
+    assert "rbac.require_object_action" in source
+    assert 'record.status != "stored"' in source
+    assert "parsing.can_parse" in source
+
+
+def test_parseability_is_derived_from_the_parser_itself():
+    """قائمةٌ ثانية تفترق عن المفكِّك بأول نوعٍ يُضاف."""
+    from athera_api.services import parsing
+
+    assert parsing.can_parse("application/pdf", "a.pdf")
+    assert parsing.can_parse(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "a.docx")
+    assert parsing.can_parse("text/plain", "notes.txt")
+    # وما لا يُقرأ يُقال إنه لا يُقرأ.
+    assert not parsing.can_parse("application/octet-stream", "data.sav")
+    assert not parsing.can_parse("application/vnd.ms-excel", "sheet.xls")

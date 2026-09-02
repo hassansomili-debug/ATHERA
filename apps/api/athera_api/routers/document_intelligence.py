@@ -30,7 +30,7 @@ from ..schemas.document_intelligence import (
     ReviewResponse,
     SectionGroup,
 )
-from ..services import audit, consent, memory, rbac, storage
+from ..services import audit, consent, memory, parsing, rbac, storage
 from ..services.document_intelligence import fields as catalogue
 from ..services.document_intelligence import pipeline
 from ..services.document_intelligence.contracts import STATUS_EXTRACTED, ExtractionBatch
@@ -286,6 +286,66 @@ async def upload_thesis(
         chunks=0, candidates=0,
         message=_t(principal.locale, "تم رفع الرسالة · جارٍ قراءة الملف",
                    "Thesis uploaded · reading document"),
+    )
+
+
+@router.post("/process-file/{file_id}", response_model=ExtractionStateResponse,
+             status_code=status.HTTP_202_ACCEPTED)
+async def process_stored_file(
+    file_id: uuid.UUID,
+    background: BackgroundTasks,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ExtractionStateResponse:
+    """اقرأ ملفًا **مرفوعًا سلفًا** — ولا ترفعه ثانية.
+
+    **الحلقة الناقصة في المنتج.** الرفع من المكتبة يُنتج ملفًا في التخزين
+    وصفًّا في القاعدة، ثم يقف: لا مسار يقول «اقرأ هذا الملف بعينه». وكان
+    المسار الوحيد للقراءة هو `POST /theses/upload` — أي **رفعٌ جديد**. فمن
+    رفع ملفه من المكتبة كان عليه أن يرفعه مرة أخرى ليُقرأ، فيصير في القاعدة
+    ملفان وكائنان في التخزين لمستندٍ واحد.
+
+    **ولا خط أنابيب ثانٍ هنا.** نفس `_process` الذي يستدعيه الرفع، ونفس
+    `ensure_thesis_for_file` الذي يمنع التكرار بالبحث لا بقيد جديد. وما
+    يُضاف سطرُ ربطٍ لا معمارية.
+
+    وترتيب الإيداع قبل الجدولة مقصود — الدرس نفسه المسجَّل في الرفع: المهمة
+    تفتح جلستها الخاصة، فما لم يُودَع لا تراه.
+    """
+    record = (
+        await session.execute(select(File).where(
+            File.id == file_id, File.tenant_id == principal.tenant_id))
+    ).scalar_one_or_none()
+    if record is None:
+        raise NotFound("file.not_found")
+    await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
+                                     "file", record.id, "read")
+
+    if record.status != "stored":
+        raise AtheraError("document.not_stored", status_code=409,
+                          state=record.status)
+    if not parsing.can_parse(record.content_type, record.original_filename):
+        raise AtheraError("document.unsupported_type", status_code=422,
+                          content_type=record.content_type)
+
+    thesis, created = await pipeline.ensure_thesis_for_file(
+        session, tenant_id=principal.tenant_id, file_id=record.id)
+    await audit.record(
+        session, tenant_id=principal.tenant_id,
+        action="document.processing_requested",
+        object_type="file", object_id=record.id, actor_user_id=principal.user_id,
+        state_after={"thesis_id": str(thesis.id), "record_created": created},
+        reason="processing an already-stored file; no re-upload, no duplicate file row",
+        request_id=principal.request_id,
+    )
+    await session.commit()
+
+    background.add_task(_process, principal.tenant_id, principal.user_id,
+                        record.id, principal.locale)
+    return ExtractionStateResponse(
+        thesis_id=thesis.id, file_id=record.id, status=Status.PARSING.value,
+        chunks=0, candidates=0,
+        message=_t(principal.locale, "جارٍ قراءة المستند", "Reading the document"),
     )
 
 

@@ -100,6 +100,14 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
               "workspace happens by invitation from its administrator, not by "
               "registering.",
     },
+    "document.not_stored": {
+        "ar": "لم يكتمل حفظ هذا الملف بعد — أعد المحاولة بعد قليل.",
+        "en": "This file is not fully stored yet — try again shortly.",
+    },
+    "document.unsupported_type": {
+        "ar": "نوع هذا الملف لا يمكن قراءته: تُقرأ ملفات PDF وWord والنصوص.",
+        "en": "This file type cannot be read: PDF, Word and text files are supported.",
+    },
     "tenant.context_missing": {
         "ar": "لم يُحدَّد سياق المستأجر للطلب.",
         "en": "No tenant context was resolved for this request.",

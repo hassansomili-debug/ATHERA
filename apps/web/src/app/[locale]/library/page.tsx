@@ -17,6 +17,9 @@ import { FileUpload } from "@/components/FileUpload";
  * بيانات وصفية فقط لا يجوز اقتطاف نص منه (§14.5)، والواجهة تقول ذلك بدل
  * أن تتركه مفاجأة عند المحاولة.
  */
+/** أنواع يقرؤها المفكِّك — والزرّ لا يُعرض على ما لا يُقرأ. */
+const PARSEABLE = /\.(pdf|docx|txt|md)$/i;
+
 interface LibraryFile {
   id: string;
   original_filename: string;
@@ -69,6 +72,7 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
   const t = translator(getMessages(locale));
 
   const [files, setFiles] = useState<LibraryFile[]>([]);
+  const [processing, setProcessing] = useState<string | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [doi, setDoi] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -138,8 +142,35 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
                     : ""}
                 </div>
                 <div style={{ display: "flex", gap: 12, marginBlockStart: 8 }}>
+                  {/* المعالجة تُعرض لما يمكن قراءته وحده — ووعدٌ لا يُنجَز
+                      أسوأ من غياب الزرّ. */}
+                  {file.processing_status === "not_processed" ? (
+                    PARSEABLE.test(file.original_filename) ? (
+                      <button
+                        type="button"
+                        disabled={processing === file.id}
+                        onClick={() => {
+                          setProcessing(file.id);
+                          setError(null);
+                          void apiFetch(`/api/v1/theses/process-file/${file.id}`, {
+                            method: "POST", locale,
+                          })
+                            .then(() => loadFiles())
+                            .catch((err) => setError(
+                              err instanceof AtheraApiError
+                                ? err.localized(locale) : t("common.loadFailed")))
+                            .finally(() => setProcessing(null));
+                        }}
+                      >
+                        {processing === file.id
+                          ? t("library.processing2") : t("library.processDoc")}
+                      </button>
+                    ) : (
+                      <span style={{ color: "var(--muted)" }}>{t("library.cannotProcess")}</span>
+                    )
+                  ) : null}
                   {file.thesis_id ? (
-                    <a href={`/${locale}/theses`}>{t("library.reviewLink")}</a>
+                    <a href={`/${locale}/theses`}>{t("library.openReview")}</a>
                   ) : null}
                   <a href={`/${locale}/library`} onClick={(event) => {
                     event.preventDefault();
