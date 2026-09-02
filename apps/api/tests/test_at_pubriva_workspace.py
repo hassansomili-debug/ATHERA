@@ -7,6 +7,7 @@
 ٤) ما في السلّة لا يظهر قائمًا — في أي شاشة.
 """
 import datetime as dt
+import pathlib
 import uuid
 
 import pytest
@@ -74,6 +75,39 @@ def test_impact_summary_says_nothing_depends_when_nothing_does():
                     breaks_approved_work=True)])
     assert not loaded.is_safe and loaded.breaks_approved_work
     assert "2 قسمًا معتمَدًا" in loaded.summary_ar()
+
+
+def test_every_link_state_the_code_writes_is_permitted_by_the_migration():
+    """**عيبٌ كشفه الإنتاج**: الموجّه كتب `"removed"` والقيد لا يعرفها.
+
+    فكانت كل إزالةِ ملفٍّ من بحثٍ تُنتج 500 على الخادم الحيّ — والاختبارات
+    المحلية لم تمسّها لأنها لم تُنفِّذ المسار على قاعدة. وهو الخطأ المتكرر:
+    مفردةٌ تُكتب بجانب سجلّها بدل أن تُشتقّ منه.
+
+    فيُقابَل ما يكتبه الشيفرة بما يسمح به الترحيل — نصًّا بنصّ.
+    """
+    import inspect
+    import re
+
+    from athera_api.models.portfolio import ProjectFile
+    from athera_api.routers import workspace as router
+    from athera_api.services import workspace as service
+
+    migration = (pathlib.Path(__file__).resolve().parents[3] / "infra" / "db"
+                 / "migrations" / "versions" / "0020_project_workspace.py"
+                 ).read_text(encoding="utf-8")
+    allowed = set(re.search(r"LINK_STATES = \(([^)]*)\)", migration).group(1)
+                  .replace('"', "").replace("'", "").replace(" ", "").strip(",").split(","))
+
+    assert set(ProjectFile.STATES) == allowed, (
+        f"مفردات النموذج {set(ProjectFile.STATES)} تخالف قيد الترحيل {allowed}")
+
+    # ولا يُكتب سلسلةُ حالٍ حرفية في الموجّه أو الخدمة — تُشتقّ من النموذج.
+    for module in (router, service):
+        source = inspect.getsource(module)
+        for literal in re.findall(r'(?:link|existing)\.state = "([^"]+)"', source):
+            assert literal in allowed, (
+                f"{module.__name__} يكتب الحال {literal!r} ولا يقبلها القيد")
 
 
 def test_project_creation_asks_for_a_title_and_nothing_more():

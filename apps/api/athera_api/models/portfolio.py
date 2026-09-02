@@ -140,6 +140,16 @@ class ProjectFile(Base, TenantScoped, Timestamped):
     __tablename__ = "project_files"
     __table_args__ = (UniqueConstraint("project_id", "file_id", name="uq_project_file"),)
 
+    # **حالا الرابط، مكتوبتان مرّة واحدة.** والقيد في القاعدة لا يقبل غيرهما.
+    # وكان الموجّه يكتب `"removed"` بجانبهما — لفظًا لا وجود له في القيد —
+    # فكانت كل إزالةٍ ملفٍّ من بحثٍ تُنتج 500 في الإنتاج. وهو الخطأ المتكرر
+    # نفسه: مفردةٌ تُكتب بجانب سجلّها بدل أن تُشتقّ منه.
+    #
+    # و`ARCHIVED` هي «أُزيل من هذا البحث»: الرابط يبقى للأثر ولا يُعدّ قائمًا.
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+    STATES = (ACTIVE, ARCHIVED)
+
     id: Mapped[uuid.UUID] = uuid_pk()
     project_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("research_projects.id", ondelete="CASCADE"),
