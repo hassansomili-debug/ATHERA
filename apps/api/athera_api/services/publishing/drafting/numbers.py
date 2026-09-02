@@ -181,30 +181,31 @@ def redact(text: str) -> tuple[str, list[str]]:
     دعوةٌ للنموذج أن يعيد رقمًا سيرفضه المدقّق بعد قليل — فيبدو الحارس
     تعسّفًا، ويُغرى المستخدم بتعطيله.
 
-    فيُحجب الرقم ويُقال إنه غير متاح، ويبقى المعنى الذي يسنده الدليل.
+    فتُنظَّف الجملة من الادعاء الإحصائي، ويبقى المعنى الذي يسنده الدليل.
     """
     body = normalise(text)
     removed: list[str] = []
 
-    def _mask(label: str):
-        def _replace(match: re.Match[str]) -> str:
-            removed.append(match.group(0).strip())
-            return label
+    def _drop(match: re.Match[str]) -> str:
+        removed.append(match.group(0).strip())
+        return ""
 
-        return _replace
-
-    # **والعلامة محايدة تجاه النموذج.** «[دلالة إحصائية محجوبة]» تُخبره أن
-    # ثمة نتيجة دلالة، فيعيد بناءها من عنده — وهو ما وقع في أول نداء إنتاجي.
-    # فالعلامة تقول «غير متاح» ولا تصف ما حُجب. والباحث يرى التفصيل في
-    # `redacted_statistics`، وهو صاحب البيانات.
     for pattern in STATISTIC_TOKENS.values():
-        body = pattern.sub(_mask("[غير متاح]"), body)
+        body = pattern.sub(_drop, body)
     # **وادّعاء الدلالة يُحجب كذلك.** «فروق دالة إحصائيًّا» يقرّر نتيجة اختبار
     # فرضية ولو خلا من رقم؛ وإرساله كما هو دعوةٌ لإعادته، ثم يرفضه المدقّق.
     # ويبقى ما يسنده الدليل: وجود فرق، واتجاهه.
     for pattern in SIGNIFICANCE_CLAIMS:
-        body = pattern.sub(_mask("[غير متاح]"), body)
-    return body, removed
+        body = pattern.sub(_drop, body)
+
+    # **ويُحذف ولا يُعلَّم.** العلامة المحايدة `[غير متاح]` كانت أهون من
+    # الوصفية، لكنها تبقى تقول «هنا شيءٌ حُجب» — فيعيد النموذج بناءه من
+    # السياق، **وينسخ العلامة نفسها إلى نصّ المخطوطة**. وقد وقع الاثنان في
+    # أول نداء إنتاجي للخاتمة.
+    #
+    # فالجملة تُنظَّف ويبقى ما يسنده الدليل. والباحث يرى ما حُجب في
+    # `redacted_statistics` — وهو صاحب البيانات، لا النموذج.
+    return re.sub(r"\s{2,}", " ", body).replace(" ،", "،").strip(), removed
 
 
 

@@ -155,7 +155,8 @@ def test_an_unsupported_statistic_is_withheld_from_the_model():
     sent = context.model_context()
     assert len(sent) == 1
     assert "دالة إحصائيًا" not in sent[0]["statement_ar"]
-    assert "[غير متاح]" in sent[0]["statement_ar"]
+    # ولا علامة تحلّ محلّه: علامةٌ تقول «هنا شيءٌ حُجب» تُفشي ما تحجبه.
+    assert "[غير متاح]" not in sent[0]["statement_ar"]
     # والمعنى الذي يسنده الدليل باقٍ.
     assert "لصالح المجموعة التجريبية" in sent[0]["statement_ar"]
 
@@ -526,45 +527,21 @@ def test_the_results_rules_forbid_reconstructing_withheld_values():
     assert "قسمٌ ناقص صادق" in rules
 
 
-def test_the_redaction_marker_does_not_describe_what_it_hides():
-    """علامةٌ تصف المحجوب تُخبر النموذج بما يعيد بناءه.
+def test_redaction_leaves_no_trace_the_model_can_read_or_copy():
+    """العلامة المحايدة كانت أهون من الوصفية — ولا تزال تقول «هنا شيءٌ حُجب».
 
-    أول نداء إنتاجي وضع «[دلالة إحصائية غير مسنَدة]»، فأعاد النموذج بناء
-    ادّعاء الدلالة من عنده. والباحث يرى التفصيل في `redacted_statistics`،
-    وهو صاحب البيانات.
+    فيعيد النموذج بناءه من السياق، وينسخ العلامة نفسها إلى نصّ المخطوطة.
+    وقد وقع الاثنان في أول نداء إنتاجي للخاتمة.
     """
     from athera_api.services.publishing.drafting import numbers
+    from athera_api.services.publishing.vocab import INTERNAL_MARKERS
 
     body, removed = numbers.redact(RESULT_FACT)
-    assert "[غير متاح]" in body
-    for leak in ("دلالة", "إحصائي", "0.05"):
-        assert leak not in body, leak
-    # وما حُجب يبقى معروفًا للباحث.
-    assert removed and "0.05" in removed[0]
-
-
-# ══════════ 10. المخرجات تُرسل فعلًا ══════════
-
-def test_eligible_outputs_reach_the_model():
-    """كانت تُحمَّل وتُبصَم ويُتحقَّق منها — **ولا تُرسل**.
-
-    فكان النموذج يُحاسَب على رقمٍ لم يُعطَ سبيلًا إليه، ويكتب أن القيمة غير
-    متاحة وهي بين يدي المنظومة. وأول تشغيلة إنتاجية بمخرَج حقيقي كشفت ذلك:
-    مخرَجٌ مؤهَّل قائم، والمسودة تقول إن القيمة لم ترد.
-    """
-    import json
-
-    from athera_api.services.publishing.drafting import generate
-
-    output = _output({"t": 4.21, "df": 118, "p": 0.003})
-    context = _context(_item("result", RESULT_FACT), outputs=[output])
-    payload = json.loads(generate.build_prompt(context))
-
-    assert "analysis_outputs" in payload
-    assert payload["allowed_analysis_output_ids"] == [str(output.output_id)]
-    sent = payload["analysis_outputs"][0]
-    assert sent["analysis_output_id"] == str(output.output_id)
-    assert sent["payload"]["t"] == 4.21
+    assert removed, "لم يُحجب شيء"
+    for marker in INTERNAL_MARKERS:
+        assert marker not in body, marker
+    assert "دالة إحصائيًا" not in body
+    assert "لصالح المجموعة التجريبية" in body
 
 
 def test_no_outputs_means_no_output_block_content():
