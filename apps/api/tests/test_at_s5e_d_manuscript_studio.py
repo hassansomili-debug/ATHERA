@@ -547,3 +547,36 @@ def test_results_strictness_did_not_regress():
         context, "بلغت قيمة p = 0.05")
     assert "statistic_value_mismatch" not in _run_checks(
         context, "بلغت قيمة مربع إيتا 0.106")
+
+
+# ══════════ 10. التشكيل لا يغيّر الحكم ══════════
+
+@pytest.mark.parametrize("phrasing", [
+    "وجد فرق دال إحصائيا بين المجموعتين",
+    "الفرق دالّ إحصائيًّا",
+    "الفرق دالٌّ إحصائيًّا",
+    "كان الفرق دالًّا إحصائيًّا",
+    "فروق دالة إحصائيًا عند مستوى 0.05",
+    "كان دالًّا عند مستوى 0.05",
+    "ذات دلالة إحصائية",
+    "the difference was statistically significant",
+])
+def test_a_significance_claim_is_caught_however_it_is_vowelled(phrasing):
+    """**ثغرةٌ وجدها نصٌّ إنتاجي حقيقي.**
+
+    كانت الحركات مسموحًا بها بعد «إحصائي» وحدها، فكان «الفرق **دالٌّ**
+    إحصائيًّا» يمرّ بلا كشف: التنوين والشدّة بعد «دال» يقطعان النمط.
+
+    والباحث يشكّل أو لا يشكّل، والحكم واحد. وحارسٌ يُهزم بحركةٍ فوق حرف
+    ليس حارسًا.
+    """
+    from athera_api.services.publishing.drafting import numbers
+
+    assert any(hit.kind == "significance" for hit in numbers.find(phrasing)), phrasing
+
+
+def test_a_vowelled_significance_claim_is_blocked_end_to_end():
+    """ولا يصير نصًّا: يمرّ بالمسار كما يمرّ به الإنتاج."""
+    context = _discussion_context(PRODUCTION_PAYLOAD)
+    assert "significance_without_analysis_output" in _run_checks(
+        context, "وقد تبيّن أن الفرق دالٌّ إحصائيًّا لصالح المجموعة التجريبية")
