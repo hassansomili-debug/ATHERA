@@ -330,7 +330,10 @@ def test_the_prompt_carries_only_the_section_context():
     context = _context(_item("methodology", FACTS["design"]))
     payload = json.loads(generate.build_prompt(context))
     assert set(payload) == {"section_key", "section_purpose_ar", "language",
-                            "evidence", "thread_elements_ar", "allowed_memory_ids"}
+                            "evidence", "thread_elements_ar", "allowed_memory_ids",
+                            "analysis_outputs", "allowed_analysis_output_ids"}
+    # والمنهجية بلا مخرجات: القائمة موجودة وفارغة، فلا يظنّها النموذج محجوبة.
+    assert payload["analysis_outputs"] == []
     blob = json.dumps(payload, ensure_ascii=False)
     for leaked in ("source_file_id", "storage_key", "https://", "Bearer", "sk-"):
         assert leaked not in blob, leaked
