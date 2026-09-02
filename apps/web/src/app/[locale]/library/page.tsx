@@ -1,18 +1,47 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { FileUpload } from "@/components/FileUpload";
 
 /**
- * مكتبة الأدلة (§14).
+ * مكتبة الباحث (§14).
+ *
+ * **وكانت لا تعرض ملفات صاحبها إطلاقًا.** تعرض المصادر المستوردة بـDOI
+ * وحدها؛ فمن رفع رسالته لم يجد لها أثرًا، وكان عليه أن يحفظ معرّفها بنفسه.
+ * والملفات الآن أولًا — وهي ما يملكه الباحث فعلًا — ثم المصادر بعدها.
  *
  * حالة الوصول تُعرض بجانب كل مصدر لأنها تحدد ما يجوز الاستشهاد به: مصدر
  * بيانات وصفية فقط لا يجوز اقتطاف نص منه (§14.5)، والواجهة تقول ذلك بدل
  * أن تتركه مفاجأة عند المحاولة.
  */
+interface LibraryFile {
+  id: string;
+  original_filename: string;
+  content_type: string;
+  size_bytes: number;
+  status: string;
+  created_at: string;
+  processing_status: string;
+  thesis_id: string | null;
+  candidates: number;
+  reviewed: number;
+}
+
+/** حال المعالجة نصًّا — **لا لونًا وحده**، ولا وعدًا بما لم يقع. */
+const PROCESSING_LABEL: Record<string, string> = {
+  not_processed: "library.notProcessed",
+  parsing: "library.processing",
+  extracting: "library.processing",
+  awaiting_consent: "library.processing",
+  awaiting_review: "library.needsReview",
+  completed: "library.processed",
+  extract_failed: "library.failedState",
+  parse_failed: "library.failedState",
+};
+
 interface Source {
   id: string;
   doi: string | null;
@@ -39,16 +68,24 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
   const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
   const t = translator(getMessages(locale));
 
+  const [files, setFiles] = useState<LibraryFile[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [doi, setDoi] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const loadFiles = useCallback(() => {
+    apiFetch<LibraryFile[]>("/api/v1/files", { locale })
+      .then(setFiles)
+      .catch(() => setFiles([]));
+  }, [locale]);
+
   useEffect(() => {
+    loadFiles();
     apiFetch<Source[]>("/api/v1/sources", { locale })
       .then(setSources)
       .catch(() => setSources([]));
-  }, [locale]);
+  }, [locale, loadFiles]);
 
   async function importDoi(event: React.FormEvent) {
     event.preventDefault();
@@ -75,8 +112,51 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
       <h1>{t("library.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("library.subtitle")}</p>
       <div style={{ marginBlock: "18px 24px" }}>
-        <FileUpload locale={locale} messages={getMessages(locale)} />
+        <FileUpload locale={locale} messages={getMessages(locale)} onUploaded={loadFiles} />
       </div>
+
+      {/* ── ملفاتي: ما يملكه الباحث فعلًا ── */}
+      <section>
+        <h2>{t("library.myFiles")}</h2>
+        <p style={{ color: "var(--muted)" }}>{t("library.filesNote")}</p>
+        {files.length === 0 ? (
+          <p>{t("library.noFiles")}</p>
+        ) : (
+          <div className="cards">
+            {files.map((file) => (
+              <article className="card" key={file.id}>
+                <h3>{file.original_filename}</h3>
+                <div className="metric-label">
+                  {file.content_type} · {Math.max(1, Math.round(file.size_bytes / 1024))} KB ·{" "}
+                  {new Date(file.created_at).toLocaleDateString(locale)}
+                </div>
+                {/* الحالة نصًّا صريحًا — ولا يُقال «حُلِّل» لملفٍ لم يُقرأ. */}
+                <div className="metric-label">
+                  {t(PROCESSING_LABEL[file.processing_status] ?? "library.notProcessed")}
+                  {file.candidates > 0
+                    ? ` · ${file.candidates} ${t("library.candidatesCount")} · ${file.reviewed} ${t("library.reviewedCount")}`
+                    : ""}
+                </div>
+                <div style={{ display: "flex", gap: 12, marginBlockStart: 8 }}>
+                  {file.thesis_id ? (
+                    <a href={`/${locale}/theses`}>{t("library.reviewLink")}</a>
+                  ) : null}
+                  <a href={`/${locale}/library`} onClick={(event) => {
+                    event.preventDefault();
+                    void apiFetch<{ url: string }>(`/api/v1/files/${file.id}/download`, { locale })
+                      .then((r) => window.open(r.url, "_blank", "noopener"))
+                      .catch((err) => setError(
+                        err instanceof AtheraApiError
+                          ? err.localized(locale) : t("common.loadFailed")));
+                  }}>{t("library.downloadFile")}</a>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <h2>{t("library.sourcesTab")}</h2>
 
       <form className="form" onSubmit={importDoi} style={{ maxInlineSize: 480 }}>
         <label>

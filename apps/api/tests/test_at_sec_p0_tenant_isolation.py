@@ -1193,3 +1193,36 @@ def test_the_manuscript_gate_checks_both_id_and_tenant():
     source = inspect.getsource(publishing.manuscript_for_tenant)
     assert "Manuscript.id == manuscript_id" in source
     assert "Manuscript.tenant_id == principal.tenant_id" in source
+
+
+# ══════════ 8. المكتبة تعرض ملفات الباحث — وملفاته وحده ══════════
+
+def test_the_library_listing_is_scoped_to_the_tenant():
+    """**مسارٌ لم يكن موجودًا**، فكانت المكتبة لا تعرض ملفًا رفعه صاحبها.
+
+    ويُضاف بالبوابتين معًا من أول سطر: RLS، وفلترةٌ صريحة بالمستأجر — درسُ
+    حادثة P0 يُطبَّق قبل التسريب لا بعده.
+    """
+    import inspect
+
+    from athera_api.routers import files
+
+    source = inspect.getsource(files.list_files)
+    assert "File.tenant_id == principal.tenant_id" in source
+    for scoped in ("Thesis.tenant_id == principal.tenant_id",
+                   "ExtractionRun.tenant_id == principal.tenant_id",
+                   "FactCandidate.tenant_id == principal.tenant_id"):
+        assert scoped in source, scoped
+
+
+def test_the_library_never_claims_a_file_was_analysed():
+    """الحالة تُقرأ من تشغيلة استخراج حقيقية، ولا تُخترع متفائلة."""
+    import inspect
+
+    from athera_api.routers import files
+
+    source = inspect.getsource(files.list_files)
+    assert '"not_processed"' in source
+    assert "run.status" in source
+    # ولا حالة ثابتة تُكتب بجانب الواقع.
+    assert '"analyzed"' not in source and '"processed" if' not in source

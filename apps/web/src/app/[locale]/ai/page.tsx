@@ -1,6 +1,6 @@
 "use client";
 
-import { use } from "react";
+import { use, useState } from "react";
 
 import { AtheraAiInput } from "@/components/AtheraAiInput";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
@@ -27,6 +27,10 @@ export default function AiPage({ params }: { params: Promise<{ locale: string }>
   const messages = getMessages(locale);
   const t = translator(messages);
   const { items, modelEnabled, loading } = usePosture(locale);
+  // **مقترحات البداية كانت أزرارًا ميتة.** تُرسم قابلةً للنقر بلا معالج:
+  // يضغطها المستخدم فلا يحدث شيء، ولا رسالة تقول لماذا. وهي الآن تملأ
+  // المدخل بنصّها، فيعدّله المستخدم ويرسله.
+  const [seed, setSeed] = useState("");
 
   return (
     <>
@@ -36,7 +40,7 @@ export default function AiPage({ params }: { params: Promise<{ locale: string }>
       </div>
 
       <section style={{ maxInlineSize: "78ch", marginBlockEnd: 30 }}>
-        <AtheraAiInput locale={locale} messages={messages} rows={4} />
+        <AtheraAiInput locale={locale} messages={messages} rows={4} seed={seed} />
       </section>
 
       <section style={{ marginBlockEnd: 30 }}>
@@ -45,7 +49,13 @@ export default function AiPage({ params }: { params: Promise<{ locale: string }>
         </p>
         <div className="starters">
           {INTENTS.map((key) => (
-            <button type="button" className="starter" key={key} disabled={loading || !modelEnabled}>
+            <button
+              type="button"
+              className="starter"
+              key={key}
+              disabled={loading || !modelEnabled}
+              onClick={() => setSeed(t(`ai.${key}`))}
+            >
               {t(`ai.${key}`)}
             </button>
           ))}

@@ -79,10 +79,15 @@ export async function apiFetch<T>(
   }
 
   const bearer = token ?? getAccessToken();
+  // **رفع الملفات يفرض نوعه بنفسه.** `FormData` يحتاج حدًّا فاصلًا
+  // (boundary) يولّده المتصفح ويضعه في الترويسة؛ وفرضُ `application/json`
+  // فوقه يُنتج طلبًا لا يستطيع الخادم تفكيكه. ولهذا كان الرفع يلتفّ على
+  // هذا العميل ويبني `fetch` بنفسه — فيفقد حارس الإعداد وتوحيد الأخطاء.
+  const isMultipart = typeof FormData !== "undefined" && init.body instanceof FormData;
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
+      ...(isMultipart ? {} : { "Content-Type": "application/json" }),
       "Accept-Language": locale,
       ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
       ...init.headers,
