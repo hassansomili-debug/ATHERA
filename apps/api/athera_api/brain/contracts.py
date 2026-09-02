@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field, ValidationError
 
 __all__ = ["Citation", "BrainAnswer", "ContractViolation", "parse_contract", "ValidationError"]
@@ -20,6 +22,26 @@ class Citation(BaseModel):
     memory_id: str
     locator: str | None = None
     quote: str | None = None
+
+
+_TRAILING_MARKUP = re.compile(
+    r"\s*</?(?:answer_ar|answer_en|citations|evidence_gaps|unsupported_claims|"
+    r"invoke|function_calls|parameter)\b[^>]*>.*",
+    re.S | re.IGNORECASE,
+)
+
+
+def strip_markup(text: str) -> str:
+    """يقطع وسمًا داخليًّا تسرّب إلى نصّ الإجابة.
+
+    **عطبٌ رآه المستخدم.** ردٌّ صحيحٌ تمامًا وصل ومعه ذيلٌ من وسوم العقد:
+    `</answer_ar>` ثم `<citations>[…]</citations>` ثم `</invoke>`. فالنموذج
+    أعاد الحقول موسومةً لا مُهيكلة، فمرّ الحقل الأول ومعه بقيّة النصّ.
+
+    والحقول مقروءة أصلًا من المخرَج المهيكل، فالوسم في النصّ زائدٌ لا معلومة
+    — وعرضُه على الباحث يجعل ردًّا سليمًا يبدو معطوبًا.
+    """
+    return _TRAILING_MARKUP.sub("", text).strip()
 
 
 class BrainAnswer(BaseModel):
