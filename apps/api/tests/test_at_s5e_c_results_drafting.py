@@ -995,3 +995,41 @@ def test_the_marker_vocabulary_has_one_home():
     from athera_api.services.publishing.drafting import checks
 
     assert checks.INTERNAL_MARKERS is vocab.INTERNAL_MARKERS
+
+
+# ══════════ 16. عددٌ حقيقي من التحليل ليس رقم عيّنة مخترَعًا ══════════
+
+def test_a_degrees_of_freedom_value_is_not_an_invented_sample_number():
+    """**عطبٌ حجب مسودة صحيحة في الإنتاج.**
+
+    كتب النموذج درجات الحرية خارج صيغة الاختبار — «د.ح = 118» بدل
+    `t(118)` — فلم يرها مستخرِج الإحصاءات، ورآها حارسُ أرقام العيّنة رقمًا
+    لا يرد في المادة الموثقة. و`118` عددٌ حقيقي خرج من التحليل.
+    """
+    from athera_api.services.publishing.drafting import checks
+
+    context = _context(_item("result", RESULT_FACT), outputs=[_output(REAL_PAYLOAD)])
+    issues = _run(_draft("بلغت درجات الحرية 118 في اختبار المجموعتين"), context)
+    assert "unsupported_sample_number" not in _keys(issues), [i.excerpt for i in issues]
+    assert checks.fabrications(issues) == []
+
+
+def test_an_untyped_payload_value_is_also_excluded():
+    """`n_control` مفتاحٌ لا نعرف نوعه — ويبقى عددًا حقيقيًّا من التحليل."""
+    context = _context(_item("result", RESULT_FACT), outputs=[_output(REAL_PAYLOAD)])
+    issues = _run(_draft("بلغ حجم كل مجموعة 60 مشاركًا"), context)
+    assert "unsupported_sample_number" not in _keys(issues)
+
+
+def test_a_number_in_no_output_and_no_evidence_is_still_refused():
+    """والاستثناء لا يتّسع: رقمٌ لا في الأدلة ولا في المخرجات يبقى مرفوضًا."""
+    context = _context(_item("result", RESULT_FACT), outputs=[_output(REAL_PAYLOAD)])
+    issues = _run(_draft("شارك 240 طالبًا في الدراسة"), context)
+    assert "unsupported_sample_number" in _keys(issues)
+
+
+def test_the_exclusion_does_not_loosen_statistic_grounding():
+    """رقمٌ في المخرَج لا يجعل **ادعاءً إحصائيًّا** مسنَدًا بنوع آخر."""
+    context = _context(_item("result", RESULT_FACT), outputs=[_output(REAL_PAYLOAD)])
+    issues = _run(_draft("بلغت قيمة p = 0.106 في الاختبار"), context)
+    assert "statistic_without_analysis_output" in _keys(issues)

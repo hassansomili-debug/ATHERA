@@ -150,6 +150,17 @@ def _canonical(value: str) -> str:
         return value
 
 
+def all_values(payload) -> set[str]:
+    """كل عدد في حمولة مخرَج — بصيغته الموحَّدة.
+
+    **أوسع من `facts()` عمدًا.** تلك تعرف الأنواع المسمّاة؛ وهذه تقول: أي
+    عدد **موجود فعلًا** في مخرَج تحليل مؤهَّل. ويحتاجها حارسُ أرقام العيّنة
+    وحده: مفتاحٌ لا نعرف نوعه (`n_control` مثلًا) يبقى عددًا حقيقيًّا خرج من
+    التحليل، ولا يجوز أن يُبلَّغ عنه رقمَ عيّنة مخترَعًا.
+    """
+    return _values_in(payload)
+
+
 def supports(hit: StatisticHit, payload) -> bool:
     """هل تحمل حمولة المخرَج هذه القيمة **بعينها**؟
 
@@ -317,4 +328,5 @@ def fact_supports(hit: StatisticHit, fact: StatisticFact) -> bool:
 
 
 __all__ = ["SIGNIFICANCE_CLAIMS", "STATISTIC_TOKENS", "StatisticFact", "StatisticHit",
-           "fact_supports", "facts", "find", "normalise", "redact", "supports"]
+           "all_values", "fact_supports", "facts", "find", "normalise", "redact",
+           "supports"]

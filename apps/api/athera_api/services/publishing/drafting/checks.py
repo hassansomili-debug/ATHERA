@@ -336,12 +336,27 @@ def run(draft, context, *, known_memory_ids: frozenset[str],
 
     # ── 4. رقمٌ يصف العينة ولا يرد في الأدلة ──
     #
-    # والقيم التي يسندها مخرَج تحليل تُستثنى: هي نتيجةٌ مسنَدة لا رقم عيّنة
-    # مخترَع، وحسابها مرتين كشفًا يُغرق الباحث بضجيج.
+    # **وكل عدد في مخرَج تحليل مؤهَّل يُستثنى** — لا القيم المرتبطة بادعاء
+    # وحدها. فدرجات الحرية في `t(118) = 3.738` عددٌ حقيقي خرج من التحليل،
+    # وقد يكتبها الباحث أو النموذج خارج صيغة الاختبار: «د.ح = 118». وحصرُ
+    # الاستثناء في المقتطفات المرتبطة يجعل رقمًا حقيقيًّا يُبلَّغ عنه رقمَ
+    # عيّنة مخترَعًا — وهو ما وقع فعلًا فحُجبت مسودة صحيحة.
+    #
+    # ويُستعمل `all_values` لا `facts`: مفتاحٌ لا نعرف نوعه (`n_control`)
+    # يبقى عددًا حقيقيًّا خرج من التحليل.
+    #
+    # ولا يُرخي هذا الإسناد: الادعاءات الإحصائية تظل تُفحص بنوعها وقيمتها
+    # وأبعادها ورابطها. وهذا الفحص وحده — حارسُ **أرقام العيّنة** — هو الذي
+    # يكفّ عن عدّ مخرجات التحليل اختلاقًا.
     grounded_digits = {d for value in grounded_values
                        for d in _sample_numbers(numbers.normalise(value))}
+    output_digits: set[str] = set()
+    for output in context.outputs:
+        for value in numbers.all_values(output.payload):
+            output_digits |= _sample_numbers(value)
     invented_numbers = sorted(
-        _sample_numbers(text) - _sample_numbers(evidence) - grounded_digits)
+        _sample_numbers(text) - _sample_numbers(evidence)
+        - grounded_digits - output_digits)
     if invented_numbers:
         add("unsupported_sample_number",
             f"رقم لا يرد في المادة الموثقة: «{invented_numbers[0]}».",
