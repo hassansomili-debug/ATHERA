@@ -548,63 +548,68 @@ async def test_the_login_tenant_resolver_is_narrow_and_not_public(db_ready):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_login_works_under_the_non_bypassing_application_role(two_tenants):
-    """الدخول عبر المسار الحقيقي بدورٍ **لا يتجاوز RLS** — وهو ما لم يُختبر قط.
+async def test_the_whole_identity_path_works_under_the_non_bypassing_role(db_ready):
+    """تسجيل ثم دخول ثم تجديد — عبر HTTP، بدورٍ **لا يتجاوز RLS**.
 
-    الاختبارات كانت تفتح جلساتها بسياق مستأجر جاهز، فلم يمرّ أحدها بالقراءة
-    السابقة للمصادقة. فسقط الدخول كليًّا أول مرة عمل فيها الإنتاج بدوره
-    المقصود — عطبٌ كان يخفيه التجاوز نفسه.
+    وهو ما لم يُختبر قط: كل الاختبارات تفتح جلساتها بسياق مستأجر جاهز، فلم
+    يمرّ أحدها بالقراءة السابقة للمصادقة. فسقط الدخول كليًّا أول مرة عمل
+    فيها الإنتاج بدوره المقصود — عطبٌ كان يخفيه التجاوز نفسه.
+
+    والمسار الثلاثة مجتمعة مقصود: التسجيل يكتب `roles` و`memberships`
+    وسجل التدقيق، والدخول يقرأ العضوية، والتجديد يقرأ `refresh_tokens` —
+    وكلها مملوكة لمستأجر ويُلمس بعضها قبل أن يُعرف.
+
+    ولا يصلح مستخدمو `two_tenants` هنا: عناوينهم على `.test`، وهو نطاق
+    محجوز يرفضه العقد. فالتسجيل يصنع هوية حقيقية يقبلها المسار نفسه.
     """
-    import httpx
-
-    from athera_api.main import app
-    from athera_api.schemas.auth import LoginRequest  # noqa: F401 — عقد الطلب
-
-    a = two_tenants["a"]
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/api/v1/auth/login", json={
-            "email": a["email"], "password": "correct-horse-battery-staple"})
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["access_token"] and body["refresh_token"]
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_refresh_works_under_the_non_bypassing_application_role(two_tenants):
-    """والتجديد كذلك: `refresh_tokens` جدولٌ مملوك لمستأجر يُقرأ قبل سياقه."""
-    import httpx
-
-    from athera_api.main import app
-
-    a = two_tenants["a"]
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        login = await client.post("/api/v1/auth/login", json={
-            "email": a["email"], "password": "correct-horse-battery-staple"})
-        assert login.status_code == 200, login.text
-        refreshed = await client.post("/api/v1/auth/refresh", json={
-            "refresh_token": login.json()["refresh_token"]})
-    assert refreshed.status_code == 200, refreshed.text
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_registration_works_under_the_non_bypassing_application_role(db_ready):
-    """والتسجيل: الأدوار والعضوية وسجل التدقيق كلها مملوكة لمستأجر."""
     import httpx
 
     from athera_api.main import app
 
     slug = f"sec-{uuid.uuid4().hex[:10]}"
+    email = f"{slug}@example.com"
+    password = "correct-horse-battery-staple"  # noqa: S105 — قيمة اختبار
+
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/api/v1/auth/register", json={
-            "email": f"{slug}@example.test",
-            "password": "correct-horse-battery-staple",
+        registered = await client.post("/api/v1/auth/register", json={
+            "email": email, "password": password,
             "full_name_ar": "باحث أمني", "tenant_slug": slug})
-    assert response.status_code == 201, response.text
+        assert registered.status_code == 201, registered.text
+
+        signed_in = await client.post("/api/v1/auth/login", json={
+            "email": email, "password": password})
+        assert signed_in.status_code == 200, signed_in.text
+        tokens = signed_in.json()
+        assert tokens["access_token"] and tokens["refresh_token"]
+
+        refreshed = await client.post("/api/v1/auth/refresh", json={
+            "refresh_token": tokens["refresh_token"]})
+        assert refreshed.status_code == 200, refreshed.text
+
+        # وطلبٌ مصادَق يمرّ بسياق مستأجر حقيقي.
+        me = await client.get("/api/v1/auth/me", headers={
+            "Authorization": f"Bearer {refreshed.json()['access_token']}"})
+        assert me.status_code == 200, me.text
+        assert me.json()["email"] == email
+        assert "researcher" in me.json()["roles"]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_unknown_account_is_refused_the_same_way(db_ready):
+    """يفشل مغلقًا — ولا يفرّق ردّه بين «لا مستخدم» و«لا عضوية»."""
+    import httpx
+
+    from athera_api.main import app
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/v1/auth/login", json={
+            "email": f"nobody-{uuid.uuid4().hex[:8]}@example.com",
+            "password": "correct-horse-battery-staple"})
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "auth.invalid_credentials"
 
 
 # ══════════ 4. حارس قاعدة الاختبار: لا تشغيلة على الإنتاج ══════════
@@ -754,7 +759,8 @@ async def test_the_definer_functions_are_narrow_and_pinned(db_ready):
     async with system_session() as session:
         for name in _DEFINERS:
             row = (await session.execute(text(
-                "SELECT p.prosecdef, p.provolatile, pg_get_function_result(p.oid), "
+                "SELECT p.prosecdef, p.provolatile::text, "
+                "       pg_get_function_result(p.oid), "
                 "       p.proconfig, pg_get_function_arguments(p.oid) "
                 "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
                 "WHERE n.nspname='public' AND p.proname = :n"), {"n": name})).one()
@@ -853,12 +859,17 @@ async def test_multiple_memberships_never_resolve_to_a_foreign_tenant(two_tenant
     async with system_session() as session:
         resolved = (await session.execute(
             text("SELECT app_login_tenant(:u)"), {"u": str(a["user_id"])})).scalar_one()
-        assert resolved in {a["tenant_id"], b["tenant_id"]}
-        # وهي عضوية قائمة فعلًا — لا اختيار عشوائي من الجدول.
+    assert resolved in {a["tenant_id"], b["tenant_id"]}
+
+    # وهي عضوية قائمة فعلًا — لا اختيار عشوائي من الجدول.
+    #
+    # **والتحقق بسياق المستأجر**: `memberships` مملوك، وقراءته بلا سياق تعيد
+    # صفرًا — وهو الفشل الآمن نفسه الذي أوقف الدخول، فلا يُقرأ هنا نفيًا.
+    async with tenant_session(resolved) as session:
         member = (await session.execute(text(
             "SELECT count(*) FROM memberships WHERE user_id = :u AND tenant_id = :t"),
             {"u": str(a["user_id"]), "t": str(resolved)})).scalar_one()
-        assert member >= 1
+    assert member >= 1
 
 
 def test_login_binds_the_tenant_context_before_any_rls_query():
