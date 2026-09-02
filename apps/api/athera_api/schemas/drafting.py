@@ -22,6 +22,18 @@ class EvidenceRef(BaseModel):
     quote: str | None = None
 
 
+class AnalysisOutputRef(BaseModel):
+    """مخرَج تحليل مؤهَّل — بمعرّفه واختباره، **بلا حمولته**.
+
+    الحمولة قد تحمل قيمًا خامًّا؛ والواجهة تحتاج أن تعرف أن السند موجود، لا
+    أن تعرض الأرقام كلها.
+    """
+
+    output_id: uuid.UUID
+    test_key: str | None = None
+    label_ar: str
+
+
 class DraftingContextResponse(BaseModel):
     manuscript_id: uuid.UUID
     section_key: str
@@ -36,6 +48,9 @@ class DraftingContextResponse(BaseModel):
     provider: str
     model: str | None
     evidence: list[EvidenceRef]
+    analysis_outputs: list[AnalysisOutputRef] = Field(default_factory=list)
+    # ما حُجب من الأدلة قبل الإرسال (§21) — يُقال ولا يُخفى.
+    redacted_statistics: list[str] = Field(default_factory=list)
     message: str
     next_steps: list[str] = Field(default_factory=list)
 
@@ -86,6 +101,6 @@ class SectionReviewDecision(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
 
 
-__all__ = ["ClaimView", "DraftIssueView", "DraftingConsentDecision",
+__all__ = ["AnalysisOutputRef", "ClaimView", "DraftIssueView", "DraftingConsentDecision",
            "DraftingContextResponse", "EvidenceRef",
            "ManuscriptFromOpportunityRequest", "SectionReviewDecision", "SectionView"]

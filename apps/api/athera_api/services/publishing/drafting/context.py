@@ -21,9 +21,12 @@ from typing import Final
 
 from sqlalchemy import select
 
+from ....models.analysis import AnalysisOutputRow, AnalysisPlanRow, AnalysisRun
 from ....models.golden_thread import ThreadElement
+from ....models.portfolio import ResearchProject
 from ...planning import outline as outline_service
 from ...planning.context import EvidenceItem, ResearchContext
+from . import numbers
 
 # الأدوار التي يخدمها كل قسم — **من الهيكل القانوني**.
 ROLES_BY_SECTION: Final[dict[str, tuple[str, ...]]] = {
@@ -40,17 +43,28 @@ ROLES_BY_SECTION: Final[dict[str, tuple[str, ...]]] = {
 # ولا يُضاف دورٌ خارج مفردات الأدوار القائمة — يحرس ذلك اختبار.
 DRAFTING_EXTRA_ROLES: Final[dict[str, tuple[str, ...]]] = {
     "method": ("analysis", "variable"),
+    # النتائج تحتاج حجم العينة لتقول «من بين كم» — وهي واقعة عيّنة لا نتيجة.
+    "results": ("sample",),
 }
 
 # عناصر الخيط الذهبي التي تخصّ كل قسم — ومفرداتها من `thread.ELEMENT_BY_ROLE`.
 THREAD_TYPES_BY_SECTION: Final[dict[str, tuple[str, ...]]] = {
     "method": ("method", "analysis"),
+    # §23 — النتيجة تُقابَل بالسؤال الذي تجيبه، لا تُعرض معلّقة.
+    "results": ("question", "hypothesis", "result"),
 }
 
 # أدوارٌ لا يُكتب القسم بدون واحدٍ منها على الأقل.
 REQUIRED_ANY_BY_SECTION: Final[dict[str, tuple[str, ...]]] = {
     "method": ("methodology", "sample"),
+    "results": ("result",),
 }
+
+# أقسامٌ تُحجب القيم الإحصائية من أدلتها قبل الإرسال (§21).
+#
+# ذاكرةٌ موثقة قد تحمل رقمًا لم يدخل محرّك التحليل. وإرسالها كما هي دعوةٌ
+# للنموذج أن يعيد رقمًا سيرفضه المدقّق — فيبدو الحارس تعسّفًا.
+REDACT_STATISTICS_IN: Final[frozenset[str]] = frozenset({"results"})
 
 
 def roles_for(section_key: str) -> tuple[str, ...]:
@@ -65,6 +79,22 @@ def purpose_of(section_key: str) -> str:
         if spec.key == section_key:
             return spec.purpose_ar
     return ""
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisOutput:
+    """مخرَج تحليل **مؤهَّل للنشر** — يعبر حدود المعاملات بلا ORM.
+
+    والتأهيل ليس وجودًا: تشغيلةٌ مكتملة، وبيانٌ كامل لإعادة الإنتاج، وسلسلة
+    ملكية مثبَتة إلى مشروع المستأجر. وما نقص عنها يبقى مرئيًّا في «البيانات
+    والتحليل» ولا يسند رقمًا في ورقة.
+    """
+
+    output_id: uuid.UUID
+    run_id: uuid.UUID
+    test_key: str | None
+    label_ar: str
+    payload: dict
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,11 +113,21 @@ class DraftingContext:
     thread_labels: tuple[str, ...]
     missing_roles: tuple[str, ...]
     fingerprint: str
+    outputs: tuple[AnalysisOutput, ...] = ()
+    redacted_statistics: tuple[str, ...] = ()
 
     @property
     def sufficient(self) -> bool:
         """يكفي متى وُجد دليلٌ من الأدوار اللازمة — وإلا بقي الناقص ناقصًا."""
         return not self.missing_roles and bool(self.items)
+
+    @property
+    def output_ids(self) -> frozenset[str]:
+        """مخرجات التحليل المسموح للنموذج أن يشير إليها — ولا واحد غيرها."""
+        return frozenset(str(o.output_id) for o in self.outputs)
+
+    def output(self, output_id: str) -> "AnalysisOutput | None":
+        return next((o for o in self.outputs if str(o.output_id) == output_id), None)
 
     @property
     def memory_ids(self) -> frozenset[str]:
@@ -99,22 +139,85 @@ class DraftingContext:
         for item in self.items:
             counts[item.role] = counts.get(item.role, 0) + 1
         return {"roles": counts, "total": len(self.items),
-                "thread_elements": len(self.thread_labels)}
+                "thread_elements": len(self.thread_labels),
+                "analysis_outputs": len(self.outputs)}
 
     def model_context(self) -> list[dict]:
-        """ما يُرسل فعلًا — مرتَّبًا بالدور، وبلا معرّف ملف ولا رابط تخزين."""
+        """ما يُرسل فعلًا — مرتَّبًا بالدور، وبلا معرّف ملف ولا رابط تخزين.
+
+        وفي الأقسام التي تُحجب فيها الأرقام، يُرسل النصّ **بعد الحجب**: فما
+        يقرؤه النموذج هو ما يجوز أن يعيده.
+        """
         order = roles_for(self.section_key)
+        redacting = self.section_key in REDACT_STATISTICS_IN
+        rows: list[dict] = []
+        for role in order:
+            for item in self.items:
+                if item.role != role:
+                    continue
+                statement = item.statement
+                quote = item.quote
+                if redacting:
+                    statement = numbers.redact(statement)[0]
+                    quote = numbers.redact(quote)[0] if quote else quote
+                rows.append({"memory_id": str(item.memory_id), "role": role,
+                             "statement_ar": statement, "locator": item.locator,
+                             "quote": quote})
+        return rows
+
+    def model_outputs(self) -> list[dict]:
+        """مخرجات التحليل المتاحة — بقيمها كما خُزّنت، وبمعرّفاتها."""
         return [
-            {"memory_id": str(i.memory_id), "role": i.role,
-             "statement_ar": i.statement, "locator": i.locator, "quote": i.quote}
-            for role in order for i in self.items if i.role == role
+            {"analysis_output_id": str(o.output_id), "test_key": o.test_key,
+             "label_ar": o.label_ar, "payload": o.payload}
+            for o in self.outputs
         ]
+
+
+async def eligible_outputs(session, *, tenant_id: uuid.UUID,
+                           project_id: uuid.UUID) -> tuple[AnalysisOutput, ...]:
+    """مخرجات التحليل التي يجوز أن تسند رقمًا في ورقة (§9، §10).
+
+    **والملكية تُثبَت بالسلسلة لا بالمعرّف:**
+
+        analysis_output → analysis_run → analysis_plan → research_project
+                                                          └── tenant_id
+
+    فربطٌ بمعرّف وحده يقبل مخرَج مشروعٍ آخر — ومشروعِ مستأجرٍ آخر إن سقطت
+    RLS. والفلترة هنا صريحة على كل حلقة، طبقةً ثانية فوق العزل.
+
+    **والتأهيل يفشل مغلقًا:** تشغيلة غير مكتملة أو غير قابلة لإعادة الإنتاج
+    لا تسند نشرًا. ونتيجتها تبقى مرئية في «البيانات والتحليل» — لكن ورقةً
+    محكَّمة لا تُبنى على رقمٍ لا يستطيع صاحبه إعادة إنتاجه.
+    """
+    rows = (await session.execute(
+        select(AnalysisOutputRow, AnalysisRun)
+        .join(AnalysisRun, AnalysisRun.id == AnalysisOutputRow.run_id)
+        .join(AnalysisPlanRow, AnalysisPlanRow.id == AnalysisRun.plan_id)
+        .join(ResearchProject, ResearchProject.id == AnalysisPlanRow.project_id)
+        .where(
+            AnalysisOutputRow.tenant_id == tenant_id,
+            AnalysisRun.tenant_id == tenant_id,
+            AnalysisPlanRow.tenant_id == tenant_id,
+            ResearchProject.tenant_id == tenant_id,
+            AnalysisPlanRow.project_id == project_id,
+            AnalysisRun.status == "completed",
+            AnalysisRun.is_reproducible.is_(True),
+        )
+        .order_by(AnalysisOutputRow.created_at)
+    )).all()
+    return tuple(
+        AnalysisOutput(output_id=output.id, run_id=run.id, test_key=output.test_key,
+                       label_ar=output.label_ar, payload=output.payload or {})
+        for output, run in rows
+    )
 
 
 def fingerprint(
     *, capability: str, tenant_id: uuid.UUID, project_id: uuid.UUID,
     manuscript_id: uuid.UUID, opportunity_id: uuid.UUID, outline_id: uuid.UUID | None,
     section_key: str, items, thread_labels, prior_text: str | None,
+    outputs=(),
 ) -> str:
     """بصمة السياق الواقعي **بالضبط** — لا وقت فيها ولا ترتيب عابر.
 
@@ -136,6 +239,12 @@ def fingerprint(
             # المحتوى لا المعرّف وحده: تعديلُ نصّ ذاكرةٍ يُبقي معرّفها.
             "contents": sorted(f"{i.role}:{i.statement}" for i in items),
             "thread": sorted(thread_labels),
+            # المخرجات بمعرّفاتها **وقيمها**: رقمٌ يُصحَّح في التحليل يُبطل
+            # إذنًا أُعطي على قيمته السابقة.
+            "outputs": sorted(str(o.output_id) for o in outputs),
+            "output_values": sorted(
+                json.dumps(o.payload, ensure_ascii=False, sort_keys=True)
+                for o in outputs),
             "prior_text": hashlib.sha256((prior_text or "").encode("utf-8")).hexdigest(),
         },
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -178,21 +287,33 @@ async def build(
             if (row.metadata_json or {}).get("opportunity_id") == str(opportunity_id)
         )
 
+    outputs = ()
+    if section_key in REDACT_STATISTICS_IN:
+        outputs = await eligible_outputs(session, tenant_id=research.tenant_id,
+                                         project_id=research.project_id)
+
+    redacted: list[str] = []
+    if section_key in REDACT_STATISTICS_IN:
+        for item in items:
+            redacted.extend(numbers.redact(item.statement)[1])
+
     return DraftingContext(
         tenant_id=research.tenant_id, project_id=research.project_id,
         manuscript_id=manuscript_id, opportunity_id=opportunity_id,
         outline_id=outline_id, section_key=section_key, language=language,
         purpose_ar=purpose_of(section_key), items=items, thread_labels=labels,
-        missing_roles=missing,
+        missing_roles=missing, outputs=outputs,
+        redacted_statistics=tuple(dict.fromkeys(redacted)),
         fingerprint=fingerprint(
             capability=capability, tenant_id=research.tenant_id,
             project_id=research.project_id, manuscript_id=manuscript_id,
             opportunity_id=opportunity_id, outline_id=outline_id,
             section_key=section_key, items=items, thread_labels=labels,
-            prior_text=prior_text),
+            prior_text=prior_text, outputs=outputs),
     )
 
 
-__all__ = ["DRAFTING_EXTRA_ROLES", "REQUIRED_ANY_BY_SECTION", "ROLES_BY_SECTION",
-           "THREAD_TYPES_BY_SECTION", "DraftingContext", "build", "fingerprint",
+__all__ = ["DRAFTING_EXTRA_ROLES", "REDACT_STATISTICS_IN", "REQUIRED_ANY_BY_SECTION",
+           "ROLES_BY_SECTION", "THREAD_TYPES_BY_SECTION", "AnalysisOutput",
+           "DraftingContext", "build", "eligible_outputs", "fingerprint",
            "purpose_of", "roles_for"]

@@ -35,6 +35,7 @@ from ..models.research import ResearcherMemory
 from ..models.thesis import PublicationOpportunity
 from ..providers.gateway import active_model, provider_readiness
 from ..schemas.drafting import (
+    AnalysisOutputRef,
     ClaimView,
     DraftIssueView,
     DraftingConsentDecision,
@@ -57,9 +58,10 @@ logger = logging.getLogger("athera.drafting")
 
 router = APIRouter(prefix="/api/v1/manuscripts", tags=["manuscript-drafting"])
 
-# **الأقسام المفعَّلة في هذه المرحلة.** المنهجية أولًا: أدلتها موثقة، وتأصيلها
-# قابل للفحص، ولا تحتاج سجلّ أدبيات، واختلاقها يُكشف بسهولة (§31).
-ENABLED_SECTIONS: frozenset[str] = frozenset({"method"})
+# **الأقسام المفعَّلة.** المنهجية أولًا (S5E-B): أدلتها موثقة وتأصيلها قابل
+# للفحص. ثم النتائج (S5E-C) بوضعٍ أشدّ: كل قيمة إحصائية تحتاج مخرَج تحليل
+# **بعينه**، وما لا يجده يبقى غير مكتوب.
+ENABLED_SECTIONS: frozenset[str] = frozenset({"method", "results"})
 
 DRAFT_NOTICE_AR = (
     "مسودة بُنيت من معرفتك الموثقة — وليست نصًّا معتمدًا. اعتمادك وحده يجعلها كذلك."
@@ -72,6 +74,23 @@ DRAFT_NOTICE_EN = (
 
 def _t(locale: str, ar: str, en: str) -> str:
     return en if locale == "en" else ar
+
+
+def _replay_claim(view: ClaimView):
+    """يعيد بناء الادعاء المحفوظ بشكل العقد — لإعادة التحقق عند كل قراءة.
+
+    فالكشوفات تُحسب من الحالة الراهنة لا تُخزَّن: دليلٌ يُحذف أو مخرَجٌ
+    تُصحَّح قيمته يجب أن يظهر أثره في القسم فورًا، لا أن يبقى تقريرٌ قديم
+    يقول إن كل شيء سليم.
+    """
+    from ..services.publishing.drafting.contracts import DraftedClaim
+
+    return DraftedClaim(
+        text_ar=view.text_ar, claim_type=view.claim_type,
+        origin="inference" if view.is_labelled_inference else "fact",
+        memory_ids=[str(e.memory_id) for e in view.evidence],
+        analysis_output_ids=[str(o) for o in view.analysis_output_ids],
+    )
 
 
 def _require_enabled(section_key: str) -> None:
@@ -271,6 +290,10 @@ async def drafting_context_state(
         evidence=[EvidenceRef(memory_id=i.memory_id, role=i.role,
                               statement_ar=i.statement, locator=i.locator, quote=i.quote)
                   for i in context.items],
+        analysis_outputs=[AnalysisOutputRef(output_id=o.output_id, test_key=o.test_key,
+                                            label_ar=o.label_ar)
+                          for o in context.outputs],
+        redacted_statistics=list(context.redacted_statistics),
         message=message, next_steps=steps,
     )
 
@@ -372,6 +395,33 @@ async def draft_section(
 
     grounded, dropped = generate.ground(draft, context)
 
+    # ── التحقق الحتمي **قبل الحفظ** (§25) ──
+    #
+    # كشوفات الاختلاق لا يصير نصّها مخطوطة ولو تحت «بانتظار المراجعة»:
+    # رقمٌ لا مصدر له يُقرأ نتيجةً مهما كانت حال المراجعة. وبقية الكشوفات
+    # تحذيرات على نصٍّ قائم يقرّر فيه الباحث.
+    issues = draft_checks.run(draft, context, known_memory_ids=context.memory_ids,
+                              known_output_ids=context.output_ids)
+    fabricated = draft_checks.fabrications(issues)
+    if fabricated:
+        logger.warning("drafting: refused %s for manuscript %s — %s",
+                       section_key, manuscript_id,
+                       ",".join(sorted({i.issue_key for i in fabricated})))
+        async with maker() as failing:
+            await audit.record(
+                failing, tenant_id=tenant_id, action="manuscript.section_refused",
+                object_type="manuscript", object_id=manuscript_id, actor_user_id=actor_id,
+                state_after={"section_key": section_key,
+                             "context_fingerprint": context.fingerprint,
+                             "issues": sorted({i.issue_key for i in fabricated})},
+                reason="draft withheld: unsupported factual content would have been persisted",
+                request_id=principal.request_id,
+            )
+        raise AtheraError(
+            "drafting.unsupported_content", status_code=422, section=section_key,
+            issues=",".join(sorted({i.issue_key for i in fabricated})),
+            detail=fabricated[0].detail_ar)
+
     # ── معاملة (أخيرة): نسخة جديدة، ثم الحفظ والربط والتدقيق ──
     async with maker() as fresh:
         record = await manuscript_for_tenant(fresh, principal, manuscript_id)
@@ -393,7 +443,7 @@ async def draft_section(
         stats = await generate.persist(
             fresh, tenant_id=tenant_id, project_id=project_id, section=current,
             draft=draft, grounded=grounded, agent_run_id=agent_run_id,
-            fingerprint=context.fingerprint, known_output_ids=frozenset())
+            fingerprint=context.fingerprint, known_output_ids=context.output_ids)
         record.current_version_id = version.id
 
         await audit.record(
@@ -498,12 +548,15 @@ async def read_section(
     issues: list[DraftIssueView] = []
     if section.text_ar:
         context = await _build_context(session, principal, record, section_key)
+        replay_claims = [
+            _replay_claim(view) for view in claims
+        ]
         replay = SectionDraft(
             section_text_ar=section.text_ar, section_text_en=section.text_en,
-            claims=[], missing_evidence=[], warnings_ar=[])
+            claims=replay_claims, missing_evidence=[], warnings_ar=[])
         for found in draft_checks.run(replay, context,
                                       known_memory_ids=context.memory_ids,
-                                      known_output_ids=frozenset()):
+                                      known_output_ids=context.output_ids):
             issues.append(DraftIssueView(
                 issue_key=found.issue_key, section_key=found.section_key,
                 severity="blocking" if found.is_blocking else "advisory",

@@ -40,10 +40,11 @@ def _principal(tenant):
 
 # ══════════ 1. القسم المفعَّل وحده، وبمفردته القانونية ══════════
 
-def test_only_the_method_section_is_enabled_in_this_slice():
+def test_only_the_deliberately_enabled_sections_are_open():
+    """المفعَّل يُعلَن بالاسم — فمرحلةٌ تفتح قسمًا تُرى في المراجعة."""
     from athera_api.routers import manuscript_drafting as drafting
 
-    assert drafting.ENABLED_SECTIONS == frozenset({"method"})
+    assert drafting.ENABLED_SECTIONS == frozenset({"method", "results"})
 
 
 def test_the_old_alias_is_refused_not_silently_accepted():
@@ -61,7 +62,7 @@ def test_a_canonical_but_disabled_section_is_refused_by_name():
     from athera_api.routers import manuscript_drafting as drafting
 
     with pytest.raises(AtheraError) as err:
-        drafting._require_enabled("results")
+        drafting._require_enabled("discussion")
     assert err.value.code == "drafting.section_not_enabled"
 
 
