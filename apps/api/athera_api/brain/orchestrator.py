@@ -437,40 +437,57 @@ class Orchestrator:
             call = await self._gateway.invoke(request)
 
         # ── معاملة (2): التسجيل، نجح النداء أم فشل ──
+        #
+        # **والرفع بعد الإيداع لا داخله.** كان كل `raise` هنا يقع داخل
+        # `async with`، فيُلغي المعاملة التي كتب فيها فشله للتوّ: تبقى
+        # التشغيلة `running` إلى الأبد، ولا يُكتب حدث `contract_violation`.
+        # أي أن سجلّ الفشل كان يبتلع نفسه.
+        #
+        # وهو العطب نفسه الذي أصلحه S5C في مسار معالجة المستندات — وأثبته
+        # الإنتاج هنا مرة أخرى: تشغيلة `scientific_writer` علِقت `running`
+        # بينما المستخدم يرى 502. فيُلتقط الفشل، وتُغلق المعاملة فتُودَع،
+        # ثم يُرفع.
+        failure: BaseException | None = None
+        parsed = None
         async with session_maker() as session:
             run = (
                 await session.execute(select(AgentRun).where(AgentRun.id == run_id))
             ).scalar_one()
+
+            def _fail(error: BaseException) -> None:
+                run.status = "failed"
+                run.error = f"{type(error).__name__}: {error}"[:500]
+                run.finished_at = dt.datetime.now(dt.UTC)
+
             if authorization_error is not None:
-                run.status = "failed"
-                run.error = f"{type(authorization_error).__name__}: {authorization_error}"[:500]
-                run.finished_at = dt.datetime.now(dt.UTC)
-                raise authorization_error
+                _fail(authorization_error)
+                failure = authorization_error
+            else:
+                model_run = await self._gateway.record(
+                    session, tenant_id=tenant_id, call=call, agent_run_id=run_id)
+                if call.exception is not None:
+                    _fail(call.exception)
+                    failure = call.exception
+                else:
+                    try:
+                        parsed = parse_contract(contract, call.response.structured)
+                    except ContractViolation as exc:
+                        _fail(exc)
+                        await audit.record(
+                            session, tenant_id=tenant_id,
+                            action="brain.contract_violation", object_type="agent_run",
+                            object_id=run_id, actor_user_id=actor_user_id,
+                            reason=str(exc)[:500], agent_run_id=run_id,
+                            model_run_id=model_run.id,
+                        )
+                        failure = exc
+                    else:
+                        run.status = "completed"
+                        run.finished_at = dt.datetime.now(dt.UTC)
+                        run.output_summary = {"contract": contract.__name__}
 
-            model_run = await self._gateway.record(
-                session, tenant_id=tenant_id, call=call, agent_run_id=run_id)
-            if call.exception is not None:
-                run.status = "failed"
-                run.error = f"{type(call.exception).__name__}: {call.exception}"[:500]
-                run.finished_at = dt.datetime.now(dt.UTC)
-                raise call.exception
-
-            try:
-                parsed = parse_contract(contract, call.response.structured)
-            except ContractViolation as exc:
-                run.status = "failed"
-                run.error = str(exc)[:500]
-                run.finished_at = dt.datetime.now(dt.UTC)
-                await audit.record(
-                    session, tenant_id=tenant_id, action="brain.contract_violation",
-                    object_type="agent_run", object_id=run_id, actor_user_id=actor_user_id,
-                    reason=str(exc)[:500], agent_run_id=run_id, model_run_id=model_run.id,
-                )
-                raise
-
-            run.status = "completed"
-            run.finished_at = dt.datetime.now(dt.UTC)
-            run.output_summary = {"contract": contract.__name__}
+        if failure is not None:
+            raise failure
         return parsed, run_id
 
     async def run_structured(
