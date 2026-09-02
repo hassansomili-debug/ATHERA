@@ -580,3 +580,49 @@ def test_a_vowelled_significance_claim_is_blocked_end_to_end():
     context = _discussion_context(PRODUCTION_PAYLOAD)
     assert "significance_without_analysis_output" in _run_checks(
         context, "وقد تبيّن أن الفرق دالٌّ إحصائيًّا لصالح المجموعة التجريبية")
+
+
+# ══════════ 11. نفيُ الدلالة ليس ادّعاءها ══════════
+
+@pytest.mark.parametrize("denial", [
+    "لا يمكن الجزم بأن هذا الفرق دالٌّ إحصائيًّا أو غير دالّ",
+    "لم تُسجَّل قيمة دلالة، فالفرق غير دالّ إحصائيًّا بالضرورة",
+    "لا تتوفر أدلة تجعل الفرق دالًّا إحصائيًّا",
+    "the difference was not statistically significant",
+])
+def test_denying_significance_is_not_claiming_it(denial):
+    """**كشفٌ كاذب على الجملة التي طلبناها نحن.**
+
+    حين تنقص قيمة p نطلب من النموذج أن يقول «لا يمكن الجزم بالدلالة» — ثم
+    كان الحارس يرفض تلك الجملة بعينها، لأن فيها لفظ «دالّ إحصائيًّا».
+
+    فيصير الحارس يعاقب الصدق الذي أمر به. والدرس مسجَّل منذ حواجز Sprint 2:
+    حاجزٌ يعاقب الصدق أسوأ من حاجزٍ يفوّت خطأ.
+    """
+    from athera_api.services.publishing.drafting import numbers
+
+    assert not any(h.kind == "significance" for h in numbers.find(denial)), denial
+
+
+@pytest.mark.parametrize("assertion", [
+    "وقد تبيّن أن الفرق دالٌّ إحصائيًّا لصالح المجموعة التجريبية",
+    "فروق دالة إحصائيًا عند مستوى 0.05",
+    "the difference was statistically significant",
+])
+def test_asserting_significance_is_still_caught(assertion):
+    """والاستثناء لا يتّسع: الإثبات يبقى مكشوفًا."""
+    from athera_api.services.publishing.drafting import numbers
+
+    assert any(h.kind == "significance" for h in numbers.find(assertion)), assertion
+
+
+def test_the_production_discussion_sentence_passes():
+    """الجملة التي كتبتها المناقشة في الإنتاج — بحرفها."""
+    context = _discussion_context(PRODUCTION_PAYLOAD)
+    prose = (
+        "بلغ متوسط المجموعة التجريبية 68.11 مقابل 62.66 للضابطة، وبلغ مربع "
+        "إيتا 0.106. غير أنه لا يمكن، بناءً على الأدلة المتاحة، الجزم بأن هذا "
+        "الفرق دالٌّ إحصائيًّا أو غير دالّ، إذ لم تُسجَّل ضمن مخرجات التحليل "
+        "أي قيمة دلالة."
+    )
+    assert _run_checks(context, prose) == set()

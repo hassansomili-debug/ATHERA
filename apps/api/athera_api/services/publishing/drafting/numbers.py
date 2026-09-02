@@ -75,6 +75,33 @@ SIGNIFICANCE_CLAIMS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
+# **نفيُ الدلالة ليس ادّعاءها.** الجملة التي تقول «لا يمكن الجزم بأن الفرق
+# دالٌّ إحصائيًّا» هي **بالضبط** ما نطلبه من النموذج حين تنقص قيمة p — ومعاقبتها
+# تجعل الحارس يرفض الصدق الذي أمر به.
+#
+# والدرس مسجَّل في حواجز Sprint 2: حاجزٌ يعاقب الصدق أسوأ من حاجز يفوّت خطأ.
+_SIGNIFICANCE_DENIALS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"لا\s+يمكن|لا\s+يجوز|لا\s+يُمكن|يتعذّر|غير\s+متاح"),
+    re.compile(r"(?:لم|لا)\s+(?:يكن|تكن|يُعدّ|تُعدّ|يثبت|تثبت)"),
+    re.compile(r"غير\s+دالّ?|بلا\s+دلالة|دون\s+دلالة"),
+    re.compile(r"لم\s+تُسجَّل|لم\s+ترد|لا\s+تتوفر|لا\s+يتوفر"),
+    re.compile(r"\b(?:not|cannot|no|without)\b", re.IGNORECASE),
+)
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?؟])\s+|\n+")
+
+
+def _sentence_around(text: str, position: int) -> str:
+    start = 0
+    for match in _SENTENCE_SPLIT.finditer(text, 0, position):
+        start = match.end()
+    end = len(text)
+    boundary = _SENTENCE_SPLIT.search(text, position)
+    if boundary:
+        end = boundary.start()
+    return text[start:end]
+
+
 @dataclass(frozen=True, slots=True)
 class StatisticHit:
     """قيمة إحصائية وُجدت في نصّ — بنوعها ومقتطفها وقيمتها وأبعادها.
@@ -115,10 +142,14 @@ def find(text: str) -> list[StatisticHit]:
                                      value=value, dims=dims,
                                      start=match.start(), end=match.end()))
     for pattern in SIGNIFICANCE_CLAIMS:
-        match = pattern.search(body)
-        if match:
+        for match in pattern.finditer(body):
+            sentence = _sentence_around(body, match.start())
+            if any(denial.search(sentence) for denial in _SIGNIFICANCE_DENIALS):
+                continue  # نفيٌ أو تعذُّر — لا ادّعاء
             hits.append(StatisticHit(kind="significance", excerpt=match.group(0),
                                      value=None, start=match.start(), end=match.end()))
+            break
+        if any(h.kind == "significance" for h in hits):
             break
     return hits
 
