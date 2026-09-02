@@ -514,7 +514,9 @@ async def test_the_whole_methods_path_runs_through_the_real_orchestrator(
 
         async def generate_structured(self, request):
             seen["classification"] = request.classification
-            seen["prompt"] = " ".join(m.get("content", "") for m in request.messages)
+            # الرسائل كائنات `Message` لا قواميس — والنصّ في `content`.
+            seen["prompt"] = " ".join(getattr(m, "content", "") or ""
+                                      for m in request.messages)
             return ModelResponse(content="", provider="anthropic", model="fake-model",
                                  structured=payload,
                                  usage=ModelUsage(input_tokens=10, output_tokens=10,

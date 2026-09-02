@@ -1732,14 +1732,19 @@ def test_the_global_ceiling_stays_c1():
 def test_the_capability_list_is_closed_and_named():
     """§2 — القائمة مغلقة ومسمّاة، ولا قدرة عامة فيها.
 
-    وتوسّعت بقدرة تخطيط النشر (S5D) — بقيمة معلومة لا بفتح الباب: كل قدرة
-    باسمها الصريح، وسقفها C2 ولا شيء فوقه.
+    وتوسّعت مرتين — بتخطيط النشر (S5D) ثم بصياغة المخطوطة (S5E) — بقيمة
+    معلومة لا بفتح الباب: كل قدرة باسمها الصريح، وسقفها C2 ولا شيء فوقه.
+
+    **والقائمة مكتوبة هنا يدويًّا عمدًا:** إضافة قدرة قرار سياسة يُرى في
+    المراجعة، لا سطرٌ يمرّ. فاشتقاق هذا التأكيد من السجل نفسه يجعله يوافق
+    كل إضافة صامتًا — ويُبطل الغرض منه.
     """
     from athera_api.providers.gateway import _CAPABILITY_CEILINGS
 
     assert set(_CAPABILITY_CEILINGS) == {
         "document_intelligence_external_c2",
         "publication_planning_external_c2",
+        "manuscript_drafting_external_c2",
     }
     # ولا تأذن بما فوق C2 مهما كانت الموافقة.
     assert all(v in ("C1", "C2") for v in _CAPABILITY_CEILINGS.values())
