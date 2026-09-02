@@ -914,7 +914,7 @@ async def test_a_contract_violation_survives_its_own_transaction(two_tenants, mo
     from athera_api.brain.contracts import ContractViolation
     from athera_api.brain.orchestrator import Orchestrator
     from athera_api.db import tenant_session
-    from athera_api.models.brain import AgentRun
+    from athera_api.models.runs import AgentRun
     from athera_api.providers import gateway as gateway_module
     from athera_api.providers.base import ModelResponse, ModelUsage
     from athera_api.services.publishing.drafting.contracts import SectionDraft
