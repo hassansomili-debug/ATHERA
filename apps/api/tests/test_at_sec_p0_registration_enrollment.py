@@ -19,6 +19,11 @@ import pytest
 from tests.conftest import requires_db
 
 
+# نطاقٌ اصطناعي يقبله المدقّق: `.test` نطاقٌ محجوز يرفضه `EmailStr`، وحارس
+# قاعدة الاختبار يمنع أصلًا أن تبلغ هذه الصفوف قاعدة إنتاج.
+FIXTURE_DOMAIN = "fixtures.athera"
+
+
 def _payload(email: str, **extra) -> dict:
     body = {
         "email": email,
@@ -70,7 +75,7 @@ async def test_a_brand_new_workspace_still_registers_normally(db_ready):
     from athera_api.models.identity import Membership, Tenant, User
 
     slug = f"fresh-{uuid.uuid4().hex[:10]}"
-    tokens, error = await _register(_payload(f"{slug}@example.test", tenant_slug=slug))
+    tokens, error = await _register(_payload(f"{slug}@fixtures.athera", tenant_slug=slug))
     assert error is None, error
     assert tokens.access_token
 
@@ -78,7 +83,7 @@ async def test_a_brand_new_workspace_still_registers_normally(db_ready):
         tenant = (await session.execute(
             select(Tenant).where(Tenant.slug == slug))).scalar_one()
         user = (await session.execute(
-            select(User).where(User.email == f"{slug}@example.test"))).scalar_one()
+            select(User).where(User.email == f"{slug}@fixtures.athera"))).scalar_one()
         membership = (await session.execute(
             select(Membership).where(Membership.user_id == user.id))).scalar_one()
     assert membership.tenant_id == tenant.id
@@ -101,7 +106,7 @@ async def test_registering_into_an_existing_tenant_is_denied(two_tenants):
                 Tenant.id == two_tenants["a"]["tenant_id"]))).scalar_one()
 
     before = await _counts()
-    email = f"attacker-{uuid.uuid4().hex[:8]}@example.test"
+    email = f"attacker-{uuid.uuid4().hex[:8]}@fixtures.athera"
     tokens, error = await _register(_payload(email, tenant_slug=victim))
 
     assert tokens is None, "أُصدر رمزٌ لمستأجر ليس للمستدعي فيه شيء"
@@ -125,7 +130,7 @@ async def test_no_user_row_survives_a_denied_registration(two_tenants):
             select(Tenant.slug).where(
                 Tenant.id == two_tenants["a"]["tenant_id"]))).scalar_one()
 
-    email = f"ghost-{uuid.uuid4().hex[:8]}@example.test"
+    email = f"ghost-{uuid.uuid4().hex[:8]}@fixtures.athera"
     _tokens, error = await _register(_payload(email, tenant_slug=victim))
     assert error is not None
 
@@ -149,7 +154,7 @@ async def test_no_membership_is_created_in_the_targeted_tenant(two_tenants):
         before = (await session.execute(select(func.count(Membership.id)).where(
             Membership.tenant_id == tenant_id))).scalar_one()
 
-    await _register(_payload(f"x-{uuid.uuid4().hex[:8]}@example.test",
+    await _register(_payload(f"x-{uuid.uuid4().hex[:8]}@fixtures.athera",
                              tenant_slug=victim))
 
     async with system_session() as session:
@@ -175,7 +180,7 @@ async def test_no_audit_event_is_written_inside_the_targeted_tenant(two_tenants)
         before = (await session.execute(select(func.count(AuditEvent.id)).where(
             AuditEvent.tenant_id == tenant_id))).scalar_one()
 
-    await _register(_payload(f"y-{uuid.uuid4().hex[:8]}@example.test",
+    await _register(_payload(f"y-{uuid.uuid4().hex[:8]}@fixtures.athera",
                              tenant_slug=victim))
 
     async with system_session() as session:
@@ -224,8 +229,8 @@ async def test_a_slug_race_never_turns_into_an_enrollment(db_ready):
 
     slug = f"race-{uuid.uuid4().hex[:10]}"
     results = await asyncio.gather(
-        _register(_payload(f"a-{slug}@example.test", tenant_slug=slug)),
-        _register(_payload(f"b-{slug}@example.test", tenant_slug=slug)),
+        _register(_payload(f"a-{slug}@fixtures.athera", tenant_slug=slug)),
+        _register(_payload(f"b-{slug}@fixtures.athera", tenant_slug=slug)),
         return_exceptions=True,
     )
     granted = [r for r in results if isinstance(r, tuple) and r[0] is not None]
