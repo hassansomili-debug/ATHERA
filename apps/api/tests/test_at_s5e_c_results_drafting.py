@@ -440,13 +440,20 @@ async def _seed_analysis(tid, uid, *, reproducible: bool):
                              name_ar="بيانات اصطناعية", classification="C3")
         session.add(dataset)
         await session.flush()
-        # §17.3 — التجميد له معرّف وفاعل وتاريخ، أو ليس تجميدًا. والقاعدة
-        # تفرضه بقيد، فالبذرة تحترمه ولا تلتفّ عليه.
+        # قيود §17.2 و§17.3 تُحترم كما تفرضها القاعدة، ولا يُلتفّ عليها:
+        # الخام بلا أصل، والمشتقّ يعرف أصله وسبب تغييره، والتجميد له معرّف
+        # وفاعل وتاريخ أو ليس تجميدًا.
+        raw = DatasetVersionRow(
+            tenant_id=tid, dataset_id=dataset.id, state="raw", label="raw",
+            checksum="0" * 64)
+        session.add(raw)
+        await session.flush()
         frozen = dt.datetime.now(dt.UTC) if reproducible else None
         version = DatasetVersionRow(
             tenant_id=tid, dataset_id=dataset.id, state="cleaned", label="v1",
-            checksum="a" * 64,
-            freeze_id="frz-test" if reproducible else None,
+            checksum="a" * 64, parent_version_id=raw.id,
+            change_note_ar="تنظيف اصطناعي للاختبار",
+            freeze_id=f"frz-{uuid.uuid4().hex[:8]}" if reproducible else None,
             frozen_at=frozen, frozen_by=uid if reproducible else None)
         session.add(version)
         await session.flush()
@@ -462,6 +469,9 @@ async def _seed_analysis(tid, uid, *, reproducible: bool):
             runtime="python 3.12" if reproducible else None,
             packages={"scipy": "1.14"} if reproducible else None,
             random_seed=7 if reproducible else None,
+            # §18.1 — «قابل لإعادة الإنتاج» يعني بيانًا كاملًا **وبصمة**،
+            # والقاعدة تفرض ذلك بقيد لا بالتوثيق وحده.
+            fingerprint="d" * 64 if reproducible else None,
             is_reproducible=reproducible,
             missing_manifest_fields=[] if reproducible else ["code_hash"],
             status="completed", started_at=dt.datetime.now(dt.UTC),
