@@ -20,6 +20,19 @@ import { usePosture } from "@/lib/posture";
  *
  * فالمرفق صار يعمل فعلًا، والآخران يقولان «قريبًا» صراحةً.
  */
+/** حال المعالجة نصًّا — من حالات الخادم الحقيقية لا من تخمين الواجهة. */
+const STATE_LABEL: Record<string, string> = {
+  not_processed: "ai.stateNotProcessed",
+  parsing: "ai.stateProcessing",
+  extracting: "ai.stateProcessing",
+  awaiting_consent: "ai.stateAwaitingConsent",
+  awaiting_review: "ai.stateAwaitingReview",
+  completed: "ai.stateReady",
+  extract_failed: "ai.stateFailed",
+  parse_failed: "ai.stateFailed",
+};
+
+
 export function AtheraAiInput({
   locale, messages, rows = 3, seed,
 }: { locale: Locale; messages: Messages; rows?: number; seed?: string }) {
@@ -36,6 +49,9 @@ export function AtheraAiInput({
   const [answer, setAnswer] = useState<AiAnswer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attached, setAttached] = useState<{ id: string; name: string } | null>(null);
+  // آخر سؤال — يُعاد إرساله بعد الإذن، فلا يُطلب من الباحث كتابته ثانية.
+  const [pending, setPending] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const disabled = loading || !modelEnabled || busy;
 
@@ -58,22 +74,57 @@ export function AtheraAiInput({
     }
   }
 
-  async function ask() {
+  async function ask(question?: string) {
+    const text = (question ?? value).trim();
     setBusy(true);
     setError(null);
     setAnswer(null);
+    setPending(text);
     try {
       setAnswer(await apiFetch<AiAnswer>("/api/v1/ai/ask", {
         method: "POST",
         locale,
         // الملف المرفق يُمرَّر بمعرّفه — والخادم يقرّر ما يجوز قراءته منه.
         body: JSON.stringify({
-          question: value.trim(),
+          question: text,
           ...(attached ? { file_id: attached.id } : {}),
         }),
       }));
     } catch (err) {
       // خطأ المزوّد يصل مترجَمًا — ولا يُستبدل بنصّ مُولَّد.
+      setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.askFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** يمنح إذن السؤال عن المستند ثم **يُعيد السؤال نفسه** — بلا كتابةٍ ثانية. */
+  async function authorizeAndAsk(fileId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/api/v1/theses/files/${fileId}/chat-consent?decision=grant`, {
+        method: "POST", locale,
+      });
+    } catch (err) {
+      setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.askFailed"));
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    await ask(pending ?? value);
+  }
+
+  /** يبدأ معالجة المستند من هنا — فلا يُطلب من الباحث أن يبحث عن مكانها. */
+  async function startProcessing(fileId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/api/v1/theses/process-file/${fileId}`, { method: "POST", locale });
+      setError(null);
+      setAnswer(null);
+      setNotice(t("ai.processStarted"));
+    } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.askFailed"));
     } finally {
       setBusy(false);
@@ -137,6 +188,64 @@ export function AtheraAiInput({
         </p>
       ) : null}
 
+      {/* ── الفعل التالي زرًّا، لا تعليمةً يُنفّذها الباحث بنفسه ──
+          كانت الحدود تُقال نصًّا: «امنح الإذن…» — أي بنداء API. والباحث
+          لا يملك طرفية، ولا يجب أن يملكها. */}
+      {answer?.attachment ? (
+        <section className="card" style={{ marginBlockStart: 14 }}>
+          <div className="metric-label">
+            {t("ai.fileState")}: {answer.attachment.filename} —{" "}
+            {t(STATE_LABEL[answer.attachment.processing_status] ?? "ai.stateNotProcessed")}
+            {answer.attachment.approved_facts > 0
+              ? ` · ${answer.attachment.approved_facts} ${t("ai.consentFacts")}`
+              : ""}
+          </div>
+
+          {answer.attachment.needs === "chat_consent" ? (
+            <>
+              <h3>{t("ai.consentTitle")}</h3>
+              <p>{t("ai.consentBody")}</p>
+              <p className="metric-label">
+                {answer.attachment.approved_facts} {t("ai.consentFacts")}
+              </p>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void authorizeAndAsk(answer.attachment!.file_id)}
+                >
+                  {t("ai.consentAllow")}
+                </button>
+                <button type="button" disabled={busy} onClick={() => setAnswer(null)}>
+                  {t("ai.consentCancel")}
+                </button>
+              </div>
+            </>
+          ) : null}
+
+          {answer.attachment.needs === "process" ? (
+            <>
+              <p>{t("ai.needsProcess")}</p>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void startProcessing(answer.attachment!.file_id)}
+              >
+                {t("ai.needsProcessAction")}
+              </button>
+            </>
+          ) : null}
+
+          {answer.attachment.needs === "review" ? (
+            <>
+              <p>{t("ai.needsReview")}</p>
+              <a href={`/${locale}/theses`}>{t("ai.needsReviewAction")}</a>
+            </>
+          ) : null}
+        </section>
+      ) : null}
+
+      {notice ? <p style={{ marginBlockStart: 10 }}>{notice}</p> : null}
       {error ? <p className="error" style={{ marginBlockStart: 10 }}>{error}</p> : null}
       {answer ? <AiAnswerCard messages={messages} data={answer} /> : null}
 

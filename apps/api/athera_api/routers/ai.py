@@ -23,11 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.files import File
-from ..models.research import FactCandidate, ResearcherMemory
+from ..models.research import ExtractionRun, FactCandidate, ResearcherMemory
 from ..brain.contracts import strip_markup
 from ..brain.orchestrator import Orchestrator
 from ..providers.gateway import provider_readiness
-from ..schemas.ai import AiAskRequest, AiAskResponse
+from ..schemas.ai import AiAskRequest, AiAskResponse, AttachmentState
 from ..services import ai_policy, ai_rate_limit, audit, consent
 
 # الأجنت الذي ينفّذ نيّة S5B النصّية. الاسم داخلي ولا يظهر للباحث.
@@ -66,6 +66,7 @@ async def ask(
     # هذا الملف بعينه. وهي معرفته لا محتوى مستنده، وقد مرّت بمراجعته.
     document_context: list[dict] = []
     pending_fields: list[str] = []
+    attachment: AttachmentState | None = None
     if payload.selected_file is not None:
         record = (
             await session.execute(select(File).where(
@@ -83,6 +84,13 @@ async def ask(
                    FactCandidate.file_id == record.id)
         )).all()
 
+        run = (await session.execute(
+            select(ExtractionRun)
+            .where(ExtractionRun.tenant_id == principal.tenant_id,
+                   ExtractionRun.file_id == record.id)
+            .order_by(ExtractionRun.created_at.desc()).limit(1)
+        )).scalar_one_or_none()
+
         for candidate, memory in rows:
             if candidate.status == "approved" and memory is not None \
                     and memory.verification_status == "verified":
@@ -93,6 +101,18 @@ async def ask(
                 })
             elif candidate.status == "unverified":
                 pending_fields.append(candidate.field_key)
+
+        # **حالٌ تقرؤها الواجهة، لا نصٌّ تفسّره.** فتبني الزرّ الصحيح بدل
+        # أن تترك الباحث ينفّذ التعليمة بنفسه.
+        attachment = AttachmentState(
+            file_id=record.id, filename=record.original_filename,
+            processing_status=run.status if run is not None else "not_processed",
+            consent_state=await consent.chat_state(
+                session, tenant_id=principal.tenant_id, file_id=record.id),
+            approved_facts=len(document_context),
+            pending_review=len(set(pending_fields)),
+            needs="none",
+        )
 
         if not rows:
             # §10 — يُقال بصدق، ويُعطى الفعل التالي.
@@ -106,6 +126,7 @@ async def ask(
                 locale, "اطلب «معالجة المستند» من مكتبتك البحثية أولًا.",
                 "Ask for “Process document” in your research library first.",
             ))
+            attachment = attachment.model_copy(update={"needs": "process"})
         elif not document_context:
             limitations.append(_t(
                 locale,
@@ -113,6 +134,7 @@ async def ask(
                 "The file was read but you have not approved any of its facts yet, "
                 "so I cannot answer from it.",
             ))
+            attachment = attachment.model_copy(update={"needs": "review"})
         else:
             capabilities.append(_t(
                 locale,
@@ -150,6 +172,7 @@ async def ask(
                 locale, "اضبط مزوّد النموذج ومفتاحه في أسرار الخادم.",
                 "Configure the model provider and its key in the server secrets.",
             )],
+            attachment=attachment,
         )
 
     # ── الاستدعاء عبر المنسّق: هو الطبقة المعمارية، والبوابة تحته ──
@@ -189,9 +212,11 @@ async def ask(
                 "the facts you approved would be sent, not its text.",
             ))
             actions.append(_t(
-                locale, "امنح الإذن من صفحة المستند لتُجيب أثيرا منه.",
-                "Grant consent on the document page so ATHERA can answer from it.",
+                locale, "اسمح لأثيرا بالإجابة من هذا المستند.",
+                "Allow ATHERA to answer from this document.",
             ))
+            if attachment is not None:
+                attachment = attachment.model_copy(update={"needs": "chat_consent"})
 
     if document_context:
         classification = "C2"
@@ -268,5 +293,6 @@ async def ask(
             _t(locale, "راجع الاقتراح واعتمد ما تريد إدخاله في مشروعك.",
                "Review the proposal and approve what you want to enter into your project."),
         ],
+        attachment=attachment,
         model_run_id=result.model_run_id,
     )
