@@ -18,8 +18,6 @@ from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.audit import ProvenanceEvent
 from ..models.files import File, FileAccessLog
-from ..models.research import ExtractionRun, FactCandidate
-from ..models.thesis import Thesis
 from ..models.identity import ObjectGrant
 from ..schemas.files import (
     FileCompleteRequest,
@@ -29,7 +27,7 @@ from ..schemas.files import (
     FileResponse,
     LibraryFile,
 )
-from ..services import audit, rbac, storage
+from ..services import audit, rbac, storage, workspace
 
 # مقطع الميجابايت: يوازن بين عدد الدورات وبصمة الذاكرة.
 CHUNK_BYTES = 1024 * 1024
@@ -61,36 +59,14 @@ async def list_files(
 
     library: list[LibraryFile] = []
     for row in rows:
-        thesis = (await session.execute(
-            select(Thesis).where(Thesis.tenant_id == principal.tenant_id,
-                                 Thesis.file_id == row.id)
-        )).scalar_one_or_none()
-
-        processing, candidates, reviewed = "not_processed", 0, 0
-        if thesis is not None:
-            run = (await session.execute(
-                select(ExtractionRun)
-                .where(ExtractionRun.tenant_id == principal.tenant_id,
-                       ExtractionRun.file_id == row.id)
-                .order_by(ExtractionRun.created_at.desc()).limit(1)
-            )).scalar_one_or_none()
-            if run is not None:
-                processing = run.status
-            decided = (await session.execute(
-                select(FactCandidate.status)
-                .where(FactCandidate.tenant_id == principal.tenant_id,
-                       FactCandidate.file_id == row.id)
-            )).scalars().all()
-            candidates = len(decided)
-            reviewed = sum(1 for status_value in decided if status_value != "unverified")
-
+        processing, candidates, reviewed, thesis_id = await workspace.file_processing_state(
+            session, tenant_id=principal.tenant_id, file_id=row.id)
         library.append(LibraryFile(
             id=row.id, original_filename=row.original_filename,
             content_type=row.content_type, size_bytes=row.size_bytes,
             classification=row.classification, status=row.status,
             created_at=row.created_at, processing_status=processing,
-            thesis_id=thesis.id if thesis else None,
-            candidates=candidates, reviewed=reviewed))
+            thesis_id=thesis_id, candidates=candidates, reviewed=reviewed))
     return library
 
 

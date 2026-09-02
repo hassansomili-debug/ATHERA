@@ -1202,26 +1202,52 @@ def test_the_library_listing_is_scoped_to_the_tenant():
 
     ويُضاف بالبوابتين معًا من أول سطر: RLS، وفلترةٌ صريحة بالمستأجر — درسُ
     حادثة P0 يُطبَّق قبل التسريب لا بعده.
+
+    وقد انتقل حسابُ حال المعالجة إلى `services/workspace.file_processing_state`
+    ليقرأه المكتبة ومساحة العمل معًا. فيُتتبَّع الشرط إلى موضعه الجديد **ولا
+    يُحذف**: قائمةُ الملفات تبقى مفلترة بمستأجرها، والحسابُ المشترك يفلتر
+    بمستأجره في كل استعلام فيه.
     """
     import inspect
 
     from athera_api.routers import files
+    from athera_api.services import workspace
 
-    source = inspect.getsource(files.list_files)
-    assert "File.tenant_id == principal.tenant_id" in source
-    for scoped in ("Thesis.tenant_id == principal.tenant_id",
-                   "ExtractionRun.tenant_id == principal.tenant_id",
-                   "FactCandidate.tenant_id == principal.tenant_id"):
-        assert scoped in source, scoped
+    listing = inspect.getsource(files.list_files)
+    assert "File.tenant_id == principal.tenant_id" in listing
+
+    shared = inspect.getsource(workspace.file_processing_state)
+    for scoped in ("Thesis.tenant_id == tenant_id",
+                   "ExtractionRun.tenant_id == tenant_id",
+                   "FactCandidate.tenant_id == tenant_id"):
+        assert scoped in shared, scoped
+
+
+def test_no_caller_recomputes_the_processing_state_beside_the_shared_one():
+    """حسابان لحالٍ واحدة يفترقان بأول تعديل — والباحث يرى شاشتين تتناقضان.
+
+    وهذا وجهٌ آخر من الدرس المتكرر: ما يُكتب بجانب سجلّه بدل أن يُشتقّ منه.
+    فيُمنع أن يستعلم أي مسار عن `ExtractionRun` ليخترع الحال لنفسه.
+    """
+    import inspect
+
+    from athera_api.routers import files
+    from athera_api.routers import workspace as workspace_router
+
+    for func in (files.list_files, workspace_router.project_files):
+        source = inspect.getsource(func)
+        assert "ExtractionRun" not in source, (
+            f"{func.__name__} يحسب حال المعالجة بنفسه بدل أن يشتقّها")
+        assert "file_processing_state" in source
 
 
 def test_the_library_never_claims_a_file_was_analysed():
     """الحالة تُقرأ من تشغيلة استخراج حقيقية، ولا تُخترع متفائلة."""
     import inspect
 
-    from athera_api.routers import files
+    from athera_api.services import workspace
 
-    source = inspect.getsource(files.list_files)
+    source = inspect.getsource(workspace.file_processing_state)
     assert '"not_processed"' in source
     assert "run.status" in source
     # ولا حالة ثابتة تُكتب بجانب الواقع.

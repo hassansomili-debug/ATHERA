@@ -1,0 +1,404 @@
+"""مساحة عمل البحث | PUBRIVA project workspace.
+
+يثبت هذا الملف أربعة أشياء لا يُشحن بدونها:
+١) عزل المستأجر على جدولَي الربط الجديدين — RLS مفروضة لا مُعلنة فقط.
+٢) الافتراض `saved_only` للمصادر — الاستيراد ليس حكمًا بالصلاحية دليلًا.
+٣) الإزالة تُخبر بما يترتب **قبل** أن تقع، وترفض حتى يُقرّ الباحث.
+٤) ما في السلّة لا يظهر قائمًا — في أي شاشة.
+"""
+import datetime as dt
+import uuid
+
+import pytest
+
+from tests.conftest import requires_db
+
+
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+# ─────────────────────── اختبارات خالصة بلا قاعدة ───────────────────────
+
+def test_brain_roles_all_exist_in_the_field_vocabulary():
+    """كل دورٍ يذكره «دماغ البحث» موجودٌ فعلًا في مفردات الحقول.
+
+    وإلا فالعنصر يظهر «ناقصًا» أبدًا مهما وثّق الباحث — لأن الاسم المكتوب
+    بجانب السجل لا يقابل شيئًا فيه. وهو الخطأ المتكرر نفسه، فيُمسك هنا.
+    """
+    from athera_api.services.planning.context import ROLE_BY_FIELD
+    from athera_api.services.workspace import BRAIN_FIELDS
+
+    known = set(ROLE_BY_FIELD.values())
+    for key, label_ar, _label_en, roles in BRAIN_FIELDS:
+        assert roles, f"{key} names no role at all"
+        assert label_ar.strip(), f"{key} has no Arabic label"
+        for role in roles:
+            assert role in known, (
+                f"«{key}» يشير إلى الدور {role!r} وليس له وجود في ROLE_BY_FIELD — "
+                "فالعنصر ميت لا يمكن أن يُعرف أبدًا")
+
+
+def test_brain_keys_are_unique():
+    from athera_api.services.workspace import BRAIN_FIELDS
+
+    keys = [key for key, _a, _e, _r in BRAIN_FIELDS]
+    assert len(keys) == len(set(keys))
+
+
+def test_impact_summary_says_nothing_depends_when_nothing_does():
+    from athera_api.services.workspace import Consequence, Impact
+
+    empty = Impact()
+    assert empty.is_safe and not empty.breaks_approved_work
+    assert "لا يعتمد" in empty.summary_ar()
+
+    loaded = Impact(consequences=[
+        Consequence("approved_sections", 2, "قسمًا معتمَدًا", "approved sections",
+                    breaks_approved_work=True)])
+    assert not loaded.is_safe and loaded.breaks_approved_work
+    assert "2 قسمًا معتمَدًا" in loaded.summary_ar()
+
+
+def test_project_creation_asks_for_a_title_and_nothing_more():
+    """الاستمارةُ قبل الفكرة توقف الباحث عند الباب."""
+    from athera_api.schemas.workspace import ProjectCreateRequest
+
+    payload = ProjectCreateRequest(title_ar="أثر برنامج في التفكير الناقد")
+    assert payload.starting_from == "idea"
+
+    with pytest.raises(ValueError):
+        ProjectCreateRequest(title_ar="أ")
+
+
+def test_source_use_states_are_the_three_named_ones():
+    from athera_api.schemas.workspace import SourceUseRequest
+
+    for state in ("included", "saved_only", "excluded"):
+        assert SourceUseRequest(use_state=state).use_state == state
+    with pytest.raises(ValueError):
+        SourceUseRequest(use_state="maybe")
+
+
+def test_workspace_error_codes_all_have_translations():
+    """رسالةٌ بلا ترجمة تصل الباحث مفتاحًا تقنيًّا — وهو ليس رسالة."""
+    import inspect
+
+    from athera_api.i18n.catalog import CATALOG
+    from athera_api.routers import workspace as router
+
+    source = inspect.getsource(router)
+    referenced = {
+        line.split('"')[1]
+        for line in source.splitlines()
+        if '"workspace.' in line and "raise" in line or '("workspace.' in line
+    }
+    referenced = {code for code in referenced if code.startswith("workspace.")}
+    assert referenced, "no workspace error codes were found to check"
+    missing = sorted(code for code in referenced if code not in CATALOG)
+    assert not missing, f"error codes with no translation: {missing}"
+
+
+# ──────────────────────── اختبارات تمسّ القاعدة ────────────────────────
+
+async def _seed_file(tid: uuid.UUID, name: str) -> uuid.UUID:
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+
+    async with tenant_session(tid) as session:
+        file = File(
+            tenant_id=tid, storage_key=f"t/{uuid.uuid4()}", original_filename=name,
+            content_type="application/pdf", size_bytes=1024,
+            sha256_hex="0" * 64, classification="C2", status="stored")
+        session.add(file)
+        await session.flush()
+        return file.id
+
+
+async def _seed_project(tid: uuid.UUID, title: str) -> uuid.UUID:
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ResearchProject
+
+    async with tenant_session(tid) as session:
+        project = ResearchProject(
+            tenant_id=tid, working_title_ar=title, status="planned", current_gate="G1")
+        session.add(project)
+        await session.flush()
+        return project.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_project_file_link_is_invisible_to_the_other_tenant(two_tenants):
+    """جدول الربط الجديد يخضع لـRLS مثل غيره — لا استثناء لجدولٍ حديث."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectFile
+
+    a, b = two_tenants["a"], two_tenants["b"]
+    project_a = await _seed_project(a["tenant_id"], "بحث المستأجر أ")
+    file_a = await _seed_file(a["tenant_id"], "أ.pdf")
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        session.add(ProjectFile(
+            tenant_id=a["tenant_id"], project_id=project_a, file_id=file_a,
+            state="active", added_by=a["user_id"]))
+
+    async with tenant_session(b["tenant_id"], b["user_id"]) as session:
+        rows = (await session.execute(select(ProjectFile))).scalars().all()
+        assert all(row.project_id != project_a for row in rows)
+        direct = (await session.execute(
+            select(ProjectFile).where(ProjectFile.project_id == project_a)
+        )).scalars().all()
+        assert direct == [], "ربط ملفات مستأجرٍ ظهر لمستأجر آخر"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_project_source_link_is_invisible_to_the_other_tenant(two_tenants):
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.literature import Source
+    from athera_api.models.portfolio import ProjectSource
+
+    a, b = two_tenants["a"], two_tenants["b"]
+    project_a = await _seed_project(a["tenant_id"], "بحث فيه مراجع")
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        source = Source(tenant_id=a["tenant_id"], title="مرجع سرّي",
+                        publication_year=2024, retraction_status="unknown")
+        session.add(source)
+        await session.flush()
+        session.add(ProjectSource(
+            tenant_id=a["tenant_id"], project_id=project_a, source_id=source.id,
+            added_by=a["user_id"]))
+        await session.flush()
+        source_a = source.id
+
+    async with tenant_session(b["tenant_id"], b["user_id"]) as session:
+        leaked = (await session.execute(
+            select(ProjectSource).where(ProjectSource.source_id == source_a)
+        )).scalars().all()
+        assert leaked == []
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_imported_source_is_saved_only_until_the_researcher_decides(two_tenants):
+    """**الاستيراد ليس حكمًا بالصلاحية دليلًا.**
+
+    وجعلُ كل مستورَدٍ «مُدرَجًا» افتراضًا يبني ورقةً على ما لم يقرأه أحد.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.literature import Source
+    from athera_api.models.portfolio import ProjectSource
+
+    a = two_tenants["a"]
+    project = await _seed_project(a["tenant_id"], "بحث المراجع الافتراضية")
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        source = Source(tenant_id=a["tenant_id"], title="مرجع مستورَد",
+                        retraction_status="unknown")
+        session.add(source)
+        await session.flush()
+        # لا يُمرَّر `use_state` إطلاقًا — القاعدة هي التي تقرّر الافتراض.
+        session.add(ProjectSource(
+            tenant_id=a["tenant_id"], project_id=project, source_id=source.id,
+            added_by=a["user_id"]))
+        await session.flush()
+        link = (await session.execute(
+            select(ProjectSource).where(ProjectSource.source_id == source.id)
+        )).scalar_one()
+        assert link.use_state == "saved_only"
+        assert link.decided_by is None and link.decided_at is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_including_a_source_requires_a_named_decider(two_tenants):
+    """قرارٌ صريح بلا فاعل يُرفض — القيد في القاعدة لا في الواجهة وحدها."""
+    from sqlalchemy.exc import IntegrityError
+
+    from athera_api.db import tenant_session
+    from athera_api.models.literature import Source
+    from athera_api.models.portfolio import ProjectSource
+
+    a = two_tenants["a"]
+    project = await _seed_project(a["tenant_id"], "بحث القرار المنسوب")
+
+    with pytest.raises(IntegrityError):
+        async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+            source = Source(tenant_id=a["tenant_id"], title="مرجع بلا قرار",
+                            retraction_status="unknown")
+            session.add(source)
+            await session.flush()
+            session.add(ProjectSource(
+                tenant_id=a["tenant_id"], project_id=project, source_id=source.id,
+                use_state="included", added_by=a["user_id"]))
+            await session.flush()
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_trashed_project_is_gone_from_every_listing(two_tenants):
+    """الحذف الذي يُخفي في شاشة ويُبقي في أخرى يجعل الحذف كذبًا."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ResearchProject
+    from athera_api.services.workspace import live_project
+
+    a = two_tenants["a"]
+    project_id = await _seed_project(a["tenant_id"], "بحثٌ سيُحذف")
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        assert await live_project(
+            session, tenant_id=a["tenant_id"], project_id=project_id) is not None
+        row = (await session.execute(
+            select(ResearchProject).where(ResearchProject.id == project_id)
+        )).scalar_one()
+        row.deleted_at, row.deleted_by = _now(), a["user_id"]
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        assert await live_project(
+            session, tenant_id=a["tenant_id"], project_id=project_id) is None
+        # ولا يُتلَف: الصف باقٍ كاملًا، والاستعادة ترجعه كما كان.
+        still_there = (await session.execute(
+            select(ResearchProject).where(ResearchProject.id == project_id)
+        )).scalar_one()
+        assert still_there.working_title_ar == "بحثٌ سيُحذف"
+        assert still_there.deleted_by == a["user_id"]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_trashing_a_project_requires_naming_who_did_it(two_tenants):
+    """`deleted_at` بلا `deleted_by` حذفٌ بلا صاحب — يرفضه القيد."""
+    from sqlalchemy.exc import IntegrityError
+
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ResearchProject
+
+    a = two_tenants["a"]
+    with pytest.raises(IntegrityError):
+        async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+            session.add(ResearchProject(
+                tenant_id=a["tenant_id"], working_title_ar="حذفٌ بلا صاحب",
+                status="planned", deleted_at=_now()))
+            await session.flush()
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_same_file_may_serve_two_projects(two_tenants):
+    """ملفٌ واحد يخدم بحثين — وهو سبب اختيار جدول ربطٍ لا عمود."""
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectFile
+
+    a = two_tenants["a"]
+    one = await _seed_project(a["tenant_id"], "بحث أول")
+    two = await _seed_project(a["tenant_id"], "بحث ثانٍ")
+    file_id = await _seed_file(a["tenant_id"], "بياناتٌ مشتركة.csv")
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        for project_id in (one, two):
+            session.add(ProjectFile(
+                tenant_id=a["tenant_id"], project_id=project_id, file_id=file_id,
+                state="active", added_by=a["user_id"]))
+        await session.flush()
+        count = (await session.execute(
+            select(func.count(ProjectFile.id)).where(ProjectFile.file_id == file_id)
+        )).scalar_one()
+        assert count == 2, "الملف الواحد لم يُقبل في بحثين — فرضنا نسخًا"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_file_cannot_be_linked_to_one_project_twice(two_tenants):
+    from sqlalchemy.exc import IntegrityError
+
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectFile
+
+    a = two_tenants["a"]
+    project_id = await _seed_project(a["tenant_id"], "بحثٌ لا يقبل التكرار")
+    file_id = await _seed_file(a["tenant_id"], "مكرَّر.pdf")
+
+    with pytest.raises(IntegrityError):
+        async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+            for _ in range(2):
+                session.add(ProjectFile(
+                    tenant_id=a["tenant_id"], project_id=project_id, file_id=file_id,
+                    state="active", added_by=a["user_id"]))
+            await session.flush()
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_removing_a_file_from_a_project_never_deletes_the_file(two_tenants):
+    """`RESTRICT` عمدًا: الإزالة من بحثٍ ليست حذفًا من المكتبة."""
+    from sqlalchemy import delete, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+    from athera_api.models.portfolio import ProjectFile
+
+    a = two_tenants["a"]
+    project_id = await _seed_project(a["tenant_id"], "بحثٌ يُزال منه ملف")
+    file_id = await _seed_file(a["tenant_id"], "باقٍ.pdf")
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        session.add(ProjectFile(
+            tenant_id=a["tenant_id"], project_id=project_id, file_id=file_id,
+            state="active", added_by=a["user_id"]))
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        await session.execute(
+            delete(ProjectFile).where(ProjectFile.file_id == file_id))
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        survivor = (await session.execute(
+            select(File).where(File.id == file_id))).scalar_one_or_none()
+        assert survivor is not None, "إزالة الملف من بحثٍ حذفته من المكتبة"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_next_action_starts_by_asking_for_a_document(two_tenants):
+    """بحثٌ بلا أدلة لا يُقال له «اكتب المناقشة» — نصيحةٌ لا تُنفَّذ."""
+    from athera_api.db import tenant_session
+    from athera_api.services.workspace import next_action
+
+    a = two_tenants["a"]
+    project_id = await _seed_project(a["tenant_id"], "بحثٌ في أوله")
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        action = await next_action(
+            session, tenant_id=a["tenant_id"], project_id=project_id)
+    assert action is not None and action[0] == "add_document"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_research_brain_reports_missing_without_inventing_a_percentage(two_tenants):
+    """بحثٌ في أوله لا يعرف نتائجه — وقولُ ذلك أصدق من شريطٍ يقول «٤٠٪»."""
+    from athera_api.db import tenant_session
+    from athera_api.services.workspace import BRAIN_FIELDS, research_brain
+
+    a = two_tenants["a"]
+    project_id = await _seed_project(a["tenant_id"], "بحثٌ فارغ")
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        brain = await research_brain(
+            session, tenant_id=a["tenant_id"], project_id=project_id)
+
+    assert len(brain) == len(BRAIN_FIELDS)
+    assert {entry.state for entry in brain} <= {"known", "needs_review",
+                                                "missing", "conflicting"}
+    assert all(entry.label_ar for entry in brain)

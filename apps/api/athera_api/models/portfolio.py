@@ -8,7 +8,16 @@
 import datetime as dt
 import uuid
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -56,6 +65,21 @@ class ResearchProject(Base, TenantScoped, Timestamped):
 
     risks: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     target_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    # ── سلّة المهملات (PUBRIVA) ──
+    #
+    # **الحذف الظاهر تأجيلٌ لا إتلاف.** بحثٌ يُحذف بضغطة لا يُستعاد،
+    # وسنواتُ عملٍ لا تُعاد كتابتها. فالحذف نقلٌ إلى سلّة، والإتلاف قرارٌ ثانٍ.
+    archived_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    deleted_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+
+    @property
+    def is_live(self) -> bool:
+        return self.deleted_at is None
+
     current_gate: Mapped[str | None] = mapped_column(String(8), nullable=True)
     gate_approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_thesis_derived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -99,3 +123,69 @@ class ProjectDecision(Base, TenantScoped, Timestamped):
     )
     decided_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     supersedes_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+
+
+class ProjectFile(Base, TenantScoped, Timestamped):
+    """ربط ملفٍ ببحث — **رابطٌ لا نسخة** (PUBRIVA).
+
+    الملف أصلٌ في مكتبة الباحث العامة، وقد يخدم أكثر من بحث: بياناتٌ تُقرأ
+    في سياقين، أو رسالةٌ يُبنى عليها مشروعان. وعمودٌ واحد على `files` يفرض
+    نسخًا — ونسخةٌ ثانية للأصل تفترق عنه بأول تعديل، ولا يعرف أحدٌ أيّهما
+    الصحيح.
+
+    و`RESTRICT` على الملف عمدًا: إزالته من مشروع شيء، وحذفه من المكتبة شيء
+    آخر — ولا يقع الثاني بأثرٍ جانبي للأول.
+    """
+
+    __tablename__ = "project_files"
+    __table_args__ = (UniqueConstraint("project_id", "file_id", name="uq_project_file"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("research_projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("files.id", ondelete="RESTRICT"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    added_by: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    note_ar: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ProjectSource(Base, TenantScoped, Timestamped):
+    """ربط مصدرٍ ببحث — **بحال استعماله فيه** (PUBRIVA).
+
+    مصدرٌ «مُدرَج» في مشروع قد يكون «محفوظًا فقط» في آخر و«مستبعَدًا» في
+    ثالث، وهو مصدرٌ واحد. فحالُ الاستعمال تخصّ العلاقة لا الشيء.
+
+    والافتراض `saved_only`: **استيرادُ مصدرٍ ليس حكمًا بصلاحيته دليلًا**.
+    وجعلُ كل ما يُخزَّن دليلًا افتراضًا يبني ورقةً على ما لم يقرأه أحد.
+    """
+
+    __tablename__ = "project_sources"
+    __table_args__ = (UniqueConstraint("project_id", "source_id",
+                                       name="uq_project_source"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("research_projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("sources.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    use_state: Mapped[str] = mapped_column(String(16), nullable=False,
+                                           default="saved_only")
+    added_by: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    decided_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    reason_ar: Mapped[str | None] = mapped_column(Text, nullable=True)
