@@ -605,3 +605,290 @@ async def test_registration_works_under_the_non_bypassing_application_role(db_re
             "password": "correct-horse-battery-staple",
             "full_name_ar": "باحث أمني", "tenant_slug": slug})
     assert response.status_code == 201, response.text
+
+
+# ══════════ 4. حارس قاعدة الاختبار: لا تشغيلة على الإنتاج ══════════
+
+# الرابط الحقيقي الذي جرت عليه التشغيلة في 2026-08-31 — بلا كلمة.
+PRODUCTION_SHAPE = (
+    "postgresql+asyncpg://postgres.ofyabufybofbxwkfalgs:REDACTED"
+    "@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
+)
+CI_SHAPE = "postgresql+asyncpg://athera_app:pw@localhost:5432/athera"
+
+
+def test_the_guard_refuses_the_exact_production_target_of_the_incident():
+    from tests.db_safety import guard
+
+    with pytest.raises(RuntimeError) as err:
+        guard({"APP_ENV": "production", "DATABASE_URL": PRODUCTION_SHAPE})
+    message = str(err.value)
+    # أربع إشارات مستقلة — ولا واحدة تحمل الحكم وحدها.
+    for signal in ("APP_ENV=production", "managed-database host",
+                   "is not an allowed test host", "is never a test database",
+                   "managed-project reference"):
+        assert signal in message, signal
+
+
+def test_the_guard_refuses_production_even_when_app_env_is_not_set():
+    """المتغيّر قد يُنسى؛ والمضيف واسم القاعدة لا يُنسيان."""
+    from tests.db_safety import guard
+
+    with pytest.raises(RuntimeError):
+        guard({"DATABASE_URL": PRODUCTION_SHAPE})
+
+
+def test_the_guard_refuses_a_bypassrls_url_pointed_at_production():
+    """دورٌ يتجاوز RLS موجَّهٌ إلى الإنتاج أسوأ من كل ما سبق."""
+    from tests.db_safety import guard
+
+    with pytest.raises(RuntimeError) as err:
+        guard({"DATABASE_URL": CI_SHAPE, "ATHERA_TEST_BYPASSRLS_URL": PRODUCTION_SHAPE})
+    assert "ATHERA_TEST_BYPASSRLS_URL" in str(err.value)
+
+
+def test_the_guard_refuses_the_postgres_database_even_on_localhost():
+    from tests.db_safety import guard
+
+    with pytest.raises(RuntimeError) as err:
+        guard({"DATABASE_URL": "postgresql+asyncpg://athera_app:pw@localhost:5432/postgres"})
+    assert "is never a test database" in str(err.value)
+
+
+def test_the_guard_refuses_what_it_cannot_parse():
+    """يفشل مغلقًا: هدفٌ لا يُفهم لا يُفترض أنه بريء."""
+    from tests.db_safety import guard
+
+    with pytest.raises(RuntimeError):
+        guard({"DATABASE_URL": "not a url at all"})
+
+
+def test_the_guard_accepts_the_local_and_ci_targets():
+    from tests.db_safety import guard
+
+    guard({"DATABASE_URL": CI_SHAPE,
+           "DATABASE_MIGRATION_URL":
+               "postgresql+psycopg://athera_owner:pw@localhost:5432/athera",
+           "MIGRATION_DRILL_URL":
+               "postgresql+psycopg://athera_owner:pw@localhost:5432/athera_migration",
+           "ATHERA_TEST_BYPASSRLS_URL":
+               "postgresql+asyncpg://athera_test_bypass:pw@localhost:5432/athera"})
+
+
+def test_the_guard_never_prints_a_credential():
+    from tests.db_safety import guard
+
+    secret = "sup3r-secret-password"  # noqa: S105 — قيمة اختبار لا سرّ
+    url = f"postgresql+asyncpg://postgres.abc:{secret}@x.pooler.supabase.com:6543/postgres"
+    with pytest.raises(RuntimeError) as err:
+        guard({"DATABASE_URL": url})
+    message = str(err.value)
+    assert secret not in message
+    assert url not in message
+    assert "postgres.abc" not in message, "اسم المستخدم كاملًا في الرسالة"
+
+
+def test_the_guard_has_no_environment_escape_hatch():
+    """إضافة مضيفٍ تغييرٌ يُراجَع في المستودع — لا متغيّرَ يُصدَّر في عجلة."""
+    import inspect
+
+    from tests import db_safety
+
+    source = inspect.getsource(db_safety)
+    for hatch in ("ALLOW_PRODUCTION", "SKIP_DB_GUARD", "FORCE", "_UNSAFE"):
+        assert hatch not in source, hatch
+
+
+def test_the_guard_runs_before_any_fixture():
+    """في `pytest_configure` — قبل الجمع، فلا تجهيزة تكتب قبل السؤال."""
+    import inspect
+
+    from tests import conftest
+
+    assert hasattr(conftest, "pytest_configure")
+    source = inspect.getsource(conftest.pytest_configure)
+    assert "_guard_test_database()" in source
+    assert "UsageError" in source, "الفشل يجب أن يوقف التشغيلة لا اختبارًا"
+
+
+def test_the_guard_reads_the_url_the_application_actually_uses():
+    """ثقب الحادثة نفسه: `.env` من جذر المستودع لا يظهر في البيئة."""
+    import inspect
+
+    from tests import db_safety
+
+    source = inspect.getsource(db_safety.guard)
+    assert "get_settings().database_url" in source
+
+
+# ══════════ 5. الاستثناءان الضيّقان — مراجعة أمنية (0018) ══════════
+
+_DEFINERS = ("app_login_tenant", "app_refresh_token_tenant")
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_definer_functions_contain_no_dynamic_sql(db_ready):
+    """لا `EXECUTE` ولا تركيب نصّ — فلا اسم جدولٍ يأتي من المستدعي."""
+    from sqlalchemy import text
+
+    from athera_api.db import system_session
+
+    async with system_session() as session:
+        for name in _DEFINERS:
+            body = (await session.execute(text(
+                "SELECT prosrc FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname='public' AND p.proname = :n"), {"n": name})).scalar_one()
+            upper = body.upper()
+            for forbidden in ("EXECUTE", "FORMAT(", "QUOTE_IDENT", "||", "SET ROLE"):
+                assert forbidden not in upper, f"{name}: {forbidden}"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_definer_functions_are_narrow_and_pinned(db_ready):
+    from sqlalchemy import text
+
+    from athera_api.db import system_session
+
+    async with system_session() as session:
+        for name in _DEFINERS:
+            row = (await session.execute(text(
+                "SELECT p.prosecdef, p.provolatile, pg_get_function_result(p.oid), "
+                "       p.proconfig, pg_get_function_arguments(p.oid) "
+                "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname='public' AND p.proname = :n"), {"n": name})).one()
+            assert row[0] is True, f"{name} is not SECURITY DEFINER"
+            assert row[1] == "s", f"{name} is not STABLE"
+            # **معرّف واحد** — لا صفّ، ولا SETOF، ولا محتوى.
+            assert row[2] == "uuid", f"{name} returns {row[2]}"
+            assert any(c.startswith("search_path=") for c in (row[3] or [])), name
+            assert "record" not in row[4].lower()
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_only_the_application_role_may_execute_the_definers(db_ready):
+    """العامة لا تنفّذ، ولا دورَ غير مقصودٍ يملك التنفيذ."""
+    from sqlalchemy import text
+
+    from athera_api.db import system_session
+
+    async with system_session() as session:
+        for signature in ("app_login_tenant(uuid, text)",
+                          "app_refresh_token_tenant(text)"):
+            assert (await session.execute(text(
+                "SELECT has_function_privilege('public', :s, 'EXECUTE')"),
+                {"s": signature})).scalar_one() is False, signature
+            assert (await session.execute(text(
+                "SELECT has_function_privilege('athera_app', :s, 'EXECUTE')"),
+                {"s": signature})).scalar_one() is True, signature
+
+            # ولا دور مسجَّل دخول آخر — عدا الخارقين والمالك ودور الاختبار.
+            others = (await session.execute(text(
+                "SELECT rolname FROM pg_roles WHERE rolcanlogin "
+                "  AND NOT rolsuper AND NOT rolbypassrls "
+                "  AND rolname NOT IN ('athera_app') "
+                "  AND rolname NOT LIKE 'pg\\_%' "
+                "  AND has_function_privilege(rolname, :s, 'EXECUTE')"),
+                {"s": signature})).scalars().all()
+            assert others == [], f"{signature} is executable by {others}"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_unknown_identity_resolves_to_no_tenant(db_ready):
+    """يفشل مغلقًا: لا مستأجر افتراضي، ولا أول صفٍّ في الجدول."""
+    from sqlalchemy import text
+
+    from athera_api.db import system_session
+
+    async with system_session() as session:
+        assert (await session.execute(text(
+            "SELECT app_login_tenant(:u)"),
+            {"u": str(uuid.uuid4())})).scalar_one() is None
+        assert (await session.execute(text(
+            "SELECT app_refresh_token_tenant(:h)"),
+            {"h": uuid.uuid4().hex})).scalar_one() is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_slug_the_user_does_not_belong_to_resolves_to_nothing(two_tenants):
+    """اسم مستأجرٍ ليس للمستخدم فيه عضوية لا يفتح شيئًا."""
+    from sqlalchemy import select, text
+
+    from athera_api.db import system_session
+    from athera_api.models.identity import Tenant
+
+    a, b = two_tenants["a"], two_tenants["b"]
+    async with system_session() as session:
+        slug_b = (await session.execute(
+            select(Tenant.slug).where(Tenant.id == b["tenant_id"]))).scalar_one()
+        resolved = (await session.execute(
+            text("SELECT app_login_tenant(:u, :s)"),
+            {"u": str(a["user_id"]), "s": slug_b})).scalar_one()
+    assert resolved is None, "حُلّ مستأجرٌ لا عضوية للمستخدم فيه"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_multiple_memberships_never_resolve_to_a_foreign_tenant(two_tenants):
+    """الالتباس يُحسم بمستأجرٍ **للمستخدم فيه عضوية** — لا بأيّ مستأجر."""
+    from sqlalchemy import select, text
+
+    from athera_api.db import system_session, tenant_session
+    from athera_api.models.identity import Membership, Role
+
+    a, b = two_tenants["a"], two_tenants["b"]
+
+    # عضوية ثانية حقيقية للمستخدم أ في مستأجر ب.
+    async with tenant_session(b["tenant_id"]) as session:
+        role_b = (await session.execute(
+            select(Role).where(Role.tenant_id == b["tenant_id"],
+                               Role.key == "researcher"))).scalar_one()
+        session.add(Membership(tenant_id=b["tenant_id"], user_id=a["user_id"],
+                               role_id=role_b.id))
+
+    async with system_session() as session:
+        resolved = (await session.execute(
+            text("SELECT app_login_tenant(:u)"), {"u": str(a["user_id"])})).scalar_one()
+        assert resolved in {a["tenant_id"], b["tenant_id"]}
+        # وهي عضوية قائمة فعلًا — لا اختيار عشوائي من الجدول.
+        member = (await session.execute(text(
+            "SELECT count(*) FROM memberships WHERE user_id = :u AND tenant_id = :t"),
+            {"u": str(a["user_id"]), "t": str(resolved)})).scalar_one()
+        assert member >= 1
+
+
+def test_login_binds_the_tenant_context_before_any_rls_query():
+    """ترتيب لا تفصيل: السياق يُثبَّت ثم تُقرأ الجداول المملوكة."""
+    import inspect
+
+    from athera_api.routers import auth
+
+    source = inspect.getsource(auth.login)
+    bind = source.index("_bind_tenant(")
+    membership = source.index("select(Membership, Role)")
+    assert bind < membership, "قراءة العضوية تسبق تثبيت السياق"
+
+    refresh = inspect.getsource(auth.refresh)
+    assert refresh.index("_bind_tenant(") < refresh.index("select(RefreshToken)")
+
+
+def test_no_rls_policy_was_relaxed_to_repair_authentication():
+    """الإصلاح استثناءٌ مسمّى — لا سياسةٌ تسمح عند غياب السياق."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[3] / "infra" / "db" / "migrations"
+    body = (root / "versions" / "0018_login_tenant_resolution.py").read_text()
+    upper = body.upper()
+    for weakening in ("CREATE POLICY", "ALTER POLICY", "DROP POLICY",
+                      "DISABLE ROW LEVEL SECURITY", "NO FORCE ROW LEVEL SECURITY",
+                      "GRANT BYPASSRLS", "ALTER ROLE"):
+        assert weakening not in upper, weakening
+    # ونمط الفشل المفتوح بعينه: «اسمح حين لا سياق» — وهو ما كان سيجعل كل
+    # مسارٍ نُسي فيه الضبط يرى كل شيء.
+    assert "APP_CURRENT_TENANT() IS NULL" not in upper
+    assert "REVOKE ALL ON FUNCTION" in body
+    assert "GRANT EXECUTE ON FUNCTION" in body
