@@ -312,3 +312,39 @@ def test_the_instruction_offers_the_empty_answer_explicitly():
 
     assert "فارغًا" in generate.INSTRUCTION
     assert "دلالة إحصائية" in generate.INSTRUCTION
+
+
+# ══════════ 7. المخرجات تتبع سياسة الإحصاء لا سياسة الحجب ══════════
+
+def test_a_section_that_forbids_statistics_receives_no_analysis_outputs():
+    """**عطبٌ منع كتابة الخاتمة في الإنتاج، محاولةً بعد محاولة.**
+
+    كانت المخرجات تُحمَّل حيثما يقع الحجب — وهما سؤالان مختلفان. فوصل
+    «الخاتمةَ» مخرَجٌ يحمل `t = 3.738`، وسياستها تمنع الإحصاء أصلًا؛ فاستنتج
+    النموذج الدلالة من قيمة (ت) بنفسه، ورفضها المدقّق في كل مرة.
+
+    والقسم الذي لا يجوز أن يحمل إحصاءً لا تُرسل إليه أرقامٌ يستنتج منها.
+    """
+    import inspect
+
+    from athera_api.services.publishing.drafting import context as ctx
+
+    source = inspect.getsource(ctx.build)
+    assert "spec.allows_statistics" in source
+    assert "if section_key in REDACT_STATISTICS_IN:\n        outputs" not in source
+
+    for key in ("conclusion", "limitations", "implications", "method"):
+        assert policy.POLICIES[key].allows_statistics is False, key
+    for key in ("results", "discussion", "abstract"):
+        assert policy.POLICIES[key].allows_statistics is True, key
+
+
+def test_redaction_and_output_loading_are_independent_questions():
+    """يُحجب حيثما تصل أدلةُ نتائج، وتُرسل المخرجات حيثما يجوز الإحصاء."""
+    conclusion = policy.POLICIES["conclusion"]
+    assert conclusion.redact_statistics is True
+    assert conclusion.allows_statistics is False
+
+    limitations = policy.POLICIES["limitations"]
+    assert limitations.redact_statistics is False
+    assert limitations.allows_statistics is False

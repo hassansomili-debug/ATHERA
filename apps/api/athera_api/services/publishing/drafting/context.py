@@ -271,8 +271,17 @@ async def build(
             if (row.metadata_json or {}).get("opportunity_id") == str(opportunity_id)
         )
 
+    # **مخرجات التحليل تتبع سياسة الإحصاء، لا سياسة الحجب.**
+    #
+    # كانت تُحمَّل حيثما يقع الحجب — وهما سؤالان مختلفان. فوصلت «الخاتمة»
+    # مخرَجٌ يحمل `t = 3.738`، وسياستها تمنع الإحصاء أصلًا؛ فاستنتج النموذج
+    # الدلالة من قيمة (ت) بنفسه، ورفضها المدقّق في كل محاولة. وهو ممنوعٌ
+    # صراحةً: النموذج لا يحسب الدلالة.
+    #
+    # فالقسم الذي لا يجوز أن يحمل إحصاءً لا تُرسل إليه أرقام يستنتج منها.
+    spec = POLICIES.get(section_key)
     outputs = ()
-    if section_key in REDACT_STATISTICS_IN:
+    if spec is not None and spec.allows_statistics:
         outputs = await eligible_outputs(session, tenant_id=research.tenant_id,
                                          project_id=research.project_id)
 
