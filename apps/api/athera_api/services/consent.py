@@ -300,3 +300,123 @@ async def record_decision(
         request_id=request_id,
     )
     return row
+
+
+# ══════════ S5E — إذن صياغة المخطوطة (MDC2) ══════════
+#
+# **وصفٌ لا تكرار:** الصفّ واحد لكل (مخطوطة، بصمة) لا لكل مخطوطة. فقسمان من
+# مخطوطة واحدة لهما سياقان مختلفان وبصمتان مختلفتان — وإذنٌ يُعطى لصياغة
+# المنهجية لا يصلح لصياغة النتائج، ولا يجوز أن يمحوه.
+
+
+async def _drafting_row(session: AsyncSession, *, tenant_id: uuid.UUID,
+                        manuscript_id: uuid.UUID,
+                        context_fingerprint: str | None = None) -> Approval | None:
+    query = select(Approval).where(
+        Approval.tenant_id == tenant_id,
+        Approval.object_type == DRAFTING_OBJECT_TYPE,
+        Approval.object_id == manuscript_id,
+    )
+    if context_fingerprint is not None:
+        query = query.where(Approval.context_fingerprint == context_fingerprint)
+    return (
+        await session.execute(query.order_by(Approval.created_at.desc()).limit(1))
+    ).scalar_one_or_none()
+
+
+async def drafting_state(session: AsyncSession, *, tenant_id: uuid.UUID,
+                         manuscript_id: uuid.UUID, context_fingerprint: str) -> str:
+    """`granted` أو `declined` أو `stale` أو `absent` — لهذا السياق بعينه."""
+    exact = await _drafting_row(session, tenant_id=tenant_id, manuscript_id=manuscript_id,
+                                context_fingerprint=context_fingerprint)
+    if exact is not None and exact.status == "approved":
+        return GRANTED
+
+    latest = await _drafting_row(session, tenant_id=tenant_id, manuscript_id=manuscript_id)
+    if latest is None:
+        return ABSENT
+    if latest.status == "rejected":
+        return DECLINED
+    # أُذن لسياق آخر — أدلةٌ تغيّرت أو قسمٌ آخر. ليس رفضًا، وليس إذنًا لهذا.
+    return STALE if latest.status == "approved" else ABSENT
+
+
+async def drafting_authorization(
+    session: AsyncSession, *, tenant_id: uuid.UUID, manuscript_id: uuid.UUID,
+    context_fingerprint: str,
+) -> ExternalProcessingGrant | None:
+    """إذنٌ لنداء صياغة واحد — بمطابقة بصمة تامة لا تقريبية."""
+    row = await _drafting_row(session, tenant_id=tenant_id, manuscript_id=manuscript_id,
+                              context_fingerprint=context_fingerprint)
+    if row is None or row.status != "approved":
+        return None
+    if row.context_fingerprint != context_fingerprint:
+        return None
+    return ExternalProcessingGrant(
+        capability=DRAFTING_CAPABILITY, file_id=manuscript_id, approval_id=row.id,
+        decided_by=row.decided_by, decided_at=row.decided_at,
+        max_classification=CAPABILITY_CEILING[DRAFTING_CAPABILITY],
+        context_fingerprint=context_fingerprint,
+    )
+
+
+async def record_drafting_decision(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    manuscript_id: uuid.UUID,
+    section_key: str,
+    actor_user_id: uuid.UUID,
+    granted: bool,
+    provider: str,
+    model: str | None,
+    context_fingerprint: str,
+    evidence_count: int,
+    revocation: bool = False,
+    request_id: str | None = None,
+) -> Approval:
+    """يسجّل قرار الباحث في إرسال أدلة قسمٍ لصياغته."""
+    now = dt.datetime.now(dt.UTC)
+    row = await _drafting_row(session, tenant_id=tenant_id, manuscript_id=manuscript_id,
+                              context_fingerprint=context_fingerprint)
+    before = row.status if row is not None else None
+
+    if row is None:
+        row = Approval(
+            tenant_id=tenant_id, gate=DRAFTING_GATE, object_type=DRAFTING_OBJECT_TYPE,
+            object_id=manuscript_id, requested_by=actor_user_id,
+        )
+        session.add(row)
+
+    row.status = "approved" if granted else "rejected"
+    row.decided_by = actor_user_id
+    row.decided_at = now
+    row.context_fingerprint = context_fingerprint if granted else None
+    row.reason = (
+        "drafting consent revoked by researcher" if revocation
+        else (f"researcher authorized external AI drafting of section {section_key}"
+              if granted else "researcher declined external AI manuscript drafting")
+    )
+    await session.flush()
+
+    await audit.record(
+        session, tenant_id=tenant_id,
+        action="consent.manuscript_drafting_revoked" if revocation
+        else ("consent.manuscript_drafting_granted" if granted
+              else "consent.manuscript_drafting_declined"),
+        object_type="manuscript", object_id=manuscript_id,
+        actor_user_id=actor_user_id, approval_id=row.id,
+        state_before={"status": before},
+        state_after={
+            "status": row.status,
+            "capability": DRAFTING_CAPABILITY,
+            "max_classification": CAPABILITY_CEILING[DRAFTING_CAPABILITY],
+            "provider": provider, "model": model,
+            "section_key": section_key,
+            # بصمةٌ وعدد — لا نصّ دليل واحد ولا سطر من المسودة.
+            "context_fingerprint": context_fingerprint,
+            "evidence_count": evidence_count,
+        },
+        reason=row.reason, request_id=request_id,
+    )
+    return row

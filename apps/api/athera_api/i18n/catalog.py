@@ -48,6 +48,46 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "en": "Service not ready: the database configuration does not satisfy the "
               "tenant-isolation requirement.",
     },
+    "publishing.project_not_found": {
+        "ar": "المشروع غير موجود أو خارج نطاق صلاحيتك.",
+        "en": "Project not found or outside your scope.",
+    },
+    "drafting.unknown_section": {
+        "ar": "قسم غير معروف في بنية المخطوطة.",
+        "en": "Unknown manuscript section.",
+    },
+    "drafting.section_not_enabled": {
+        "ar": "صياغة هذا القسم لم تُفعَّل بعد — المنهجية أولًا.",
+        "en": "Drafting this section is not enabled yet — Methods comes first.",
+    },
+    "drafting.manuscript_not_bound": {
+        "ar": "المخطوطة غير مرتبطة بفرصة نشر مختارة.",
+        "en": "This manuscript is not bound to a selected publication opportunity.",
+    },
+    "drafting.insufficient_evidence": {
+        "ar": "لا توجد معرفة موثقة كافية لكتابة هذا القسم.",
+        "en": "There is not enough verified knowledge to draft this section.",
+    },
+    "drafting.consent_required": {
+        "ar": "صياغة المخطوطة تحتاج إذنًا صريحًا منك — وإذن التخطيط لا يكفي.",
+        "en": "Manuscript drafting needs your explicit consent; planning consent is not enough.",
+    },
+    "drafting.context_changed": {
+        "ar": "تغيّرت الأدلة منذ عرض الشاشة — راجعها ثم قرّر.",
+        "en": "The evidence changed since this screen was shown — review it, then decide.",
+    },
+    "drafting.section_approved": {
+        "ar": "هذا القسم معتمَد — إعادة الصياغة تحتاج طلب تعديل صريحًا.",
+        "en": "This section is approved; regenerating it needs an explicit revision request.",
+    },
+    "drafting.section_not_drafted": {
+        "ar": "لم تُكتب مسودة لهذا القسم بعد.",
+        "en": "No draft exists for this section yet.",
+    },
+    "drafting.generation_failed": {
+        "ar": "تعذّر إنتاج المسودة — لم يُحفظ نصّ ناقص.",
+        "en": "The draft could not be produced; no partial text was saved.",
+    },
     "tenant.context_missing": {
         "ar": "لم يُحدَّد سياق المستأجر للطلب.",
         "en": "No tenant context was resolved for this request.",
