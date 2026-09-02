@@ -157,7 +157,8 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
     # ── معاملة (1): تشغيلة مرئية قبل أي عمل قد يسقط ──
     async with session_maker() as session:
         record = (
-            await session.execute(select(File).where(File.id == file_id))
+            await session.execute(select(File).where(File.id == file_id,
+                                                            File.tenant_id == tenant_id))
         ).scalar_one_or_none()
         if record is None:
             logger.warning("document_intelligence: file %s not visible to tenant %s",
@@ -225,7 +226,8 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
         logger.exception("document_intelligence: run %s failed on file %s", run_id, file_id)
         async with session_maker() as session:
             failed_run = (
-                await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+                await session.execute(select(ExtractionRun).where(
+                    ExtractionRun.id == run_id, ExtractionRun.tenant_id == tenant_id))
             ).scalar_one_or_none()
             if failed_run is not None:
                 failed_run.status = Status.EXTRACTION_FAILED.value
@@ -289,7 +291,8 @@ async def upload_thesis(
 
 async def _guard(session: AsyncSession, principal: Principal, thesis_id: uuid.UUID) -> Thesis:
     thesis = (
-        await session.execute(select(Thesis).where(Thesis.id == thesis_id))
+        await session.execute(select(Thesis).where(
+            Thesis.id == thesis_id, Thesis.tenant_id == principal.tenant_id))
     ).scalar_one_or_none()
     if thesis is None:
         raise NotFound("thesis.not_found")
@@ -588,7 +591,9 @@ async def decide(
     المسار هو تعديل القيمة قبل الاعتماد لا تجاوز التحقق منه.
     """
     row = (
-        await session.execute(select(FactCandidate).where(FactCandidate.id == candidate_id))
+        await session.execute(select(FactCandidate).where(
+            FactCandidate.id == candidate_id,
+            FactCandidate.tenant_id == principal.tenant_id))
     ).scalar_one_or_none()
     if row is None:
         raise NotFound("thesis.candidate_not_found")

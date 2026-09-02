@@ -165,7 +165,8 @@ async def prepare(
     run = None
     if run_id is not None:
         run = (
-            await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+            await session.execute(select(ExtractionRun).where(
+                ExtractionRun.id == run_id, ExtractionRun.tenant_id == tenant_id))
         ).scalar_one_or_none()
     if run is None:
         run = ExtractionRun(
@@ -261,7 +262,8 @@ async def absorb(
     spec_by_key = {k: f for k in plan.field_keys
                    for f in MODEL_FIELDS if f.key == k}
     run = (
-        await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+        await session.execute(select(ExtractionRun).where(
+            ExtractionRun.id == run_id, ExtractionRun.tenant_id == tenant_id))
     ).scalar_one()
 
     accepted = rejected = 0
@@ -313,11 +315,13 @@ async def absorb(
 
 
 async def finalize(
-    session: AsyncSession, *, run_id: uuid.UUID, failed: list[str],
+    session: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID,
+    failed: list[str],
 ) -> ExtractionRun:
     """إغلاق التشغيلة — معاملة قصيرة أخيرة."""
     run = (
-        await session.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+        await session.execute(select(ExtractionRun).where(
+            ExtractionRun.id == run_id, ExtractionRun.tenant_id == tenant_id))
     ).scalar_one()
     run.status = Status.AWAITING_REVIEW.value
     run.finished_at = dt.datetime.now(dt.UTC)
@@ -357,7 +361,8 @@ async def run_extraction(
     """
     async with session_maker() as session:
         record = (
-            await session.execute(select(File).where(File.id == file_id))
+            await session.execute(select(File).where(
+                File.id == file_id, File.tenant_id == tenant_id))
         ).scalar_one()
         prepared = await prepare(
             session, tenant_id=tenant_id, actor_user_id=actor_user_id,
@@ -401,7 +406,8 @@ async def run_extraction(
         attempted |= missing
 
     async with session_maker() as session:
-        run = await finalize(session, run_id=prepared.run_id, failed=failed)
+        run = await finalize(session, tenant_id=tenant_id,
+                             run_id=prepared.run_id, failed=failed)
         status = Status(run.status)
 
     return PipelineResult(prepared.run_id, status, prepared.chunks, candidates,

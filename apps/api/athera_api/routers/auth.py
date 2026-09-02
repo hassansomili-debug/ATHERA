@@ -6,7 +6,7 @@ import datetime as dt
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from ..config import get_settings
 from ..db import system_session, tenant_session
@@ -36,6 +36,26 @@ from ..services import audit, rbac
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 settings = get_settings()
+
+
+async def _bind_tenant(session, tenant_id: uuid.UUID,
+                       actor_id: uuid.UUID | None = None) -> None:
+    """يثبّت سياق المستأجر لبقية المعاملة **حالما يُعرف**.
+
+    مسار الهوية يبدأ بلا سياق — فالمستأجر نفسه هو ما نبحث عنه. لكن ما إن
+    يُعرف حتى تصير كل قراءة وكتابة بعده مملوكةً له: العضوية والأدوار ورموز
+    التجديد وسجل التدقيق. فيُضبط هنا، وتجري بقية المعاملة تحت RLS كاملةً
+    بلا استثناء ولا إرخاء سياسة.
+
+    وهو المبدأ الذي أقرّه الترحيل 0014 لإقلاع المستأجر — وينطبق على الدخول
+    بحرفه. و`set_config(..., true)` محلّي بالمعاملة فلا يتسرّب إلى طلبٍ
+    لاحق عبر اتصال معاد استخدامه من التجمّع.
+    """
+    await session.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)})
+    if actor_id is not None:
+        await session.execute(
+            text("SELECT set_config('app.actor_id', :aid, true)"), {"aid": str(actor_id)})
 
 
 async def _issue_pair(session, user: User, tenant_id: uuid.UUID, roles: list[str],
@@ -79,6 +99,10 @@ async def register(payload: RegisterRequest, locale: str = Depends(get_locale)) 
             )
             session.add(tenant)
             await session.flush()
+        # مستأجرٌ قائم أو جديد — وفي الحالتين يصير سياق بقية المعاملة.
+        # (المشغّل يضبطه للجديد؛ والقائم لم يكن يضبطه أحد، فتسقط كتابة
+        #  الأدوار والعضوية وسجل التدقيق تحت RLS.)
+        await _bind_tenant(session, tenant.id)
 
         user = User(
             email=payload.email.lower(),
@@ -125,19 +149,34 @@ async def login(payload: LoginRequest, locale: str = Depends(get_locale)) -> Tok
         if user is None or not user.is_active or not verify_password(user.password_hash, payload.password):
             raise Unauthorized("auth.invalid_credentials")
 
-        membership_q = select(Membership, Role).join(Role, Role.id == Membership.role_id).where(
-            Membership.user_id == user.id
+        # **مستأجر هذا المستخدم — بدالة ضيّقة تعيد معرّفًا لا صفًّا** (0018).
+        #
+        # `memberships` و`roles` مملوكان لمستأجر وسياستهما صارمة، والسياق
+        # هنا لم يُحدَّد بعد لأن المستأجر هو ما نبحث عنه. وقراءتهما مباشرةً
+        # تعيد صفر صفوف تحت الدور الصحيح — وهو ما أوقف الدخول كليًّا حين
+        # صُحّح رابط الإنتاج. فالسؤال الوحيد المستثنى هو «أي مستأجر؟».
+        tenant_id = await session.scalar(
+            text("SELECT app_login_tenant(:uid, :slug)"),
+            {"uid": str(user.id), "slug": payload.tenant_slug or None},
         )
-        if payload.tenant_slug:
-            membership_q = membership_q.join(Tenant, Tenant.id == Membership.tenant_id).where(
-                Tenant.slug == payload.tenant_slug
+        if tenant_id is None:
+            raise Unauthorized("auth.invalid_credentials")
+        await _bind_tenant(session, tenant_id, user.id)
+
+        # وما بعدها تحت RLS كاملةً — بفلترة صريحة أيضًا، طبقتين لا واحدة.
+        rows = (
+            await session.execute(
+                select(Membership, Role)
+                .join(Role, Role.id == Membership.role_id)
+                .where(Membership.user_id == user.id,
+                       Membership.tenant_id == tenant_id,
+                       Role.tenant_id == tenant_id)
             )
-        rows = (await session.execute(membership_q)).all()
+        ).all()
         if not rows:
             raise Unauthorized("auth.invalid_credentials")
 
-        tenant_id = rows[0][0].tenant_id
-        roles = [row[1].key for row in rows if row[0].tenant_id == tenant_id]
+        roles = [row[1].key for row in rows]
 
         factor = (
             await session.execute(
@@ -175,8 +214,18 @@ async def login(payload: LoginRequest, locale: str = Depends(get_locale)) -> Tok
 async def refresh(payload: RefreshRequest) -> TokenPair:
     token_hash = hash_refresh_token(payload.refresh_token)
     async with system_session() as session:
+        # `refresh_tokens` مملوك لمستأجر — ولا يُعرف مستأجره إلا منه (0018).
+        owner_tenant = await session.scalar(
+            text("SELECT app_refresh_token_tenant(:h)"), {"h": token_hash})
+        if owner_tenant is None:
+            raise Unauthorized("auth.token_expired")
+        await _bind_tenant(session, owner_tenant)
+
         record = (
-            await session.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+            await session.execute(
+                select(RefreshToken).where(RefreshToken.token_hash == token_hash,
+                                           RefreshToken.tenant_id == owner_tenant)
+            )
         ).scalar_one_or_none()
         now = dt.datetime.now(dt.UTC)
         if record is None or record.revoked_at is not None or record.expires_at <= now:

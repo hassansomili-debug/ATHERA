@@ -28,3 +28,6 @@ build/
 
 # ناتج tsc التزايدي — يُولَّد عند كل `npm run typecheck`
 *.tsbuildinfo
+
+# بيئة افتراضية محلية للتحقق | local verification venv
+.venv*

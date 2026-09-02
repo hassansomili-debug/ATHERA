@@ -31,6 +31,15 @@ jobs:
       # تحويلها إلى «مرفوض» إتلافُ قرار بشري. فالعطب في عزل التدريب لا في
       # الحارس، وإصلاحه بإضعاف الحارس كان سيبدّد الضمان الذي وُجد لأجله.
       MIGRATION_DRILL_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera_migration
+      # دورُ اختبارٍ **يتجاوز RLS عمدًا** — في قاعدة الاختبار وحدها.
+      #
+      # كل الاختبارات كانت تعمل بـ`athera_app` الذي لا يتجاوز، فكانت القاعدة
+      # ترشّح نيابةً عن التطبيق وتخفي أن التطبيق لا يرشّح. وحين اتّصل الإنتاج
+      # بدورٍ متجاوز سقطت الطبقة الوحيدة ولم يكن خلفها شيء. فهذا الدور يسأل
+      # السؤال الذي لم يُسأل: لو سقطت القاعدة، هل يمنع التطبيق؟
+      #
+      # كلمته قيمة CI لا سرّ إنتاج، ولا تُستعمل بيانات اعتماد إنتاجية بحال.
+      ATHERA_TEST_BYPASSRLS_URL: postgresql+asyncpg://athera_test_bypass:athera_test_bypass_pw@localhost:5432/athera
       JWT_SECRET: ci-only-not-a-real-secret
       MODEL_PROVIDER: "null"
     steps:
@@ -50,6 +59,24 @@ jobs:
       - run: pip install -e "apps/api[dev,providers]"
       - name: Migrate (RLS + append-only audit)
         run: cd infra/db && alembic upgrade head
+      # يُنشأ **بعد** الترحيل: صلاحياته تأتي بعضوية `athera_app` لا بمنحٍ
+      # مكرّر، فيرث ما لدور التطبيق — بما فيه سجلّ التدقيق المقيَّد بالإضافة —
+      # ويضيف التجاوز وحده. فما يُختبر هو فرق طبقةٍ واحدة لا فرق صلاحيات.
+      - name: Create a BYPASSRLS test role (test database only)
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          psql -h localhost -U athera_owner -d athera -v ON_ERROR_STOP=1 \
+            -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'athera_test_bypass') THEN CREATE ROLE athera_test_bypass LOGIN PASSWORD 'athera_test_bypass_pw' BYPASSRLS; END IF; END \$\$;" \
+            -c "GRANT USAGE ON SCHEMA public TO athera_test_bypass" \
+            -c "GRANT athera_app TO athera_test_bypass"
+          # `boolean || text` يعطي 'true'/'false' لا 't'/'f' — وتلك الأخيرة
+          # طريقة **عرض** psql لعمود منطقي، لا قيمته النصّية.
+          posture=$(psql -h localhost -U athera_owner -d athera -tAc \
+            "SELECT rolsuper::text || '/' || rolbypassrls::text FROM pg_roles WHERE rolname='athera_test_bypass'")
+          echo "athera_test_bypass rolsuper/rolbypassrls: $posture"
+          test "$posture" = "false/true" || { echo "::error::the test role is not a plain BYPASSRLS role (got '$posture')"; exit 1; }
+
       - name: Lint
         run: cd apps/api && ruff check .
       - name: Architecture boundaries (§38.6.8 / ADR-0003)

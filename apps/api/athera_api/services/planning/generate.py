@@ -150,10 +150,11 @@ async def open_run(session, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
     return run.id
 
 
-async def mark_insufficient(session, *, run_id: uuid.UUID,
+async def mark_insufficient(session, *, tenant_id: uuid.UUID, run_id: uuid.UUID,
                             context: ResearchContext) -> None:
     run = (await session.execute(
-        select(PlanningRun).where(PlanningRun.id == run_id))).scalar_one()
+        select(PlanningRun).where(PlanningRun.id == run_id,
+                                  PlanningRun.tenant_id == tenant_id))).scalar_one()
     run.status = INSUFFICIENT
     run.finished_at = dt.datetime.now(dt.UTC)
     run.error = "insufficient verified evidence: " + ", ".join(context.missing_roles)
@@ -231,16 +232,19 @@ async def persist(
         created += 1
 
     run = (await session.execute(
-        select(PlanningRun).where(PlanningRun.id == run_id))).scalar_one()
+        select(PlanningRun).where(PlanningRun.id == run_id,
+                                  PlanningRun.tenant_id == tenant_id))).scalar_one()
     run.status = COMPLETED
     run.opportunities_proposed = created
     run.finished_at = dt.datetime.now(dt.UTC)
     return GenerationResult(run_id, COMPLETED, created, rejected_ungrounded, ())
 
 
-async def mark_failed(session, *, run_id: uuid.UUID, error: str) -> None:
+async def mark_failed(session, *, tenant_id: uuid.UUID, run_id: uuid.UUID,
+                      error: str) -> None:
     run = (await session.execute(
-        select(PlanningRun).where(PlanningRun.id == run_id))).scalar_one_or_none()
+        select(PlanningRun).where(PlanningRun.id == run_id,
+                                  PlanningRun.tenant_id == tenant_id))).scalar_one_or_none()
     if run is not None:
         run.status = FAILED
         run.error = error[:500]

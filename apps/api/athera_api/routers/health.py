@@ -1,11 +1,17 @@
+import logging
+
 from fastapi import APIRouter, Depends
 
 from ..config import get_settings
 from ..deps import get_locale
+from ..errors import AtheraError
 from ..providers.gateway import provider_readiness
 from ..schemas.common import Health
+from ..services import db_posture
 
 router = APIRouter(tags=["health"])
+
+logger = logging.getLogger("athera.health")
 
 
 def _health(status: str, locale: str) -> Health:
@@ -31,10 +37,18 @@ async def healthz(locale: str = Depends(get_locale)) -> Health:
 
 @router.get("/readyz", response_model=Health)
 async def readyz(locale: str = Depends(get_locale)) -> Health:
-    from sqlalchemy import text
+    """جاهزٌ يعني: القاعدة تُجيب **وعزل المستأجرين ينطبق على هذا الاتصال**.
 
+    فحص `SELECT 1` وحده كان يقول «جاهز» بينما الرابط يتصل بدورٍ يتجاوز RLS
+    — وهو بالضبط ما وقع في الإنتاج. والاتصال السليم ليس جهوزية إن كان يبطل
+    طبقة العزل: عطبٌ صامت أسوأ من عطبٍ معلن.
+    """
     from ..db import engine
 
-    async with engine.connect() as conn:
-        await conn.execute(text("SELECT 1"))
+    posture = await db_posture.inspect(engine)
+    if not posture.safe:
+        # يُسجَّل بالتفصيل داخليًّا، ويُردّ برمز واحد لا يفشي بنية القاعدة.
+        logger.error("readiness refused — %s: %s", db_posture.UNSAFE_REASON,
+                     posture.detail())
+        raise AtheraError("readiness.database_role_unsafe", status_code=503)
     return _health("ready", locale)

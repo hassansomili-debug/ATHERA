@@ -59,7 +59,8 @@ async def approve_candidate(
 ) -> ResearcherMemory:
     """اعتماد مرشّح → ذاكرة موثقة + provenance + تدقيق، في معاملة واحدة."""
     candidate = (
-        await session.execute(select(FactCandidate).where(FactCandidate.id == candidate_id))
+        await session.execute(select(FactCandidate).where(
+            FactCandidate.id == candidate_id, FactCandidate.tenant_id == tenant_id))
     ).scalar_one_or_none()
     if candidate is None:
         raise NotFound("memory.candidate_not_found")
@@ -68,7 +69,9 @@ async def approve_candidate(
     # إعادة التحقق من التأصيل عند الاعتماد، لا عند الاستخراج فقط: المقطع قد
     # يكون تغيّر، والاعتماد هو اللحظة التي تكتسب فيها المعلومة صفة رسمية.
     chunk = (
-        await session.execute(select(DocumentChunk).where(DocumentChunk.id == candidate.chunk_id))
+        await session.execute(select(DocumentChunk).where(
+            DocumentChunk.id == candidate.chunk_id,
+            DocumentChunk.tenant_id == tenant_id))
     ).scalar_one_or_none()
     if chunk is None or not quote_is_grounded(candidate.quote, chunk.text):
         raise MemoryPromotionError("memory.quote_not_grounded", candidate_id=str(candidate_id))
@@ -171,7 +174,8 @@ async def reject_candidate(
 ) -> FactCandidate:
     """الرفض لا ينتج ذاكرة، لكنه يبقى مسجّلًا — الرفض معلومة أيضًا."""
     candidate = (
-        await session.execute(select(FactCandidate).where(FactCandidate.id == candidate_id))
+        await session.execute(select(FactCandidate).where(
+            FactCandidate.id == candidate_id, FactCandidate.tenant_id == tenant_id))
     ).scalar_one_or_none()
     if candidate is None:
         raise NotFound("memory.candidate_not_found")
@@ -226,7 +230,8 @@ async def mark_candidate_unknown(
     ولا تسمح بقلب حكمٍ قيل.
     """
     candidate = (
-        await session.execute(select(FactCandidate).where(FactCandidate.id == candidate_id))
+        await session.execute(select(FactCandidate).where(
+            FactCandidate.id == candidate_id, FactCandidate.tenant_id == tenant_id))
     ).scalar_one_or_none()
     if candidate is None:
         raise NotFound("memory.candidate_not_found")

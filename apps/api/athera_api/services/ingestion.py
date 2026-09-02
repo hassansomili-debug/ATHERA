@@ -46,7 +46,9 @@ async def ingest_file(
     extractor: Extractor | None = None,
     raw_bytes: bytes | None = None,
 ) -> tuple[ExtractionRun, list[FactCandidate]]:
-    record = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
+    record = (await session.execute(
+        select(File).where(File.id == file_id, File.tenant_id == tenant_id)
+    )).scalar_one_or_none()
     if record is None:
         raise NotFound("file.not_found")
     if record.status != "stored":
