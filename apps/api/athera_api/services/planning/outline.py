@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+from ..publishing.vocab import MANUSCRIPT_SECTIONS
 from .context import ResearchContext
 
 LITERATURE_PENDING_AR: Final = "مقارنة النتائج بالدراسات السابقة — بانتظار البحث العلمي"
@@ -20,11 +21,30 @@ LITERATURE_PENDING_EN: Final = "Comparison with prior studies — pending litera
 
 @dataclass(frozen=True, slots=True)
 class SectionSpec:
+    """مواصفة قسم — و`key` **من المفردات القانونية لا بجانبها**.
+
+    كان هذا المفتاح يُكتب هنا حرًّا، فأصدر الهيكل `methods` و`literature`
+    بينما `MANUSCRIPT_SECTIONS` تقول `method` و`literature_review`،
+    و`manuscript_sections.section_key` عليه قيدٌ بالثانية. فأول تحويل لهيكل
+    إلى أقسام مخطوطة كانت القاعدة سترفضه.
+
+    وهو صنف العطب نفسه الذي أنتج عوائق S5D الثلاثة: معرّفٌ يُكتب بجانب
+    سجلّه بدل أن يُشتقّ منه. والفحص هنا يُغلق الصنف **عند الاستيراد** لا عند
+    الاستعمال، فينكسر البناء لا الإنتاج.
+    """
+
     key: str
     title_ar: str
     title_en: str
     purpose_ar: str
     roles: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.key not in MANUSCRIPT_SECTIONS:
+            raise ValueError(
+                f"outline section key {self.key!r} is not in MANUSCRIPT_SECTIONS; "
+                "the manuscript vocabulary is the single authority for section keys"
+            )
 
 
 # الهيكل الافتراضي لورقة كمّية — ويُكيَّف بنوع المقالة.
@@ -37,10 +57,10 @@ DEFAULT_SECTIONS: Final[tuple[SectionSpec, ...]] = (
     SectionSpec("introduction", "المقدمة", "Introduction",
                 "تُقرّر المشكلة وتبرّر أهميتها وتنتهي بالسؤال.",
                 ("problem", "question", "objective")),
-    SectionSpec("literature", "الإطار النظري والأدبيات", "Literature and theory",
+    SectionSpec("literature_review", "الإطار النظري والأدبيات", "Literature and theory",
                 "يضع الدراسة في نظريتها — والمقارنة بالسابق بانتظار البحث.",
                 ("theory",)),
-    SectionSpec("methods", "المنهجية", "Methods",
+    SectionSpec("method", "المنهجية", "Methods",
                 "التصميم والمجتمع والعينة والأداة وإجراءات الصدق والثبات.",
                 ("methodology", "sample")),
     SectionSpec("results", "النتائج", "Results",
@@ -89,7 +109,7 @@ def build(context: ResearchContext, opportunity, *, article_type: str | None = N
         if spec.key == "discussion":
             # §28 — لا مراجع تُخترع.
             unsupported.append(LITERATURE_PENDING_AR)
-        if spec.key == "literature":
+        if spec.key == "literature_review":
             unsupported.append(LITERATURE_PENDING_AR)
         if spec.key == "title" and opportunity.working_title_ar:
             allowed.append(opportunity.working_title_ar)

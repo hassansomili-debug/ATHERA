@@ -166,15 +166,34 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             gate="G7",
         ),
         AgentSpec(
+            # الكاتب العلمي (S5E) — يصوغ قسمًا واحدًا من أدلةٍ **تُمرَّر إليه**.
+            #
+            # **ولا أدوات له**، كما `publication_planner`. كان يملك
+            # `memory.search_verified`، ولم يستدعه مسارٌ واحد في التطبيق قط
+            # (السجل والاختباران وحدهما يذكرانه). وبحثٌ حرّ في الذاكرة يعني
+            # سياقًا لا يعرفه أحد: يُخالف §15 (أقلّ سياق لازم للقسم)، ويُفلت
+            # من بصمة الإذن التي تُبنى من أدلة القسم بعينها.
+            #
+            # فسياقه يُجمَّع حتميًّا من خريطة أدلة القسم قبل النداء، ويُختم
+            # ببصمة — فما أُذن به هو ما أُرسل بالضبط.
             key="scientific_writer",
             name_ar="الكاتب العلمي", name_en="Scientific Writer",
-            responsibility_ar="صياغة الورقة من مصادر معتمدة",
-            responsibility_en="Draft the paper from approved sources",
-            constraint_ar="لا يكتب نتائج غير موجودة",
-            constraint_en="Never writes results that do not exist",
-            allowed_tools=frozenset({"memory.search_verified"}),
+            responsibility_ar="صياغة قسم واحد من المخطوطة من الأدلة الموثقة الممرَّرة إليه",
+            responsibility_en="Draft one manuscript section from the verified evidence passed to it",
+            constraint_ar=(
+                "لا يكتب نتيجة ولا رقمًا ولا إجراءً منهجيًّا لا يسنده دليل موثق أو "
+                "مخرَج تحليل؛ ولا يخترع مرجعًا ولا مؤلفًا ولا سنة؛ ولا يقوّي اللغة "
+                "السببية فوق ما يسمح به التصميم الموثق؛ وما لا دليل عليه يُعلَن ناقصًا"
+            ),
+            constraint_en=(
+                "Writes no result, number or method detail unsupported by verified evidence "
+                "or an analysis output; invents no reference, author or year; never strengthens "
+                "causal language beyond the verified design; and leaves what has no evidence "
+                "visibly missing"
+            ),
+            allowed_tools=frozenset(),
             guards=BASE_GUARDS | {"numbers_require_analysis_run"},
-            reads_memory=_VERIFIED_MEMORY,
+            reads_memory=frozenset(),
             gate="G9",
         ),
         AgentSpec(

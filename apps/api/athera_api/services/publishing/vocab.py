@@ -112,3 +112,21 @@ OPTIONAL_PACKAGE_ITEMS: Final[frozenset[str]] = frozenset({
 
 # حالات الرقعة المقترحة من المراجعة (§21).
 PATCH_STATUSES: Final[tuple[str, ...]] = ("proposed", "applied", "rejected")
+
+# ── S5E — حالات مراجعة القسم (§18) ──
+#
+# قرار الباحث في نصٍّ ولّده نموذج. ولا تُخلط بـ`manuscripts.status` التي تصف
+# دورة حياة الورقة كلها: قسمٌ معتمَد في مخطوطة ما زالت `draft` حالٌ طبيعية.
+SECTION_REVIEW_STATUSES: Final[dict[str, tuple[str, str]]] = {
+    "draft": ("مسودة", "Draft"),
+    "needs_review": ("بانتظار مراجعتك", "Awaiting your review"),
+    "approved": ("معتمَد", "Approved"),
+    "revision_requested": ("مطلوب تعديله", "Revision requested"),
+}
+
+# حالات لا تكون بلا فاعل ووقت — والقاعدة تفرضها في `ck_manuscript_sections_review_actor`.
+SECTION_DECIDED_STATUSES: Final[frozenset[str]] = frozenset({"approved", "revision_requested"})
+
+# مستوى سند الادعاء — **مفردات `claim_evidence_links` القائمة نفسها**،
+# فلا مفردتان لمعنى واحد.
+SUPPORT_LEVELS: Final[tuple[str, ...]] = ("direct", "partial", "contextual", "contradictory")
