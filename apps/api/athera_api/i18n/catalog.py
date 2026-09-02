@@ -88,6 +88,11 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "تعذّر إنتاج المسودة — لم يُحفظ نصّ ناقص.",
         "en": "The draft could not be produced; no partial text was saved.",
     },
+    "drafting.unsupported_content": {
+        "ar": "المسودة حُجبت: كانت ستُثبت واقعة لا يسندها دليل أو مخرَج تحليل.",
+        "en": "The draft was withheld: it would have asserted content with no verified "
+              "evidence or analysis output behind it.",
+    },
     "tenant.context_missing": {
         "ar": "لم يُحدَّد سياق المستأجر للطلب.",
         "en": "No tenant context was resolved for this request.",

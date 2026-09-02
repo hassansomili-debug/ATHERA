@@ -22,6 +22,7 @@ from ....models.publishing import (
     ManuscriptSection,
     ManuscriptSectionClaim,
 )
+from . import numbers
 from .contracts import SectionDraft
 
 INSTRUCTION: Final = (
@@ -136,9 +137,15 @@ async def persist(
                 support_level=drafted.support_level))
             memory_links += 1
         for output_id in outputs:
+            # §8 — المقتطف يُستخرج من نصّ الادعاء لا يكتبه النموذج، ويكون
+            # جزءًا منه فعلًا. فمقتطفٌ يخترعه النموذج يجعل السند غير قابل
+            # للفحص: يبقى مطابقًا لنفسه مهما قال النصّ.
+            hits = [h.excerpt for h in numbers.find(drafted.text_ar)
+                    if h.excerpt in numbers.normalise(drafted.text_ar)]
+            excerpt = hits[0] if hits else numbers.normalise(drafted.text_ar)[:500]
             session.add(ClaimAnalysisLink(
                 tenant_id=tenant_id, claim_id=claim.id, output_id=uuid.UUID(output_id),
-                statistic_excerpt=drafted.text_ar[:500]))
+                statistic_excerpt=excerpt))
             analysis_links += 1
 
     # الموروث يُزامَن للتوافق مع بوابة G9 القائمة — **وليس مرجعًا**.

@@ -19,6 +19,7 @@ from typing import Final
 
 from ...golden_thread import language
 from ..manuscript import _STATISTICS
+from . import numbers
 
 # مفردات منهجية لا يجوز ادّعاؤها بلا سند — وكلٌّ بصنفه فيُقال للباحث **أي**
 # تفصيل اختُلق لا «ثمة اختلاق».
@@ -58,6 +59,22 @@ _SAMPLE_NUMBER = re.compile(r"(?<![\d.])(\d{2,6})(?![\d.])")
 _YEARS = re.compile(r"^(?:1[89]|20)\d{2}$")
 
 # صيغ استشهاد — لا مرجع يُختلق والسجل مغلق (§23).
+# صيغ تفسيرية لا موضع لها في «النتائج» (§2) — التفسير للمناقشة.
+#
+# والنتائج وصفٌ لما لوحظ. وجملةٌ تفسّر «لماذا» تُقحم في القسم الوصفي ادّعاءً
+# لا يسنده قياس، ويقرؤه المحكِّم نتيجةً.
+_INTERPRETATION_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"(?:يُعزى|تُعزى|يمكن\s+تفسير|ويُفسَّر|مما\s+يدلّ?\s+على|"
+               r"مما\s+يشير\s+إلى|ويرجع\s+ذلك)"),
+    # الفاعل قد يتوسّط: «وتتفق **هذه النتيجة** مع ما توصّلت إليه…».
+    re.compile(r"(?:يتفق|تتفق|يختلف|تختلف)\s+(?:\S+\s+){0,3}مع\s+(?:ما\s+)?"
+               r"(?:توصّل|دراس|نتائج|الأدب)"),
+    re.compile(r"(?:نوصي|يُوصى|وتوصي\s+الدراسة|ويُقترح)"),
+    re.compile(r"\b(?:this\s+(?:suggests|implies|indicates\s+that)|"
+               r"consistent\s+with\s+(?:previous|prior)|we\s+recommend)\b",
+               re.IGNORECASE),
+)
+
 _CITATION_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     # الفاصلة العربية `،` كالفاصلة اللاتينية — و«(الزهراني، 2019)» استشهاد.
     re.compile(r"\(\s*[^()]{2,60}?[,،]\s*(?:19|20)\d{2}[a-z]?\s*\)"),
@@ -65,6 +82,10 @@ _CITATION_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\b[A-Z][a-z]+\s+(?:et\s+al\.|and\s+[A-Z][a-z]+)\s*\(\s*(?:19|20)\d{2}\s*\)"),
     re.compile(r"(?:وآخرون|وزملاؤه)\s*\(\s*(?:19|20)\d{2}\s*\)"),
 )
+
+
+# أقسامٌ وصفية: تقول ما لوحظ ولا تفسّره (§2).
+_DESCRIPTIVE_SECTIONS: Final[frozenset[str]] = frozenset({"results"})
 
 
 @dataclass(slots=True)
@@ -78,6 +99,25 @@ class DraftIssue:
     excerpt: str | None = None
     claim_index: int | None = None
     is_blocking: bool = True
+
+
+def _grounded_statistics(draft, context, known_output_ids: frozenset[str]) -> set[str]:
+    """القيم التي يسندها مخرَجٌ بعينه — **بعد التحقق من قيمتها فيه** (§7).
+
+    ولا يكفي أن يذكر النموذج معرّف مخرَج: يُتحقّق أن المعرّف أُرسل إليه، وأن
+    المخرَج يحمل هذه القيمة نفسها. فالمعرّف إشارةٌ لا سلطة.
+    """
+    grounded: set[str] = set()
+    for claim in draft.claims:
+        outputs = [context.output(o) for o in claim.analysis_output_ids
+                   if o in known_output_ids]
+        payloads = [o.payload for o in outputs if o is not None]
+        if not payloads:
+            continue
+        for hit in numbers.find(claim.text_ar):
+            if any(numbers.supports(hit, payload) for payload in payloads):
+                grounded.add(hit.excerpt)
+    return grounded
 
 
 def _evidence_blob(context) -> str:
@@ -124,18 +164,82 @@ def run(draft, context, *, known_memory_ids: frozenset[str],
                 "A claim is presented as fact with no verified evidence behind it.",
                 excerpt=claim.text_ar[:200], index=index)
 
-    # ── 2. رقمٌ إحصائي بلا مخرَج تحليل ──
+    # ── 2. رقمٌ إحصائي بلا مخرَج تحليل بعينه ──
     #
-    # وجودُ تشغيلة في القسم ليس سندًا (§20): السند أن يكون الرقم في مخرَج
-    # بعينه. والمنهجية لا يُتوقّع أن تحمل نتيجة أصلًا.
+    # وجودُ تشغيلة في القسم ليس سندًا (§20): السند أن تكون **هذه القيمة** في
+    # **ذلك المخرَج**. ولا تقريب: `0.047` و`0.05` ليستا واحدة.
+    grounded_values = _grounded_statistics(draft, context, known_output_ids)
+    for hit in numbers.find(text):
+        if hit.excerpt in grounded_values:
+            continue
+        if hit.is_bare_significance:
+            add("significance_without_analysis_output",
+                f"ادّعاء دلالة إحصائية بلا مخرَج تحليل يسنده: «{hit.excerpt}».",
+                f"A statistical-significance claim with no analysis output behind it: "
+                f"'{hit.excerpt}'.",
+                excerpt=hit.excerpt)
+        else:
+            add("statistic_without_analysis_output",
+                f"قيمة إحصائية ({hit.kind}) بلا مخرَج تحليل يسندها: «{hit.excerpt}».",
+                f"A statistic ({hit.kind}) with no analysis output behind it: "
+                f"'{hit.excerpt}'.",
+                excerpt=hit.excerpt)
+        break
+
+    # وأنماط `manuscript.evaluate()` القائمة تبقى حزامًا ثانيًا — لما يفوته
+    # المستخرِج. ومقتطفاتها تختلف طولًا عن مقتطفاته (`t(118) = 4` مقابل
+    # `t(118) = 4.21`)، فالمقابلة بالتداخل لا بالتطابق الحرفي؛ وإلا عُدّت
+    # قيمةٌ مسنَدة غيرَ مسنَدة لأن الحزامين يقتطعانها بطولين مختلفين.
+    def _already_grounded(found: str) -> bool:
+        return any(found in value or value in found for value in grounded_values)
+
     for pattern in _STATISTICS:
         match = pattern.search(text)
-        if match:
+        if match and not _already_grounded(match.group(0)):
             add("statistic_without_analysis_output",
                 f"قيمة إحصائية في المسودة بلا مخرَج تحليل يسندها: «{match.group(0)}».",
                 f"A statistic appears with no analysis output behind it: '{match.group(0)}'.",
                 excerpt=match.group(0))
             break
+
+    # ── 2ب. تفسيرٌ في قسمٍ وصفي ──
+    if section in _DESCRIPTIVE_SECTIONS:
+        for pattern in _INTERPRETATION_PATTERNS:
+            found = pattern.search(text)
+            if found:
+                add("interpretation_in_results",
+                    f"تفسير في قسم وصفي — موضعه المناقشة: «{found.group(0)}».",
+                    f"Interpretation inside a descriptive section; it belongs in the "
+                    f"discussion: '{found.group(0)}'.",
+                    excerpt=found.group(0))
+                break
+        # §2 — ادعاءات النتائج وقائع، لا مقترحات.
+        for index, claim in enumerate(draft.claims):
+            if claim.origin == "proposal":
+                add("proposal_in_results",
+                    "اقتراح معروضٌ نتيجةً — والنتائج وصفٌ لما لوحظ.",
+                    "A proposal presented as a result; Results describes what was observed.",
+                    excerpt=claim.text_ar[:200], index=index)
+                break
+
+    # ── 2ج. قيمةٌ تخالف المخرَج الذي رُبطت به ──
+    for index, claim in enumerate(draft.claims):
+        for output_id in claim.analysis_output_ids:
+            if output_id not in known_output_ids:
+                continue
+            output = context.output(output_id)
+            if output is None:
+                continue
+            mismatched = [h for h in numbers.find(claim.text_ar)
+                          if not h.is_bare_significance
+                          and not numbers.supports(h, output.payload)]
+            if mismatched:
+                add("statistic_value_mismatch",
+                    f"قيمة لا ترد في المخرَج المرتبط بها: «{mismatched[0].excerpt}».",
+                    f"A value that does not appear in the analysis output it is linked "
+                    f"to: '{mismatched[0].excerpt}'.",
+                    excerpt=mismatched[0].excerpt, index=index)
+                break
 
     # ── 3. تفصيل منهجي لا أثر له في الأدلة ──
     #
@@ -161,7 +265,13 @@ def run(draft, context, *, known_memory_ids: frozenset[str],
                 break
 
     # ── 4. رقمٌ يصف العينة ولا يرد في الأدلة ──
-    invented_numbers = sorted(_sample_numbers(text) - _sample_numbers(evidence))
+    #
+    # والقيم التي يسندها مخرَج تحليل تُستثنى: هي نتيجةٌ مسنَدة لا رقم عيّنة
+    # مخترَع، وحسابها مرتين كشفًا يُغرق الباحث بضجيج.
+    grounded_digits = {d for value in grounded_values
+                       for d in _sample_numbers(numbers.normalise(value))}
+    invented_numbers = sorted(
+        _sample_numbers(text) - _sample_numbers(evidence) - grounded_digits)
     if invented_numbers:
         add("unsupported_sample_number",
             f"رقم لا يرد في المادة الموثقة: «{invented_numbers[0]}».",
@@ -197,4 +307,23 @@ def _design_family(evidence: str) -> str | None:
     return _hint(evidence, _DESIGN_HINTS)
 
 
-__all__ = ["DraftIssue", "run"]
+# كشوفاتٌ لا يجوز أن يصير نصّها مخطوطة — ولو تحت «بانتظار المراجعة» (§25).
+#
+# فبقية الكشوفات تحذيرات على نصٍّ قائم يراه الباحث ويقرّر فيه؛ وهذه اختلاق:
+# رقمٌ لا مصدر له، أو قيمةٌ تخالف مصدرها، أو إسنادٌ إلى دليل لم يُرسل، أو
+# مرجعٌ لا وجود له. وتركها تُحفظ يجعل الاختلاق نصًّا يُقرأ.
+FABRICATION_ISSUES: Final[frozenset[str]] = frozenset({
+    "statistic_without_analysis_output",
+    "significance_without_analysis_output",
+    "statistic_value_mismatch",
+    "claim_references_unknown_evidence",
+    "fabricated_citation",
+    "unsupported_sample_number",
+})
+
+
+def fabrications(issues: list[DraftIssue]) -> list[DraftIssue]:
+    return [i for i in issues if i.issue_key in FABRICATION_ISSUES]
+
+
+__all__ = ["FABRICATION_ISSUES", "DraftIssue", "fabrications", "run"]
