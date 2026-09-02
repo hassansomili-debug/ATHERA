@@ -20,6 +20,7 @@ from typing import Final
 from ...golden_thread import language
 from ..manuscript import _STATISTICS
 from ..vocab import INTERNAL_MARKERS
+from .policy import POLICIES
 from . import numbers
 
 # مفردات منهجية لا يجوز ادّعاؤها بلا سند — وكلٌّ بصنفه فيُقال للباحث **أي**
@@ -89,8 +90,9 @@ _CITATION_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
-# أقسامٌ وصفية: تقول ما لوحظ ولا تفسّره (§2).
-_DESCRIPTIVE_SECTIONS: Final[frozenset[str]] = frozenset({"results"})
+# أقسامٌ وصفية: تقول ما لوحظ ولا تفسّره (§2) — **من السجلّ لا بجانبه**.
+_DESCRIPTIVE_SECTIONS: Final[frozenset[str]] = frozenset(
+    key for key, policy in POLICIES.items() if policy.descriptive_only)
 
 
 @dataclass(slots=True)

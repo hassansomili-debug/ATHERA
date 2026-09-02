@@ -40,11 +40,19 @@ def _principal(tenant):
 
 # ══════════ 1. القسم المفعَّل وحده، وبمفردته القانونية ══════════
 
-def test_only_the_deliberately_enabled_sections_are_open():
-    """المفعَّل يُعلَن بالاسم — فمرحلةٌ تفتح قسمًا تُرى في المراجعة."""
-    from athera_api.routers import manuscript_drafting as drafting
+def test_the_router_reads_enabled_sections_from_the_policy_registry():
+    """المفعَّل يُعلَن في **موضع واحد** — لا في المسار وحده.
 
-    assert drafting.ENABLED_SECTIONS == frozenset({"method", "results"})
+    فقسمٌ يُفعَّل بتعديل سياسته، ولا يُنسى مدقّقه ولا أدواره ولا حجب أرقامه.
+    """
+    from athera_api.routers import manuscript_drafting as drafting
+    from athera_api.services.publishing.drafting import policy
+
+    assert drafting.ENABLED_SECTIONS is policy.ENABLED_SECTIONS
+    # والمعلّق لبحث الأدبيات ليس مفعَّلًا — ولا يُكتب من ذاكرة نموذج.
+    assert not (policy.ENABLED_SECTIONS & policy.PENDING_SECTIONS)
+    assert "literature_review" in policy.PENDING_SECTIONS
+    assert "references" in policy.PENDING_SECTIONS
 
 
 def test_the_old_alias_is_refused_not_silently_accepted():
@@ -62,18 +70,25 @@ def test_a_canonical_but_disabled_section_is_refused_by_name():
     from athera_api.routers import manuscript_drafting as drafting
 
     with pytest.raises(AtheraError) as err:
-        drafting._require_enabled("discussion")
+        drafting._require_enabled("literature_review")
     assert err.value.code == "drafting.section_not_enabled"
+    # ويُقال السبب: معلّقٌ لبحثٍ لم يُفعَّل، لا مرفوضٌ بلا بيان.
+    assert err.value.context.get("reason")
 
 
 def test_the_drafting_roles_are_derived_from_the_canonical_outline():
     """أدوار القسم تُشتقّ من الهيكل، وتوسيعها معلَن لا صامت."""
     from athera_api.services.planning import outline
     from athera_api.services.publishing.drafting import context as ctx
+    from athera_api.services.publishing.drafting import policy
 
-    assert ctx.ROLES_BY_SECTION == {s.key: s.roles for s in outline.DEFAULT_SECTIONS}
+    outline_roles = {spec.key: spec.roles for spec in outline.DEFAULT_SECTIONS}
+    for key, spec in policy.POLICIES.items():
+        base = outline_roles.get(key, ())
+        assert set(base) <= set(spec.roles), f"{key} فقد دورًا من الهيكل"
+
     roles = ctx.roles_for("method")
-    assert set(outline.DEFAULT_SECTIONS[4].roles) <= set(roles)
+    assert set(outline_roles["method"]) <= set(roles)
     assert "result" not in roles, "أدلة النتائج لا تُرسل لصياغة المنهجية"
 
 

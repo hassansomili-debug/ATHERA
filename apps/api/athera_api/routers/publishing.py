@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
-from ..models.literature import Journal, JournalIndexingRecord
+from ..models.literature import Claim, Journal, JournalIndexingRecord
 from ..models.portfolio import ResearchProject
 from ..models.publishing import (
     JournalMatchRow,
@@ -25,6 +25,7 @@ from ..models.publishing import (
     JournalProfile,
     Manuscript,
     ManuscriptSection,
+    ManuscriptSectionClaim,
     ManuscriptVersion,
     ReviewerReportRow,
     ReviewPatch,
@@ -50,7 +51,7 @@ from ..schemas.publishing import (
     SubmissionPackageResponse,
 )
 from ..services import audit
-from ..services.publishing import journals, manuscript, review, vocab
+from ..services.publishing import consistency, journals, manuscript, review, vocab
 
 router = APIRouter(prefix="/api/v1", tags=["publishing"])
 
@@ -214,7 +215,22 @@ async def _readiness(
         )
     ).scalars().all()
     supported = supported or {}
-    return manuscript.evaluate([
+
+    # **الإسناد البنيوي هو المرجع** (S5E-A): `claim_ids` الموروثة تُجيب اليوم
+    # وتكذب غدًا. فالادعاءات المسنَدة تُقرأ من جدول الروابط لا من المصفوفة.
+    for row in rows:
+        links = (await session.execute(
+            select(Claim.id, Claim.status)
+            .join(ManuscriptSectionClaim, ManuscriptSectionClaim.claim_id == Claim.id)
+            .where(ManuscriptSectionClaim.section_id == row.id,
+                   ManuscriptSectionClaim.tenant_id == principal.tenant_id)
+        )).all()
+        if links:
+            row.claim_ids = [str(cid) for cid, _status in links]
+            supported.setdefault(row.section_key, set()).update(
+                str(cid) for cid, status in links if status == "supported")
+
+    result = manuscript.evaluate([
         manuscript.SectionState(
             section_key=row.section_key, text=row.text_ar or "",
             claim_ids=frozenset(row.claim_ids or []),
@@ -223,6 +239,19 @@ async def _readiness(
         )
         for row in rows
     ])
+
+    # §26 — والجاهزية تشمل اتساق الورقة كوحدة، لا سلامة أقسامها فرادى.
+    # قسمان سليمان وحدهما قد يتناقضان، ولا يراهما فحصُ القسم الواحد.
+    for issue in consistency.evaluate([
+        consistency.SectionText(section_key=row.section_key, text=row.text_ar or "",
+                                review_status=row.review_status)
+        for row in rows
+    ]):
+        result.issues.append(manuscript.ReadinessIssue(
+            section_key=issue.sections[0] if issue.sections else "manuscript",
+            issue_key=issue.issue_key, detail_ar=issue.detail_ar,
+            detail_en=issue.detail_en, excerpt=issue.excerpt))
+    return result
 
 
 @router.get("/manuscripts", response_model=list[ManuscriptResponse])
