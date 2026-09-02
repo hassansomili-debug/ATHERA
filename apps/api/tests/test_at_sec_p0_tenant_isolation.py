@@ -903,3 +903,150 @@ def test_no_rls_policy_was_relaxed_to_repair_authentication():
     assert "APP_CURRENT_TENANT() IS NULL" not in upper
     assert "REVOKE ALL ON FUNCTION" in body
     assert "GRANT EXECUTE ON FUNCTION" in body
+
+
+# ══════════ 6. فصل التطوير عن الإنتاج — الطبقة الثانية ══════════
+
+def test_the_target_classifier_reads_the_production_shape():
+    from athera_api.dbtarget import parse
+
+    target = parse(PRODUCTION_SHAPE)
+    assert target is not None
+    assert target.looks_managed and not target.is_local
+    assert target.managed_marker == "supabase.com"
+    assert target.carries_project_reference
+    assert target.describe() == "aws-0-ap-south-1.pooler.supabase.com/postgres"
+
+
+def test_the_target_classifier_reads_a_local_shape():
+    from athera_api.dbtarget import parse
+
+    target = parse(CI_SHAPE)
+    assert target is not None
+    assert target.is_local and not target.looks_managed
+    assert target.managed_marker is None
+    assert not target.carries_project_reference
+
+
+def test_an_unrecognised_host_is_treated_as_managed_not_local():
+    """يفشل مغلقًا: مضيفٌ لا نعرفه يُعامَل بعيدًا لا محليًّا."""
+    from athera_api.dbtarget import parse
+
+    target = parse("postgresql+asyncpg://u:p@db.example.org:5432/athera")
+    assert target is not None
+    assert target.looks_managed
+
+
+def test_the_classifier_describe_carries_no_credential():
+    from athera_api.dbtarget import parse
+
+    secret = "sup3r-secret-password"  # noqa: S105 — قيمة اختبار لا سرّ
+    target = parse(f"postgresql://postgres.abc:{secret}@x.pooler.supabase.com:6543/postgres")
+    assert target is not None
+    described = target.describe()
+    assert secret not in described
+    assert "postgres.abc" not in described
+
+
+def test_the_startup_guard_refuses_a_managed_target_outside_production():
+    """تشغيل الـAPI محليًّا بسياق صدفةٍ منسيّ لا يبلغ قاعدة الإنتاج.
+
+    حارس الاختبارات يحمي `pytest` وحده؛ وهذا يحمي كل عملية تفتح محرّكًا.
+    """
+    import inspect
+
+    from athera_api import db
+
+    source = inspect.getsource(db._refuse_production_outside_production)
+    assert 'app_env.strip().lower() == "production"' in source
+    assert "looks_managed" in source
+    assert "raise RuntimeError" in source
+
+    # ويُستدعى عند الاستيراد — لا يبقى دالةً لا ينادي عليها أحد.
+    module = inspect.getsource(db)
+    assert "\n_refuse_production_outside_production()\n" in module
+
+
+def test_the_startup_guard_is_reached_before_the_engine_is_created():
+    """الترتيب هو الحارس: الرفض قبل `create_async_engine` لا بعده."""
+    import inspect
+
+    from athera_api import db
+
+    source = inspect.getsource(db)
+    assert (source.index("\n_refuse_production_outside_production()\n")
+            < source.index("engine = create_async_engine"))
+
+
+def test_the_test_guard_and_the_startup_guard_share_one_classifier():
+    """جوابٌ واحد في موضع واحد — لا نسختان تفترقان بأول تعديل."""
+    import inspect
+
+    from athera_api import dbtarget
+    from tests import db_safety
+
+    assert db_safety.ALLOWED_HOSTS is dbtarget.LOCAL_HOSTS
+    assert db_safety.MANAGED_HOST_MARKERS is dbtarget.MANAGED_HOST_MARKERS
+    assert "parse_target" in inspect.getsource(db_safety.parse)
+
+
+# ══════════ 7. أمر ترحيل الإنتاج — نيّة موجبة وهدف مُتحقَّق منه ══════════
+
+def _migrate_script() -> str:
+    import pathlib
+
+    return (pathlib.Path(__file__).resolve().parents[3]
+            / "scripts" / "migrate_production.py").read_text()
+
+
+def test_the_production_migration_command_demands_a_typed_reference():
+    source = _migrate_script()
+    assert '"--confirm", required=True' in source
+    assert "args.confirm != reference" in source
+
+
+def test_the_production_migration_command_refuses_a_local_target():
+    """أمر الإنتاج لا يُشغَّل سهوًا على قاعدة تطوير."""
+    source = _migrate_script()
+    assert "if not target.looks_managed:" in source
+    assert "use `make migrate` for local development" in source
+
+
+def test_the_production_migration_command_refuses_the_runtime_role():
+    """اعتماد الترحيل لا يصير `DATABASE_URL` — ولا العكس."""
+    source = _migrate_script()
+    assert 'RUNTIME_ROLE = "athera_app"' in source
+    assert "== RUNTIME_ROLE" in source
+
+
+def test_the_migration_credential_file_is_never_loaded_implicitly():
+    """`Settings` تقرأ `.env` وحده — فملف الترحيل لا يُحمَّل بأي أمر عادي."""
+    import inspect
+
+    from athera_api.config import Settings
+
+    assert Settings.model_config["env_file"] == ".env"
+    assert ".env.production" not in inspect.getsource(Settings)
+
+    source = _migrate_script()
+    assert '.env.production.migration' in source
+
+
+def test_the_repository_template_documents_the_separation():
+    import pathlib
+
+    template = (pathlib.Path(__file__).resolve().parents[3] / ".env.example").read_text()
+    assert "APP_ENV=development" in template
+    assert "make migrate-prod" in template
+
+    # ولا هدف إنتاجي في القالب — يُفحص كل رابط لا يُبحث عن كلمة، فذكرُ
+    # مزوّدٍ في شرحٍ ليس اعتمادًا.
+    from athera_api.dbtarget import parse
+
+    for line in template.splitlines():
+        if line.strip().startswith("#") or "://" not in line:
+            continue
+        target = parse(line.partition("=")[2].strip())
+        if target is None or not target.host:
+            continue
+        assert target.is_local, f"the template points at {target.describe()}"
