@@ -293,7 +293,7 @@ async def research_brain(session: AsyncSession, *, tenant_id: uuid.UUID,
                FactCandidate.tenant_id == tenant_id,
                ProjectFile.tenant_id == tenant_id,
                ProjectFile.project_id == project_id,
-               ProjectFile.state == "active")
+               ProjectFile.state == ProjectFile.ACTIVE)
     )).all()
 
     by_role: dict[str, list[tuple[str, str]]] = {}
@@ -332,7 +332,7 @@ async def next_action(session: AsyncSession, *, tenant_id: uuid.UUID,
     files = (await session.execute(
         select(func.count(ProjectFile.id)).where(
             ProjectFile.tenant_id == tenant_id, ProjectFile.project_id == project_id,
-            ProjectFile.state == "active")
+            ProjectFile.state == ProjectFile.ACTIVE)
     )).scalar_one()
     if not files:
         return ("add_document", "أضف مستند بحثك لتبدأ",

@@ -56,7 +56,7 @@ async def _summary(session: AsyncSession, principal: Principal,
     files = (await session.execute(
         select(func.count(ProjectFile.id)).where(
             ProjectFile.tenant_id == tid, ProjectFile.project_id == row.id,
-            ProjectFile.state == "active")
+            ProjectFile.state == ProjectFile.ACTIVE)
     )).scalar_one()
     sources = (await session.execute(
         select(func.count(ProjectSource.id)).where(
@@ -75,7 +75,7 @@ async def _summary(session: AsyncSession, principal: Principal,
                FactCandidate.tenant_id == tid,
                ProjectFile.tenant_id == tid,
                ProjectFile.project_id == row.id,
-               ProjectFile.state == "active")
+               ProjectFile.state == ProjectFile.ACTIVE)
     )).scalar_one()
     manuscripts = (await session.execute(
         select(func.count(Manuscript.id)).where(
@@ -308,11 +308,11 @@ async def link_file(
             ProjectFile.file_id == file.id)
     )).scalar_one_or_none()
     if existing is not None:
-        existing.state = "active"
+        existing.state = ProjectFile.ACTIVE
         link = existing
     else:
         link = ProjectFile(tenant_id=principal.tenant_id, project_id=project_id,
-                           file_id=file.id, state="active",
+                           file_id=file.id, state=ProjectFile.ACTIVE,
                            added_by=principal.user_id)
         session.add(link)
     await session.flush()
@@ -382,12 +382,12 @@ async def unlink_file(
                           status_code=status.HTTP_409_CONFLICT,
                           summary=view.summary)
 
-    link.state = "removed"
+    link.state = ProjectFile.ARCHIVED
     await session.flush()
     await audit.record(
         session, tenant_id=principal.tenant_id, action="workspace.file_unlinked",
         object_type="project_file", object_id=link.id, actor_user_id=principal.user_id,
-        state_after={"state": "removed", "acknowledged": acknowledged,
+        state_after={"state": ProjectFile.ARCHIVED, "acknowledged": acknowledged,
                      "consequences": len(impact.consequences)},
         reason="removing a file from a project never deletes it from the library")
     return view
