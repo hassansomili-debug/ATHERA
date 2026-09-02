@@ -180,6 +180,21 @@ def parse_text(data: bytes) -> list[ParsedChunk]:
     return _build([(None, data.decode("utf-8", errors="replace"))])
 
 
+def can_parse(content_type: str, filename: str = "") -> bool:
+    """أيستطيع المفكِّك قراءة هذا النوع؟ — **يُسأل قبل الوعد لا بعده**.
+
+    والمكتبة تعرض «معالجة المستند» لما يمكن معالجته وحده؛ فزرٌّ يُعرض على
+    ملفٍ لا يُقرأ يَعِد ثم يخذل. والجواب من `parse` نفسه لا من قائمةٍ ثانية
+    تفترق عنه بأول نوعٍ يُضاف.
+    """
+    lowered = (filename or "").lower()
+    return (
+        content_type == "application/pdf" or lowered.endswith(".pdf")
+        or "wordprocessingml" in content_type or lowered.endswith(".docx")
+        or content_type.startswith("text/") or lowered.endswith((".txt", ".md"))
+    )
+
+
 def parse(data: bytes, content_type: str, filename: str = "") -> list[ParsedChunk]:
     lowered = filename.lower()
     if content_type == "application/pdf" or lowered.endswith(".pdf"):
