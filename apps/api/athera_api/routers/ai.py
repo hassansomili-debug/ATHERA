@@ -24,6 +24,7 @@ from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.files import File
 from ..models.research import FactCandidate, ResearcherMemory
+from ..brain.contracts import strip_markup
 from ..brain.orchestrator import Orchestrator
 from ..providers.gateway import provider_readiness
 from ..schemas.ai import AiAskRequest, AiAskResponse
@@ -252,7 +253,9 @@ async def ask(
     limitations.extend(answer.evidence_gaps)
 
     return AiAskResponse(
-        answer=(answer.answer_en or answer.answer_ar) if locale == "en" else answer.answer_ar,
+        answer=strip_markup(
+            (answer.answer_en or answer.answer_ar) if locale == "en"
+            else answer.answer_ar),
         status="ok",
         # بلا أدوات فلا استشهاد مسنود: اقتراح نموذج، لا دليل (§7.4).
         # §12 — إجابةٌ من معرفةٍ اعتمدها الباحث ليست اقتراح نموذج، وتُقال

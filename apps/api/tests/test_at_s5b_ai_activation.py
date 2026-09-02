@@ -672,3 +672,41 @@ def test_the_gate_stays_closed_when_posture_cannot_be_read():
     assert "modelEnabled: reachable && declared" in posture
     # ولا افتراض بالفتح عند الفشل.
     assert "modelEnabled: true" not in posture
+
+
+def test_contract_markup_never_reaches_the_researcher():
+    """**عطبٌ رآه المستخدم في الإنتاج.**
+
+    وصل ردٌّ صحيحٌ تمامًا ومعه ذيلٌ من وسوم العقد: `</answer_ar>` ثم
+    `<citations>[…]</citations>` ثم `</invoke>`. فالنموذج أعاد الحقول
+    **موسومةً لا مُهيكلة**، فمرّ الحقل الأول ومعه بقيّة النصّ.
+
+    والحقول مقروءة أصلًا من المخرَج المهيكل، فالوسم زائدٌ لا معلومة — وعرضُه
+    يجعل ردًّا سليمًا يبدو معطوبًا.
+    """
+    from athera_api.brain.contracts import strip_markup
+
+    leaked = (
+        "مشكلة الدراسة: تدنّي مهارات التفكير الناقد.</answer_ar>\n"
+        '<citations>[{"memory_id": "problem"}]</citations>\n'
+        "<evidence_gaps>[]</evidence_gaps>\n</invoke>"
+    )
+    assert strip_markup(leaked) == "مشكلة الدراسة: تدنّي مهارات التفكير الناقد."
+
+
+def test_a_clean_answer_is_left_untouched():
+    """والمنقّي لا يقصّ نصًّا سليمًا: علامة `<` وحدها ليست وسمًا."""
+    from athera_api.brain.contracts import strip_markup
+
+    for clean in ("جواب عادي بلا وسوم.",
+                  "بلغت النسبة 5 < 10 في المجموعة الضابطة.",
+                  "The answer mentions a < b and nothing else."):
+        assert strip_markup(clean) == clean
+
+
+def test_the_router_strips_before_returning():
+    import inspect
+
+    from athera_api.routers import ai
+
+    assert "strip_markup(" in inspect.getsource(ai.ask)
