@@ -27,54 +27,38 @@ from ....models.portfolio import ResearchProject
 from ...planning import outline as outline_service
 from ...planning.context import EvidenceItem, ResearchContext
 from . import numbers
+from .policy import POLICIES
 
-# الأدوار التي يخدمها كل قسم — **من الهيكل القانوني**.
+# **القواعد كلها من `policy.py`.** كانت موزّعة هنا وفي المسار وفي المدقّق،
+# فكان قارئٌ يسأل «ما الذي يجوز في المناقشة؟» يجمع الجواب من ثلاثة أمكنة.
+# والأسماء تبقى للتوافق، وتُشتقّ من السجلّ لا تُعاد كتابتها.
 ROLES_BY_SECTION: Final[dict[str, tuple[str, ...]]] = {
-    spec.key: spec.roles for spec in outline_service.DEFAULT_SECTIONS
+    key: policy.roles for key, policy in POLICIES.items()
 }
-
-# توسيعٌ **مُعلَن** لأدوار الصياغة، لا انحرافٌ صامت.
-#
-# الهيكل يضع `analysis` تحت «النتائج» لأن الهيكل يسأل: أي دليلٍ يُعرَض في أي
-# قسم. والصياغة تسأل سؤالًا آخر: أي دليلٍ يُذكر في أي قسم. وخطة التحليل
-# تُوصف في المنهجية ويُبلَّغ عن ناتجها في النتائج — فذكرها هنا وصفُ إجراء لا
-# عرضُ نتيجة. و`variable` كذلك: المتغيّرات تُعرَّف في المنهجية.
-#
-# ولا يُضاف دورٌ خارج مفردات الأدوار القائمة — يحرس ذلك اختبار.
 DRAFTING_EXTRA_ROLES: Final[dict[str, tuple[str, ...]]] = {
-    "method": ("analysis", "variable"),
-    # النتائج تحتاج حجم العينة لتقول «من بين كم» — وهي واقعة عيّنة لا نتيجة.
-    "results": ("sample",),
+    key: policy.extra_roles for key, policy in POLICIES.items() if policy.extra_roles
 }
-
-# عناصر الخيط الذهبي التي تخصّ كل قسم — ومفرداتها من `thread.ELEMENT_BY_ROLE`.
 THREAD_TYPES_BY_SECTION: Final[dict[str, tuple[str, ...]]] = {
-    "method": ("method", "analysis"),
-    # §23 — النتيجة تُقابَل بالسؤال الذي تجيبه، لا تُعرض معلّقة.
-    "results": ("question", "hypothesis", "result"),
+    key: policy.thread_types for key, policy in POLICIES.items() if policy.thread_types
 }
-
-# أدوارٌ لا يُكتب القسم بدون واحدٍ منها على الأقل.
 REQUIRED_ANY_BY_SECTION: Final[dict[str, tuple[str, ...]]] = {
-    "method": ("methodology", "sample"),
-    "results": ("result",),
+    key: policy.required_any for key, policy in POLICIES.items() if policy.required_any
 }
-
-# أقسامٌ تُحجب القيم الإحصائية من أدلتها قبل الإرسال (§21).
-#
-# ذاكرةٌ موثقة قد تحمل رقمًا لم يدخل محرّك التحليل. وإرسالها كما هي دعوةٌ
-# للنموذج أن يعيد رقمًا سيرفضه المدقّق — فيبدو الحارس تعسّفًا.
-REDACT_STATISTICS_IN: Final[frozenset[str]] = frozenset({"results"})
+REDACT_STATISTICS_IN: Final[frozenset[str]] = frozenset(
+    key for key, policy in POLICIES.items() if policy.redact_statistics)
 
 
 def roles_for(section_key: str) -> tuple[str, ...]:
-    """أدوار الأدلة التي تخدم قسمًا — مشتقّةً ومعلَنة."""
-    return tuple(dict.fromkeys(
-        ROLES_BY_SECTION.get(section_key, ()) + DRAFTING_EXTRA_ROLES.get(section_key, ())
-    ))
+    """أدوار الأدلة التي تخدم قسمًا — من سياسته."""
+    policy = POLICIES.get(section_key)
+    return policy.roles if policy else ()
 
 
 def purpose_of(section_key: str) -> str:
+    """غرض القسم — من سياسته، وإلا من هيكل S5D."""
+    policy = POLICIES.get(section_key)
+    if policy and policy.purpose_note_ar:
+        return policy.purpose_note_ar
     for spec in outline_service.DEFAULT_SECTIONS:
         if spec.key == section_key:
             return spec.purpose_ar

@@ -37,6 +37,10 @@ from ..providers.gateway import active_model, provider_readiness
 from ..schemas.drafting import (
     AnalysisOutputRef,
     ClaimView,
+    ManuscriptIssueView,
+    ManuscriptOverview,
+    SectionEditRequest,
+    SectionOverview,
     DraftIssueView,
     DraftingConsentDecision,
     DraftingContextResponse,
@@ -47,10 +51,11 @@ from ..schemas.drafting import (
 )
 from ..services import audit, consent
 from ..services.planning import context as research_context
-from ..services.publishing import vocab
+from ..services.publishing import consistency, vocab
 from ..services.publishing.drafting import checks as draft_checks
 from ..services.publishing.drafting import context as draft_context
 from ..services.publishing.drafting import generate
+from ..services.publishing.drafting import policy
 from ..services.publishing.drafting.contracts import SectionDraft
 from .publishing import manuscript_for_tenant
 
@@ -58,10 +63,9 @@ logger = logging.getLogger("athera.drafting")
 
 router = APIRouter(prefix="/api/v1/manuscripts", tags=["manuscript-drafting"])
 
-# **الأقسام المفعَّلة.** المنهجية أولًا (S5E-B): أدلتها موثقة وتأصيلها قابل
-# للفحص. ثم النتائج (S5E-C) بوضعٍ أشدّ: كل قيمة إحصائية تحتاج مخرَج تحليل
-# **بعينه**، وما لا يجده يبقى غير مكتوب.
-ENABLED_SECTIONS: frozenset[str] = frozenset({"method", "results"})
+# **الأقسام المفعَّلة تُقرأ من السجلّ** (`drafting/policy.py`) لا تُكتب هنا.
+# فقسمٌ يُفعَّل بتعديل سياسته وحدها، ولا يُنسى مدقّقه ولا أدواره.
+ENABLED_SECTIONS: frozenset[str] = policy.ENABLED_SECTIONS
 
 DRAFT_NOTICE_AR = (
     "مسودة بُنيت من معرفتك الموثقة — وليست نصًّا معتمدًا. اعتمادك وحده يجعلها كذلك."
@@ -103,9 +107,11 @@ def _require_enabled(section_key: str) -> None:
         raise AtheraError("drafting.unknown_section", status_code=422,
                           section=section_key)
     if section_key not in ENABLED_SECTIONS:
-        raise AtheraError("drafting.section_not_enabled", status_code=422,
-                          section=section_key,
-                          enabled=",".join(sorted(ENABLED_SECTIONS)))
+        pending = policy.policy_for(section_key)
+        raise AtheraError(
+            "drafting.section_not_enabled", status_code=422, section=section_key,
+            enabled=",".join(sorted(ENABLED_SECTIONS)),
+            reason=(pending.purpose_note_ar if pending else ""))
 
 
 def _maker(tenant_id: uuid.UUID, actor_id: uuid.UUID):
@@ -646,6 +652,142 @@ async def review_section(
         state_after={"review_status": section.review_status,
                      "section_key": section_key, "version": version.version_label},
         reason=(payload.reason or "")[:1000] or "researcher review decision",
+        request_id=principal.request_id,
+    )
+    return await read_section(manuscript_id, section_key, principal=principal,
+                              session=session)
+
+
+# ══════════ 7. نظرة واحدة على المخطوطة ══════════
+
+SECTION_TITLES_AR: dict[str, str] = {
+    "title": "العنوان", "abstract": "الملخّص", "introduction": "المقدمة",
+    "literature_review": "الإطار النظري والأدبيات", "theory": "النظرية",
+    "method": "المنهجية", "results": "النتائج", "discussion": "المناقشة",
+    "conclusion": "الخاتمة", "limitations": "حدود الدراسة",
+    "implications": "الدلالات والتوصيات", "references": "المراجع",
+}
+
+
+@router.get("/{manuscript_id}/overview", response_model=ManuscriptOverview)
+async def overview(
+    manuscript_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ManuscriptOverview:
+    """حال المخطوطة كوحدة — بأقسامها وكشوفاتها وما ينتظر البحث العلمي.
+
+    **ولا نسبة جاهزية واحدة.** رقمٌ مثل «٧٣٪ جاهزة» يقرؤه الباحث وعدًا،
+    ويخفي أن الباقي ليس عملًا متبقيًّا بل **عائقًا علميًّا**. فتُعرض الأعداد
+    والعوائق بأسمائها: كم قسمًا معتمَدًا، وكم كشفًا حاجبًا، وما الذي ينتظر
+    سجلّ الأدبيات.
+    """
+    record = await manuscript_for_tenant(session, principal, manuscript_id)
+    version = await _current_version(session, principal, manuscript_id)
+    rows = (await session.execute(
+        select(ManuscriptSection).where(
+            ManuscriptSection.version_id == version.id,
+            ManuscriptSection.tenant_id == principal.tenant_id)
+    )).scalars().all()
+    written = {row.section_key: row for row in rows}
+
+    views: list[SectionOverview] = []
+    for key in policy.ordered_sections():
+        spec = policy.POLICIES[key]
+        row = written.get(key)
+        claims = grounded = 0
+        if row is not None:
+            links = (await session.execute(
+                select(Claim)
+                .join(ManuscriptSectionClaim, ManuscriptSectionClaim.claim_id == Claim.id)
+                .where(ManuscriptSectionClaim.section_id == row.id,
+                       ManuscriptSectionClaim.tenant_id == principal.tenant_id)
+            )).scalars().all()
+            claims = len(links)
+            grounded = sum(1 for c in links if c.status == "supported")
+
+        # **حالٌ مشتقّة لا مخزَّنة** (§18): ما لا يحتاج عمودًا لا يأخذ عمودًا.
+        if not spec.enabled:
+            status = "pending_literature" if spec.literature == "blocked" else "disabled"
+        elif row is None:
+            status = "not_started"
+        else:
+            status = row.review_status
+        views.append(SectionOverview(
+            section_key=key, title_ar=SECTION_TITLES_AR.get(key, key),
+            enabled=spec.enabled, status=status,
+            review_status=row.review_status if row else None,
+            claims=claims, grounded_claims=grounded,
+            literature=spec.literature, purpose_ar=spec.purpose_note_ar))
+
+    found = consistency.evaluate([
+        consistency.SectionText(section_key=row.section_key, text=row.text_ar or "",
+                                review_status=row.review_status)
+        for row in rows])
+    reviewed = [row.reviewed_at for row in rows if row.reviewed_at]
+
+    return ManuscriptOverview(
+        manuscript_id=manuscript_id, title_ar=record.title_ar,
+        version_label=version.version_label, opportunity_id=record.opportunity_id,
+        outline_id=record.outline_id, sections=views,
+        approved_sections=sum(1 for v in views if v.status == "approved"),
+        enabled_sections=len(policy.ENABLED_SECTIONS),
+        pending_literature=sorted(
+            key for key, spec in policy.POLICIES.items() if spec.literature != "none"),
+        issues=[ManuscriptIssueView(
+            issue_key=i.issue_key, sections=list(i.sections),
+            severity="blocking" if i.is_blocking else "advisory",
+            message_ar=i.detail_ar, message_en=i.detail_en, excerpt=i.excerpt)
+            for i in found],
+        blocking=sum(1 for i in found if i.is_blocking),
+        last_reviewed_at=max(reviewed) if reviewed else None,
+        note=_t(principal.locale, DRAFT_NOTICE_AR, DRAFT_NOTICE_EN),
+    )
+
+
+# ══════════ 8. تحرير الباحث ══════════
+
+@router.put("/{manuscript_id}/sections/{section_key}", response_model=SectionView)
+async def edit_section(
+    manuscript_id: uuid.UUID,
+    section_key: str,
+    payload: SectionEditRequest,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> SectionView:
+    """يكتب الباحث نصّه — **ولا يرث تحقّق النصّ السابق** (§21).
+
+    نصٌّ حرّره إنسان ليس مسنَدًا لأن ما قبله كان مسنَدًا. فتُعاد المراجعة،
+    ويُعاد الفحص الحتمي على النصّ الجديد عند كل قراءة — فلو أضاف التحرير
+    رقمًا بلا مخرَج أو واقعةً بلا دليل، ظهر الكشف فورًا.
+
+    **والاعتماد يسقط.** قسمٌ اعتمده الباحث ثم غُيّر نصّه لم يعد النصّ الذي
+    اعتمده — واعتمادٌ يُنقل إلى نصٍّ آخر اعتمادٌ لم يقع.
+    """
+    _require_enabled(section_key)
+    await manuscript_for_tenant(session, principal, manuscript_id)
+    version = await _current_version(session, principal, manuscript_id)
+    section = await _section(session, principal, version.id, section_key)
+    if section is None:
+        raise NotFound("drafting.section_not_drafted")
+
+    before = section.review_status
+    section.text_ar = payload.text_ar
+    section.text_en = payload.text_en
+    section.review_status = "needs_review"
+    section.reviewed_by = None
+    section.reviewed_at = None
+    # والبصمة تسقط: النصّ لم يعد ناتج ذلك السياق.
+    section.drafting_context_fingerprint = None
+
+    await audit.record(
+        session, tenant_id=principal.tenant_id, action="manuscript.section_edited",
+        object_type="manuscript", object_id=manuscript_id,
+        actor_user_id=principal.user_id,
+        state_before={"review_status": before},
+        state_after={"review_status": "needs_review", "section_key": section_key,
+                     "version": version.version_label, "chars": len(payload.text_ar)},
+        reason="researcher edit; prior validation and approval do not carry over",
         request_id=principal.request_id,
     )
     return await read_section(manuscript_id, section_key, principal=principal,

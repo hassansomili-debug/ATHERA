@@ -96,11 +96,57 @@ class SectionView(BaseModel):
     note: str
 
 
+class SectionOverview(BaseModel):
+    section_key: str
+    title_ar: str
+    enabled: bool
+    status: str
+    review_status: str | None = None
+    claims: int = 0
+    grounded_claims: int = 0
+    blocking: int = 0
+    literature: str = "none"
+    purpose_ar: str = ""
+
+
+class ManuscriptIssueView(BaseModel):
+    issue_key: str
+    sections: list[str]
+    severity: str
+    message_ar: str
+    message_en: str
+    excerpt: str | None = None
+
+
+class ManuscriptOverview(BaseModel):
+    manuscript_id: uuid.UUID
+    title_ar: str
+    version_label: str
+    opportunity_id: uuid.UUID | None
+    outline_id: uuid.UUID | None
+    sections: list[SectionOverview]
+    approved_sections: int
+    enabled_sections: int
+    pending_literature: list[str]
+    issues: list[ManuscriptIssueView]
+    blocking: int
+    last_reviewed_at: dt.datetime | None
+    note: str
+
+
+class SectionEditRequest(BaseModel):
+    """تحرير الباحث لنصّ قسم — ولا يبقى تحقّقٌ قديم على نصٍّ تغيّر."""
+
+    text_ar: str = Field(min_length=1, max_length=20000)
+    text_en: str | None = Field(default=None, max_length=20000)
+
+
 class SectionReviewDecision(BaseModel):
     decision: str = Field(pattern="^(approve|request_revision)$")
     reason: str | None = Field(default=None, max_length=1000)
 
 
 __all__ = ["AnalysisOutputRef", "ClaimView", "DraftIssueView", "DraftingConsentDecision",
-           "DraftingContextResponse", "EvidenceRef",
-           "ManuscriptFromOpportunityRequest", "SectionReviewDecision", "SectionView"]
+           "DraftingContextResponse", "EvidenceRef", "ManuscriptFromOpportunityRequest",
+           "ManuscriptIssueView", "ManuscriptOverview", "SectionEditRequest",
+           "SectionOverview", "SectionReviewDecision", "SectionView"]
