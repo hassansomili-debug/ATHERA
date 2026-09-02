@@ -856,3 +856,106 @@ def test_a_grounded_decimal_is_not_reported_as_an_invented_sample_number():
                         context, known_memory_ids=context.memory_ids,
                         known_output_ids=context.output_ids)
     assert "unsupported_sample_number" not in _keys(issues), [i.excerpt for i in issues]
+
+
+# ══════════ 14. النسخة الجديدة تنقل إسناد ما لم يتغيّر ══════════
+
+def test_carrying_a_section_forward_also_carries_its_claim_links():
+    """**عطبٌ وجده الإنتاج.** القسم كان يُنسخ بنصّه وحاله ويترك روابطه خلفه.
+
+    فبقي `claim_ids` الموروث يقول إن للمنهجية المعتمَدة ادعاءاتها، بينما
+    `manuscript_section_claims` — وهو المرجع — فارغ. وذلك بعينه ما بُني ذلك
+    الجدول ليمنعه: مصفوفةٌ تُجيب اليوم وتكذب غدًا.
+
+    وفي الإنتاج: المنهجية في v2 لها رابطان، وفي v3 وv4 صفر — ونصّها لم يتغيّر.
+    """
+    import inspect
+
+    from athera_api.routers import manuscript_drafting as drafting
+
+    source = inspect.getsource(drafting._new_version)
+    assert "ManuscriptSectionClaim(" in source, "النسخة الجديدة لا تنقل الروابط"
+    assert "claim_id=link.claim_id" in source
+    # والادعاء لا يُستنسخ: كيانٌ مملوك للمشروع لا للنسخة.
+    # (نظرةُ خلفٍ سالبة كي لا يُطابَق `ManuscriptSectionClaim(`.)
+    import re as _re
+
+    assert not _re.search(r"(?<![A-Za-z])Claim\(", source), "الادعاء يُستنسخ بدل أن يُربط"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_approved_section_keeps_its_provenance_across_versions(two_tenants):
+    """المنهجية المعتمَدة تبقى نصًّا **وإسنادًا** بعد إعادة صياغة النتائج."""
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.deps import Principal
+    from athera_api.models.literature import Claim
+    from athera_api.models.publishing import (
+        Manuscript,
+        ManuscriptSection,
+        ManuscriptSectionClaim,
+        ManuscriptVersion,
+    )
+    from athera_api.routers import manuscript_drafting as drafting
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+    principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
+                          mfa_satisfied=True, locale="ar")
+
+    async with tenant_session(tid, uid) as session:
+        from athera_api.models.portfolio import ResearchProject
+
+        project = ResearchProject(tenant_id=tid, working_title_ar="مشروع")
+        session.add(project)
+        await session.flush()
+        record = Manuscript(tenant_id=tid, project_id=project.id, title_ar="مخطوطة",
+                            language="ar", status="draft")
+        session.add(record)
+        await session.flush()
+        old = ManuscriptVersion(tenant_id=tid, manuscript_id=record.id,
+                                version_label="v1", created_by=uid,
+                                change_reason_ar="الأولى")
+        session.add(old)
+        await session.flush()
+        section = ManuscriptSection(
+            tenant_id=tid, version_id=old.id, section_key="method",
+            text_ar="نصّ المنهجية المعتمَد", review_status="approved",
+            reviewed_by=uid, reviewed_at=func.now())
+        session.add(section)
+        claim = Claim(tenant_id=tid, project_id=project.id, text_ar="ادعاء منهجي",
+                      claim_type="empirical", status="supported")
+        session.add(claim)
+        await session.flush()
+        session.add(ManuscriptSectionClaim(tenant_id=tid, section_id=section.id,
+                                           claim_id=claim.id, ordinal=1))
+        await session.flush()
+        manuscript_id, old_id, claim_id = record.id, old.id, claim.id
+
+    async with tenant_session(tid, uid) as session:
+        record = (await session.execute(
+            select(Manuscript).where(Manuscript.id == manuscript_id))).scalar_one()
+        old = (await session.execute(
+            select(ManuscriptVersion).where(ManuscriptVersion.id == old_id))).scalar_one()
+        fresh = await drafting._new_version(session, principal, record, old,
+                                            reason="إعادة صياغة النتائج",
+                                            replace="results")
+
+    async with tenant_session(tid, uid) as session:
+        carried = (await session.execute(
+            select(ManuscriptSection).where(
+                ManuscriptSection.version_id == fresh.id,
+                ManuscriptSection.section_key == "method"))).scalar_one()
+        links = (await session.execute(
+            select(ManuscriptSectionClaim).where(
+                ManuscriptSectionClaim.section_id == carried.id))).scalars().all()
+        total_claims = (await session.execute(
+            select(func.count(Claim.id)).where(Claim.tenant_id == tid))).scalar_one()
+
+    assert carried.review_status == "approved"
+    assert carried.text_ar == "نصّ المنهجية المعتمَد"
+    assert [link.claim_id for link in links] == [claim_id], "ضاع إسناد قسمٍ معتمَد"
+    # والادعاء لم يُستنسخ — كيانٌ واحد مرتبط بنسختين.
+    assert total_claims == 1

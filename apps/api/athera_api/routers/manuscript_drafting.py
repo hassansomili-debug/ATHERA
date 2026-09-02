@@ -495,14 +495,34 @@ async def _new_version(session: AsyncSession, principal: Principal, record: Manu
     for row in rows:
         if row.section_key == replace:
             continue
-        session.add(ManuscriptSection(
+        carried = ManuscriptSection(
             tenant_id=principal.tenant_id, version_id=fresh.id,
             section_key=row.section_key, text_ar=row.text_ar, text_en=row.text_en,
             claim_ids=row.claim_ids, analysis_run_ids=row.analysis_run_ids,
             ordinal=row.ordinal, review_status=row.review_status,
             reviewed_by=row.reviewed_by, reviewed_at=row.reviewed_at,
             drafting_context_fingerprint=row.drafting_context_fingerprint,
-            generation_run_id=row.generation_run_id))
+            generation_run_id=row.generation_run_id)
+        session.add(carried)
+        await session.flush()
+
+        # **وروابط الادعاءات تُنقل معه.** كان القسم يُنسخ بنصّه وحاله ويترك
+        # روابطه البنيوية خلفه، فيبقى `claim_ids` الموروث يقول إن له ادعاءات
+        # بينما المرجع الحقيقي فارغ. وذلك بعينه ما بُني هذا الجدول ليمنعه:
+        # مصفوفةٌ تُجيب اليوم وتكذب غدًا.
+        #
+        # والادعاء كيانٌ مملوك للمشروع لا للنسخة، فربطه بصفّ القسم الجديد
+        # نقلُ إسنادٍ لا استنساخُ ادعاء.
+        links = (await session.execute(
+            select(ManuscriptSectionClaim).where(
+                ManuscriptSectionClaim.section_id == row.id,
+                ManuscriptSectionClaim.tenant_id == principal.tenant_id)
+            .order_by(ManuscriptSectionClaim.ordinal)
+        )).scalars().all()
+        for link in links:
+            session.add(ManuscriptSectionClaim(
+                tenant_id=principal.tenant_id, section_id=carried.id,
+                claim_id=link.claim_id, ordinal=link.ordinal))
     await session.flush()
     return fresh
 
