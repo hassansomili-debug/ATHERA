@@ -222,11 +222,30 @@ async def list_manuscripts(
             .where(Manuscript.tenant_id == principal.tenant_id)
             .order_by(Manuscript.created_at.desc()))
     ).scalars().all()
+
+    # **الوسم يُقرأ من النسخة، ولا يوجد على المخطوطة.**
+    #
+    # كان السطر `current_version_label=r.current_version_label` — وهي خاصية
+    # لا وجود لها على النموذج. فكان هذا المسار يرفع `AttributeError` لكل
+    # مستأجر يملك مخطوطة واحدة على الأقل، ويرد 500 على الشاشة التي تستدعيه.
+    # ولم يظهر لأن لا اختبار سرد مخطوطةً موجودة، ولا مستأجر إنتاجي أنشأ واحدة
+    # بعد. `Manuscript` يحمل `current_version_id`، والوسم في `ManuscriptVersion`.
+    labels: dict[uuid.UUID, str] = {}
+    if rows:
+        labels = dict((
+            await session.execute(
+                select(ManuscriptVersion.id, ManuscriptVersion.version_label)
+                .where(ManuscriptVersion.tenant_id == principal.tenant_id,
+                       ManuscriptVersion.manuscript_id.in_([r.id for r in rows]))
+            )
+        ).all())
+
     return [
         ManuscriptResponse(
             id=r.id, project_id=r.project_id, title=r.title_en or r.title_ar,
             title_ar=r.title_ar, language=r.language, status=r.status,
-            current_version_label=r.current_version_label, g9_approved_at=r.g9_approved_at,
+            current_version_label=labels.get(r.current_version_id),
+            g9_approved_at=r.g9_approved_at,
         )
         for r in rows
     ]

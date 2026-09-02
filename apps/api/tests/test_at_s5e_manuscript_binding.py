@@ -212,11 +212,16 @@ async def test_the_live_schema_carries_one_section_vocabulary(db_ready):
 
     from athera_api.db import system_session
 
+    # يُبحث عنه **بجدوله ومحتواه لا باسمٍ يُخمَّن**: اسم القيد تفصيلُ ترحيل،
+    # واختبارٌ يخمّنه يقيس اسمه لا سلوكه.
     async with system_session() as session:
-        definition = (await session.execute(text(
+        definitions = (await session.execute(text(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-            "WHERE conname = 'ck_manuscript_sections_section_key'"
-        ))).scalar_one()
+            "WHERE conrelid = 'manuscript_sections'::regclass AND contype = 'c'"
+        ))).scalars().all()
+    matches = [d for d in definitions if "section_key" in d]
+    assert matches, f"no CHECK constrains section_key: {definitions}"
+    definition = matches[0]
     assert "'method'" in definition
     assert "'literature_review'" in definition
     assert "'methods'" not in definition
@@ -327,3 +332,25 @@ def test_the_revision_history_is_manuscript_versions_not_a_second_table():
     # وتطبيق الرقعة يمرّ به: نسخةٌ جديدة تخلف سابقتها بسلسلة `supersedes`.
     source = inspect.getsource(publishing.apply_patch)
     assert "supersedes_id=old_version.id" in source
+
+
+def test_the_manuscript_listing_reads_the_version_label_from_the_version():
+    """`Manuscript` لا يحمل وسم النسخة — وقراءته منه ترفع خطأً على كل صفّ.
+
+    كان المسار يقرأ `r.current_version_label`، وهي خاصية لا وجود لها؛ فكان
+    يردّ 500 لكل مستأجر يملك مخطوطة. ولم يظهر لأن لا اختبار سرد مخطوطةً
+    موجودة — والفحص هنا بنيوي كي لا يعود بصمت.
+    """
+    import inspect
+
+    from athera_api.models.publishing import Manuscript
+    from athera_api.routers import publishing
+
+    import ast
+
+    assert not hasattr(Manuscript, "current_version_label")
+    # الشرح يذكر الخطأ ليقول إنه لا يقع — فيُفحص الكود لا التعليق.
+    tree = ast.parse(inspect.getsource(publishing.list_manuscripts).strip())
+    code = ast.unparse(tree)
+    assert "r.current_version_label" not in code
+    assert "ManuscriptVersion.version_label" in code
