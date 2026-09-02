@@ -279,6 +279,11 @@ async def research_brain(session: AsyncSession, *, tenant_id: uuid.UUID,
     # `project_id`، فأول صياغة قرأت ذاكرة المستأجر كلها — فكان دماغ بحثٍ
     # يعرض معرفةً استُخرجت من بحثٍ غيره، والباحث لا يرى الفرق. فيُقيَّد
     # بالسلسلة التي تثبت الانتماء: ملفات هذا البحث ← مرشّحوها ← ذاكرتها.
+    #
+    # **وحدُّ هذا الاشتقاق يُقال:** من مسارات §٧.٤ الأربعة، `upload` وحده
+    # يمرّ بملف. فذاكرةٌ رُقّيت من تشغيلة تحليل أو من قول الباحث لا تظهر
+    # هنا بعد، ويُعرض عنصرها `missing`. وهو نقصٌ يُرى فيُسدّ — أهون من
+    # عرض معرفةٍ من بحثٍ آخر يُبنى عليها وهي ليست منه.
     rows = (await session.execute(
         select(ResearcherMemory, FactCandidate.field_key, FactCandidate.status)
         .join(FactCandidate,

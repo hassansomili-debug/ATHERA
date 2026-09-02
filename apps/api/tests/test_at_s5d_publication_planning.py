@@ -1167,7 +1167,7 @@ def test_the_existing_namespaces_are_untouched():
     """§21 — `review` و`thesisReview` لم تُكتَبا فوقهما."""
     ar = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
     assert ar["review"]["title"] == "المراجعة والتحكيم"
-    assert ar["thesisReview"]["title"] == "راجع ما استخرجته أثيرا"
+    assert ar["thesisReview"]["title"] == "راجع ما استخرجته بُبريفا"
     assert "publicationPlanning" in ar and ar["publicationPlanning"]["title"] == "فرص النشر"
 
 
