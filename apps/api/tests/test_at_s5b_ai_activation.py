@@ -710,3 +710,32 @@ def test_the_router_strips_before_returning():
     from athera_api.routers import ai
 
     assert "strip_markup(" in inspect.getsource(ai.ask)
+
+
+def test_the_attachment_state_tells_the_ui_what_button_to_show():
+    """**الفجوة التي أبقت المسار على نداء API.**
+
+    كانت الحدود تُقال بالعربية في `limitations` وحدها: «امنح الإذن من صفحة
+    المستند». والواجهة لا تستطيع أن تعرف من نصٍّ عربي **أي زرٍّ تعرض** —
+    أتطلب المعالجة؟ أم المراجعة؟ أم الإذن؟ فتُترك التعليمة نصًّا يُنفّذه
+    الباحث بنفسه، أي بنداء API. والباحث لا يملك طرفية ولا يجب أن يملكها.
+
+    و`needs` يقول الفعل التالي بكلمة واحدة، فتبنيه الواجهة زرًّا.
+    """
+    from athera_api.schemas.ai import AttachmentState
+
+    fields = AttachmentState.model_fields
+    for required in ("file_id", "filename", "processing_status", "consent_state",
+                     "approved_facts", "pending_review", "needs"):
+        assert required in fields, required
+
+
+def test_every_blocked_branch_sets_a_next_action():
+    """ولا فرعَ يقول «لا أستطيع» بلا أن يقول «افعل هذا»."""
+    import inspect
+
+    from athera_api.routers import ai
+
+    source = inspect.getsource(ai.ask)
+    for need in ('"process"', '"review"', '"chat_consent"'):
+        assert f'update={{"needs": {need}}}' in source, need

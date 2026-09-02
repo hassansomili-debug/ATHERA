@@ -10,6 +10,17 @@ import { type Messages, translator } from "@/lib/i18n";
  *
  * ولا اسم أجنت ولا أداة ولا مزوّد ولا معرّف أثر — «أثيرا AI» هي الهوية.
  */
+export interface AttachmentState {
+  file_id: string;
+  filename: string;
+  processing_status: string;
+  consent_state: string;
+  approved_facts: number;
+  pending_review: number;
+  /** الفعل التالي بكلمة واحدة: process | review | chat_consent | none */
+  needs: string;
+}
+
 export interface AiAnswer {
   answer: string;
   status: string;
@@ -17,6 +28,7 @@ export interface AiAnswer {
   capabilities_used: string[];
   limitations: string[];
   recommended_next_actions: string[];
+  attachment?: AttachmentState | null;
 }
 
 export function AiAnswerCard({
