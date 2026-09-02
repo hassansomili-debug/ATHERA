@@ -47,6 +47,67 @@ def test_brain_keys_are_unique():
     assert len(keys) == len(set(keys))
 
 
+def test_the_product_name_is_never_written_beside_the_catalog():
+    """**عيبٌ كشفه الإنتاج**: القائمة تقول «بُبريفا» والشعار يقول «ATHERA».
+
+    كان السطر الثاني في الشعار اسم اللغة الأخرى مكتوبًا حرفيًّا في
+    `layout.tsx`، خارج كتالوج الرسائل. فلمّا أُعيدت التسمية بقي على حاله —
+    ورأى الباحث اسمين لمنتجٍ واحد في الشاشة نفسها.
+
+    فيُمنع أن يُكتب اسم المنتج نصًّا في شيفرة الواجهة: يُقرأ من الكتالوج
+    وحده، فلا يفترق موضعان أبدًا.
+    """
+    import json
+    import pathlib as _pl
+
+    web = _pl.Path(__file__).resolve().parents[3] / "apps" / "web"
+    catalog = json.loads((web / "messages" / "ar.json").read_text(encoding="utf-8"))
+    names = {catalog["app"]["name"],
+             json.loads((web / "messages" / "en.json").read_text(encoding="utf-8"))["app"]["name"],
+             "ATHERA", "أثيرا"}
+
+    def code_lines(text: str):
+        """أسطر الشيفرة وحدها — **والتعليق يشرح ما أُزيل فلا يُحاسَب عليه**.
+
+        وحارسٌ يعاقب على شرحٍ صادق يُعطَّل ثم لا يحرس شيئًا. فتُتتبَّع حال
+        التعليق الكتلي سطرًا سطرًا بدل النظر إلى أول حرفٍ وحده.
+        """
+        in_block = False
+        for number, line in enumerate(text.splitlines(), 1):
+            rest, visible = line, ""
+            while rest:
+                if in_block:
+                    end = rest.find("*/")
+                    if end < 0:
+                        rest = ""
+                    else:
+                        rest, in_block = rest[end + 2:], False
+                else:
+                    start = rest.find("/*")
+                    slash = rest.find("//")
+                    if slash >= 0 and (start < 0 or slash < start):
+                        visible += rest[:slash]
+                        rest = ""
+                    elif start >= 0:
+                        visible += rest[:start]
+                        rest, in_block = rest[start + 2:], True
+                    else:
+                        visible += rest
+                        rest = ""
+            if visible.strip():
+                yield number, visible
+
+    offenders = []
+    for path in (web / "src").rglob("*.tsx"):
+        for number, line in code_lines(path.read_text(encoding="utf-8")):
+            for name in names:
+                if f'"{name}"' in line or f"'{name}'" in line or f">{name}<" in line:
+                    offenders.append(f"{path.name}:{number} -> {name}")
+
+    assert not offenders, (
+        "اسم المنتج مكتوب في الشيفرة بدل أن يُقرأ من الكتالوج: " + "; ".join(offenders))
+
+
 def test_impact_is_measured_inside_the_project_not_across_the_tenant():
     """`project_id` وسيطٌ يجب أن يُستعمل — لا أن يُستقبل ويُهمل.
 

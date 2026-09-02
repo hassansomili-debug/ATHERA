@@ -1,6 +1,7 @@
 {
   "app": {
     "name": "PUBRIVA",
+    "promise": "Research to Publication",
     "tagline": "AI-Native Scientific Research & Publication Platform",
     "loading": "Loading…"
   },
