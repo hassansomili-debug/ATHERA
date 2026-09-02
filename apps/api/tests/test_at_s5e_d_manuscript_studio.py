@@ -348,3 +348,51 @@ def test_redaction_and_output_loading_are_independent_questions():
     limitations = policy.POLICIES["limitations"]
     assert limitations.redact_statistics is False
     assert limitations.allows_statistics is False
+
+
+# ══════════ 8. مفردات المنهج تُفحص في المنهجية وحدها ══════════
+
+def _section_context(section_key: str):
+    import uuid
+
+    from athera_api.services.planning.context import EvidenceItem
+    from athera_api.services.publishing.drafting.context import DraftingContext
+
+    item = EvidenceItem(uuid.uuid4(), "result", None, "أظهرت النتائج فروقًا",
+                        "project_decision", None, "§النتائج ¶1", None)
+    return DraftingContext(
+        tenant_id=uuid.UUID(int=1), project_id=uuid.UUID(int=2),
+        manuscript_id=uuid.UUID(int=3), opportunity_id=uuid.UUID(int=4),
+        outline_id=None, section_key=section_key, language="ar", purpose_ar="",
+        items=(item,), thread_labels=(), missing_roles=(), fingerprint="a" * 64)
+
+
+def _issues(section_key: str, text: str):
+    from athera_api.services.publishing.drafting import checks
+    from athera_api.services.publishing.drafting.contracts import SectionDraft
+
+    context = _section_context(section_key)
+    return {i.issue_key for i in checks.run(
+        SectionDraft(section_text_ar=text), context,
+        known_memory_ids=context.memory_ids, known_output_ids=frozenset())}
+
+
+@pytest.mark.parametrize(("section", "text"), [
+    ("conclusion", "لا يمكن في حدود الأدلة المتاحة الجزم بذلك"),
+    ("discussion", "ويُعدّ مربع إيتا مقياسًا لحجم الأثر"),
+])
+def test_method_vocabulary_does_not_fire_outside_the_method_section(section, text):
+    """**كشفان كاذبان وقعا في الإنتاج، وسببهما اشتراك اللفظ.**
+
+    «في حدود الأدلة **المتاحة**» قُرئت عيّنةً متاحة، و«**مقياس** لحجم الأثر»
+    قُرئ أداةَ دراسة. والحارس وُضع ليمنع قسم المنهجية من اختراع أداةٍ أو
+    أسلوب معاينة — لا ليطارد المفردات في كل قسم.
+
+    وحارسٌ يكثر ضجيجه يُتجاهَل، ثم لا يحرس شيئًا.
+    """
+    assert not {k for k in _issues(section, text) if k.startswith("unsupported_")}
+
+
+def test_the_method_section_still_catches_an_invented_instrument():
+    """والاستثناء لا يتّسع: المنهجية تبقى محروسة."""
+    assert "unsupported_instrument" in _issues("method", "طُبّقت استبانة من إعداد الباحث")
