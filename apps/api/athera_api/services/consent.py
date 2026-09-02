@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.audit import Approval
+from ..providers.gateway import capability_ceiling
 from . import audit
 
 # القدرات المأذون لها بتجاوز السقف العام — كلٌّ باسمها لا بصفتها.
@@ -43,11 +44,23 @@ CAPABILITY: Final = "document_intelligence_external_c2"
 PLANNING_CAPABILITY: Final = "publication_planning_external_c2"
 DRAFTING_CAPABILITY: Final = "manuscript_drafting_external_c2"
 
-# ما تأذن به كل قدرة **بالضبط**. لا C3 ولا C4 مهما كانت الموافقة.
+# ما تأذن به كل قدرة **بالضبط** — **مشتقًّا من سجل البوابة لا مكتوبًا بجانبه**.
+#
+# كانت هذه الخريطة نسخةً ثانية للحقيقة نفسها، فأُضيفت قدرة الصياغة هنا ولم
+# تُضف هناك: فصار الإذن صحيحًا والبوابة ترفض `C2` — والرسالة تقول
+# «disabled_for_classification» بينما الباحث أذن فعلًا. وهو صنف العطب الذي
+# كلّف S5D ثلاثة عوائق: معرّفٌ يُكتب بجانب سجلّه بدل أن يُشتقّ منه.
+#
+# والسلطة عند البوابة عمدًا: هي حدّ المغادرة إلى الخارج، وإضافة اسم فيها
+# قرار سياسة يُرى في المراجعة. وهذه تقرأ منها ولا تعيد كتابتها.
 CAPABILITY_CEILING: Final[dict[str, str]] = {
-    CAPABILITY: "C2",
-    PLANNING_CAPABILITY: "C2",
-    DRAFTING_CAPABILITY: "C2",
+    name: ceiling
+    for name, ceiling in (
+        (CAPABILITY, capability_ceiling(CAPABILITY)),
+        (PLANNING_CAPABILITY, capability_ceiling(PLANNING_CAPABILITY)),
+        (DRAFTING_CAPABILITY, capability_ceiling(DRAFTING_CAPABILITY)),
+    )
+    if ceiling is not None
 }
 
 GATE: Final = "DIC2"

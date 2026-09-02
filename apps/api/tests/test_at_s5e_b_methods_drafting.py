@@ -817,3 +817,35 @@ async def test_tenant_b_cannot_draft_or_read_tenant_a_methods(two_tenants):
 
     with pytest.raises(NotFound):
         await drafting.draft_section(manuscript_a, "method", principal=_principal(b))
+
+
+# ══════════ 9. سجلّ واحد للسقوف — لا نسختان تفترقان ══════════
+
+def test_the_consent_ceilings_are_derived_from_the_gateway_registry():
+    """السلطة عند البوابة، وموافقاتُ الخدمات تقرأ منها ولا تعيد كتابتها.
+
+    كانتا خريطتين للحقيقة نفسها، فأُضيفت قدرة الصياغة في إحداهما دون
+    الأخرى: صار الإذن صحيحًا والبوابة ترفض `C2`، والرسالة تقول
+    «disabled_for_classification» بينما الباحث أذن فعلًا.
+    """
+    import inspect
+
+    from athera_api.providers import gateway
+    from athera_api.services import consent
+
+    assert consent.CAPABILITY_CEILING == dict(gateway._CAPABILITY_CEILINGS)
+    # ومشتقّة فعلًا لا منسوخة: لا قيمة تصنيف مكتوبة بجانب اسم قدرة.
+    source = inspect.getsource(consent)
+    block = source[source.index("CAPABILITY_CEILING:"):source.index("GATE: Final")]
+    assert "capability_ceiling(" in block
+    assert '"C2"' not in block, "سقفٌ مكتوب بجانب اسمه بدل أن يُشتقّ"
+
+
+def test_every_declared_capability_can_actually_leave_the_gateway():
+    """كل قدرة معلَنة في الموافقات تعرفها البوابة — وإلا فالإذن بلا أثر."""
+    from athera_api.providers.gateway import capability_ceiling
+    from athera_api.services import consent
+
+    for capability in (consent.CAPABILITY, consent.PLANNING_CAPABILITY,
+                       consent.DRAFTING_CAPABILITY):
+        assert capability_ceiling(capability) == "C2", capability
