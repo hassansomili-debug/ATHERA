@@ -448,13 +448,16 @@ async def _seed_analysis(tid, uid, *, reproducible: bool):
             checksum="0" * 64)
         session.add(raw)
         await session.flush()
-        frozen = dt.datetime.now(dt.UTC) if reproducible else None
+        # **والتجميد في الحالتين.** مشغّلٌ في القاعدة يمنع تشغيل تحليل على
+        # بيانات غير مجمَّدة أصلًا (§17.3) — فالتشغيلة غير القابلة لإعادة
+        # الإنتاج ليست تشغيلةً على بيانات سائلة، بل تشغيلةٌ نقص بيانها:
+        # بلا بصمة كود ولا بيئة ولا حزم ولا بذرة عشوائية.
         version = DatasetVersionRow(
             tenant_id=tid, dataset_id=dataset.id, state="cleaned", label="v1",
             checksum="a" * 64, parent_version_id=raw.id,
             change_note_ar="تنظيف اصطناعي للاختبار",
-            freeze_id=f"frz-{uuid.uuid4().hex[:8]}" if reproducible else None,
-            frozen_at=frozen, frozen_by=uid if reproducible else None)
+            freeze_id=f"frz-{uuid.uuid4().hex[:8]}",
+            frozen_at=dt.datetime.now(dt.UTC), frozen_by=uid)
         session.add(version)
         await session.flush()
         plan = AnalysisPlanRow(tenant_id=tid, project_id=project.id, version_label="v1",
@@ -464,7 +467,7 @@ async def _seed_analysis(tid, uid, *, reproducible: bool):
         await session.flush()
         run = AnalysisRun(
             tenant_id=tid, plan_id=plan.id, dataset_version_id=version.id,
-            dataset_freeze_id=version.freeze_id or "none", tool="python",
+            dataset_freeze_id=version.freeze_id, tool="python",
             code_hash="c" * 64 if reproducible else None,
             runtime="python 3.12" if reproducible else None,
             packages={"scipy": "1.14"} if reproducible else None,
@@ -473,7 +476,8 @@ async def _seed_analysis(tid, uid, *, reproducible: bool):
             # والقاعدة تفرض ذلك بقيد لا بالتوثيق وحده.
             fingerprint="d" * 64 if reproducible else None,
             is_reproducible=reproducible,
-            missing_manifest_fields=[] if reproducible else ["code_hash"],
+            missing_manifest_fields=[] if reproducible else
+            ["code_hash", "runtime", "packages", "random_seed"],
             status="completed", started_at=dt.datetime.now(dt.UTC),
             finished_at=dt.datetime.now(dt.UTC))
         session.add(run)
