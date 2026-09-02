@@ -102,7 +102,10 @@ export function SectionWorkspace({
   strict?: boolean;
 }) {
   const t = translator(getMessages(locale));
-  const c = (key: string) => t(`${copy}.${key}`);
+  // **مُخزَّنة كـ`t` نفسها.** دالةٌ تُنشأ عند كل عرض داخل مكوّن يستعمل
+  // `useCallback` تُفقد المُترجم قدرته على حفظ التذكير، فيرفض ESLint البناء.
+  // والسبب نفسه الذي جعل `t` مخزَّنة في `WeakMap` منذ البداية.
+  const c = useCallback((key: string) => t(`${copy}.${key}`), [t, copy]);
 
   const [context, setContext] = useState<ContextState | null>(null);
   const [section, setSection] = useState<SectionView | null>(null);

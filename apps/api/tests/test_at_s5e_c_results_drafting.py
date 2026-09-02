@@ -427,7 +427,7 @@ async def _seed_analysis(tid, uid, *, reproducible: bool):
         AnalysisOutputRow,
         AnalysisPlanRow,
         AnalysisRun,
-        DatasetRow,
+        Dataset,
         DatasetVersionRow,
     )
     from athera_api.models.portfolio import ResearchProject
@@ -436,7 +436,7 @@ async def _seed_analysis(tid, uid, *, reproducible: bool):
         project = ResearchProject(tenant_id=tid, working_title_ar="مشروع تحليل")
         session.add(project)
         await session.flush()
-        dataset = DatasetRow(tenant_id=tid, project_id=project.id,
+        dataset = Dataset(tenant_id=tid, project_id=project.id,
                              name_ar="بيانات اصطناعية", classification="C3")
         session.add(dataset)
         await session.flush()
