@@ -7,6 +7,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 
 from ..config import get_settings
 from ..db import system_session, tenant_session
@@ -86,22 +87,49 @@ async def register(payload: RegisterRequest, locale: str = Depends(get_locale)) 
         if existing is not None:
             raise AtheraError("auth.email_taken", status_code=409)
 
+        # ══════════ التسجيل الذاتي يُنشئ مساحةً جديدة، ولا ينضمّ إلى قائمة ══════════
+        #
+        # **ثغرة تفويض أُغلقت هنا.** كان هذا المسار — وهو عام بلا مصادقة —
+        # يقبل `tenant_slug` نصًّا حرًّا من المستدعي، فإن طابق مستأجرًا قائمًا
+        # أنشأ المستخدم **عضوًا فيه بدور باحث** وأصدر له رمزًا. أي أن كل عمل
+        # عزل المستأجرين — RLS وسياساتها وبوابات الملكية وحارس الدور —
+        # يُلتفّ عليه بالباب الأمامي: المهاجم لا يكسر العزل، بل يصير عضوًا
+        # شرعيًّا فيه. ويكفي أن يعرف الاسم؛ وأسماءٌ كثيرة تُخمَّن.
+        #
+        # والقاعدة الآن: **اسمٌ مأخوذ يعني رفضًا، لا انضمامًا.** والانضمام إلى
+        # مساحة قائمة يحتاج مسارًا مأذونًا (`POST /tenants/{id}/members`،
+        # وهو محصورٌ بأدوار الإدارة داخل مستأجرها).
+        #
+        # والقاعدة تسري على الاسم المشتقّ من البريد كما تسري على المكتوب:
+        # `ahmed@x.com` و`ahmed@y.com` يشتقّان الاسم نفسه، فلو استُثني
+        # المشتقّ لبقيت الثغرة مفتوحةً بلا أن يكتب المهاجم حرفًا.
         slug = payload.tenant_slug or payload.email.split("@")[0].lower()[:64]
-        tenant = (
-            await session.execute(select(Tenant).where(Tenant.slug == slug))
+        taken = (
+            await session.execute(select(Tenant.id).where(Tenant.slug == slug))
         ).scalar_one_or_none()
-        if tenant is None:
-            tenant = Tenant(
-                slug=slug,
-                name_ar=payload.tenant_name_ar or payload.full_name_ar,
-                name_en=payload.tenant_name_en or payload.full_name_en,
-                default_locale=payload.preferred_locale,
-            )
-            session.add(tenant)
+        if taken is not None:
+            # رفضٌ **قبل أي كتابة**: لا مستخدم، ولا دور، ولا عضوية، ولا رمز،
+            # ولا حدث تدقيق داخل مستأجرٍ ليس للمستدعي فيه شيء.
+            raise AtheraError("auth.workspace_name_taken", status_code=409)
+
+        tenant = Tenant(
+            slug=slug,
+            name_ar=payload.tenant_name_ar or payload.full_name_ar,
+            name_en=payload.tenant_name_en or payload.full_name_en,
+            default_locale=payload.preferred_locale,
+        )
+        session.add(tenant)
+        try:
+            # **السباق يفشل مغلقًا.** طلبان متزامنان على الاسم نفسه: أحدهما
+            # يفوز، والآخر يصطدم بقيد التفرّد. ولا يجوز أن يُقرأ الاصطدام
+            # «صار المستأجر موجودًا، فلننضمّ إليه» — تلك هي الثغرة نفسها
+            # تدخل من باب المعالجة.
             await session.flush()
-        # مستأجرٌ قائم أو جديد — وفي الحالتين يصير سياق بقية المعاملة.
-        # (المشغّل يضبطه للجديد؛ والقائم لم يكن يضبطه أحد، فتسقط كتابة
-        #  الأدوار والعضوية وسجل التدقيق تحت RLS.)
+        except IntegrityError as exc:
+            raise AtheraError("auth.workspace_name_taken", status_code=409) from exc
+
+        # سياق بقية المعاملة — وإلا سقطت كتابة الأدوار والعضوية والتدقيق
+        # تحت RLS.
         await _bind_tenant(session, tenant.id)
 
         user = User(
@@ -114,6 +142,7 @@ async def register(payload: RegisterRequest, locale: str = Depends(get_locale)) 
         session.add(user)
         await session.flush()
 
+        # المستأجر جديدٌ يقينًا، فدورُه إمّا بذَره مشغّل الترحيل أو يُنشأ هنا.
         researcher_role = (
             await session.execute(
                 select(Role).where(Role.tenant_id == tenant.id, Role.key == "researcher")

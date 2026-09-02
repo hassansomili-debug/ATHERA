@@ -93,6 +93,13 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "en": "The draft was withheld: it would have asserted content with no verified "
               "evidence or analysis output behind it.",
     },
+    "auth.workspace_name_taken": {
+        "ar": "اسم مساحة العمل هذا مأخوذ. اختر اسمًا آخر — والانضمام إلى مساحة "
+              "قائمة يكون بدعوة من مسؤولها لا بالتسجيل.",
+        "en": "That workspace name is taken. Choose another — joining an existing "
+              "workspace happens by invitation from its administrator, not by "
+              "registering.",
+    },
     "tenant.context_missing": {
         "ar": "لم يُحدَّد سياق المستأجر للطلب.",
         "en": "No tenant context was resolved for this request.",
