@@ -46,6 +46,22 @@ def test_brain_keys_are_unique():
     assert len(keys) == len(set(keys))
 
 
+def test_impact_is_measured_inside_the_project_not_across_the_tenant():
+    """`project_id` وسيطٌ يجب أن يُستعمل — لا أن يُستقبل ويُهمل.
+
+    وأول صياغة عدّت الادعاءات والأقسام في المستأجر كله، فكان ملفٌّ يُمنع من
+    الإزالة بحجّة ورقةٍ في بحثٍ آخر. **وحارسٌ يعاقب على ما لم يقع يُعطَّل ثم
+    لا يحرس شيئًا.**
+    """
+    import inspect
+
+    from athera_api.services import workspace
+
+    source = inspect.getsource(workspace.file_impact)
+    assert "Claim.project_id == project_id" in source
+    assert "Manuscript.project_id == project_id" in source
+
+
 def test_impact_summary_says_nothing_depends_when_nothing_does():
     from athera_api.services.workspace import Consequence, Impact
 
@@ -454,7 +470,7 @@ async def test_one_project_never_shows_another_projects_knowledge(two_tenants):
             field_key="design",
             statement_ar="المنهج شبه تجريبي بمجموعتين",
             quote="المنهج شبه تجريبي بمجموعتين", locator="p.4",
-            status="verified", decided_by=uid, decided_at=_now(),
+            status="approved", decided_by=uid, decided_at=_now(),
             resulting_memory_id=memory.id))
         await session.flush()
 

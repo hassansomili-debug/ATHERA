@@ -98,17 +98,29 @@ async def file_impact(session: AsyncSession, *, tenant_id: uuid.UUID,
                 ClaimMemoryLink.tenant_id == tenant_id,
                 ClaimMemoryLink.memory_id.in_(memory_ids))
         )).scalars().all()
-        if claim_ids:
+        # **والأثر يُقاس في هذا البحث لا في المستأجر كله.** فادعاءٌ في ورقةٍ
+        # لبحثٍ آخر لا يمنع إزالة الملف من هنا؛ ومنعُه بحجّة عملٍ في مكانٍ
+        # ثالث حارسٌ يعاقب على ما لم يقع — ومثله يُعطَّل ثم لا يحرس شيئًا.
+        project_claims = (await session.execute(
+            select(Claim.id).where(Claim.tenant_id == tenant_id,
+                                   Claim.project_id == project_id,
+                                   Claim.id.in_(claim_ids))
+        )).scalars().all()
+        if project_claims:
             sections = (await session.execute(
                 select(func.count(func.distinct(ManuscriptSection.id)))
                 .select_from(ManuscriptSectionClaim)
                 .join(ManuscriptSection,
                       ManuscriptSection.id == ManuscriptSectionClaim.section_id)
+                .join(ManuscriptVersion,
+                      ManuscriptVersion.id == ManuscriptSection.version_id)
+                .join(Manuscript, Manuscript.id == ManuscriptVersion.manuscript_id)
                 .where(ManuscriptSectionClaim.tenant_id == tenant_id,
-                       ManuscriptSectionClaim.claim_id.in_(claim_ids))
+                       Manuscript.project_id == project_id,
+                       ManuscriptSectionClaim.claim_id.in_(project_claims))
             )).scalar_one()
             impact.consequences.append(Consequence(
-                "manuscript_claims", len(set(claim_ids)),
+                "manuscript_claims", len(set(project_claims)),
                 "ادعاءً في مخطوطتك", "manuscript claims", breaks_approved_work=True))
             if sections:
                 impact.consequences.append(Consequence(
