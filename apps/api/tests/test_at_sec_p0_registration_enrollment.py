@@ -46,21 +46,29 @@ async def _register(payload: dict):
         return None, exc
 
 
-async def _counts() -> dict:
+async def _counts(tenant_id=None) -> dict:
+    """أعدادٌ عامة — والعضويات تُعدّ بسياق مستأجرها حين يُطلب.
+
+    `users` و`tenants` لهما سياسة عامة؛ و`memberships` عليها عزلٌ مفروض،
+    فعدّها بلا سياق يعطي صفرًا دائمًا — ومقارنةُ صفرٍ بصفر لا تثبت شيئًا.
+    """
     from sqlalchemy import func, select
 
-    from athera_api.db import system_session
+    from athera_api.db import system_session, tenant_session
     from athera_api.models.identity import Membership, Tenant, User
 
     async with system_session() as session:
-        return {
+        totals = {
             "users": (await session.execute(
                 select(func.count(User.id)))).scalar_one(),
             "tenants": (await session.execute(
                 select(func.count(Tenant.id)))).scalar_one(),
-            "memberships": (await session.execute(
-                select(func.count(Membership.id)))).scalar_one(),
         }
+    if tenant_id is not None:
+        async with tenant_session(tenant_id) as scoped:
+            totals["memberships"] = (await scoped.execute(
+                select(func.count(Membership.id)))).scalar_one()
+    return totals
 
 
 # ══════════ 1. السلوك المشروع لا ينكسر ══════════
@@ -71,7 +79,7 @@ async def test_a_brand_new_workspace_still_registers_normally(db_ready):
     """المسار المقصود يبقى: اسمٌ جديد ⇒ مساحةٌ جديدة وعضويةُ باحث فيها."""
     from sqlalchemy import select
 
-    from athera_api.db import system_session
+    from athera_api.db import system_session, tenant_session
     from athera_api.models.identity import Membership, Tenant, User
 
     slug = f"fresh-{uuid.uuid4().hex[:10]}"
@@ -83,8 +91,13 @@ async def test_a_brand_new_workspace_still_registers_normally(db_ready):
         tenant = (await session.execute(
             select(Tenant).where(Tenant.slug == slug))).scalar_one()
         user = (await session.execute(
-            select(User).where(User.email == f"{slug}@fixtures.athera"))).scalar_one()
-        membership = (await session.execute(
+            select(User).where(User.email == f"{slug}@{FIXTURE_DOMAIN}"))).scalar_one()
+
+    # **العضوية تُقرأ بسياق مستأجرها.** `memberships` عليها عزلٌ مفروض، وجلسةُ
+    # النظام لا تضبط مستأجرًا — فتعود صفرًا. وهو الدرس نفسه الذي كشفه احتواء
+    # حادثة P0 حين انكسر تسجيل الدخول.
+    async with tenant_session(tenant.id, user.id) as scoped:
+        membership = (await scoped.execute(
             select(Membership).where(Membership.user_id == user.id))).scalar_one()
     assert membership.tenant_id == tenant.id
 
@@ -105,7 +118,7 @@ async def test_registering_into_an_existing_tenant_is_denied(two_tenants):
             select(Tenant.slug).where(
                 Tenant.id == two_tenants["a"]["tenant_id"]))).scalar_one()
 
-    before = await _counts()
+    before = await _counts(two_tenants["a"]["tenant_id"])
     email = f"attacker-{uuid.uuid4().hex[:8]}@fixtures.athera"
     tokens, error = await _register(_payload(email, tenant_slug=victim))
 
@@ -113,7 +126,7 @@ async def test_registering_into_an_existing_tenant_is_denied(two_tenants):
     assert error is not None and error.code == "auth.workspace_name_taken"
     assert error.status_code == 409
     # **ولا كتابة واحدة**: لا مستخدم، ولا عضوية، ولا دور، ولا مستأجر.
-    assert await _counts() == before
+    assert await _counts(two_tenants["a"]["tenant_id"]) == before
 
 
 @requires_db
@@ -200,11 +213,11 @@ async def test_an_email_derived_slug_cannot_join_an_existing_tenant(db_ready):
     المهاجم حرفًا** — يكفي أن يسجّل ببريدٍ اسمُه اسمُ الضحية.
     """
     local = f"shared{uuid.uuid4().hex[:8]}"
-    first, error = await _register(_payload(f"{local}@first.test"))
+    first, error = await _register(_payload(f"{local}@first.athera"))
     assert error is None and first is not None
 
     before = await _counts()
-    second, error = await _register(_payload(f"{local}@second.test"))
+    second, error = await _register(_payload(f"{local}@second.athera"))
     assert second is None, "انضمّ إلى مساحة غيره باسمٍ مشتقّ من بريده"
     assert error is not None and error.code == "auth.workspace_name_taken"
     assert await _counts() == before
