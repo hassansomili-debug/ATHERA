@@ -354,7 +354,6 @@ async def drafting_authorization(
         return None
     return ExternalProcessingGrant(
         capability=DRAFTING_CAPABILITY, file_id=manuscript_id, approval_id=row.id,
-        decided_by=row.decided_by, decided_at=row.decided_at,
         max_classification=CAPABILITY_CEILING[DRAFTING_CAPABILITY],
         context_fingerprint=context_fingerprint,
     )
