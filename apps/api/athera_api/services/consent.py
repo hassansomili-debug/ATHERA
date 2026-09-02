@@ -43,6 +43,10 @@ from . import audit
 CAPABILITY: Final = "document_intelligence_external_c2"
 PLANNING_CAPABILITY: Final = "publication_planning_external_c2"
 DRAFTING_CAPABILITY: Final = "manuscript_drafting_external_c2"
+# **والمحادثة لا تلتفّ على شيء من ذلك.** سؤالٌ عن مستند يُرسل معرفةً اعتمدها
+# الباحث — وهي C2. فلولا قدرةٌ رابعة لصارت المحادثة بابًا خلفيًّا: سؤالٌ
+# بريء الشكل يُخرج ما يمنع الإذنُ إخراجَه.
+CHAT_CAPABILITY: Final = "document_chat_external_c2"
 
 # ما تأذن به كل قدرة **بالضبط** — **مشتقًّا من سجل البوابة لا مكتوبًا بجانبه**.
 #
@@ -59,6 +63,7 @@ CAPABILITY_CEILING: Final[dict[str, str]] = {
         (CAPABILITY, capability_ceiling(CAPABILITY)),
         (PLANNING_CAPABILITY, capability_ceiling(PLANNING_CAPABILITY)),
         (DRAFTING_CAPABILITY, capability_ceiling(DRAFTING_CAPABILITY)),
+        (CHAT_CAPABILITY, capability_ceiling(CHAT_CAPABILITY)),
     )
     if ceiling is not None
 }
@@ -66,11 +71,14 @@ CAPABILITY_CEILING: Final[dict[str, str]] = {
 GATE: Final = "DIC2"
 PLANNING_GATE: Final = "PPC2"
 DRAFTING_GATE: Final = "MDC2"
+CHAT_GATE: Final = "DCC2"
 OBJECT_TYPE: Final = f"file.{CAPABILITY}"
 PLANNING_OBJECT_TYPE: Final = f"project.{PLANNING_CAPABILITY}"
 # **على المخطوطة لا على المشروع**: الإذن يُعطى لصياغة ورقة بعينها، ومشروعٌ
 # قد يحمل أكثر من مخطوطة لأكثر من فرصة.
 DRAFTING_OBJECT_TYPE: Final = f"manuscript.{DRAFTING_CAPABILITY}"
+# على الملف: الإذن يُعطى للسؤال عن مستندٍ بعينه.
+CHAT_OBJECT_TYPE: Final = f"file.{CHAT_CAPABILITY}"
 
 GRANTED: Final = "granted"
 # أُذن ثم تغيّرت الأدلة — ليست رفضًا، وليست إذنًا للقطة الجديدة.
@@ -429,6 +437,86 @@ async def record_drafting_decision(
             "context_fingerprint": context_fingerprint,
             "evidence_count": evidence_count,
         },
+        reason=row.reason, request_id=request_id,
+    )
+    return row
+
+
+# ══════════ سؤال أثيرا عن مستند مختار (DCC2) ══════════
+
+
+async def _chat_row(session: AsyncSession, *, tenant_id: uuid.UUID,
+                    file_id: uuid.UUID) -> Approval | None:
+    return (
+        await session.execute(
+            select(Approval).where(
+                Approval.tenant_id == tenant_id,
+                Approval.object_type == CHAT_OBJECT_TYPE,
+                Approval.object_id == file_id,
+            ).order_by(Approval.created_at.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def chat_state(session: AsyncSession, *, tenant_id: uuid.UUID,
+                     file_id: uuid.UUID) -> str:
+    """`granted` أو `declined` أو `absent` — لهذا الملف بعينه.
+
+    **ولا بصمة هنا.** الإذن يُعطى للسؤال عن مستند، وما يُرسل معرفةٌ اعتمدها
+    الباحث بنفسه واحدةً واحدة؛ فاعتمادُه لها هو التغيّر ذو المعنى، وربطُ
+    الإذن ببصمةٍ تتغيّر كلما اعتمد حقلًا يجعله يُبطَل عند كل موافقة.
+    """
+    row = await _chat_row(session, tenant_id=tenant_id, file_id=file_id)
+    if row is None:
+        return ABSENT
+    return GRANTED if row.status == "approved" else DECLINED
+
+
+async def chat_authorization(session: AsyncSession, *, tenant_id: uuid.UUID,
+                             file_id: uuid.UUID) -> ExternalProcessingGrant | None:
+    row = await _chat_row(session, tenant_id=tenant_id, file_id=file_id)
+    if row is None or row.status != "approved":
+        return None
+    return ExternalProcessingGrant(
+        capability=CHAT_CAPABILITY, file_id=file_id, approval_id=row.id,
+        decided_by=row.decided_by, decided_at=row.decided_at,
+        max_classification=CAPABILITY_CEILING[CHAT_CAPABILITY],
+        context_fingerprint=None,
+    )
+
+
+async def record_chat_decision(
+    session: AsyncSession, *, tenant_id: uuid.UUID, file_id: uuid.UUID,
+    actor_user_id: uuid.UUID, granted: bool, provider: str, model: str | None,
+    fact_count: int, request_id: str | None = None,
+) -> Approval:
+    now = dt.datetime.now(dt.UTC)
+    row = await _chat_row(session, tenant_id=tenant_id, file_id=file_id)
+    before = row.status if row is not None else None
+    if row is None:
+        row = Approval(tenant_id=tenant_id, gate=CHAT_GATE,
+                       object_type=CHAT_OBJECT_TYPE, object_id=file_id,
+                       requested_by=actor_user_id)
+        session.add(row)
+    row.status = "approved" if granted else "rejected"
+    row.decided_by = actor_user_id
+    row.decided_at = now
+    row.reason = ("researcher authorized answering questions from this document's "
+                  "approved facts" if granted
+                  else "researcher declined external answering from this document")
+    await session.flush()
+
+    await audit.record(
+        session, tenant_id=tenant_id,
+        action="consent.document_chat_granted" if granted
+        else "consent.document_chat_declined",
+        object_type="file", object_id=file_id, actor_user_id=actor_user_id,
+        approval_id=row.id, state_before={"status": before},
+        state_after={"status": row.status, "capability": CHAT_CAPABILITY,
+                     "max_classification": CAPABILITY_CEILING[CHAT_CAPABILITY],
+                     "provider": provider, "model": model,
+                     # عددٌ لا نصّ: كم معلومة معتمَدة قد تُرسل.
+                     "approved_fact_count": fact_count},
         reason=row.reason, request_id=request_id,
     )
     return row

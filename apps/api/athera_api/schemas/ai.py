@@ -13,8 +13,15 @@ from pydantic import BaseModel, Field
 
 class AiAskRequest(BaseModel):
     question: str = Field(min_length=8, max_length=4000)
-    # معرّف ملف مرفق — يُذكر ولا يُقرأ محتواه في هذه المرحلة.
+    # معرّف ملفٍ **يختاره الباحث بعينه**. ولا بحث تلقائي في ملفاته كلها:
+    # المحادثة تقرأ ما أشار إليه، لا ما تستطيع الوصول إليه.
     attachment_file_id: uuid.UUID | None = None
+    # الواجهة ترسله باسمه المختصر كذلك.
+    file_id: uuid.UUID | None = None
+
+    @property
+    def selected_file(self) -> uuid.UUID | None:
+        return self.attachment_file_id or self.file_id
 
 
 class AiAskResponse(BaseModel):

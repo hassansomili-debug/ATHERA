@@ -119,6 +119,10 @@ _CAPABILITY_CEILINGS: Final[dict[str, str]] = {
     "document_intelligence_external_c2": "C2",   # S5C — قراءة مستند
     "publication_planning_external_c2": "C2",    # S5D — بناء مقترحات نشر
     "manuscript_drafting_external_c2": "C2",     # S5E — صياغة نصّ ورقة
+    # سؤال أثيرا عن مستندٍ بعينه. **وقدرةٌ لا تأذن لأختها:** إذن قراءة
+    # المستند أذن باستخراج بياناته لتُراجَع؛ وهذا يأذن بإرسال ما اعتمده
+    # الباحث منها ليُجيب عن سؤاله. غرضان يقرّهما مرتين.
+    "document_chat_external_c2": "C2",           # المحادثة عن مستند مختار
 }
 
 

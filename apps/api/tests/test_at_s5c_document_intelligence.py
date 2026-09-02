@@ -1732,8 +1732,9 @@ def test_the_global_ceiling_stays_c1():
 def test_the_capability_list_is_closed_and_named():
     """§2 — القائمة مغلقة ومسمّاة، ولا قدرة عامة فيها.
 
-    وتوسّعت مرتين — بتخطيط النشر (S5D) ثم بصياغة المخطوطة (S5E) — بقيمة
-    معلومة لا بفتح الباب: كل قدرة باسمها الصريح، وسقفها C2 ولا شيء فوقه.
+    وتوسّعت ثلاثًا — بتخطيط النشر (S5D)، ثم بصياغة المخطوطة (S5E)، ثم
+    بالسؤال عن مستندٍ مختار — بقيمة معلومة لا بفتح الباب: كل قدرة باسمها
+    الصريح، وسقفها C2 ولا شيء فوقه.
 
     **والقائمة مكتوبة هنا يدويًّا عمدًا:** إضافة قدرة قرار سياسة يُرى في
     المراجعة، لا سطرٌ يمرّ. فاشتقاق هذا التأكيد من السجل نفسه يجعله يوافق
@@ -1745,6 +1746,7 @@ def test_the_capability_list_is_closed_and_named():
         "document_intelligence_external_c2",
         "publication_planning_external_c2",
         "manuscript_drafting_external_c2",
+        "document_chat_external_c2",
     }
     # ولا تأذن بما فوق C2 مهما كانت الموافقة.
     assert all(v in ("C1", "C2") for v in _CAPABILITY_CEILINGS.values())
@@ -1805,17 +1807,29 @@ def test_only_the_consent_service_builds_a_grant():
     assert builders <= {"consent.py"}, builders
 
 
-def test_generic_ai_ask_never_passes_a_grant():
-    """§13.2 و§13.6 — الاستثناء لا يسري على /ai/ask ولا على أدوات أخرى."""
+def test_the_chat_ceiling_is_c1_unless_a_named_grant_raises_it():
+    """§13.2 و§13.6 — والاستثناء يبقى استثناءً مسمّى.
+
+    كان هذا الاختبار يشترط ألّا يذكر المسار «إذنًا» إطلاقًا، لأن المحادثة
+    كانت نصًّا محضًا. وحين صارت تُجيب عن مستند مختار، تغيّر السؤال ولم تتغيّر
+    القاعدة: **لا يخرج شيء فوق C1 بلا إذنٍ مسمّى**.
+
+    فالشرط الآن أدقّ: السقف C1 افتراضًا، ولا يُرفع إلا بمنحةٍ من قدرة
+    `document_chat_external_c2` — ولا يُبنى الإذن هنا بل يُقرأ.
+    """
     import inspect
 
     from athera_api.routers import ai as ai_router
 
     source = inspect.getsource(ai_router)
-    assert "grant" not in source
-    assert "consent" not in source
-    # وتصنيف مدخله باقٍ C1.
-    assert 'input_classification="C1"' in source
+    assert 'classification = "C1"' in source
+    assert "consent.chat_authorization" in source
+    assert "input_classification=classification" in source
+    # ولا يُخترع إذن: يُقرأ صفٌّ محسوم أو يُرفض الإرسال.
+    assert "ExternalProcessingGrant(" not in source
+    assert "record_chat_decision" not in source
+    # وبلا منحة لا يُرسل شيء من المستند.
+    assert "document_context = []" in source
 
 
 def test_run_structured_passes_the_grant_it_was_given_and_creates_none():
@@ -2560,3 +2574,100 @@ def test_parseability_is_derived_from_the_parser_itself():
     # وما لا يُقرأ يُقال إنه لا يُقرأ.
     assert not parsing.can_parse("application/octet-stream", "data.sav")
     assert not parsing.can_parse("application/vnd.ms-excel", "sheet.xls")
+
+
+# ══════════ المحادثة تقرأ الملف المختار — بمعرفته المعتمَدة ══════════
+
+def test_the_chat_never_becomes_a_backdoor_around_consent():
+    """**أخطر ما في وصل المحادثة بالملفات.**
+
+    إرسال مقاطع المستند إلى مزوّد خارجي محكومٌ بإذن C2 في مسار المعالجة.
+    فلو قرأت المحادثة المقاطع مباشرةً لالتفّت على ذلك الإذن **بسؤالٍ بريء
+    الشكل** — ولا حارس بينهما.
+
+    فالمحادثة تقرأ ما اعتمده الباحث بنفسه: الذاكرة الموثقة المشتقّة من هذا
+    الملف. وهي معرفته لا محتوى مستنده، وقد مرّت بمراجعته.
+    """
+    import inspect
+
+    from athera_api.routers import ai
+
+    source = inspect.getsource(ai.ask)
+    # لا مقاطع ولا نصّ خام.
+    assert "DocumentChunk" not in source
+    assert "storage.get" not in source and "download" not in source
+    # بل المرشّحون المعتمَدون وذاكرتهم الموثقة.
+    assert 'candidate.status == "approved"' in source
+    assert 'memory.verification_status == "verified"' in source
+
+
+def test_the_chat_reads_only_the_file_the_researcher_pointed_at():
+    """§9 — لا بحث تلقائي في ملفات المستأجر كلها."""
+    import inspect
+
+    from athera_api.routers import ai
+
+    source = inspect.getsource(ai.ask)
+    assert "FactCandidate.file_id == record.id" in source
+    assert "File.tenant_id == principal.tenant_id" in source
+
+
+def test_an_unprocessed_file_is_answered_truthfully():
+    """§10 — يُقال إنه لم يُقرأ، ويُعطى الفعل التالي — لا إجابة مخترَعة."""
+    import inspect
+
+    from athera_api.routers import ai
+
+    source = inspect.getsource(ai.ask)
+    assert "معالجة المستند" in source
+    assert "لم تُقرأ محتوياته بعد" in source
+
+
+def test_document_grounded_answers_are_not_labelled_model_suggestion():
+    """§12 — إجابةٌ من معرفةٍ اعتمدها الباحث ليست اقتراح نموذج."""
+    import inspect
+
+    from athera_api.routers import ai
+
+    source = inspect.getsource(ai.ask)
+    assert 'evidence_state=("verified" if (answer.citations or document_context)' in source
+
+
+def test_the_external_ceiling_rises_for_that_call_alone():
+    """السقف العام يبقى C1 — ويُرفع لنداءٍ يحمل معرفة مستند وحده."""
+    import inspect
+
+    from athera_api.routers import ai
+
+    source = inspect.getsource(ai.ask)
+    assert 'classification = "C1"' in source
+    assert 'classification = "C2"' in source
+    assert "input_classification=classification" in source
+
+
+def test_the_document_chat_capability_is_declared_in_both_registries():
+    """قدرةٌ في وحدة الإذن بلا سقفٍ في البوابة = إذنٌ صحيح ورفضٌ مبهم.
+
+    وهو العطب الذي كلّف S5E دورة كاملة: خريطة السقوف كانت نسخة ثانية
+    للحقيقة، فأُضيفت قدرة هنا ولم تُضف هناك.
+    """
+    from athera_api.providers.gateway import capability_ceiling
+    from athera_api.services import consent
+
+    assert capability_ceiling(consent.CHAT_CAPABILITY) == "C2"
+    assert consent.CAPABILITY_CEILING[consent.CHAT_CAPABILITY] == "C2"
+    # وقدرةٌ لا تأذن لأختها.
+    assert consent.CHAT_CAPABILITY != consent.CAPABILITY
+    assert consent.CHAT_OBJECT_TYPE != consent.OBJECT_TYPE
+
+
+def test_reading_a_document_does_not_authorize_answering_from_it():
+    """إذن القراءة أذن بالاستخراج ليُراجَع؛ والسؤال غرضٌ آخر يُقرّ مرتين."""
+    import inspect
+
+    from athera_api.services import consent
+
+    source = inspect.getsource(consent._chat_row)
+    assert "CHAT_OBJECT_TYPE" in source
+    # ولا يقرأ صفّ إذن القراءة بحال: نوع الكائن مختلف.
+    assert consent.CHAT_OBJECT_TYPE != consent.OBJECT_TYPE

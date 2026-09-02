@@ -121,21 +121,22 @@ def test_the_writer_constraint_names_what_it_may_not_invent():
 
 # ══════════ 3. القدرات الثلاث — ولا واحدة تأذن لأختها ══════════
 
-def test_the_three_capabilities_are_distinct_and_all_capped_at_c2():
+def test_every_capability_is_distinct_and_all_are_capped_at_c2():
     from athera_api.services import consent
 
     capabilities = {consent.CAPABILITY, consent.PLANNING_CAPABILITY,
-                    consent.DRAFTING_CAPABILITY}
-    assert len(capabilities) == 3, "two capabilities collapsed into one name"
+                    consent.DRAFTING_CAPABILITY, consent.CHAT_CAPABILITY}
+    assert len(capabilities) == 4, "two capabilities collapsed into one name"
     assert set(consent.CAPABILITY_CEILING) == capabilities, "a capability has no declared ceiling"
     assert set(consent.CAPABILITY_CEILING.values()) == {"C2"}, "a capability exceeds C2"
 
-    gates = {consent.GATE, consent.PLANNING_GATE, consent.DRAFTING_GATE}
-    assert len(gates) == 3, "two capabilities share a gate code"
+    gates = {consent.GATE, consent.PLANNING_GATE, consent.DRAFTING_GATE,
+             consent.CHAT_GATE}
+    assert len(gates) == 4, "two capabilities share a gate code"
 
     kinds = {consent.OBJECT_TYPE, consent.PLANNING_OBJECT_TYPE,
-             consent.DRAFTING_OBJECT_TYPE}
-    assert len(kinds) == 3
+             consent.DRAFTING_OBJECT_TYPE, consent.CHAT_OBJECT_TYPE}
+    assert len(kinds) == 4
     # الإذن يُعطى لصياغة **مخطوطة** بعينها لا لمشروع كامل.
     assert consent.DRAFTING_OBJECT_TYPE.startswith("manuscript.")
 

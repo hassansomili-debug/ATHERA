@@ -181,6 +181,12 @@ class Orchestrator:
         extra_system: str | None = None,
         # لغة المخرَج المطلوبة — تُملى صراحةً لا تُستنتج من لغة السؤال.
         output_locale: str = "ar",
+        # إذنٌ مسمّى يرفع سقف الإرسال لهذا النداء وحده — يُمرَّر ولا يُبنى.
+        #
+        # وكان `run_structured` وحده يقبله، فبقي المسار الحواري محصورًا
+        # بـC1 حتى لو أذن الباحث صراحةً. والبوابة هي من يقرأ المنحة ويقرّر،
+        # وهذه تنقلها إليها لا أكثر.
+        grant: object | None = None,
     ) -> AgentResult:
         spec: AgentSpec = get_agent(agent_key)
         trace_id = trace_id or uuid.uuid4()
@@ -270,7 +276,8 @@ class Orchestrator:
             classification=_max_classification([*classifications, input_classification]),
         )
         response, model_run = await self._gateway.generate_structured(
-            session, tenant_id=tenant_id, request=request, agent_run_id=run.id
+            session, tenant_id=tenant_id, request=request, agent_run_id=run.id,
+            grant=grant,
         )
 
         # ── 5. العقد ──
