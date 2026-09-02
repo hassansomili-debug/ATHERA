@@ -23,6 +23,7 @@ __all__ = [
     "ReviewPatch", "SubmissionPackage",
     "MANUSCRIPT_SECTIONS", "TRUST_TIERS", "REVIEWER_ROLES", "READINESS_STATUSES",
     "SUBMISSION_PACKAGE_ITEMS",
+    "ManuscriptSectionClaim", "ClaimMemoryLink", "ClaimAnalysisLink",
 ]
 
 
@@ -45,6 +46,20 @@ class Manuscript(Base, TenantScoped, Timestamped):
     )
     g9_approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     g9_readiness_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # ── S5E — من أي فرصة ومن أي هيكل وُلدت هذه المخطوطة ──
+    #
+    # عمودان لا كيانٌ ثالث: `Manuscript → ManuscriptVersion → ManuscriptSection`
+    # تمثّل بالفعل وعاء المسودة وتاريخ مراجعاتها ومحتوى أقسامها. وكلاهما قابل
+    # للعدم — مخطوطات ما قبل S5E لا فرصة لها ولا هيكل، ولا تُخترع لها قيمة.
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("publication_opportunities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    outline_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("manuscript_outlines.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class ManuscriptVersion(Base, TenantScoped, Timestamped):
@@ -80,9 +95,26 @@ class ManuscriptSection(Base, TenantScoped, Timestamped):
     text_ar: Mapped[str | None] = mapped_column(Text, nullable=True)
     text_en: Mapped[str | None] = mapped_column(Text, nullable=True)
     # §19.2 — الادعاءات والتشغيلات مرتبطة بالقسم، فتُفحص بوابة G9 عليها.
+    # **موروثة، وليست مرجعًا** (S5E): السند البنيوي في
+    # `manuscript_section_claims` و`claim_analysis_links`.
     claim_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     analysis_run_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # ── S5E — حال مراجعة القسم وبصمة سياق صياغته ──
+    #
+    # والبصمة على القسم لا على المخطوطة: الإذن يُعطى لصياغة **قسم** من أدلةٍ
+    # بعينها، وأدلةٌ تُضاف بعده لا تُرسل تحته.
+    review_status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    reviewed_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    drafting_context_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    generation_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
 
 
 class JournalProfile(Base, TenantScoped, Timestamped):
@@ -229,3 +261,80 @@ class SubmissionPackage(Base, TenantScoped, Timestamped):
     missing_optional: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     assembled_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     is_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class ManuscriptSectionClaim(Base, TenantScoped, Timestamped):
+    """قسم مخطوطة ← ادعاء، **بمفتاح أجنبي لا بمصفوفة معرّفات** (S5E).
+
+    `ManuscriptSection.claim_ids` تبقى للتوافق ولا تكون مرجعًا: مصفوفة JSON
+    تُجيب اليوم وتكذب غدًا حين يُحذف ادعاء فيبقى معرّفه معلّقًا بلا أن ينبّه
+    أحد. والمفتاح الأجنبي يمنع ذلك أو يعلنه.
+    """
+
+    __tablename__ = "manuscript_section_claims"
+    __table_args__ = (UniqueConstraint("section_id", "claim_id", name="uq_section_claim"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    section_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("manuscript_sections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    claim_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("claims.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class ClaimMemoryLink(Base, TenantScoped, Timestamped):
+    """ادعاء ← ذاكرة الباحث الموثقة (S5E).
+
+    `ClaimEvidenceLink` القائم يشترط مقتطفًا من **مصدر أدبيات خارجي**،
+    وكلا المفتاحين غير قابل للعدم. فلا يستطيع أن يقول: «هذا الادعاء تسنده
+    معرفة الباحث الموثقة» — وذلك بالضبط ما تحتاجه S5E، والسجل الخارجي مغلق
+    حتى S5F.
+
+    **ولا نسخ للإسناد:** الموضع والاقتباس والملف تملكها `researcher_memories`.
+    والسلسلة: قسم → ادعاء → رابط → ذاكرة → إسناد.
+    """
+
+    __tablename__ = "claim_memory_links"
+    __table_args__ = (UniqueConstraint("claim_id", "memory_id", name="uq_claim_memory"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    claim_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("claims.id", ondelete="CASCADE"), nullable=False
+    )
+    # `RESTRICT` عمدًا: دليلٌ يسند ادعاءً في مخطوطة لا يختفي صامتًا.
+    memory_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("researcher_memories.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    support_level: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class ClaimAnalysisLink(Base, TenantScoped, Timestamped):
+    """ادعاء ← **المخرَج التحليلي بعينه** لا التشغيلة وحدها (S5E §27).
+
+    `ManuscriptSection.analysis_run_ids` تثبت أن «تشغيلةً ما موجودة في هذا
+    القسم» — ولا تثبت أن **هذا الرقم** خرج من **ذلك المخرَج**. وقسمٌ فيه
+    تشغيلة انحدار لا يجعل متوسطًا مكتوبًا فيه مسنَدًا.
+
+    و`statistic_excerpt` يحفظ الصيغة كما وردت في الادعاء، فيبقى التطابق
+    قابلًا للفحص بعد شهور.
+
+    **ولا عمود `run_id`:** التشغيلة تُشتقّ من `AnalysisOutputRow.run_id` —
+    مصدر حقيقة واحد لا عمودان يفترقان.
+    """
+
+    __tablename__ = "claim_analysis_links"
+    __table_args__ = (UniqueConstraint("claim_id", "output_id", name="uq_claim_analysis"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    claim_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("claims.id", ondelete="CASCADE"), nullable=False
+    )
+    output_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("analysis_outputs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    statistic_excerpt: Mapped[str] = mapped_column(Text, nullable=False)

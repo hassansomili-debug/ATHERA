@@ -1050,3 +1050,146 @@ def test_the_repository_template_documents_the_separation():
         if target is None or not target.host:
             continue
         assert target.is_local, f"the template points at {target.describe()}"
+
+
+# ══════════ 8. S5E — العزل من أول يوم لا بعد تسريب ══════════
+
+async def _seed_manuscript_for(tid, uid):
+    """مخطوطة بنسخة وقسم — للمستأجر المالك."""
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ResearchProject
+    from athera_api.models.publishing import Manuscript, ManuscriptSection, ManuscriptVersion
+
+    async with tenant_session(tid, uid) as session:
+        project = ResearchProject(tenant_id=tid, working_title_ar="مشروع مخطوطة")
+        session.add(project)
+        await session.flush()
+        row = Manuscript(tenant_id=tid, project_id=project.id,
+                         title_ar="سرٌّ لا يخرج من مستأجره", language="ar", status="draft")
+        session.add(row)
+        await session.flush()
+        version = ManuscriptVersion(
+            tenant_id=tid, manuscript_id=row.id, version_label=f"v{uuid.uuid4().hex[:6]}",
+            created_by=uid, change_reason_ar="إنشاء أولي")
+        session.add(version)
+        await session.flush()
+        session.add(ManuscriptSection(
+            tenant_id=tid, version_id=version.id, section_key="method",
+            text_ar="استخدمت الدراسة المنهج شبه التجريبي بتصميم المجموعتين"))
+        return row.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_tenant_b_cannot_read_tenant_a_manuscript_without_rls(two_tenants):
+    from athera_api.db import tenant_session
+    from athera_api.errors import NotFound
+    from athera_api.routers import publishing
+
+    a, b = two_tenants["a"], two_tenants["b"]
+    manuscript_a = await _seed_manuscript_for(a["tenant_id"], a["user_id"])
+
+    async with bypassing_rls():
+        async with tenant_session(b["tenant_id"], b["user_id"]) as session:
+            with pytest.raises(NotFound) as err:
+                await publishing.readiness(manuscript_a, principal=_principal(b),
+                                           session=session)
+            assert err.value.code == "publishing.manuscript_not_found"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_tenant_b_cannot_list_tenant_a_manuscripts_without_rls(two_tenants):
+    from athera_api.db import tenant_session
+    from athera_api.routers import publishing
+
+    a, b = two_tenants["a"], two_tenants["b"]
+    manuscript_a = await _seed_manuscript_for(a["tenant_id"], a["user_id"])
+
+    async with bypassing_rls():
+        async with tenant_session(b["tenant_id"], b["user_id"]) as session:
+            rows = await publishing.list_manuscripts(principal=_principal(b), session=session)
+    assert manuscript_a not in {row.id for row in rows}
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_tenant_b_cannot_write_a_section_into_tenant_a_manuscript(two_tenants):
+    """الكتابة العابرة — والرفض **قبل** أي تعديل لا بعده."""
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.errors import NotFound
+    from athera_api.models.publishing import ManuscriptSection, ManuscriptVersion
+    from athera_api.routers import publishing
+    from athera_api.schemas.publishing import SectionUpsertRequest
+
+    a, b = two_tenants["a"], two_tenants["b"]
+    manuscript_a = await _seed_manuscript_for(a["tenant_id"], a["user_id"])
+
+    async def _sections() -> int:
+        async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+            return (await session.execute(
+                select(func.count(ManuscriptSection.id))
+                .join(ManuscriptVersion, ManuscriptVersion.id == ManuscriptSection.version_id)
+                .where(ManuscriptVersion.manuscript_id == manuscript_a))).scalar_one()
+
+    before = await _sections()
+    async with bypassing_rls():
+        async with tenant_session(b["tenant_id"], b["user_id"]) as session:
+            with pytest.raises(NotFound):
+                await publishing.upsert_section(
+                    manuscript_a,
+                    SectionUpsertRequest(section_key="results", text_ar="نتيجة مدسوسة"),
+                    principal=_principal(b), session=session)
+    assert await _sections() == before, "قسمٌ كُتب في مخطوطة مستأجر آخر"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_owning_tenant_still_reads_its_manuscript_without_rls(two_tenants):
+    """الضابط الموجب: الفلترة تمنع الغريب ولا تمنع صاحب الحق."""
+    from athera_api.db import tenant_session
+    from athera_api.routers import publishing
+
+    a = two_tenants["a"]
+    manuscript_a = await _seed_manuscript_for(a["tenant_id"], a["user_id"])
+
+    async with bypassing_rls():
+        async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+            result = await publishing.readiness(manuscript_a, principal=_principal(a),
+                                                session=session)
+            assert result.sections_checked >= 1
+            rows = await publishing.list_manuscripts(principal=_principal(a), session=session)
+    assert manuscript_a in {row.id for row in rows}
+
+
+def test_every_manuscript_lookup_constrains_the_tenant():
+    """فحصٌ بنيوي — يعمل في كل بيئة، ويلتقط الانحدار عند كتابته."""
+    import ast
+    import pathlib
+    import re
+
+    source = (pathlib.Path(__file__).resolve().parents[1]
+              / "athera_api" / "routers" / "publishing.py")
+    offenders = []
+    for node in ast.walk(ast.parse(source.read_text())):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "where"):
+            continue
+        clause = ast.unparse(node)
+        if "tenant_id" in clause or "Manuscript" not in clause:
+            continue
+        if re.search(r"\.(id|_id)\s*==", clause):
+            offenders.append(f"{node.lineno}: {clause[:90]}")
+    assert offenders == [], offenders
+
+
+def test_the_manuscript_gate_checks_both_id_and_tenant():
+    import inspect
+
+    from athera_api.routers import publishing
+
+    source = inspect.getsource(publishing._manuscript)
+    assert "Manuscript.id == manuscript_id" in source
+    assert "Manuscript.tenant_id == principal.tenant_id" in source

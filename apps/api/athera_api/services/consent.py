@@ -36,19 +36,28 @@ from . import audit
 # **وقدرةٌ لا تأذن لأختها.** موافقة قراءة المستند (S5C) لا تصلح لتخطيط النشر
 # (S5D): الأولى تُرسل مقاطع رسالة لاستخراج بياناتها، والثانية تُرسل حقائق
 # موثقة لبناء مقترحات. غرضان مختلفان يقرّهما الباحث مرتين.
+# **وتخطيطُ النشر لا يأذن بكتابة الورقة (S5E).** الثانية أذنت بإرسال حقائق
+# لبناء **مقترحات** يقرؤها الباحث ويختار منها؛ والثالثة تأذن بإرسالها لصياغة
+# **نصّ ورقة** يحمل اسمه. ثلاثة أغراض يقرّها الباحث ثلاث مرات.
 CAPABILITY: Final = "document_intelligence_external_c2"
 PLANNING_CAPABILITY: Final = "publication_planning_external_c2"
+DRAFTING_CAPABILITY: Final = "manuscript_drafting_external_c2"
 
 # ما تأذن به كل قدرة **بالضبط**. لا C3 ولا C4 مهما كانت الموافقة.
 CAPABILITY_CEILING: Final[dict[str, str]] = {
     CAPABILITY: "C2",
     PLANNING_CAPABILITY: "C2",
+    DRAFTING_CAPABILITY: "C2",
 }
 
 GATE: Final = "DIC2"
 PLANNING_GATE: Final = "PPC2"
+DRAFTING_GATE: Final = "MDC2"
 OBJECT_TYPE: Final = f"file.{CAPABILITY}"
 PLANNING_OBJECT_TYPE: Final = f"project.{PLANNING_CAPABILITY}"
+# **على المخطوطة لا على المشروع**: الإذن يُعطى لصياغة ورقة بعينها، ومشروعٌ
+# قد يحمل أكثر من مخطوطة لأكثر من فرصة.
+DRAFTING_OBJECT_TYPE: Final = f"manuscript.{DRAFTING_CAPABILITY}"
 
 GRANTED: Final = "granted"
 # أُذن ثم تغيّرت الأدلة — ليست رفضًا، وليست إذنًا للقطة الجديدة.

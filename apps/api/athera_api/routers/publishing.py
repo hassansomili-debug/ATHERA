@@ -67,11 +67,36 @@ def _pick(locale: str, arabic: str, english: str | None) -> str:
     return (english or arabic) if locale == "en" else arabic
 
 
-async def _current_version(session: AsyncSession, manuscript_id: uuid.UUID) -> ManuscriptVersion | None:
+async def _manuscript(session: AsyncSession, principal: Principal,
+                      manuscript_id: uuid.UUID) -> Manuscript:
+    """**البوابة القانونية لملكية المخطوطة** — بالمعرّف والمستأجر معًا (S5E §21).
+
+    درس حادثة P0 يُطبَّق هنا من البداية لا بعد تسريب: RLS خاصيةُ قاعدة،
+    والفلترة الصريحة تفويضُ تطبيق. أيّهما بقي وحده يمنع — ولا واحدة تُترك
+    تعمل وحدها، فقد أثبت الإنتاج أن سطرًا في سرّ نشرٍ يُسقط طبقةً كاملة.
+
+    و404 لا 403: وجود مخطوطة عند مستأجرٍ آخر معلومةٌ لا تُفشى.
+    """
+    row = (
+        await session.execute(
+            select(Manuscript).where(
+                Manuscript.id == manuscript_id,
+                Manuscript.tenant_id == principal.tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise NotFound("publishing.manuscript_not_found")
+    return row
+
+
+async def _current_version(session: AsyncSession, principal: Principal,
+                           manuscript_id: uuid.UUID) -> ManuscriptVersion | None:
     return (
         await session.execute(
             select(ManuscriptVersion)
-            .where(ManuscriptVersion.manuscript_id == manuscript_id)
+            .where(ManuscriptVersion.manuscript_id == manuscript_id,
+                   ManuscriptVersion.tenant_id == principal.tenant_id)
             .order_by(ManuscriptVersion.created_at.desc())
             .limit(1)
         )
@@ -124,7 +149,8 @@ async def upsert_section(
     if payload.section_key not in vocab.MANUSCRIPT_SECTIONS:
         raise AtheraError("publishing.unknown_section", status_code=422,
                           section=payload.section_key)
-    version = await _current_version(session, manuscript_id)
+    await _manuscript(session, principal, manuscript_id)
+    version = await _current_version(session, principal, manuscript_id)
     if version is None:
         raise NotFound("publishing.manuscript_not_found")
 
@@ -133,6 +159,7 @@ async def upsert_section(
             select(ManuscriptSection).where(
                 ManuscriptSection.version_id == version.id,
                 ManuscriptSection.section_key == payload.section_key,
+                ManuscriptSection.tenant_id == principal.tenant_id,
             )
         )
     ).scalar_one_or_none()
@@ -158,14 +185,19 @@ async def upsert_section(
 
 
 async def _readiness(
-    session: AsyncSession, manuscript_id: uuid.UUID, supported: dict[str, set[str]] | None = None
+    session: AsyncSession, principal: Principal, manuscript_id: uuid.UUID,
+    supported: dict[str, set[str]] | None = None,
 ) -> manuscript.ManuscriptReadiness:
-    version = await _current_version(session, manuscript_id)
+    await _manuscript(session, principal, manuscript_id)
+    version = await _current_version(session, principal, manuscript_id)
     if version is None:
         raise NotFound("publishing.manuscript_not_found")
     rows = (
         await session.execute(
-            select(ManuscriptSection).where(ManuscriptSection.version_id == version.id)
+            select(ManuscriptSection).where(
+                ManuscriptSection.version_id == version.id,
+                ManuscriptSection.tenant_id == principal.tenant_id,
+            )
         )
     ).scalars().all()
     supported = supported or {}
@@ -186,7 +218,9 @@ async def list_manuscripts(
     session: AsyncSession = Depends(get_session),
 ) -> list[ManuscriptResponse]:
     rows = (
-        await session.execute(select(Manuscript).order_by(Manuscript.created_at.desc()))
+        await session.execute(select(Manuscript)
+            .where(Manuscript.tenant_id == principal.tenant_id)
+            .order_by(Manuscript.created_at.desc()))
     ).scalars().all()
     return [
         ManuscriptResponse(
@@ -206,7 +240,7 @@ async def readiness(
     session: AsyncSession = Depends(get_session),
 ) -> ManuscriptReadinessResponse:
     """§19.2 — يسمّي ما ينقص بالاسم لا يرفض رفضًا مبهمًا."""
-    result = await _readiness(session, manuscript_id)
+    result = await _readiness(session, principal, manuscript_id)
     return ManuscriptReadinessResponse(
         manuscript_id=manuscript_id, can_pass_g9=result.can_pass_g9,
         issues=[
@@ -229,13 +263,8 @@ async def approve_g9(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ManuscriptResponse:
-    record = (
-        await session.execute(select(Manuscript).where(Manuscript.id == manuscript_id))
-    ).scalar_one_or_none()
-    if record is None:
-        raise NotFound("publishing.manuscript_not_found")
-
-    result = await _readiness(session, manuscript_id)
+    record = await _manuscript(session, principal, manuscript_id)
+    result = await _readiness(session, principal, manuscript_id)
     snapshot = {
         "can_pass_g9": result.can_pass_g9,
         "issues": [i.issue_key for i in result.issues],
@@ -262,7 +291,8 @@ async def approve_g9(
         object_type="manuscript", object_id=manuscript_id, actor_user_id=principal.user_id,
         state_after=snapshot, reason="researcher approved the manuscript at gate G9",
     )
-    version = await _current_version(session, manuscript_id)
+    # الملكية أُثبتت أعلاه بـ`_manuscript` — ولا تُعاد هنا.
+    version = await _current_version(session, principal, manuscript_id)
     return ManuscriptResponse(
         id=record.id, project_id=record.project_id,
         title=_pick(principal.locale, record.title_ar, record.title_en),
@@ -518,7 +548,8 @@ async def apply_patch(
 ) -> PatchResponse:
     """§21 — التطبيق **ينشئ نسخة جديدة** ولا يمس النسخة المعتمدة."""
     patch = (
-        await session.execute(select(ReviewPatch).where(ReviewPatch.id == patch_id))
+        await session.execute(select(ReviewPatch).where(ReviewPatch.id == patch_id,
+                                  ReviewPatch.tenant_id == principal.tenant_id))
     ).scalar_one_or_none()
     if patch is None:
         raise NotFound("publishing.patch_not_found")
@@ -528,16 +559,22 @@ async def apply_patch(
 
     report = (
         await session.execute(
-            select(ReviewerReportRow).where(ReviewerReportRow.id == patch.report_id)
+            select(ReviewerReportRow).where(
+                ReviewerReportRow.id == patch.report_id,
+                ReviewerReportRow.tenant_id == principal.tenant_id)
         )
     ).scalar_one()
     round_row = (
-        await session.execute(select(ReviewRound).where(ReviewRound.id == report.round_id))
+        await session.execute(select(ReviewRound).where(
+            ReviewRound.id == report.round_id,
+            ReviewRound.tenant_id == principal.tenant_id))
     ).scalar_one()
 
     old_version = (
         await session.execute(
-            select(ManuscriptVersion).where(ManuscriptVersion.id == round_row.version_id)
+            select(ManuscriptVersion).where(
+                ManuscriptVersion.id == round_row.version_id,
+                ManuscriptVersion.tenant_id == principal.tenant_id)
         )
     ).scalar_one()
     new_version = ManuscriptVersion(
@@ -551,18 +588,31 @@ async def apply_patch(
     # تُنسخ الأقسام إلى النسخة الجديدة، ويُطبَّق النص المقترح على قسمه وحده.
     sections = (
         await session.execute(
-            select(ManuscriptSection).where(ManuscriptSection.version_id == old_version.id)
+            select(ManuscriptSection).where(
+                ManuscriptSection.version_id == old_version.id,
+                ManuscriptSection.tenant_id == principal.tenant_id)
         )
     ).scalars().all()
     for section in sections:
+        # **قسمٌ تغيّر نصّه يفقد اعتماده؛ وقسمٌ لم يتغيّر يحتفظ به** (§17).
+        #
+        # النسخة الجديدة ليست بدايةً من الصفر: نسخُ الأقسام كما هي مع إسقاط
+        # حال المراجعة كان سيمحو اعتماد الباحث لأقسامٍ لم يمسّها أحد. والعكس
+        # — نقل الاعتماد إلى نصٍّ رُقّع — أسوأ: اعتمادٌ على نصٍّ لم يُقرأ.
+        rewritten = (section.section_key == patch.section_key
+                     and bool(patch.suggested_text_ar))
         session.add(ManuscriptSection(
             tenant_id=principal.tenant_id, version_id=new_version.id,
             section_key=section.section_key,
-            text_ar=(patch.suggested_text_ar
-                     if section.section_key == patch.section_key and patch.suggested_text_ar
-                     else section.text_ar),
+            text_ar=patch.suggested_text_ar if rewritten else section.text_ar,
             text_en=section.text_en, claim_ids=section.claim_ids,
             analysis_run_ids=section.analysis_run_ids, ordinal=section.ordinal,
+            review_status="needs_review" if rewritten else section.review_status,
+            reviewed_by=None if rewritten else section.reviewed_by,
+            reviewed_at=None if rewritten else section.reviewed_at,
+            drafting_context_fingerprint=(
+                None if rewritten else section.drafting_context_fingerprint),
+            generation_run_id=None if rewritten else section.generation_run_id,
         ))
 
     patch.status = "applied"
@@ -570,11 +620,7 @@ async def apply_patch(
     patch.decided_at = dt.datetime.now(dt.UTC)
     patch.applied_in_version_id = new_version.id
 
-    manuscript_row = (
-        await session.execute(
-            select(Manuscript).where(Manuscript.id == round_row.manuscript_id)
-        )
-    ).scalar_one()
+    manuscript_row = await _manuscript(session, principal, round_row.manuscript_id)
     manuscript_row.current_version_id = new_version.id
     # النسخة الجديدة تُلغي اعتماد G9 السابق: الاعتماد كان على نص آخر.
     manuscript_row.g9_approved_at = None
@@ -601,14 +647,17 @@ async def submission_package(
     session: AsyncSession = Depends(get_session),
 ) -> SubmissionPackageResponse:
     """§22.1 — يبني الحزمة مما هو موجود فعلًا ويسمّي الناقص."""
-    version = await _current_version(session, manuscript_id)
+    await _manuscript(session, principal, manuscript_id)
+    version = await _current_version(session, principal, manuscript_id)
     if version is None:
         raise NotFound("publishing.manuscript_not_found")
     sections = {
         row.section_key
         for row in (
             await session.execute(
-                select(ManuscriptSection).where(ManuscriptSection.version_id == version.id)
+                select(ManuscriptSection).where(
+                    ManuscriptSection.version_id == version.id,
+                    ManuscriptSection.tenant_id == principal.tenant_id)
             )
         ).scalars().all()
         if (row.text_ar or "").strip()
