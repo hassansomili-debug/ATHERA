@@ -450,9 +450,9 @@ async def test_one_project_never_shows_another_projects_knowledge(two_tenants):
         session.add(ProjectFile(tenant_id=tid, project_id=owner, file_id=file_id,
                                 state="active", added_by=uid))
         memory = ResearcherMemory(
-            tenant_id=tid, memory_category="methodology",
+            tenant_id=tid, memory_category="verified_evidence",
             statement_ar="المنهج شبه تجريبي بمجموعتين",
-            source_type="document_extraction", source_file_id=file_id,
+            source_type="upload", source_file_id=file_id,
             source_locator="p.4", source_quote="المنهج شبه تجريبي بمجموعتين",
             verification_status="verified", verified_by=uid, verified_at=_now())
         session.add(memory)
@@ -466,7 +466,7 @@ async def test_one_project_never_shows_another_projects_knowledge(two_tenants):
         await session.flush()
         session.add(FactCandidate(
             tenant_id=tid, extraction_run_id=run.id, file_id=file_id,
-            chunk_id=chunk.id, memory_category="methodology",
+            chunk_id=chunk.id, memory_category="verified_evidence",
             field_key="design",
             statement_ar="المنهج شبه تجريبي بمجموعتين",
             quote="المنهج شبه تجريبي بمجموعتين", locator="p.4",
