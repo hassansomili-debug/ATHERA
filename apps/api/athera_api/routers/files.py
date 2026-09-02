@@ -18,6 +18,8 @@ from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.audit import ProvenanceEvent
 from ..models.files import File, FileAccessLog
+from ..models.research import ExtractionRun, FactCandidate
+from ..models.thesis import Thesis
 from ..models.identity import ObjectGrant
 from ..schemas.files import (
     FileCompleteRequest,
@@ -25,6 +27,7 @@ from ..schemas.files import (
     FileInitRequest,
     FileInitResponse,
     FileResponse,
+    LibraryFile,
 )
 from ..services import audit, rbac, storage
 
@@ -33,6 +36,62 @@ CHUNK_BYTES = 1024 * 1024
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 settings = get_settings()
+
+
+@router.get("", response_model=list[LibraryFile])
+async def list_files(
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> list[LibraryFile]:
+    """ملفات الباحث — **وكانت المكتبة لا تستطيع أن تعرضها إطلاقًا.**
+
+    المسار لم يكن موجودًا: `POST /files` يبدأ رفعًا، و`GET /files/{id}` يقرأ
+    واحدًا بمعرّفه. فمن رفع ملفًا لم يجد له أثرًا في الواجهة — كان عليه أن
+    يحفظ معرّفه بنفسه.
+
+    **والحالة تُقال كما هي.** الرفع يُنتج `stored`، والقراءة والاستخراج
+    يجريان في مسار الرسائل (S5C). فتُقرأ حال المعالجة من `extraction_runs`
+    الحقيقية، ولا يُقال «حُلِّل» لملفٍ لم يُقرأ — والصمت أصدق من وعدٍ كاذب.
+    """
+    rows = (await session.execute(
+        select(File)
+        .where(File.tenant_id == principal.tenant_id)
+        .order_by(File.created_at.desc())
+    )).scalars().all()
+
+    library: list[LibraryFile] = []
+    for row in rows:
+        thesis = (await session.execute(
+            select(Thesis).where(Thesis.tenant_id == principal.tenant_id,
+                                 Thesis.file_id == row.id)
+        )).scalar_one_or_none()
+
+        processing, candidates, reviewed = "not_processed", 0, 0
+        if thesis is not None:
+            run = (await session.execute(
+                select(ExtractionRun)
+                .where(ExtractionRun.tenant_id == principal.tenant_id,
+                       ExtractionRun.file_id == row.id)
+                .order_by(ExtractionRun.created_at.desc()).limit(1)
+            )).scalar_one_or_none()
+            if run is not None:
+                processing = run.status
+            decided = (await session.execute(
+                select(FactCandidate.status)
+                .where(FactCandidate.tenant_id == principal.tenant_id,
+                       FactCandidate.file_id == row.id)
+            )).scalars().all()
+            candidates = len(decided)
+            reviewed = sum(1 for status_value in decided if status_value != "unverified")
+
+        library.append(LibraryFile(
+            id=row.id, original_filename=row.original_filename,
+            content_type=row.content_type, size_bytes=row.size_bytes,
+            classification=row.classification, status=row.status,
+            created_at=row.created_at, processing_status=processing,
+            thesis_id=thesis.id if thesis else None,
+            candidates=candidates, reviewed=reviewed))
+    return library
 
 
 @router.post("", response_model=FileInitResponse, status_code=status.HTTP_201_CREATED)

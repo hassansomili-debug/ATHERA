@@ -6,7 +6,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { type Locale, type Messages, translator } from "@/lib/i18n";
 import { usePosture } from "@/lib/posture";
-import { getAccessToken } from "@/lib/session";
 
 /**
  * رفع الرسالة ثم متابعة قراءتها.
@@ -124,24 +123,11 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
     try {
       const body = new FormData();
       body.append("upload", selected);
-      const token = getAccessToken();
-      const base = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-      const response = await fetch(`${base}/api/v1/theses/upload`, {
-        method: "POST",
-        headers: {
-          "Accept-Language": locale,
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body,
+      // عبر عميل الـAPI: حارس الإعداد وتوحيد الأخطاء ومعالجة انتهاء الجلسة
+      // كلها فيه، وكان الالتفاف عليه لأجل ترويسة `FormData` وحدها.
+      const started = await apiFetch<ExtractionState>("/api/v1/theses/upload", {
+        method: "POST", locale, body,
       });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new AtheraApiError(response.status, payload?.error ?? {
-          code: "file.upload_failed", locale, message: t("upload.failed"),
-          messages: { ar: t("upload.failed"), en: t("upload.failed") },
-        });
-      }
-      const started = (await response.json()) as ExtractionState;
       setState(started);
       setPhase(started.status);
     } catch (err) {

@@ -174,7 +174,21 @@
       "expression_of_concern": "Expression of concern",
       "retracted": "Retracted",
       "unknown": "Unknown"
-    }
+    },
+    "myFiles": "My files",
+    "sourcesTab": "Sources and literature",
+    "noFiles": "You have not uploaded a file yet.",
+    "uploaded": "Uploaded",
+    "processing": "Processing",
+    "processed": "Processed",
+    "needsReview": "Awaiting your review",
+    "failedState": "Processing failed",
+    "notProcessed": "Not processed yet",
+    "reviewLink": "Review the extracted knowledge",
+    "downloadFile": "Download",
+    "candidatesCount": "extracted facts",
+    "reviewedCount": "reviewed",
+    "filesNote": "Your files stay on ATHERA's server. No file's content is read without your explicit consent."
   },
   "claims": {
     "title": "Claims ledger",
@@ -549,7 +563,11 @@
     "status_disabled": "Execution not activated",
     "status_provider_error": "Provider unreachable",
     "gateUnreachableTitle": "Could not check runtime status.",
-    "gateUnreachableBody": "We could not ask the server about the model provider — your session may have expired, or it was unreachable. Sign in and retry; we will not claim execution is disabled when we never asked."
+    "gateUnreachableBody": "We could not ask the server about the model provider — your session may have expired, or it was unreachable. Sign in and retry; we will not claim execution is disabled when we never asked.",
+    "soon": "Coming soon",
+    "attached": "Attached",
+    "detach": "Remove attachment",
+    "uploadFailed": "The file could not be uploaded."
   },
   "stages": {
     "idea": "Idea",

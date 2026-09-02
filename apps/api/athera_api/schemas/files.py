@@ -48,3 +48,26 @@ class FileResponse(BaseModel):
 class FileDownloadResponse(BaseModel):
     download_url: str
     expires_in: int
+
+
+class LibraryFile(BaseModel):
+    """ملفٌ في مكتبة الباحث — بحالته الحقيقية لا بحالةٍ متفائلة.
+
+    **و`processing` مشتقّةٌ لا مخزَّنة.** الرفعُ يُنشئ صفًّا حالته `stored`،
+    والمعالجة تجري في مسار الرسائل (S5C) وتُسجَّل في `extraction_runs`. فتُقرأ
+    الحالة من هناك — ولا يُخترع لها عمود، ولا يُقال «حُلِّل» لملفٍ لم يُقرأ.
+    """
+
+    id: uuid.UUID
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    classification: str
+    status: str
+    created_at: dt.datetime
+    # حال المعالجة: `not_processed` أو حالة تشغيلة الاستخراج الحقيقية.
+    processing_status: str = "not_processed"
+    # الرسالة المرتبطة إن وُجدت — فمنها تُفتح المراجعة.
+    thesis_id: uuid.UUID | None = None
+    candidates: int = 0
+    reviewed: int = 0

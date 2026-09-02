@@ -2,10 +2,9 @@
 
 import { useRef, useState } from "react";
 
-import { AtheraApiError } from "@/lib/api";
+import { AtheraApiError, apiFetch } from "@/lib/api";
 import { type Locale, type Messages, translator } from "@/lib/i18n";
 import { usePosture } from "@/lib/posture";
-import { getAccessToken } from "@/lib/session";
 
 /**
  * رفع ملفات البحث.
@@ -29,7 +28,9 @@ interface StoredFile {
 
 const ACCEPT = ".pdf,.docx,.doc,.txt,.ris,.bib,.csv,.xls,.xlsx,.sav,.zsav";
 
-export function FileUpload({ locale, messages }: { locale: Locale; messages: Messages }) {
+export function FileUpload({
+  locale, messages, onUploaded,
+}: { locale: Locale; messages: Messages; onUploaded?: () => void }) {
   const t = translator(messages);
   const { items, loading } = usePosture(locale);
   const storageReady = items.find((i) => i.key === "storage")?.value !== "none";
@@ -46,26 +47,15 @@ export function FileUpload({ locale, messages }: { locale: Locale; messages: Mes
     try {
       const body = new FormData();
       body.append("upload", selected);
-      const token = getAccessToken();
-      const base = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-      // `FormData` يضبط حدّ الأجزاء بنفسه — لا تُضبط Content-Type يدويًا.
-      const response = await fetch(`${base}/api/v1/files/upload`, {
-        method: "POST",
-        headers: {
-          "Accept-Language": locale,
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body,
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new AtheraApiError(response.status, payload?.error ?? {
-          code: "file.upload_failed", locale, message: t("upload.failed"),
-          messages: { ar: t("upload.failed"), en: t("upload.failed") },
-        });
-      }
-      setFile((await response.json()) as StoredFile);
+      // **عبر عميل الـAPI لا `fetch` خامًّا.** كان يبني الطلب بنفسه ليتجنّب
+      // ترويسة JSON التي تكسر `FormData` — فيفقد حارس الإعداد المفقود
+      // وتوحيد رسائل الخطأ ومعالجة انتهاء الجلسة. والعميل يعرف `FormData`
+      // الآن ولا يفرض عليه نوعًا.
+      setFile(await apiFetch<StoredFile>("/api/v1/files/upload", {
+        method: "POST", locale, body,
+      }));
       setState("stored");
+      onUploaded?.();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("upload.failed"));
       setState("failed");
