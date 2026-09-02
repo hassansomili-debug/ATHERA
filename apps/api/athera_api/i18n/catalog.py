@@ -43,6 +43,11 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "المستأجر غير موجود أو خارج نطاق صلاحيتك.",
         "en": "Tenant not found or outside your scope.",
     },
+    "readiness.database_role_unsafe": {
+        "ar": "الخدمة ليست جاهزة: إعداد قاعدة البيانات لا يستوفي شرط عزل المستأجرين.",
+        "en": "Service not ready: the database configuration does not satisfy the "
+              "tenant-isolation requirement.",
+    },
     "tenant.context_missing": {
         "ar": "لم يُحدَّد سياق المستأجر للطلب.",
         "en": "No tenant context was resolved for this request.",

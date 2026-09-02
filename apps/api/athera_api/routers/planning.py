@@ -63,18 +63,48 @@ def _t(locale: str, ar: str, en: str) -> str:
 
 async def _project(session: AsyncSession, principal: Principal,
                    project_id: uuid.UUID) -> ResearchProject:
-    """المشروع — وRLS يحرس المستأجر قبل أي فحص هنا.
+    """**البوابة القانونية الوحيدة للملكية** — بالمعرّف والمستأجر معًا.
 
-    فمشروع مستأجر آخر لا يُرى أصلًا، ولا يُردّ بـ403 يفشي وجوده.
+    كان هذا الفحص يقرأ المشروع بمعرّفه وحده ويتّكل على RLS في حراسة
+    المستأجر. والاتّكال صحيح ما دامت RLS تنطبق — وفي الإنتاج لم تنطبق:
+    رابط زمن التشغيل كان يتصل بدورٍ يحمل `rolbypassrls`، فسقطت الطبقة
+    الوحيدة، ولم يكن خلفها شيء. فقرأ مستأجرٌ فرصَ آخر وخيطه وهيكله، وردّ
+    قراره بـ200.
+
+    فالطبقتان تبقيان معًا: RLS خاصيةُ قاعدة، والفلترة الصريحة تفويضُ
+    تطبيق. أيّهما بقي وحده يمنع التسريب — وهذا هو المقصود.
+
+    و404 لا 403: وجودُ مشروعٍ عند مستأجرٍ آخر معلومةٌ لا تُفشى.
     """
     project = (
         await session.execute(
-            select(ResearchProject).where(ResearchProject.id == project_id)
+            select(ResearchProject).where(
+                ResearchProject.id == project_id,
+                ResearchProject.tenant_id == principal.tenant_id,
+            )
         )
     ).scalar_one_or_none()
     if project is None:
         raise NotFound("planning.project_not_found")
     return project
+
+
+async def _opportunity(session: AsyncSession, principal: Principal,
+                       project_id: uuid.UUID,
+                       opportunity_id: uuid.UUID) -> PublicationOpportunity:
+    """فرصةٌ بمعرّفها **ومشروعها ومستأجرها** — ولا واحدة تُقرأ بدونها."""
+    row = (
+        await session.execute(
+            select(PublicationOpportunity).where(
+                PublicationOpportunity.id == opportunity_id,
+                PublicationOpportunity.project_id == project_id,
+                PublicationOpportunity.tenant_id == principal.tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise NotFound("planning.opportunity_not_found")
+    return row
 
 
 async def _build_context(session: AsyncSession, principal: Principal,
@@ -214,7 +244,7 @@ async def generate_opportunities(
     except Exception as exc:  # noqa: BLE001 — الفشل يُروى في معاملة مستقلة
         logger.exception("planning: run %s failed for project %s", run_id, project_id)
         async with maker() as fresh:
-            await generate.mark_failed(fresh, run_id=run_id,
+            await generate.mark_failed(fresh, tenant_id=tenant_id, run_id=run_id,
                                        error=f"{type(exc).__name__}: {exc}")
         raise
 
@@ -227,7 +257,8 @@ async def generate_opportunities(
             rejected_ungrounded=rejected,
         )
         run = (await fresh.execute(
-            select(PlanningRun).where(PlanningRun.id == run_id))).scalar_one()
+            select(PlanningRun).where(PlanningRun.id == run_id,
+                                      PlanningRun.tenant_id == tenant_id))).scalar_one()
         run.agent_run_id = agent_run_id
         await audit.record(
             fresh, tenant_id=tenant_id, action="planning.opportunities_generated",
@@ -287,21 +318,30 @@ async def list_opportunities(
     rows = (
         await session.execute(
             select(PublicationOpportunity)
-            .where(PublicationOpportunity.project_id == project_id)
+            .where(PublicationOpportunity.project_id == project_id,
+                   PublicationOpportunity.tenant_id == principal.tenant_id)
             .order_by(PublicationOpportunity.evidence_readiness_score.desc().nullslast(),
                       PublicationOpportunity.created_at.desc())
         )
     ).scalars().all()
-    counts = dict((
-        await session.execute(
-            select(OpportunityEvidenceLink.opportunity_id,
-                   func.count(OpportunityEvidenceLink.id))
-            .group_by(OpportunityEvidenceLink.opportunity_id)
-        )
-    ).all())
+    # **عدٌّ مقيَّد بفرص هذه القائمة لا بالجدول كله.** كان الاستعلام يجمع كل
+    # روابط الأدلة في القاعدة ثم يقرأ منها ما يخصّه — وبلا RLS يعني ذلك
+    # قراءة عدّادات مستأجرين آخرين.
+    counts: dict[uuid.UUID, int] = {}
+    if rows:
+        counts = dict((
+            await session.execute(
+                select(OpportunityEvidenceLink.opportunity_id,
+                       func.count(OpportunityEvidenceLink.id))
+                .where(OpportunityEvidenceLink.tenant_id == principal.tenant_id,
+                       OpportunityEvidenceLink.opportunity_id.in_([r.id for r in rows]))
+                .group_by(OpportunityEvidenceLink.opportunity_id)
+            )
+        ).all())
     run = (
         await session.execute(
-            select(PlanningRun).where(PlanningRun.project_id == project_id)
+            select(PlanningRun).where(PlanningRun.project_id == project_id,
+                                      PlanningRun.tenant_id == principal.tenant_id)
             .order_by(PlanningRun.started_at.desc()).limit(1)
         )
     ).scalar_one_or_none()
@@ -328,17 +368,9 @@ async def decide_opportunity(
     ويُكتب في `planning_status` وحده: `status` دورةُ إنتاج ورقة، ولا يمسّها
     قرارُ تخطيط.
     """
+    # الملكية تُثبَت **قبل أي تعديل** — لا كتابة تسبق التفويض.
     await _project(session, principal, project_id)
-    row = (
-        await session.execute(
-            select(PublicationOpportunity).where(
-                PublicationOpportunity.id == opportunity_id,
-                PublicationOpportunity.project_id == project_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        raise NotFound("planning.opportunity_not_found")
+    row = await _opportunity(session, principal, project_id, opportunity_id)
 
     before = row.planning_status
     row.planning_status = "selected" if payload.decision == "select" else "excluded"
@@ -361,19 +393,14 @@ async def decide_opportunity(
     return _view(row, principal.locale)
 
 
-async def _selected(session: AsyncSession, project_id: uuid.UUID,
+async def _selected(session: AsyncSession, principal: Principal,
+                    project_id: uuid.UUID,
                     opportunity_id: uuid.UUID) -> PublicationOpportunity:
-    """الخيط والهيكل لا يُبنيان إلا لفرصة **اختارها الباحث** (§16، §27)."""
-    row = (
-        await session.execute(
-            select(PublicationOpportunity).where(
-                PublicationOpportunity.id == opportunity_id,
-                PublicationOpportunity.project_id == project_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        raise NotFound("planning.opportunity_not_found")
+    """الخيط والهيكل لا يُبنيان إلا لفرصة **اختارها الباحث** (§16، §27).
+
+    والملكية تُفحص أولًا: حالةُ فرصةِ مستأجرٍ آخر ليست جوابًا يُعطى.
+    """
+    row = await _opportunity(session, principal, project_id, opportunity_id)
     if row.planning_status != "selected":
         raise AtheraError("planning.selection_required", status_code=409,
                           planning_status=row.planning_status)
@@ -399,7 +426,7 @@ async def build_thread(
     اجتهادًا هو ربطها بالأدلة، وذلك عملٌ يقيني: أي دليل يصير أي عنصر.
     """
     await _project(session, principal, project_id)
-    opportunity = await _selected(session, project_id, opportunity_id)
+    opportunity = await _selected(session, principal, project_id, opportunity_id)
     context = await _build_context(session, principal, project_id)
 
     await thread.assemble(
@@ -429,10 +456,11 @@ async def read_thread(
     session: AsyncSession = Depends(get_session),
 ) -> ThreadView:
     await _project(session, principal, project_id)
-    opportunity = await _selected(session, project_id, opportunity_id)
+    opportunity = await _selected(session, principal, project_id, opportunity_id)
     context = await _build_context(session, principal, project_id)
 
-    graph = await thread.to_graph(session, project_id=project_id,
+    graph = await thread.to_graph(session, tenant_id=principal.tenant_id,
+                                  project_id=project_id,
                                   opportunity=opportunity, context=context)
     findings = thread.validate(graph)
     # البنيوي يحجب، واللغوي اقتراح مراجعة — والتمييز من المدقّق نفسه لا مني.
@@ -442,7 +470,9 @@ async def read_thread(
                     message_ar=f.detail_ar, message_en=f.detail_en)
         for f in findings
     ]
-    mapped = await thread.evidence_map(session, opportunity_id=opportunity_id)
+    mapped = await thread.evidence_map(session, tenant_id=principal.tenant_id,
+                                       project_id=project_id,
+                                       opportunity_id=opportunity_id)
     entries = [
         EvidenceMapEntry(
             element_id=uuid.UUID(m["element_id"]), element_type=m["element_type"],
@@ -481,7 +511,7 @@ async def build_outline(
     الورقة مرحلةٌ أخرى لا تبدأ هنا.
     """
     await _project(session, principal, project_id)
-    opportunity = await _selected(session, project_id, opportunity_id)
+    opportunity = await _selected(session, principal, project_id, opportunity_id)
     context = await _build_context(session, principal, project_id)
 
     view = await read_thread(project_id, opportunity_id, principal=principal,
@@ -532,6 +562,7 @@ async def read_outline(
             select(ManuscriptOutline).where(
                 ManuscriptOutline.opportunity_id == opportunity_id,
                 ManuscriptOutline.project_id == project_id,
+                ManuscriptOutline.tenant_id == principal.tenant_id,
             ).order_by(ManuscriptOutline.created_at.desc()).limit(1)
         )
     ).scalar_one_or_none()

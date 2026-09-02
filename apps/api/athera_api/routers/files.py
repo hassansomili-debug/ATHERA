@@ -97,7 +97,8 @@ async def complete_upload(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
-    record = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
+    record = (await session.execute(select(File).where(File.id == file_id,
+                                            File.tenant_id == principal.tenant_id))).scalar_one_or_none()
     if record is None:
         raise NotFound("file.not_found")
     await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
@@ -140,7 +141,8 @@ async def get_file(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
-    record = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
+    record = (await session.execute(select(File).where(File.id == file_id,
+                                            File.tenant_id == principal.tenant_id))).scalar_one_or_none()
     if record is None:
         raise NotFound("file.not_found")
     await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
@@ -154,7 +156,8 @@ async def download_file(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> FileDownloadResponse:
-    record = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
+    record = (await session.execute(select(File).where(File.id == file_id,
+                                            File.tenant_id == principal.tenant_id))).scalar_one_or_none()
     if record is None:
         raise NotFound("file.not_found")
     await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
@@ -317,7 +320,8 @@ async def stream_file(
     التخويل يُفحص قبل قراءة بايت واحد، وRLS تمنع أصلًا رؤية سجل مستأجر آخر:
     تخمين معرّف ملف لا يعطي شيئًا.
     """
-    record = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
+    record = (await session.execute(select(File).where(File.id == file_id,
+                                            File.tenant_id == principal.tenant_id))).scalar_one_or_none()
     if record is None:
         raise NotFound("file.not_found")
     await rbac.require_object_action(session, principal.tenant_id, principal.user_id,

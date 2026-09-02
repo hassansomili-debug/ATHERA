@@ -151,17 +151,23 @@ async def assemble(
     return created
 
 
-async def to_graph(session, *, project_id: uuid.UUID, opportunity,
-                   context: ResearchContext) -> ThreadGraph:
-    """يحوّل الصفوف إلى `ThreadGraph` الذي يفهمه المدقّق القائم."""
+async def to_graph(session, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
+                   opportunity, context: ResearchContext) -> ThreadGraph:
+    """يحوّل الصفوف إلى `ThreadGraph` الذي يفهمه المدقّق القائم.
+
+    و`tenant_id` يُمرَّر صراحةً ولا يُترك لـRLS وحدها: الحادثة أثبتت أن
+    طبقةً واحدة قد تسقط بسطرٍ في سرّ نشر، فتبقى الثانية.
+    """
     rows = (await session.execute(
-        select(ThreadElement).where(ThreadElement.project_id == project_id)
+        select(ThreadElement).where(ThreadElement.project_id == project_id,
+                                    ThreadElement.tenant_id == tenant_id)
         .order_by(ThreadElement.ordinal)
     )).scalars().all()
     mine = [r for r in rows
             if (r.metadata_json or {}).get("opportunity_id") == str(opportunity.id)]
     links = (await session.execute(
-        select(ThreadLink).where(ThreadLink.project_id == project_id))).scalars().all()
+        select(ThreadLink).where(ThreadLink.project_id == project_id,
+                                 ThreadLink.tenant_id == tenant_id))).scalars().all()
 
     proposal = (opportunity.readiness_components or {}).get("proposal", {})
     return ThreadGraph(
@@ -186,15 +192,25 @@ def validate(graph: ThreadGraph):
     return checks.run_all(graph)
 
 
-async def evidence_map(session, *, opportunity_id: uuid.UUID):
+async def evidence_map(session, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
+                       opportunity_id: uuid.UUID):
     """خريطة الأدلة (§26): كل عنصر بأدلته وإسنادها.
 
     ولا نسخ للإسناد: الموضع والاقتباس يُقرآن من `researcher_memories` نفسها.
+
+    **والاستعلام كان بلا شرط `WHERE` بتاتًا** — يقرأ كل عناصر الخيط في
+    القاعدة ثم يرشّح بالبايثون على `opportunity_id`. وذلك يصحّ ما دامت RLS
+    ترشّح قبله؛ وحين سقطت صار الاستعلام يمسح الجدول كاملًا. فالشروط الآن
+    في القاعدة: المستأجر والمشروع، ثم الفرصة.
     """
     rows = (await session.execute(
         select(ThreadElement, ThreadElementEvidence, ResearcherMemory)
         .join(ThreadElementEvidence, ThreadElementEvidence.element_id == ThreadElement.id)
         .join(ResearcherMemory, ResearcherMemory.id == ThreadElementEvidence.memory_id)
+        .where(ThreadElement.tenant_id == tenant_id,
+               ThreadElement.project_id == project_id,
+               ThreadElementEvidence.tenant_id == tenant_id,
+               ResearcherMemory.tenant_id == tenant_id)
     )).all()
     mapped: dict[str, dict] = {}
     for element, _link, memory in rows:

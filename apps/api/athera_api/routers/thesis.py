@@ -183,13 +183,17 @@ async def parse_thesis(
     session: AsyncSession = Depends(get_session),
 ) -> ParseResponse:
     """§23.3 — التفكيك يعيد استخدام مفكِّك Sprint 1 وحاجزه: كل قسم بموضعه."""
-    thesis = (await session.execute(select(Thesis).where(Thesis.id == thesis_id))).scalar_one_or_none()
+    thesis = (await session.execute(select(Thesis).where(
+        Thesis.id == thesis_id, Thesis.tenant_id == principal.tenant_id
+    ))).scalar_one_or_none()
     if thesis is None:
         raise NotFound("thesis.not_found")
     if thesis.file_id is None:
         raise AtheraError("thesis.no_file", status_code=422)
 
-    record = (await session.execute(select(File).where(File.id == thesis.file_id))).scalar_one_or_none()
+    record = (await session.execute(select(File).where(
+        File.id == thesis.file_id, File.tenant_id == principal.tenant_id
+    ))).scalar_one_or_none()
     if record is None:
         raise NotFound("file.not_found")
 
@@ -246,7 +250,9 @@ async def mine_opportunities(
     session: AsyncSession = Depends(get_session),
 ) -> MineResponse:
     """§23.4 + §23.8 — التنقيب يسبقه حساب الأعمار وإعلانها."""
-    thesis = (await session.execute(select(Thesis).where(Thesis.id == thesis_id))).scalar_one_or_none()
+    thesis = (await session.execute(select(Thesis).where(
+        Thesis.id == thesis_id, Thesis.tenant_id == principal.tenant_id
+    ))).scalar_one_or_none()
     if thesis is None:
         raise NotFound("thesis.not_found")
 
@@ -402,7 +408,9 @@ async def publication_map(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> PublicationMapResponse:
-    thesis = (await session.execute(select(Thesis).where(Thesis.id == thesis_id))).scalar_one_or_none()
+    thesis = (await session.execute(select(Thesis).where(
+        Thesis.id == thesis_id, Thesis.tenant_id == principal.tenant_id
+    ))).scalar_one_or_none()
     if thesis is None:
         raise NotFound("thesis.not_found")
 
@@ -467,7 +475,9 @@ async def record_consent(
         actor_user_id=principal.user_id,
     )
     party = (
-        await session.execute(select(AuthorshipParty).where(AuthorshipParty.id == agreement.party_id))
+        await session.execute(select(AuthorshipParty).where(
+            AuthorshipParty.id == agreement.party_id,
+            AuthorshipParty.tenant_id == principal.tenant_id))
     ).scalar_one()
     roles = (
         await session.execute(
@@ -530,7 +540,9 @@ async def convert_to_project(
     """التحويل يشترط اجتياز GT1 وحسم أي تنبيه تجزئة (TC-05 + TC-06)."""
     opportunity = (
         await session.execute(
-            select(PublicationOpportunity).where(PublicationOpportunity.id == opportunity_id)
+            select(PublicationOpportunity).where(
+                PublicationOpportunity.id == opportunity_id,
+                PublicationOpportunity.tenant_id == principal.tenant_id)
         )
     ).scalar_one_or_none()
     if opportunity is None:
