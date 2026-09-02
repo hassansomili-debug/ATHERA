@@ -383,7 +383,8 @@ async def draft_section(
         draft, agent_run_id = await Orchestrator().run_structured_detached(
             maker, tenant_id=tenant_id, actor_user_id=actor_id,
             agent_key="scientific_writer", contract=SectionDraft,
-            instruction=generate.INSTRUCTION, payload=generate.build_prompt(context),
+            instruction=generate.instruction_for(section_key),
+            payload=generate.build_prompt(context),
             # §6 — معرفة بحثية غير منشورة: C2. والقدرة تحكم، والإذن مقروء.
             input_classification="C2", output_locale=language, grant=grant,
         )
