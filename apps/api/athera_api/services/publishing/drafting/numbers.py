@@ -60,6 +60,10 @@ SIGNIFICANCE_CLAIMS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"دالّ?(?:ة|ًا|ا)?\s+إحصائي[\u064B-\u0652ًٌٍَُِّْ]*(?:ية|ة|ا)?[\u064B-\u0652]*"
     + _SIGNIFICANCE_TAIL),
     re.compile(r"ذات\s+دلالة\s+إحصائية" + _SIGNIFICANCE_TAIL),
+    # **ودالٌّ «عند مستوى كذا» بلا لفظ «إحصائي».** صيغةٌ شائعة تقرّر نتيجة
+    # الاختبار نفسها، وكانت تمرّ لأن الأنماط تشترط اللفظ.
+    re.compile(r"دالّ?(?:ة|ًا|ا|ًّا)?[\u064B-\u0652]*\s*عند\s+مستوى"
+               r"(?:\s+الدلالة)?\s*[\d.,]*"),
     re.compile(r"\bstatistically\s+significant\b", re.IGNORECASE),
     re.compile(r"\bsignificant\s+difference\b", re.IGNORECASE),
 )

@@ -81,6 +81,57 @@ class AnalysisOutput:
     payload: dict
 
 
+# أنواعٌ إحصائية تُصنَّف بها المخرجات المتاحة (§4).
+_DESCRIPTIVE_KINDS: Final = ("mean", "std_dev", "percentage")
+_EFFECT_KINDS: Final = ("eta_squared", "cohen_d", "r_squared", "correlation", "beta")
+_TEST_KINDS: Final = ("t_statistic", "f_statistic", "composite_reliability")
+
+
+@dataclass(frozen=True, slots=True)
+class StatisticalEvidence:
+    """ما تسمح به الأدلة الاستدلالية المتاحة — **مشتقٌّ من المخرجات المؤهَّلة**.
+
+    **ولا يُترك للنموذج أن يستنتج ما ينقص.** كان يُرسل إليه مخرَجٌ فيه
+    `t = 3.738` و`df = 118` بلا قيمة p، فيحسب الدلالة بنفسه ويكتب «دالّ
+    إحصائيًّا» — ويرفضه المدقّق في كل محاولة. فبقي قسم المناقشة عصيًّا على
+    الكتابة، لا لأن الأدلة لا تكفي لقولٍ صادق، بل لأن النموذج لم يُخبَر
+    **بما لا يملكه**.
+
+    فيُقال له صراحةً: عندك وصفٌ وحجمُ أثرٍ وإحصاءةُ اختبار، **وليس عندك قيمة
+    دلالة**، فلا تدّعِها ولا تشتقّها. وطبقةُ الكتابة ليست محرّك تحليل: ما
+    يلزم لاحقًا من إحصاءات يُنتَج في «البيانات والتحليل» ويُسجَّل مخرَجًا.
+    """
+
+    descriptive_available: bool = False
+    effect_size_available: bool = False
+    test_statistic_available: bool = False
+    p_value_available: bool = False
+
+    @property
+    def significance_claim_allowed(self) -> bool:
+        """ادّعاء الدلالة مأذونٌ بوجود قيمة p مسجَّلة — لا باشتقاقها."""
+        return self.p_value_available
+
+    def as_model_view(self) -> dict:
+        return {
+            "descriptive_available": self.descriptive_available,
+            "effect_size_available": self.effect_size_available,
+            "test_statistic_available": self.test_statistic_available,
+            "p_value_available": self.p_value_available,
+            "significance_claim_allowed": self.significance_claim_allowed,
+        }
+
+
+def statistical_evidence(outputs) -> StatisticalEvidence:
+    kinds = {fact.kind for output in outputs for fact in numbers.facts(output.payload)}
+    return StatisticalEvidence(
+        descriptive_available=bool(kinds & set(_DESCRIPTIVE_KINDS)),
+        effect_size_available=bool(kinds & set(_EFFECT_KINDS)),
+        test_statistic_available=bool(kinds & set(_TEST_KINDS)),
+        p_value_available="p_value" in kinds,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DraftingContext:
     """لقطة صياغة قسم واحد — تعبر حدود المعاملات، فلا ORM فيها ولا جلسة."""
@@ -110,6 +161,11 @@ class DraftingContext:
         """مخرجات التحليل المسموح للنموذج أن يشير إليها — ولا واحد غيرها."""
         return frozenset(str(o.output_id) for o in self.outputs)
 
+    @property
+    def statistics(self) -> StatisticalEvidence:
+        """قدرات الأدلة الإحصائية — تُحسب من المخرجات، ولا تُخزَّن ولا تُعلَن."""
+        return statistical_evidence(self.outputs)
+
     def output(self, output_id: str) -> "AnalysisOutput | None":
         return next((o for o in self.outputs if str(o.output_id) == output_id), None)
 
@@ -124,7 +180,8 @@ class DraftingContext:
             counts[item.role] = counts.get(item.role, 0) + 1
         return {"roles": counts, "total": len(self.items),
                 "thread_elements": len(self.thread_labels),
-                "analysis_outputs": len(self.outputs)}
+                "analysis_outputs": len(self.outputs),
+                "statistical_evidence": self.statistics.as_model_view()}
 
     def model_context(self) -> list[dict]:
         """ما يُرسل فعلًا — مرتَّبًا بالدور، وبلا معرّف ملف ولا رابط تخزين.
@@ -308,5 +365,5 @@ async def build(
 
 __all__ = ["DRAFTING_EXTRA_ROLES", "REDACT_STATISTICS_IN", "REQUIRED_ANY_BY_SECTION",
            "ROLES_BY_SECTION", "THREAD_TYPES_BY_SECTION", "AnalysisOutput",
-           "DraftingContext", "build", "eligible_outputs", "fingerprint",
-           "purpose_of", "roles_for"]
+           "DraftingContext", "StatisticalEvidence", "build", "eligible_outputs",
+           "fingerprint", "purpose_of", "roles_for", "statistical_evidence"]

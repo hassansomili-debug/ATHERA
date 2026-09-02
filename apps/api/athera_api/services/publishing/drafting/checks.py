@@ -219,10 +219,17 @@ def run(draft, context, *, known_memory_ids: frozenset[str],
         if hit.excerpt in grounded_values:
             continue
         if hit.is_bare_significance:
+            # §17 — ادّعاء الدلالة مأذونٌ **بوجود قيمة p مسجَّلة**، ولا يُشتقّ
+            # من (ت) ودرجات حريتها. فالكتابة ليست محرّك تحليل: ما يلزم من
+            # إحصاءٍ يُنتَج في «البيانات والتحليل» ويُسجَّل مخرَجًا.
+            if context.statistics.significance_claim_allowed:
+                continue
             add("significance_without_analysis_output",
-                f"ادّعاء دلالة إحصائية بلا مخرَج تحليل يسنده: «{hit.excerpt}».",
-                f"A statistical-significance claim with no analysis output behind it: "
-                f"'{hit.excerpt}'.",
+                f"ادّعاء دلالة إحصائية بلا قيمة دلالة مسجَّلة: «{hit.excerpt}». "
+                "والقيمة تُنتَج في التحليل وتُسجَّل مخرَجًا، ولا تُشتقّ هنا.",
+                f"A statistical-significance claim with no recorded p-value: "
+                f"'{hit.excerpt}'. That value is produced by analysis and recorded "
+                "as an output; it is not derived here.",
                 excerpt=hit.excerpt)
             break
 
