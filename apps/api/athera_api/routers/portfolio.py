@@ -44,8 +44,14 @@ async def list_projects(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[ProjectResponse]:
+    # ما في السلّة لا يظهر هنا أيضًا: بحثٌ يُحذف في شاشة ويبقى في أخرى
+    # يجعل الحذف كذبًا، والباحث لا يعرف أيّ الشاشتين تقول الحق.
     rows = (
-        await session.execute(select(ResearchProject).order_by(ResearchProject.created_at.desc()))
+        await session.execute(
+            select(ResearchProject)
+            .where(ResearchProject.deleted_at.is_(None))
+            .order_by(ResearchProject.created_at.desc())
+        )
     ).scalars().all()
     return [_to_response(row, principal.locale) for row in rows]
 

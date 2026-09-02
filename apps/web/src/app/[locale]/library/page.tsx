@@ -3,6 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
+import type { LibraryFile } from "@/lib/library";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { FileUpload } from "@/components/FileUpload";
 
@@ -20,18 +21,6 @@ import { FileUpload } from "@/components/FileUpload";
 /** أنواع يقرؤها المفكِّك — والزرّ لا يُعرض على ما لا يُقرأ. */
 const PARSEABLE = /\.(pdf|docx|txt|md)$/i;
 
-interface LibraryFile {
-  id: string;
-  original_filename: string;
-  content_type: string;
-  size_bytes: number;
-  status: string;
-  created_at: string;
-  processing_status: string;
-  thesis_id: string | null;
-  candidates: number;
-  reviewed: number;
-}
 
 /** حال المعالجة نصًّا — **لا لونًا وحده**، ولا وعدًا بما لم يقع. */
 const PROCESSING_LABEL: Record<string, string> = {

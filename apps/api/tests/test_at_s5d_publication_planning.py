@@ -1033,10 +1033,11 @@ def test_the_page_lives_inside_a_project_not_in_global_navigation():
     nav = (WEB / "src" / "components" / "SideNav.tsx").read_text(encoding="utf-8")
     assert "publication-opportunities" not in nav
     assert "publicationPlanning" not in nav
-    # وتُفتح من بطاقة المشروع.
-    portfolio = (WEB / "src" / "app" / "[locale]" / "portfolio"
+    # وتُفتح من داخل البحث نفسه — من قسم «النشر» في مساحة عمله.
+    workspace = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
                  / "page.tsx").read_text(encoding="utf-8")
-    assert "publication-opportunities" in portfolio
+    assert "publication-opportunities" in workspace
+    assert "publishing" in workspace
 
 
 def test_the_three_states_are_never_collapsed_into_one_error():
@@ -1166,7 +1167,7 @@ def test_the_existing_namespaces_are_untouched():
     """§21 — `review` و`thesisReview` لم تُكتَبا فوقهما."""
     ar = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
     assert ar["review"]["title"] == "المراجعة والتحكيم"
-    assert ar["thesisReview"]["title"] == "راجع ما استخرجته أثيرا"
+    assert ar["thesisReview"]["title"] == "راجع ما استخرجته بُبريفا"
     assert "publicationPlanning" in ar and ar["publicationPlanning"]["title"] == "فرص النشر"
 
 

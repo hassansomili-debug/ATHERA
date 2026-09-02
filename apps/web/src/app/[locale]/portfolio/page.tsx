@@ -1,13 +1,21 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { stageKeyFor } from "@/lib/stages";
 import { ContextLinks } from "@/components/ContextLinks";
+import {
+  type ProjectSummary,
+  createProject,
+  listProjects,
+  restoreProject,
+  trashProject,
+} from "@/lib/workspace";
 
 /**
  * محفظة الأبحاث.
@@ -56,10 +64,63 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
   const { locale: raw } = use(params);
   const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
   const t = translator(getMessages(locale));
+  const router = useRouter();
 
   const [projects, setProjects] = useState<Project[]>([]);
+  const [trashed, setTrashed] = useState<ProjectSummary[]>([]);
   const [plan, setPlan] = useState<ReferencePlan | null>(null);
+  const [newTitle, setNewTitle] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const say = useCallback(
+    (err: unknown) =>
+      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
+    [locale, t],
+  );
+
+  const reload = useCallback(() => {
+    apiFetch<Project[]>("/api/v1/portfolio/projects", { locale }).then(setProjects).catch(say);
+    listProjects(locale, true).then(setTrashed).catch(() => setTrashed([]));
+  }, [locale, say]);
+
+  async function startProject(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const created = await createProject(locale, newTitle.trim());
+      setNewTitle("");
+      router.push(`/${locale}/portfolio/${created.id}`);
+    } catch (err) {
+      say(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function moveToTrash(id: string) {
+    setBusy(true);
+    try {
+      await trashProject(locale, id);
+      reload();
+    } catch (err) {
+      say(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function putBack(id: string) {
+    setBusy(true);
+    try {
+      await restoreProject(locale, id);
+      reload();
+    } catch (err) {
+      say(err);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     Promise.all([
@@ -70,10 +131,9 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
         setProjects(rows);
         setPlan(referencePlan);
       })
-      .catch((err) =>
-        setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
-      );
-  }, [locale, t]);
+      .catch(say);
+    listProjects(locale, true).then(setTrashed).catch(() => setTrashed([]));
+  }, [locale, say]);
 
   return (
     <>
@@ -91,17 +151,39 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
         </article>
       ) : null}
 
+      {/* **الاستمارةُ قبل الفكرة توقف الباحث عند الباب.** فعنوانٌ واحد يكفي. */}
+      <article className="card" style={{ marginBlockEnd: "var(--space)" }}>
+        <div className="metric-label">{t("project.newTitle")}</div>
+        <p style={{ marginBlockStart: 4, fontSize: 14 }}>{t("project.newHint")}</p>
+        <form className="form" onSubmit={startProject} style={{ maxInlineSize: 520 }}>
+          <label htmlFor="new-project-title">{t("project.titleLabel")}</label>
+          <input
+            id="new-project-title"
+            value={newTitle}
+            minLength={3}
+            required
+            placeholder={t("project.titlePlaceholder")}
+            onChange={(event) => setNewTitle(event.target.value)}
+          />
+          <button type="submit" disabled={busy || newTitle.trim().length < 3}>
+            {busy ? t("project.creating") : t("project.create")}
+          </button>
+        </form>
+      </article>
+
       {projects.length === 0 ? <p style={{ color: "var(--muted)" }}>{t("portfolio.empty")}</p> : null}
 
       <div style={{ display: "grid", gap: 8 }}>
         {projects.map((project) => (
           <article className="card" key={project.id}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <strong>{project.working_title}</strong>
-
+              {/* العنوان هو المدخل — **ولا يُنسخ معرّف**. */}
+              <Link href={`/${locale}/portfolio/${project.id}`}>
+                <strong>{project.working_title}</strong>
+              </Link>
+              <span className="chip chip-stage">{t(`stages.${stageKeyFor(project.current_gate)}`)}</span>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockStart: 10 }}>
-              <span className="chip chip-stage">{t(`stages.${stageKeyFor(project.current_gate)}`)}</span>
               {project.study_type ? <span className="chip chip-muted">{project.study_type}</span> : null}
               {project.target_journal_name ? (
                 <span className="chip chip-muted">
@@ -109,15 +191,42 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
                 </span>
               ) : null}
             </div>
-            {/* فرص النشر أداةُ مشروع — تُفتح من داخله لا من قائمة عامة (§1). */}
-            <div style={{ marginBlockStart: 10 }}>
-              <Link
-                className="action"
-                href={`/${locale}/portfolio/${project.id}/publication-opportunities`}
-              >
-                <strong>{t("publicationPlanning.title")}</strong>
-                <span>{t("publicationPlanning.subtitle")}</span>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockStart: 10 }}>
+              <Link className="chip chip-muted" href={`/${locale}/portfolio/${project.id}`}>
+                {t("project.open")}
               </Link>
+              <button
+                type="button"
+                className="chip chip-muted"
+                disabled={busy}
+                onClick={() => moveToTrash(project.id)}
+              >
+                {t("project.trash")}
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+
+      {/* السلّة: لا يُتلف شيء، والاستعادة ترجع البحث كما كان. */}
+      <h2>{t("project.trashTab")}</h2>
+      <p className="metric-label" style={{ marginBlockStart: 0 }}>{t("project.trashNote")}</p>
+      {trashed.length === 0 ? (
+        <p style={{ color: "var(--muted)" }}>{t("project.emptyTrash")}</p>
+      ) : null}
+      <div style={{ display: "grid", gap: 8 }}>
+        {trashed.map((project) => (
+          <article className="card" key={project.id}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <span>{project.title_ar}</span>
+              <button
+                type="button"
+                className="chip chip-stage"
+                disabled={busy}
+                onClick={() => putBack(project.id)}
+              >
+                {t("project.restore")}
+              </button>
             </div>
           </article>
         ))}

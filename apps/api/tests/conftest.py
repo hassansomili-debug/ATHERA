@@ -84,8 +84,11 @@ async def db_ready() -> bool:
         message = str(exc).lower()
         unreachable = any(
             marker in message
+            # «Connect call failed» هي صيغة asyncpg على macOS بلا Docker —
+            # وكانت تفوت القائمة فتفشل الحزمة بضجيج بدل أن تُتخطى بوضوح.
             for marker in ("could not connect", "connection refused",
-                           "does not exist", "no such file", "timeout")
+                           "connect call failed", "does not exist",
+                           "no such file", "timeout")
         )
         if unreachable:
             pytest.skip(f"PostgreSQL is not reachable: {exc}")

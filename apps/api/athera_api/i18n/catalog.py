@@ -184,6 +184,34 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "أجنت غير معروف.",
         "en": "Unknown agent.",
     },
+    "workspace.project_not_found": {
+        "ar": "لم يُعثر على هذا البحث.",
+        "en": "This project was not found.",
+    },
+    "workspace.file_not_found": {
+        "ar": "لم يُعثر على هذا الملف في مكتبتك.",
+        "en": "This file was not found in your library.",
+    },
+    "workspace.file_not_linked": {
+        "ar": "هذا الملف غير مرتبط بهذا البحث.",
+        "en": "This file is not linked to this project.",
+    },
+    "workspace.source_not_found": {
+        "ar": "لم يُعثر على هذا المرجع.",
+        "en": "This source was not found.",
+    },
+    "workspace.source_not_linked": {
+        "ar": "هذا المرجع غير مرتبط بهذا البحث.",
+        "en": "This source is not linked to this project.",
+    },
+    "workspace.removal_needs_acknowledgement": {
+        "ar": "إزالة هذا الملف تقطع السند عن عملٍ اعتمدته. راجع ما يترتب ثم أكّد.",
+        "en": "Removing this file breaks support for work you approved. Review the consequences, then confirm.",
+    },
+    "workspace.source_still_cited": {
+        "ar": "لا يمكن استبعاد مرجعٍ ما زال يُستشهد به في ادعاءات هذا البحث.",
+        "en": "A source still cited by this project's claims cannot be excluded.",
+    },
     "portfolio.profile_required": {
         "ar": "يلزم إنشاء الملف الأكاديمي قبل إنشاء مشروع بحثي.",
         "en": "An academic profile is required before creating a research project.",
