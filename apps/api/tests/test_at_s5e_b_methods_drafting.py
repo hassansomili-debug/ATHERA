@@ -851,3 +851,107 @@ def test_every_declared_capability_can_actually_leave_the_gateway():
     for capability in (consent.CAPABILITY, consent.PLANNING_CAPABILITY,
                        consent.DRAFTING_CAPABILITY):
         assert capability_ceiling(capability) == "C2", capability
+
+
+# ══════════ 10. ما كشفه أول نداء إنتاجي حقيقي ══════════
+
+def test_a_transport_envelope_is_unwrapped_not_rejected():
+    """نداءٌ إنتاجي أعاد `{"parameters": {...}}` والمحتوى بداخله مطابق تمامًا.
+
+    والنداء التالي بالمدخلات نفسها أعاد الشكل المتوقّع — فالسلوك غير حتمي،
+    وتشغيلةٌ من كل بضع تشغيلات كانت تسقط بـ502 على مخرَجٍ سليم.
+    """
+    from athera_api.brain.contracts import parse_contract
+    from athera_api.services.publishing.drafting.contracts import SectionDraft
+
+    inner = {"section_text_ar": "نصّ المنهجية", "claims": [], "missing_evidence": []}
+    for envelope in ("parameters", "arguments", "input"):
+        parsed = parse_contract(SectionDraft, {envelope: inner})
+        assert parsed.section_text_ar == "نصّ المنهجية", envelope
+
+
+def test_unwrapping_never_becomes_repair():
+    """الترميم يخترع قيمة؛ وهذا يزيل غلافًا لا يحمل معلومة — ولا يتجاوز ذلك."""
+    from athera_api.brain.contracts import ContractViolation, parse_contract
+    from athera_api.services.publishing.drafting.contracts import SectionDraft
+
+    # مفتاحان: ليس غلافًا.
+    with pytest.raises(ContractViolation):
+        parse_contract(SectionDraft, {"parameters": {"section_text_ar": "نصّ"},
+                                      "extra": 1})
+    # اسم غير معروف: يمرّ كما هو ويُحاسَب على العقد.
+    with pytest.raises(ContractViolation):
+        parse_contract(SectionDraft, {"payload": {"section_text_ar": "نصّ"}})
+    # وغلافٌ فارغ لا يصير محتوى.
+    with pytest.raises(ContractViolation):
+        parse_contract(SectionDraft, {"parameters": {}})
+
+
+def test_an_envelope_name_that_is_a_real_field_is_never_stripped():
+    """المحتوى يسبق الغلاف: عقدٌ يعلن الاسم يحتفظ به."""
+    from pydantic import BaseModel
+
+    from athera_api.brain.contracts import parse_contract
+
+    class WithField(BaseModel):
+        parameters: dict
+
+    parsed = parse_contract(WithField, {"parameters": {"a": 1}})
+    assert parsed.parameters == {"a": 1}
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_contract_violation_survives_its_own_transaction(two_tenants, monkeypatch):
+    """سجلّ الفشل كان يبتلع نفسه — والإنتاج أثبته: تشغيلة علِقت `running`.
+
+    كل `raise` كان يقع داخل `async with`، فيُلغي المعاملة التي كتب فيها
+    فشله للتوّ. وهو العطب الذي أصلحه S5C في مسار المستندات، عاد في المسار
+    المنفصل.
+    """
+    from sqlalchemy import select
+
+    from athera_api.brain.contracts import ContractViolation
+    from athera_api.brain.orchestrator import Orchestrator
+    from athera_api.db import tenant_session
+    from athera_api.models.brain import AgentRun
+    from athera_api.providers import gateway as gateway_module
+    from athera_api.providers.base import ModelResponse, ModelUsage
+    from athera_api.services.publishing.drafting.contracts import SectionDraft
+
+    tenant = two_tenants["a"]
+    tid, uid = tenant["tenant_id"], tenant["user_id"]
+
+    class _BadProvider:
+        name = "anthropic"
+
+        async def generate_structured(self, request):
+            # مخرَجٌ لا يطابق العقد ولا هو غلافٌ معروف.
+            return ModelResponse(content="", provider="anthropic", model="fake",
+                                 structured={"unexpected": {"shape": True}},
+                                 usage=ModelUsage(input_tokens=1, output_tokens=1,
+                                                  latency_ms=1))
+
+        async def embed(self, texts): ...
+        async def stream(self, request): ...
+        async def tool_call(self, request): ...
+
+    monkeypatch.setattr(gateway_module, "build_provider", lambda: _BadProvider())
+
+    def _maker():
+        return tenant_session(tid, uid)
+
+    with pytest.raises(ContractViolation):
+        await Orchestrator().run_structured_detached(
+            _maker, tenant_id=tid, actor_user_id=uid, agent_key="scientific_writer",
+            contract=SectionDraft, instruction="x", payload="{}",
+            input_classification="C1", output_locale="ar")
+
+    async with tenant_session(tid, uid) as session:
+        run = (await session.execute(
+            select(AgentRun).where(AgentRun.tenant_id == tid,
+                                   AgentRun.agent_key == "scientific_writer")
+            .order_by(AgentRun.started_at.desc()).limit(1))).scalar_one()
+    assert run.status == "failed", "التشغيلة بقيت `running` — الفشل لم يُودَع"
+    assert run.error and "ContractViolation" in run.error
+    assert run.finished_at is not None
