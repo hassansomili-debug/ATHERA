@@ -35,12 +35,6 @@ def test_a_policy_cannot_be_written_with_an_unknown_key():
         policy.SectionPolicy(key="methods")
 
 
-def test_a_policy_cannot_redact_statistics_it_forbids():
-    """حجبُ ما لا يجوز أصلًا تناقضٌ صامت — يُرفض عند التعريف."""
-    with pytest.raises(ValueError, match="meaningless"):
-        policy.SectionPolicy(key="title", statistics="forbidden", redact_statistics=True)
-
-
 @pytest.mark.parametrize("module_attr", [
     ("athera_api.services.publishing.drafting.context", "REDACT_STATISTICS_IN"),
     ("athera_api.services.publishing.drafting.context", "ROLES_BY_SECTION"),
@@ -239,3 +233,35 @@ def test_a_third_section_agreeing_with_neither_is_caught():
         S("abstract", "شملت الدراسة 300 مشاركًا"),
     ])
     assert "sample_size_mismatch" in _keys(issues)
+
+
+# ══════════ 5. قسمٌ مفعَّل بلا أدوار قسمٌ ميت ══════════
+
+def test_every_enabled_section_can_actually_be_drafted():
+    """**عطبان وجدهما الإنتاج.** «العنوان» و«النظرية» كانا مفعَّلين بلا أدوار
+    أدلة — فسياقهما يعود بصفر دليل دائمًا، ولا يُكتبان أبدًا.
+
+    وقسمٌ يُعرض للباحث «لم يبدأ» ولا يستطيع أن يبدأ أسوأ من قسمٍ معطَّل
+    معلَن: الأول يَعِد، والثاني يقول الحقيقة.
+    """
+    for key in sorted(policy.ENABLED_SECTIONS):
+        spec = policy.POLICIES[key]
+        assert spec.roles, f"{key}: قسم مفعَّل بلا أدوار أدلة"
+        for role in spec.required_any:
+            assert role in spec.roles, f"{key}: يشترط دور {role} ولا يُرسل إليه"
+
+
+def test_redaction_follows_the_evidence_not_a_hand_written_list():
+    """**عطبٌ حجب الخاتمة في الإنتاج.**
+
+    كان الحجب مقصورًا على «النتائج»، فوصلت الخاتمةَ ذاكرةٌ تقول «فروق دالة
+    إحصائيًّا عند مستوى 0.05» بلا مخرَج يسندها — فأعادتها، فرُفضت. والقسم
+    الذي **لا** يجوز أن يحمل إحصاءً أولى بالحجب من الذي يجوز.
+    """
+    for key, spec in policy.POLICIES.items():
+        assert spec.redact_statistics == ("result" in spec.roles), key
+    assert policy.POLICIES["conclusion"].redact_statistics is True
+    assert policy.POLICIES["discussion"].redact_statistics is True
+    assert policy.POLICIES["abstract"].redact_statistics is True
+    # والمنهجية لا تصلها أدلة نتائج، فلا شيء يُحجب عنها.
+    assert policy.POLICIES["method"].redact_statistics is False
