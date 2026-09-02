@@ -205,3 +205,37 @@ def test_readiness_reads_supported_claims_from_the_relational_links():
 
     source = inspect.getsource(publishing._readiness)
     assert 'status == "supported"' in source
+
+
+# ══════════ 4. المدقّق لا يعاقب الدقّة ══════════
+
+def test_a_total_and_a_per_group_count_are_not_a_mismatch():
+    """**كشفٌ كاذب وجدته النسخة الإنتاجية.**
+
+    ورقةٌ صحيحة تذكر الكلّ في المنهجية، والكلَّ والمجموعةَ في النتائج:
+    «120 طالبًا … 60 لكل مجموعة». واشتراطُ التطابق يجعل المدقّق يعاقب
+    الدقّة — وحارسٌ يعاقب الصدق يُعطَّل، ثم لا يحرس شيئًا.
+    """
+    issues = consistency.evaluate([
+        S("method", "بلغت عينة الدراسة 120 طالبًا"),
+        S("results", "من أصل 120 طالبًا، بواقع n=60 لكل مجموعة"),
+    ])
+    assert "sample_size_mismatch" not in _keys(issues), [i.excerpt for i in issues]
+
+
+def test_two_sections_with_no_number_in_common_still_conflict():
+    """والاستثناء لا يتّسع: عددان لا يشتركان في شيء تناقضٌ حقيقي."""
+    issues = consistency.evaluate([
+        S("method", "بلغت عينة الدراسة 120 طالبًا"),
+        S("results", "شارك 240 طالبًا"),
+    ])
+    assert "sample_size_mismatch" in _keys(issues)
+
+
+def test_a_third_section_agreeing_with_neither_is_caught():
+    issues = consistency.evaluate([
+        S("method", "بلغت عينة الدراسة 120 طالبًا"),
+        S("results", "من أصل 120 طالبًا بواقع n=60 لكل مجموعة"),
+        S("abstract", "شملت الدراسة 300 مشاركًا"),
+    ])
+    assert "sample_size_mismatch" in _keys(issues)

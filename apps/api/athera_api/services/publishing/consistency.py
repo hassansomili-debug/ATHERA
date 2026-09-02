@@ -98,12 +98,25 @@ def evaluate(sections: list[SectionText]) -> list[ManuscriptIssue]:
         for key, section in by_key.items() if section.text
     }
     stated = {key: values for key, values in counts.items() if values}
-    if len({v for values in stated.values() for v in values}) > 1:
-        pairs = sorted(f"{key}={'،'.join(sorted(values))}" for key, values in stated.items())
-        add("sample_size_mismatch", sorted(stated),
-            f"حجم العينة يختلف بين الأقسام: {' · '.join(pairs)}.",
-            f"The stated sample size differs across sections: {' · '.join(pairs)}.",
-            excerpt=" · ".join(pairs))
+
+    # **التقاطع لا التطابق.** ورقةٌ صحيحة تذكر الكلّ في المنهجية والكلَّ
+    # والمجموعةَ في النتائج: «120 طالبًا … 60 لكل مجموعة». والمجموعتان
+    # {120} و{120، 60} متسقتان تمامًا؛ واشتراطُ التطابق يجعل المدقّق يعاقب
+    # الدقّة — وحارسٌ يعاقب الصدق يُعطَّل، ثم لا يحرس شيئًا.
+    #
+    # والتناقض أن يذكر قسمان عددين **لا يشتركان في شيء**.
+    conflicting = sorted(
+        (left, right) for left in stated for right in stated
+        if left < right and not (stated[left] & stated[right])
+    )
+    if conflicting:
+        left, right = conflicting[0]
+        pairs = " · ".join(
+            f"{key}={'،'.join(sorted(stated[key]))}" for key in (left, right))
+        add("sample_size_mismatch", (left, right),
+            f"حجم العينة يختلف بين الأقسام: {pairs}.",
+            f"The stated sample size differs across sections: {pairs}.",
+            excerpt=pairs)
 
     # ── 2. تصميمٌ يختلف بين الأقسام ──
     designs = {key: _designs(section.text)
