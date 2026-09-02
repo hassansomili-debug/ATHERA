@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import uuid
+from dataclasses import dataclass
 from typing import Final
 
 from sqlalchemy import select
@@ -23,7 +25,7 @@ from ....models.publishing import (
     ManuscriptSectionClaim,
 )
 from . import numbers
-from .contracts import SectionDraft
+from .contracts import DraftedClaim, SectionDraft
 
 INSTRUCTION: Final = (
     "أنت كاتب علمي. اكتب قسمًا واحدًا من ورقة بحثية **من الأدلة الموثقة "
@@ -92,20 +94,102 @@ def build_prompt(context) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
-def ground(draft: SectionDraft, context) -> tuple[list, list[str]]:
+@dataclass(slots=True)
+class BoundClaim:
+    """ادعاءٌ بعد الترشيح — بأدلته المقبولة ومخرجاته المقبولة.
+
+    و`derived_from_section_span` يفصل ما كتبه النموذج عمّا استخرجه الخادم من
+    نصّه: الثاني فهرسةُ نصٍّ قائم لا إنشاءُ ادعاء، والفرق يُسجَّل ولا يُطمس.
+    """
+
+    claim: DraftedClaim
+    memory_ids: list[str]
+    output_ids: list[str]
+    derived_from_section_span: bool = False
+
+
+def ground(draft: SectionDraft, context) -> tuple[list[BoundClaim], list[str]]:
     """يُسقط كل إسنادٍ إلى معرّف لم يُرسَل — **ولا يُصحَّح** (§16).
 
     نموذجٌ يخترع معرّفًا يخترع سندًا؛ وتصحيحه بأقرب معرّف يجعل الاختلاق
     يبدو إسنادًا. فيُحذف الرابط، ويُعلَن الحذف في الكشوفات.
     """
-    known = context.memory_ids
-    grounded: list = []
+    known_memories = context.memory_ids
+    known_outputs = context.output_ids
+    grounded: list[BoundClaim] = []
     dropped: list[str] = []
     for claim in draft.claims:
-        memories = [m for m in claim.memory_ids if m in known]
-        dropped.extend(m for m in claim.memory_ids if m not in known)
-        grounded.append((claim, memories))
+        memories = [m for m in claim.memory_ids if m in known_memories]
+        outputs = [o for o in claim.analysis_output_ids if o in known_outputs]
+        dropped.extend(m for m in claim.memory_ids if m not in known_memories)
+        dropped.extend(o for o in claim.analysis_output_ids if o not in known_outputs)
+        grounded.append(BoundClaim(claim=claim, memory_ids=memories,
+                                   output_ids=outputs))
     return grounded, dropped
+
+
+_SENTENCE_BOUNDARY = re.compile(r"[.!?؟\n]")
+
+
+def _span_around(text: str, start: int, end: int) -> str:
+    """الجملة التي تحوي هذا الموضع — **من النصّ كما هو، بلا تعديل حرف**."""
+    left = 0
+    for match in _SENTENCE_BOUNDARY.finditer(text, 0, start):
+        left = match.end()
+    right = len(text)
+    boundary = _SENTENCE_BOUNDARY.search(text, end)
+    if boundary:
+        right = boundary.end()
+    return text[left:right].strip()
+
+
+def bind_statistics(draft: SectionDraft, context, bound: list[BoundClaim]) -> int:
+    """يربط كل قيمة إحصائية في النثر بمخرَجها **بعينه** (§6، §7).
+
+    **المشكلة التي يحلّها:** النموذج قد يكتب الرقم في نصّ القسم ويعلّق معرّف
+    المخرَج على ادعاءٍ آخر. فيصير رقمٌ حقيقي بلا إسناد بنيوي — لا لأنه
+    مخترَع، بل لأن الربط وقع في المكان الخطأ.
+
+    **وما لا يفعله:** لا يعيد صياغة نثر، ولا يخترع رقمًا، ولا يغيّر قيمة،
+    ولا يستنتج دلالة. حين لا يجد ادعاءً يحمل القيمة، يقتطع **الجملة كما هي
+    حرفًا بحرف** من نصّ القسم ويجعلها ادعاءً ذرّيًّا. وهي فهرسةُ نصٍّ قائم.
+
+    **والغموض يفشل مغلقًا:** مخرَجان يحملان القيمة نفسها ⇒ لا يُختار أحدهما،
+    ويبقى الكشف ظاهرًا.
+
+    ويعيد عدد الادعاءات الذرّية التي أُنشئت.
+    """
+    text = draft.section_text_ar or ""
+    normalised = numbers.normalise(text)
+    created = 0
+
+    for hit in numbers.find(text):
+        if hit.value is None:
+            continue
+        carrying = [o for o in context.outputs
+                    if any(numbers.fact_supports(hit, fact)
+                           for fact in numbers.facts(o.payload))]
+        if len(carrying) != 1:
+            continue  # لا مخرَج، أو غموض — والكشوفات تقولها
+        output_id = str(carrying[0].output_id)
+
+        holder = next(
+            (b for b in bound
+             if hit.excerpt in numbers.normalise(b.claim.text_ar)), None)
+        if holder is not None:
+            if output_id not in holder.output_ids:
+                holder.output_ids.append(output_id)
+            continue
+
+        # §7 — ادعاءٌ ذرّي لكل قيمة: مخرَجٌ واحد قد يحمل عدة نتائج، وجمعها
+        # في ادعاء واحد يُضعف الإسناد أو يصطدم بقيد التفرّد.
+        span = _span_around(text, hit.start, hit.end) or normalised[hit.start:hit.end]
+        bound.append(BoundClaim(
+            claim=DraftedClaim(text_ar=span, claim_type="empirical", origin="fact",
+                               memory_ids=[], analysis_output_ids=[output_id]),
+            memory_ids=[], output_ids=[output_id], derived_from_section_span=True))
+        created += 1
+    return created
 
 
 def _claim_status(origin: str, has_evidence: bool) -> str:
@@ -147,9 +231,11 @@ async def persist(
     await session.flush()
 
     claim_ids: list[str] = []
-    memory_links = analysis_links = 0
-    for ordinal, (drafted, memories) in enumerate(grounded, start=1):
-        outputs = [o for o in drafted.analysis_output_ids if o in known_output_ids]
+    memory_links = analysis_links = derived = 0
+    for ordinal, item in enumerate(grounded, start=1):
+        drafted, memories = item.claim, item.memory_ids
+        outputs = [o for o in item.output_ids if o in known_output_ids]
+        derived += 1 if item.derived_from_section_span else 0
         claim = Claim(
             tenant_id=tenant_id, project_id=project_id, text_ar=drafted.text_ar,
             claim_type=drafted.claim_type,
@@ -187,6 +273,8 @@ async def persist(
     await session.flush()
     return {"claims": len(claim_ids), "memory_links": memory_links,
             "analysis_links": analysis_links,
+            # §6 — يُسجَّل كم ادعاءً استُخرج من نصّ القسم لا من مخرَج النموذج.
+            "claims_derived_from_section_spans": derived,
             "missing_evidence": len(draft.missing_evidence)}
 
 

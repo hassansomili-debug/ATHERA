@@ -88,6 +88,20 @@ _CITATION_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
+# علاماتُ الحجب الداخلية — **لا تظهر في نصّ مخطوطة أبدًا**.
+#
+# نضعها في الأدلة المُرسَلة لنقول للنموذج «هذه القيمة غير متاحة»، وهي لغةٌ
+# بيننا وبينه لا نصٌّ يُنشر. وظهورها في المسودة يعني أن النموذج نسخ تعليماتنا
+# إلى الورقة — وتنظيفها صامتًا يجعلنا ندّعي أن المخرَج مرّ كما هو.
+INTERNAL_MARKERS: Final[tuple[str, ...]] = (
+    "[غير متاح]",
+    "[قيمة إحصائية غير متاحة بنيويًّا]",
+    "[دلالة إحصائية غير مسنَدة بمخرَج تحليل]",
+    "غير متاح بنيوي",
+    "[unavailable]",
+    "[not structurally available]",
+)
+
 # أقسامٌ وصفية: تقول ما لوحظ ولا تفسّره (§2).
 _DESCRIPTIVE_SECTIONS: Final[frozenset[str]] = frozenset({"results"})
 
@@ -105,21 +119,40 @@ class DraftIssue:
     is_blocking: bool = True
 
 
+def outputs_carrying(hit, context) -> list:
+    """المخرجات المؤهَّلة التي تحمل هذه القيمة **بنوعها وأبعادها** (المستوى أ).
+
+    وهذا سؤال «هل يجوز أن يظهر هذا الرقم في القسم؟» — يُجاب من المخرجات
+    المتاحة كلها، لا من ادعاءٍ بعينه. وكان الخلط بين هذا السؤال وسؤال
+    الإسناد يجعل رقمًا حقيقيًّا يُرفض لأن النموذج علّق معرّف مخرَجه على
+    ادعاءٍ آخر.
+    """
+    if hit.value is None:
+        return []
+    carrying = []
+    for output in context.outputs:
+        if any(numbers.fact_supports(hit, fact)
+               for fact in numbers.facts(output.payload)):
+            carrying.append(output)
+    return carrying
+
+
 def _grounded_statistics(draft, context, known_output_ids: frozenset[str]) -> set[str]:
-    """القيم التي يسندها مخرَجٌ بعينه — **بعد التحقق من قيمتها فيه** (§7).
+    """القيم التي يسندها مخرَجٌ بعينه **ومربوطةٌ بادعاء** (المستوى ب).
 
     ولا يكفي أن يذكر النموذج معرّف مخرَج: يُتحقّق أن المعرّف أُرسل إليه، وأن
-    المخرَج يحمل هذه القيمة نفسها. فالمعرّف إشارةٌ لا سلطة.
+    المخرَج يحمل هذه القيمة بنوعها وأبعادها. فالمعرّف إشارةٌ لا سلطة.
     """
     grounded: set[str] = set()
     for claim in draft.claims:
         outputs = [context.output(o) for o in claim.analysis_output_ids
                    if o in known_output_ids]
-        payloads = [o.payload for o in outputs if o is not None]
-        if not payloads:
+        available = [o for o in outputs if o is not None]
+        if not available:
             continue
         for hit in numbers.find(claim.text_ar):
-            if any(numbers.supports(hit, payload) for payload in payloads):
+            if any(numbers.fact_supports(hit, fact)
+                   for output in available for fact in numbers.facts(output.payload)):
                 grounded.add(hit.excerpt)
     return grounded
 
@@ -199,11 +232,31 @@ def run(draft, context, *, known_memory_ids: frozenset[str],
                 f"A statistical-significance claim with no analysis output behind it: "
                 f"'{hit.excerpt}'.",
                 excerpt=hit.excerpt)
-        else:
+            break
+
+        # **فشلان لا واحد.** «لا مخرَج يحمل هذا الرقم» غير «الرقم حقيقي لكن
+        # لا إسناد بنيويًّا له». والخلط بينهما يجعل عطبًا في الربط يُقرأ
+        # اختلاقًا، فيُطارَد في المكان الخطأ.
+        carrying = outputs_carrying(hit, context)
+        if not carrying:
             add("statistic_without_analysis_output",
                 f"قيمة إحصائية ({hit.kind}) بلا مخرَج تحليل يسندها: «{hit.excerpt}».",
                 f"A statistic ({hit.kind}) with no analysis output behind it: "
                 f"'{hit.excerpt}'.",
+                excerpt=hit.excerpt)
+        elif len(carrying) > 1:
+            # §9 — لا يُختار أحدهما اعتباطًا: إسنادٌ غير محدَّد ليس إسنادًا.
+            add("statistic_output_ambiguous",
+                f"أكثر من مخرَج تحليل يحمل «{hit.excerpt}» — والإسناد الصحيح "
+                "غير محدَّد.",
+                f"More than one analysis output carries '{hit.excerpt}'; the correct "
+                "provenance cannot be determined.",
+                excerpt=hit.excerpt)
+        else:
+            add("statistic_without_claim_binding",
+                f"قيمة إحصائية حقيقية بلا رابط بنيوي إلى مخرَجها: «{hit.excerpt}».",
+                f"A real statistic with no structural link to the output that produced "
+                f"it: '{hit.excerpt}'.",
                 excerpt=hit.excerpt)
         break
 
@@ -261,6 +314,15 @@ def run(draft, context, *, known_memory_ids: frozenset[str],
                     f"to: '{mismatched[0].excerpt}'.",
                     excerpt=mismatched[0].excerpt, index=index)
                 break
+
+    # ── 2د. علامةُ حجبٍ داخلية تسرّبت إلى النصّ ──
+    for marker in INTERNAL_MARKERS:
+        if marker in text:
+            add("internal_redaction_marker_leak",
+                f"علامة داخلية ظهرت في نصّ المخطوطة: «{marker}».",
+                f"An internal redaction marker leaked into manuscript prose: '{marker}'.",
+                excerpt=marker)
+            break
 
     # ── 3. تفصيل منهجي لا أثر له في الأدلة ──
     #
@@ -337,9 +399,14 @@ FABRICATION_ISSUES: Final[frozenset[str]] = frozenset({
     "statistic_without_analysis_output",
     "significance_without_analysis_output",
     "statistic_value_mismatch",
+    "statistic_output_ambiguous",
+    "statistic_without_claim_binding",
     "claim_references_unknown_evidence",
     "fabricated_citation",
     "unsupported_sample_number",
+    # ليست اختلاقًا علميًّا، لكنها نصٌّ ليس نصَّ الباحث ولا نصَّ النموذج —
+    # وتنظيفها صامتًا يخفي أن المخرَج لم يمرّ كما هو.
+    "internal_redaction_marker_leak",
 })
 
 
@@ -347,4 +414,5 @@ def fabrications(issues: list[DraftIssue]) -> list[DraftIssue]:
     return [i for i in issues if i.issue_key in FABRICATION_ISSUES]
 
 
-__all__ = ["FABRICATION_ISSUES", "DraftIssue", "fabrications", "run"]
+__all__ = ["FABRICATION_ISSUES", "INTERNAL_MARKERS", "DraftIssue", "fabrications",
+           "outputs_carrying", "run"]
