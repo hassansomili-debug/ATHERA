@@ -265,3 +265,50 @@ def test_redaction_follows_the_evidence_not_a_hand_written_list():
     assert policy.POLICIES["abstract"].redact_statistics is True
     # والمنهجية لا تصلها أدلة نتائج، فلا شيء يُحجب عنها.
     assert policy.POLICIES["method"].redact_statistics is False
+
+
+# ══════════ 6. الحجب يُنظّف ولا يترك أثرًا يُنسخ ══════════
+
+def test_redaction_removes_the_claim_instead_of_marking_its_place():
+    """**عطبان في نداءٍ إنتاجي واحد.**
+
+    كانت توضع مكان الادعاء علامةٌ محايدة `[غير متاح]`. فقالت للنموذج «هنا
+    شيءٌ حُجب» — فأعاد بناءه من السياق، **ونسخ العلامة نفسها إلى نصّ
+    المخطوطة**. فرُفضت المسودة بكشفين معًا.
+
+    وعلامةٌ تقول «هنا شيءٌ حُجب» تُفشي ما وُضعت لتحجبه.
+    """
+    from athera_api.services.publishing.drafting import numbers
+    from athera_api.services.publishing.vocab import INTERNAL_MARKERS
+
+    body, removed = numbers.redact(
+        "أظهرت النتائج وجود فروق دالة إحصائيًا عند مستوى 0.05 لصالح المجموعة")
+    assert removed == ["دالة إحصائيًا عند مستوى 0.05"]
+    for marker in INTERNAL_MARKERS:
+        assert marker not in body, marker
+    # ويبقى ما يسنده الدليل: وجود فرق، واتجاهه.
+    assert "وجود فروق" in body and "لصالح المجموعة" in body
+    assert "  " not in body, "فراغٌ مزدوج مكان المحذوف"
+
+
+def test_an_empty_section_is_a_valid_answer():
+    """**عطبٌ أسقط نداءً إنتاجيًّا.** كان العقد يشترط حرفًا واحدًا على الأقل،
+    فلم يكن للنموذج سبيلٌ ليقول «لا يمكن كتابة هذا من الأدلة المتاحة».
+
+    فإمّا أن يملأ الشكل بنثرٍ معقول، أو يسقط الطلب بخرق العقد — ووقع الثاني
+    في أول نداء للمناقشة: دليلٌ واحد ومنعٌ محكم، فأعاد نواقصه بلا نصّ.
+    """
+    from athera_api.services.publishing.drafting.contracts import SectionDraft
+
+    draft = SectionDraft(missing_evidence=[
+        {"topic_ar": "قيمة الدلالة الإحصائية", "why_ar": "لا مخرَج يحملها"}])
+    assert draft.section_text_ar == ""
+    assert len(draft.missing_evidence) == 1
+
+
+def test_the_instruction_offers_the_empty_answer_explicitly():
+    """لا يكفي أن يقبله العقد: يجب أن يُقال للنموذج إنه جواب."""
+    from athera_api.services.publishing.drafting import generate
+
+    assert "فارغًا" in generate.INSTRUCTION
+    assert "دلالة إحصائية" in generate.INSTRUCTION

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # أصل المحتوى (§5) — والتمييز يُعلَن في البيانات لا يُترك للقارئ.
 #
@@ -50,11 +50,35 @@ class MissingEvidence(BaseModel):
 class SectionDraft(BaseModel):
     """مخرَج صياغة قسم واحد."""
 
-    section_text_ar: str = Field(min_length=1, max_length=20000)
+    # **الفراغ جوابٌ صالح.** كان الحدّ الأدنى حرفًا واحدًا، فلم يكن للنموذج
+    # سبيلٌ ليقول «لا يمكن كتابة هذا القسم من الأدلة المتاحة» — فيُدفع إلى
+    # نثرٍ يملأ الشكل، أو يسقط الطلب بخرق العقد. وقد وقع الثاني في أول نداء
+    # إنتاجي للمناقشة: دليلٌ واحد، ومنعٌ محكم، فأعاد نواقصه بلا نصّ.
+    #
+    # والقسم الفارغ بقائمة نواقصه أصدق من فقرة معقولة.
+    section_text_ar: str = Field(default="", max_length=20000)
     section_text_en: str | None = Field(default=None, max_length=20000)
     claims: list[DraftedClaim] = Field(default_factory=list, max_length=40)
     missing_evidence: list[MissingEvidence] = Field(default_factory=list, max_length=20)
     warnings_ar: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def _must_say_something(self) -> "SectionDraft":
+        """**إمّا كتبتَ، وإمّا قلتَ لماذا لم تكتب.**
+
+        جعلُ النصّ اختياريًّا فتح للنموذج بابَ الصدق — وأغلق بابًا آخر: صار
+        كلُّ حقلٍ اختياريًّا، فمرّ **أي** كائن بوصفه مسودةً صالحة. ومظروف نقلٍ
+        مثل `{"parameters": {…}}` كان يُكشف بخرق العقد، فصار يُقرأ قسمًا
+        فارغًا بلا نواقص — أي «لا أعرف» لم يقلها أحد.
+
+        فالفراغ جوابٌ صالح **بشرط أن يُعلَّل**: نصٌّ، أو قائمة نواقص. وما ليس
+        فيه واحدٌ منهما ليس مسودةً أصلًا.
+        """
+        if not self.section_text_ar.strip() and not self.missing_evidence:
+            raise ValueError(
+                "a section draft must carry either text or a missing-evidence list; "
+                "an empty answer with no stated gap is not an answer")
+        return self
 
 
 __all__ = ["ClaimType", "DraftedClaim", "MissingEvidence", "Origin", "SectionDraft",
