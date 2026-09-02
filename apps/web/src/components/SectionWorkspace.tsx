@@ -92,6 +92,7 @@ export function SectionWorkspace({
   sectionKey,
   copy,
   strict = false,
+  onChanged,
 }: {
   locale: Locale;
   manuscriptId: string;
