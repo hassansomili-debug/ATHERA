@@ -41,9 +41,21 @@ export default async function LocaleLayout({
           <aside className="sidebar">
             <div className="brand">
               <span className="brand-mark" aria-hidden="true" />
+              {/*
+                **الوعد تحت الاسم، لا اسمٌ ثانٍ مكتوب بيده.**
+
+                كان السطر الثاني اسم اللغة الأخرى مكتوبًا حرفيًّا:
+                `locale === "ar" ? "ATHERA" : "أثيرا"`. فلمّا صار الاسم
+                «بُبريفا · PUBRIVA» بقي الحرفان على حالهما — فالقائمة تقول
+                الاسم الجديد والشعار يقول القديم في الشاشة نفسها. وهو الخطأ
+                المتكرر: قيمةٌ تُكتب بجانب سجلّها بدل أن تُشتقّ منه.
+
+                فيقول السطر الثاني ما تفعله المنصّة لا اسمها بلغةٍ أخرى —
+                واسمها يعرفه من قرأ السطر الأول.
+              */}
               <span>
                 <strong>{t("app.name")}</strong>
-                <span>{locale === "ar" ? "ATHERA" : "أثيرا"}</span>
+                <span>{t("app.promise")}</span>
               </span>
             </div>
             <SideNav locale={locale} messages={messages} />
