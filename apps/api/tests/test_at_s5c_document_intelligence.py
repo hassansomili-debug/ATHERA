@@ -2671,3 +2671,31 @@ def test_reading_a_document_does_not_authorize_answering_from_it():
     assert "CHAT_OBJECT_TYPE" in source
     # ولا يقرأ صفّ إذن القراءة بحال: نوع الكائن مختلف.
     assert consent.CHAT_OBJECT_TYPE != consent.OBJECT_TYPE
+
+
+def test_every_grant_builder_agrees_with_the_grant_it_builds():
+    """**عطبٌ سقط في الإنتاج بـ500.** بانية المنحة الجديدة مرّرت حقولًا لا
+    وجود لها في الصنف (`decided_by`, `decided_at`) — فسقط النداء عند أول
+    إذنٍ مُنح، بعد أن مرّ كلُّ اختبار.
+
+    والسبب أن الاختبارات تفحص المسار بلا منحة: فرعُ «مأذون» لم يُنفَّذ قط.
+    فيُقابَل كل بانٍ بحقول الصنف نفسها.
+    """
+    import inspect
+
+    from athera_api.services import consent
+
+    fields = set(consent.ExternalProcessingGrant.__dataclass_fields__)
+    builders = [consent.authorization_for, consent.planning_authorization,
+                consent.drafting_authorization, consent.chat_authorization]
+    for builder in builders:
+        source = inspect.getsource(builder)
+        if "ExternalProcessingGrant(" not in source:
+            continue
+        call = source[source.index("ExternalProcessingGrant("):]
+        call = call[:call.index(")\n") + 1]
+        passed = {line.split("=")[0].strip()
+                  for line in call.replace("ExternalProcessingGrant(", "").split(",")
+                  if "=" in line}
+        unknown = passed - fields
+        assert not unknown, f"{builder.__name__} passes unknown fields: {unknown}"

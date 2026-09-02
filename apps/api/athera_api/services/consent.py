@@ -479,7 +479,6 @@ async def chat_authorization(session: AsyncSession, *, tenant_id: uuid.UUID,
         return None
     return ExternalProcessingGrant(
         capability=CHAT_CAPABILITY, file_id=file_id, approval_id=row.id,
-        decided_by=row.decided_by, decided_at=row.decided_at,
         max_classification=CAPABILITY_CEILING[CHAT_CAPABILITY],
         context_fingerprint=None,
     )
