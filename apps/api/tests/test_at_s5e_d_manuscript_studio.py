@@ -311,7 +311,7 @@ def test_the_instruction_offers_the_empty_answer_explicitly():
     from athera_api.services.publishing.drafting import generate
 
     assert "فارغًا" in generate.INSTRUCTION
-    assert "دلالة إحصائية" in generate.INSTRUCTION
+    assert "دالّ إحصائيًّا" in generate.INSTRUCTION
 
 
 # ══════════ 7. المخرجات تتبع سياسة الإحصاء لا سياسة الحجب ══════════
@@ -396,3 +396,154 @@ def test_method_vocabulary_does_not_fire_outside_the_method_section(section, tex
 def test_the_method_section_still_catches_an_invented_instrument():
     """والاستثناء لا يتّسع: المنهجية تبقى محروسة."""
     assert "unsupported_instrument" in _issues("method", "طُبّقت استبانة من إعداد الباحث")
+
+
+# ══════════ 9. المناقشة تُكتب بلا قيمة دلالة ══════════
+#
+# **العائق الأخير في S5E-D.** المخرَج الحقيقي يحمل `t` و`df` وحجم الأثر
+# والمتوسطات والانحرافات — **ولا يحمل قيمة p**. فكان النموذج يحسب الدلالة من
+# (ت) ودرجات حريتها ويكتب «دالّ إحصائيًّا»، فيرفضه المدقّق في كل محاولة.
+#
+# والعطب لم يكن في الحارس: كان في أن أحدًا لم يُخبر النموذج **بما لا يملك**.
+
+PRODUCTION_PAYLOAD = {
+    "test": "independent_samples_t", "t": 3.738, "df": 118, "eta_squared": 0.106,
+    "n_control": 60, "n_treatment": 60, "mean_control": 62.66, "mean_treatment": 68.11,
+    "sd_control": 9.05, "sd_treatment": 6.75,
+}
+
+
+def _discussion_context(payload=None, section="discussion"):
+    import uuid
+
+    from athera_api.services.planning.context import EvidenceItem
+    from athera_api.services.publishing.drafting.context import (
+        AnalysisOutput,
+        DraftingContext,
+    )
+
+    item = EvidenceItem(uuid.uuid4(), "result", None,
+                        "أظهرت النتائج وجود فروق لصالح المجموعة التجريبية",
+                        "project_decision", None, "§النتائج ¶18", None)
+    outputs = ()
+    if payload is not None:
+        outputs = (AnalysisOutput(uuid.uuid4(), uuid.uuid4(), "posttest",
+                                  "اختبار (ت)", payload),)
+    return DraftingContext(
+        tenant_id=uuid.UUID(int=1), project_id=uuid.UUID(int=2),
+        manuscript_id=uuid.UUID(int=3), opportunity_id=uuid.UUID(int=4),
+        outline_id=None, section_key=section, language="ar", purpose_ar="",
+        items=(item,), thread_labels=(), missing_roles=(), fingerprint="a" * 64,
+        outputs=outputs)
+
+
+def _run_checks(context, text, claims=()):
+    """يمرّ بالمسار الحقيقي: ربطٌ بنيوي ثم تحقّق — كما يفعل المسار."""
+    from athera_api.services.publishing.drafting import checks, generate
+    from athera_api.services.publishing.drafting.contracts import SectionDraft
+
+    draft = SectionDraft(section_text_ar=text, claims=list(claims))
+    bound, _dropped = generate.ground(draft, context)
+    generate.bind_statistics(draft, context, bound)
+    verified = draft.model_copy(update={"claims": [
+        b.claim.model_copy(update={"memory_ids": b.memory_ids,
+                                   "analysis_output_ids": b.output_ids})
+        for b in bound]})
+    return {i.issue_key for i in checks.run(
+        verified, context, known_memory_ids=context.memory_ids,
+        known_output_ids=context.output_ids)}
+
+
+def test_the_capability_summary_reports_exactly_what_production_has():
+    """§4 — لا يُترك للنموذج أن يستنتج ما ينقص."""
+    evidence = _discussion_context(PRODUCTION_PAYLOAD).statistics
+    assert evidence.descriptive_available is True
+    assert evidence.effect_size_available is True
+    assert evidence.test_statistic_available is True
+    assert evidence.p_value_available is False
+    assert evidence.significance_claim_allowed is False
+
+
+def test_the_capability_summary_reaches_the_provider():
+    """يُقرأ لا يُستنتج: يُرسل في الطلب نفسه."""
+    import json
+
+    from athera_api.services.publishing.drafting import generate
+
+    payload = json.loads(generate.build_prompt(_discussion_context(PRODUCTION_PAYLOAD)))
+    assert payload["statistical_evidence"]["significance_claim_allowed"] is False
+    assert payload["statistical_evidence"]["effect_size_available"] is True
+
+
+def test_discussion_drafts_grounded_prose_without_a_p_value():
+    """§15 — نقصُ قيمة الدلالة **لا يمنع** مناقشةً صادقة."""
+    context = _discussion_context(PRODUCTION_PAYLOAD)
+    prose = (
+        "بلغ المتوسط الحسابي للمجموعة التجريبية 68.11 مقابل 62.66 للمجموعة "
+        "الضابطة، وبلغت قيمة مربع إيتا 0.106. ولا تتوفر في الأدلة قيمة مستوى "
+        "الدلالة، فلا يمكن الحكم على دلالة هذا الفرق إحصائيًّا."
+    )
+    assert _run_checks(context, prose) == set()
+
+
+def test_an_unsupported_significance_claim_is_still_refused(  # §16
+):
+    from athera_api.services.publishing.drafting import checks
+
+    context = _discussion_context(PRODUCTION_PAYLOAD)
+    for phrasing in ("وجد فرق دال إحصائيًا بين المجموعتين",
+                     "the difference was statistically significant",
+                     "وكان الفرق دالًّا عند مستوى 0.05"):
+        found = _run_checks(context, phrasing)
+        assert found & {"significance_without_analysis_output",
+                        "statistic_without_analysis_output"}, phrasing
+    # ولا يصير نصًّا: الاختلاق لا يُحفظ ولو تحت «بانتظار المراجعة».
+    assert "significance_without_analysis_output" in checks.FABRICATION_ISSUES
+
+
+def test_significance_becomes_allowed_when_a_p_value_is_actually_recorded():
+    """§17 — الإذن يأتي من قيمة مسجَّلة، لا من اشتقاق."""
+    with_p = {**PRODUCTION_PAYLOAD, "p": 0.0003}
+    context = _discussion_context(with_p)
+    assert context.statistics.significance_claim_allowed is True
+    assert _run_checks(context, "وجد فرق دال إحصائيًا بين المجموعتين") == set()
+
+
+def test_the_platform_never_derives_the_missing_p_itself():
+    """§2 — طبقة الكتابة ليست محرّك تحليل، ولا تحسب ما ينقص."""
+    import inspect
+
+    from athera_api.services.publishing.drafting import checks, context as ctx, numbers
+
+    for module in (ctx, checks, numbers):
+        source = inspect.getsource(module)
+        for forbidden in ("scipy", "stats.t", "cdf(", "survival", "t_to_p",
+                          "norm.sf", "math.erf"):
+            assert forbidden not in source, f"{module.__name__}: {forbidden}"
+
+
+def test_effect_size_thresholds_are_not_invented():
+    """§7 — «صغير/متوسط/كبير» عتباتٌ اصطلاحية لا تسندها الأدلة."""
+    from athera_api.services.publishing.drafting import generate
+
+    assert "صغير" in generate.INSTRUCTION and "اذكر القيمة كما هي" in generate.INSTRUCTION
+
+
+def test_the_discussion_rules_separate_direction_from_significance():
+    """§8 — الاتجاه شيء، والدلالة شيء آخر يقرّره اختبار."""
+    from athera_api.services.publishing.drafting import generate
+
+    assert "الاتجاه" in generate.INSTRUCTION
+    assert "قُبلت" in generate.INSTRUCTION
+    rules = generate.SECTION_RULES["discussion"]
+    assert "بانتظار البحث العلمي" in rules
+    assert "لا يمنع المناقشة" in rules
+
+
+def test_results_strictness_did_not_regress():
+    """§9 — لا يُرخى شيءٌ من S5E-C لأجل المناقشة."""
+    context = _discussion_context(PRODUCTION_PAYLOAD, section="results")
+    assert "statistic_without_analysis_output" in _run_checks(
+        context, "بلغت قيمة p = 0.05")
+    assert "statistic_value_mismatch" not in _run_checks(
+        context, "بلغت قيمة مربع إيتا 0.106")
