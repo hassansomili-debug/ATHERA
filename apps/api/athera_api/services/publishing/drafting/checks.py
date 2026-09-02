@@ -130,7 +130,21 @@ def _evidence_blob(context) -> str:
 
 
 def _sample_numbers(text: str) -> set[str]:
-    return {m for m in _SAMPLE_NUMBER.findall(text) if not _YEARS.match(m)}
+    r"""أرقامٌ تصف عيّنة — **بعد التوحيد وبعد نزع القيم الإحصائية**.
+
+    وعطبان كشفهما الإنتاج:
+
+    الأول أن `\d` في بايثون يطابق الأرقام العربية الهندية، والفاصلة العشرية
+    العربية `٫` ليست في نظرة الخلف — فكان `٣٫٠٨` يُقرأ رقمين، ويُبلَّغ عن
+    «٠٨» رقمَ عيّنةٍ مخترَعًا. فيُوحَّد النصّ أولًا.
+
+    والثاني أن القيم الإحصائية تُفحص بفحصها الخاص، فمرورها هنا يجعل كل
+    قيمة تُبلَّغ مرتين بوصفين مختلفين — أحدهما خاطئ.
+    """
+    body = numbers.normalise(text)
+    for hit in numbers.find(body):
+        body = body.replace(hit.excerpt, " ")
+    return {m for m in _SAMPLE_NUMBER.findall(body) if not _YEARS.match(m)}
 
 
 def run(draft, context, *, known_memory_ids: frozenset[str],

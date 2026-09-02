@@ -575,3 +575,39 @@ def test_the_rules_forbid_copying_the_redaction_marker():
     rules = generate.SECTION_RULES["results"]
     assert "لا تنسخ العلامة [غير متاح]" in rules
     assert "فاذكرها" in rules and "ولا تقرّبها" in rules
+
+
+# ══════════ 11. أرقام العيّنة: توحيدٌ ونزعُ الإحصائي ══════════
+
+@pytest.mark.parametrize("text", [
+    "بلغت قيمة (ت) ٣٫٠٨",          # فاصلة عشرية عربية
+    "t(118) = 3.08",
+    "عند مستوى p = 0.003",
+    "بلغ مربع إيتا 0.106",
+])
+def test_a_decimal_fragment_is_never_read_as_a_sample_number(text):
+    """`\\d` في بايثون يطابق الأرقام العربية الهندية، والفاصلة `٫` ليست في
+    نظرة الخلف — فكان `٣٫٠٨` يُقرأ رقمين ويُبلَّغ عن «٠٨» رقمَ عيّنة مخترَعًا.
+    """
+    from athera_api.services.publishing.drafting import checks
+
+    assert checks._sample_numbers(text) == set(), text
+
+
+def test_a_real_sample_number_is_still_read():
+    from athera_api.services.publishing.drafting import checks
+
+    assert checks._sample_numbers(SAMPLE_FACT) == {"120"}
+
+
+def test_a_statistic_is_not_reported_twice_under_two_names():
+    """قيمةٌ إحصائية تُفحص بفحصها — ومرورها في فحص العيّنة يجعلها كشفين."""
+    from athera_api.services.publishing.drafting import checks
+
+    context = _context(_item("result", RESULT_FACT))
+    issues = checks.run(_draft("بلغ مربع إيتا 0.106"), context,
+                        known_memory_ids=context.memory_ids,
+                        known_output_ids=frozenset())
+    keys = [i.issue_key for i in issues]
+    assert "statistic_without_analysis_output" in keys
+    assert "unsupported_sample_number" not in keys
