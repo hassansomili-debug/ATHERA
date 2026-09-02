@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from .vocab import (
     EVIDENCE_BEARING_SECTIONS,
+    INTERNAL_MARKERS,
     MANUSCRIPT_SECTIONS,
     RESULT_BEARING_SECTIONS,
 )
@@ -105,6 +106,25 @@ def evaluate(
     missing = sorted(required - present)
 
     for section in sections:
+        # علامةُ تحكّمٍ داخلية في نصّ يُقيَّم للنشر (S5E §11).
+        #
+        # الحارس عند التوليد لا يكفي: **نسخةٌ قديمة تحمل العلامة تمرّ إلى
+        # البوابة بلا أن تمرّ بالتوليد مرة أخرى.** وقد وقع ذلك — ثلاثة أقسام
+        # محفوظة في الإنتاج تحملها. ولا تُنظَّف صامتًا: تنظيفها يجعلنا
+        # ندّعي أن النصّ خرج نظيفًا.
+        for marker in INTERNAL_MARKERS:
+            if marker in (section.text or ""):
+                issues.append(ReadinessIssue(
+                    section_key=section.section_key,
+                    issue_key="internal_redaction_marker",
+                    detail_ar=f"علامة تحكّم داخلية في نصّ «{section.section_key}»: "
+                              f"«{marker}».",
+                    detail_en=f"An internal control marker in '{section.section_key}': "
+                              f"'{marker}'.",
+                    excerpt=marker,
+                ))
+                break
+
         # §19.2 القاعدة 1 — ادعاء جوهري بلا دليل متحقق.
         if section.section_key in EVIDENCE_BEARING_SECTIONS:
             unsupported = section.claim_ids - section.supported_claim_ids
