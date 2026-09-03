@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useState, useSyncExternalStore } from "react";
 
 import { AtheraAiInput } from "@/components/AtheraAiInput";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
@@ -21,15 +21,21 @@ const INTENTS = [
   "intentData", "intentManuscript", "intentJournal", "intentReview",
 ];
 
+/** الرابط لا يتغيّر بلا تنقّل، والتنقّل يعيد التركيب — فلا اشتراك. */
+const NO_SUBSCRIPTION = () => () => undefined;
+const attachedFile = (): string | undefined =>
+  new URLSearchParams(window.location.search).get("file") ?? undefined;
+
 export default function AiPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale: raw } = use(params);
-  // **مستندٌ جاء من المكتبة ليُسأل عنه.** ويُقرأ في المتصفّح لا عند التوليد:
-  // `searchParams` تُخرج الصفحة من التوليد المسبق وتطلب حدًّا للتعليق،
-  // وهذه قيمةٌ لا وجود لها أصلًا قبل أن ينقر الباحث.
-  const [attachFileId, setAttachFileId] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    setAttachFileId(new URLSearchParams(window.location.search).get("file") ?? undefined);
-  }, []);
+  // **مستندٌ جاء من المكتبة ليُسأل عنه.**
+  //
+  // ويُقرأ في المتصفّح لا عند التوليد: `searchParams` تُخرج الصفحة من
+  // التوليد المسبق وتطلب حدًّا للتعليق، وهذه قيمةٌ لا وجود لها أصلًا قبل
+  // أن ينقر الباحث. ولا يُضبط داخل `useEffect` — تصيير متتالٍ يمنعه
+  // `react-hooks/set-state-in-effect`، و`useSyncExternalStore` هي الأداة
+  // الموضوعة لهذا: لقطةٌ على العميل وأخرى على الخادم تمنع اختلاف الترطيب.
+  const attachFileId = useSyncExternalStore(NO_SUBSCRIPTION, attachedFile, () => undefined);
   const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
   const messages = getMessages(locale);
   const t = translator(messages);
