@@ -173,7 +173,10 @@ jobs:
       # **`--no-save` عمدًا**: لا Node على جهاز التطوير لأعيد توليد ملف
       # القفل، وإضافةُ الحزمة إلى `package.json` بلا قفلٍ مطابق تكسر
       # `npm ci` في كل مهمّة. فتُثبَّت هنا وحدها ويبقى القفل صحيحًا.
-      - run: cd apps/web && npm install --no-save @playwright/test@1.49.1
+      #
+      # والنسخة تُطابق ما يعلنه Next: `peerOptional @playwright/test@^1.51.1`.
+      # وتثبيتُ أقدم منها يفشل بـERESOLVE — وقد فشل.
+      - run: cd apps/web && npm install --no-save @playwright/test@^1.51.1
       - run: cd apps/web && npx playwright install --with-deps chromium
 
       # ── دورة حياة الجلسة: تبني شيفرة هذا الفرع وتشغّلها بشبكةٍ معترَضة ──
