@@ -855,7 +855,7 @@ def test_the_library_keeps_reading_state_while_work_is_running():
                / "page.tsx").read_text(encoding="utf-8")
     code = "\n".join(line for _, line in code_lines(library))
     assert "RUNNING.has(file.processing_status)" in code, "الشاشة لا تُعيد قراءة حالٍ جارية"
-    assert "window.setTimeout(loadFiles" in code, "لا إعادة قراءة مجدولة"
+    assert "window.setTimeout(" in code and "loadFiles();" in code, "لا إعادة قراءة مجدولة"
     assert "window.clearTimeout" in code, "مؤقّتٌ بلا تنظيف"
     # **ويقف عند حالٍ مستقرّة** — لا قصفَ للـAPI بعد انتهاء العمل.
     assert "if (!files.some(" in code, "الاستطلاع بلا شرطٍ يوقفه"
@@ -902,3 +902,42 @@ def test_a_thesis_without_a_file_shows_no_gate_and_no_alarm():
     assert 'err.payload.code === "thesis.no_file"' in code, "غيابُ الملف يُعرض خطأً"
     # وما عدا ذلك يُقال — لا يُبتلع كل خطأ.
     assert "setError(err instanceof AtheraApiError" in code, "الأخطاء الأخرى تُبتلع"
+
+
+def test_a_late_library_answer_cannot_overwrite_a_newer_one():
+    """**جوابٌ متأخّر لا يمحو جوابًا أحدث منه.**
+
+    صار للمكتبة استطلاعٌ دوري، فصارت قراءتان تجريان معًا: واحدة يطلقها
+    الاستطلاع وأخرى يطلقها رفعُ ملفٍ للتوّ، ولا ترتيب بين ردَّيهما. فإن وصل
+    ردُّ الاستطلاع — وقد صدر قبل الرفع ولا يعرف بالملف — بعد ردّ الرفع، حلّت
+    القائمة الأقدم محلّ الأحدث: يرفع الباحث ملفه، يرى «تم الحفظ»، ثم لا يجد
+    الملف في مكتبته. وقد وقع ذلك في الإنتاج فعلًا.
+    """
+    library = (WEB / "src" / "app" / "[locale]" / "library"
+               / "page.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(library))
+    assert "latest.current += 1" in code, "القراءات بلا ترتيب"
+    assert "if (ticket === latest.current) setFiles(next)" in code, (
+        "ردٌّ قديم ما زال يُعرض")
+
+
+def test_the_library_wait_is_bounded():
+    """تشغيلةٌ ماتت في منتصفها تترك حالًا «جارية» لا تنتهي — ولولا حدٌّ
+    لظلّت الشاشة تسأل عنها ما دامت مفتوحة. **والانتظار المفتوح ليس صبرًا.**"""
+    library = (WEB / "src" / "app" / "[locale]" / "library"
+               / "page.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(library))
+    assert "polls.current >= MAX_POLLS" in code, "استطلاعٌ بلا حدّ"
+    import re
+    cap = int(re.search(r"const MAX_POLLS = (\d+);", code).group(1))
+    assert 0 < cap <= 500, f"حدُّ الاستطلاع {cap} ليس حدًّا"
+
+
+def test_a_missing_document_is_reported_with_what_was_rendered():
+    """«العنصر غير موجود» لا تفرّق بين قائمةٍ لم تُعرض وقائمةٍ عُرضت بلا
+    هذا الملف — وهما عطبان مختلفان. فيُذكر العدد مع الغياب، والعدد لا
+    يحمل اسمًا ولا سرًّا."""
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    assert "rendered: await page.locator(\"article.card\").count()" in code, (
+        "الغياب يُبلَّغ بلا سياق")
