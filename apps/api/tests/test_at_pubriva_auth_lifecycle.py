@@ -208,3 +208,64 @@ def test_the_post_login_predicate_is_guarded_where_it_always_runs():
     lifecycle = (WEB / "tests" / "auth-refresh.spec.ts").read_text(encoding="utf-8")
     assert "isSignedInDestination" in lifecycle
     assert "never accepts the login page" in lifecycle
+
+
+# ══════════ ٧. خطوات ٨–١٠: تصنع حالها، ولا تُتخطّى بصمت ══════════
+
+def test_the_file_journey_creates_its_own_fixture_through_the_ui():
+    """**فحصٌ يتّكئ على بياناتٍ سابقة يمرّ اليوم ويسقط غدًا بلا سبب.**
+
+    ونجاحُه لا يقول شيئًا: قد يكون مرّ لأن الحساب صادف أن فيه ملفًا.
+    فالرحلة ترفع ملفها بنفسها من الواجهة، باسمٍ فريد لكل تشغيلة.
+    """
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    assert "setInputFiles" in spec, "الرفع لا يمرّ بواجهة اختيار الملف"
+    assert "FILENAME" in spec and "Date.now()" in spec, "لا اسم فريد لكل تشغيلة"
+    # ولا يُصنع الحال باستدعاء الـAPI من الفحص.
+    assert "/api/v1/files/upload" not in spec, "الفحص يصنع الحال بالـAPI لا بالمتصفح"
+
+
+def test_no_acceptance_step_can_be_silently_skipped():
+    """خطوةٌ إلزامية إمّا تنجح وإمّا تسقط — و«لم يوجد الزرّ فمرّ» ليست نتيجة."""
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    assert "if (await add.count())" not in spec, "تخطٍّ صامت لخطوة الربط"
+    # الربط وفكّه يستهدفان الملف بعينه لا أوّل بطاقة في الصفحة.
+    assert ".first()).click()" not in spec
+    assert 'hasText: FILENAME' in spec, "الاستهداف ليس بالملف بعينه"
+
+
+def test_navigation_links_are_scoped_to_their_landmark():
+    """«اضغط الرابط» ليست تعليمة كافية حين يوجد رابطان بالاسم نفسه."""
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    for ambiguous in ('page.getByRole("link", { name: "مكتبتي" })',
+                      'page.getByRole("link", { name: "أبحاثي" })'):
+        assert ambiguous not in spec, f"رابط تنقّل بلا موضع: {ambiguous}"
+    assert 'getByRole("navigation", { name: "الرئيسية" })' in spec
+
+
+# ══════════ ٨. التحميل ليس فراغًا ولا عطبًا ══════════
+
+def test_the_project_files_pane_tells_loading_from_empty():
+    """**عيبٌ يراه الباحث**: القائمتان تبدآن `[]` وتُملآن بعد رحلةٍ إلى
+    الخادم، فتقول الشاشة «لا ملف مرتبط» و«لا ملفات لإضافتها» قبل أن يصل
+    الجواب — وهي دعوى عن حال البحث لم تُفحص بعد.
+    """
+    page = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
+            / "page.tsx").read_text(encoding="utf-8")
+    for state, setter in (("filesLoad", "setFilesLoad"), ("libraryLoad", "setLibraryLoad")):
+        assert f'{state} === "loading"' in page, f"{state}: لا فرق بين التحميل والفراغ"
+        assert f'{setter}("failed")' in page, f"{state}: لا يميّز العطب"
+        assert f'{setter}("ready")' in page, f"{state}: لا حال استقرار"
+    for testid in ("files-loading", "library-loading", "files-empty", "library-empty"):
+        assert f'data-testid="{testid}"' in page, testid
+
+
+def test_the_two_navigation_landmarks_have_distinct_names():
+    """معلمان بالاسم نفسه يربكان قارئ الشاشة كما يربكان الفحص."""
+    page = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
+            / "page.tsx").read_text(encoding="utf-8")
+    nav = (WEB / "src" / "components" / "SideNav.tsx").read_text(encoding="utf-8")
+    assert 'aria-label={t("nav.dashboard")}' in nav
+    assert 'aria-label={t("project.sectionsLabel")}' in page
+    # ولا يُسمّى معلَمٌ باسم عنصرٍ بداخله.
+    assert 'aria-label={t("project.overview")}' not in page

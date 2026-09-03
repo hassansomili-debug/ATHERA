@@ -106,6 +106,12 @@ export default function ProjectWorkspacePage({
   >(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // **التحميل ليس فراغًا.** القائمتان تبدآن `[]` وتُملآن بعد رحلةٍ إلى
+  // الخادم، فكانت الشاشة تقول «لا ملف مرتبط» و«لا ملفات لإضافتها» قبل أن
+  // يصل الجواب — وهي دعوى عن حال البحث لم تُفحص بعد. والباحث يقرؤها حكمًا،
+  // فيذهب يبحث عن ملفاته في مكانٍ آخر وهي في طريقها إليه.
+  const [filesLoad, setFilesLoad] = useState<"loading" | "ready" | "failed">("loading");
+  const [libraryLoad, setLibraryLoad] = useState<"loading" | "ready" | "failed">("loading");
 
   const say = useCallback(
     (err: unknown) =>
@@ -117,7 +123,15 @@ export default function ProjectWorkspacePage({
 
   const reload = useCallback(() => {
     projectOverview(locale, projectId).then(setOverview).catch(say);
-    projectFiles(locale, projectId).then(setFiles).catch(say);
+    projectFiles(locale, projectId)
+      .then((rows) => {
+        setFiles(rows);
+        setFilesLoad("ready");
+      })
+      .catch((err) => {
+        setFilesLoad("failed");
+        say(err);
+      });
     projectSources(locale, projectId).then(setSources).catch(say);
   }, [locale, projectId, say]);
 
@@ -126,7 +140,15 @@ export default function ProjectWorkspacePage({
   // مكتبة الباحث تُجلب لتقديم قائمة اختيار — لا ليكتب معرّفًا بيده.
   useEffect(() => {
     if (section === "files") {
-      listLibraryFiles(locale).then(setLibrary).catch(say);
+      listLibraryFiles(locale)
+        .then((rows) => {
+          setLibrary(rows);
+          setLibraryLoad("ready");
+        })
+        .catch((err) => {
+          setLibraryLoad("failed");
+          say(err);
+        });
     }
   }, [section, locale, say]);
 
@@ -209,7 +231,7 @@ export default function ProjectWorkspacePage({
       ) : null}
       {error ? <p className="error">{error}</p> : null}
 
-      <nav aria-label={t("project.overview")} style={{ marginBlock: "var(--space)" }}>
+      <nav aria-label={t("project.sectionsLabel")} style={{ marginBlock: "var(--space)" }}>
         <ul
           style={{
             display: "flex",
@@ -291,8 +313,14 @@ export default function ProjectWorkspacePage({
       {section === "files" ? (
         <>
           <p className="metric-label">{t("project.removeKeepsFile")}</p>
-          {files.filter((file) => file.state === "active").length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>{t("project.noFiles")}</p>
+          {filesLoad === "loading" ? (
+            <p data-testid="files-loading" style={{ color: "var(--muted)" }}>
+              {t("app.loading")}
+            </p>
+          ) : files.filter((file) => file.state === "active").length === 0 ? (
+            <p data-testid="files-empty" style={{ color: "var(--muted)" }}>
+              {t("project.noFiles")}
+            </p>
           ) : null}
           <div style={{ display: "grid", gap: 6 }}>
             {files
@@ -324,8 +352,13 @@ export default function ProjectWorkspacePage({
           </div>
 
           <h2>{t("project.addFile")}</h2>
-          {unlinked.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>
+          {libraryLoad === "loading" ? (
+            <p data-testid="library-loading" style={{ color: "var(--muted)" }}>
+              {t("app.loading")}
+            </p>
+          ) : unlinked.length === 0 ? (
+            <p data-testid="library-empty" style={{ color: "var(--muted)" }}>
+              {t("project.noCandidates")}{" "}
               <Link href={`/${locale}/library`}>{t("nav.library")}</Link>
             </p>
           ) : null}

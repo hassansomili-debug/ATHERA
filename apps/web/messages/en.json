@@ -925,6 +925,8 @@
     "useExcluded": "Excluded",
     "useHint": "Importing a source is not a judgement that it is evidence — the decision is yours and is attributed to you.",
     "notYet": "This pane is not yet wired to its source; open the full tool.",
-    "openTool": "Open the tool"
+    "openTool": "Open the tool",
+    "noCandidates": "No file in your library is available to add yet.",
+    "sectionsLabel": "Project sections"
   }
 }
