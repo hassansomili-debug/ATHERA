@@ -51,18 +51,23 @@ export function Dic2Consent({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      setConsent(await apiFetch<Dic2ConsentState>(
-        `/api/v1/theses/${thesisId}/consent`, { locale },
-      ));
-    } catch (err) {
-      // الحدّ إن تعذّرت قراءته يُقال — ولا يُفترض ممنوحًا.
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
-    }
+  // **سلسلةُ وعدٍ لا `await` في تأثير.** `setState` في مسارٍ يراه المحلّل
+  // متزامنًا داخل تأثيرٍ تصييرٌ متتالٍ يمنعه `react-hooks/set-state-in-effect`،
+  // وردُّ الخطأ في `catch` من ذلك المسار. فتُكتب كما تُكتب في بقيّة الشاشات.
+  const load = useCallback(() => {
+    apiFetch<Dic2ConsentState>(`/api/v1/theses/${thesisId}/consent`, { locale })
+      .then(setConsent)
+      .catch((err) => {
+        // **رسالةٌ بلا ملف ليست عطبًا.** من سجّل رسالته يدويًّا لا مستند
+        // له يُستخرَج منه، فلا حدّ يُعرض — ولا لافتةُ خطأ حمراء على شاشةٍ
+        // لم يقع فيها شيء. وما عدا ذلك يُقال: الحدّ إن تعذّرت قراءته لا
+        // يُفترض ممنوحًا.
+        if (err instanceof AtheraApiError && err.payload.code === "thesis.no_file") return;
+        setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      });
   }, [locale, thesisId, t]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   async function decideConsent(decision: "grant" | "decline" | "revoke") {
     setBusy(true);

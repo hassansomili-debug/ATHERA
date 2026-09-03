@@ -887,3 +887,18 @@ def test_the_running_states_and_their_label_cannot_drift():
     assert running == processing_labelled, (
         f"سجلّا الحالة افترقا: جارية {sorted(running)} · "
         f"معروضة «قيد المعالجة» {sorted(processing_labelled)}")
+
+
+def test_a_thesis_without_a_file_shows_no_gate_and_no_alarm():
+    """**غيابُ ملفٍ ليس عطبًا.**
+
+    البوابة صارت تُركَّب في كل مراجعة رسالة، ومن سجّل رسالته يدويًّا لا
+    مستند له يُستخرَج منه — فيردّ الخادم `thesis.no_file` بحقّ. ولو عُومل
+    ذلك خطأً لظهرت لافتةٌ حمراء على شاشةٍ لم يقع فيها شيء، **وحارسٌ يصرخ
+    بلا سبب يُطفَأ ثم لا يحرس شيئًا.**
+    """
+    gate = (WEB / "src" / "components" / "Dic2Consent.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(gate))
+    assert 'err.payload.code === "thesis.no_file"' in code, "غيابُ الملف يُعرض خطأً"
+    # وما عدا ذلك يُقال — لا يُبتلع كل خطأ.
+    assert "setError(err instanceof AtheraApiError" in code, "الأخطاء الأخرى تُبتلع"
