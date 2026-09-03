@@ -612,3 +612,54 @@ def test_the_link_is_proven_by_the_server_response_not_the_screen():
     assert "endsWith(\"/sources\")" in block
     assert "toBe(201)" in block
     assert 'linkedBody.use_state' in block and '.toBe("saved_only")' in block
+
+
+# ══════════ ١٦. ظرفُ تنفيذ الرحلة ══════════
+
+def test_the_p1_journey_has_its_own_execution_envelope():
+    """**الرحلة كانت تُقتل قبل أن تبلغ آخرها.**
+
+    سبعَ عشرةَ خطوةً في فحصٍ واحد، وفيها معالجةُ مستندٍ حقيقية وجولةٌ إلى
+    نموذج — والمهلة العامة تسعون ثانية. فسقط الفحص عند الخطوة الرابعة عشرة
+    **لا لأن شيئًا فشل بل لأن الوقت نفد**، فبدا الرفعُ ساقطًا وهو لم يُفحص.
+
+    والمهلة هنا لا تُعرّف حدّ الإخفاق: حدودُه في مهلة كل عملية على حدة.
+    وهذه لا تفعل إلا أن تمنع القتل المبكر.
+    """
+    import re
+
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    config = (WEB / "playwright.config.ts").read_text(encoding="utf-8")
+
+    match = re.search(r"test\.setTimeout\(([^)]+)\)", spec)
+    assert match, "رحلة P1 بلا ظرف تنفيذ خاص بها"
+    envelope = eval(match.group(1).replace("_", ""))  # noqa: S307 - ثابت في مستودعنا
+
+    default_match = re.search(r"^\s*timeout:\s*([0-9_]+),", config, re.M)
+    assert default_match, "لا مهلة عامة في الإعداد"
+    default = int(default_match.group(1).replace("_", ""))
+
+    assert envelope > default * 5, (
+        f"ظرف الرحلة {envelope}ms ليس أكبر بوضوح من العام {default}ms")
+    # **وليست بلا حدّ**: مهلةٌ مفتوحة تُبقي إخفاقًا معلّقًا حتى تُقتل المهمّة.
+    assert envelope <= 30 * 60 * 1000, "ظرفٌ مفتوح عمليًّا"
+
+
+def test_raising_the_journey_envelope_did_not_slow_the_fast_suites():
+    """حزمتا دورة الحياة والاستعادة سريعتان بلا اعتماد — ورفعُ المهلة
+    العامة يجعل كل عطبٍ فيهما بطيء الظهور."""
+    config = (WEB / "playwright.config.ts").read_text(encoding="utf-8")
+    assert "timeout: 90_000," in config, "المهلة العامة رُفعت للحزم كلها"
+    for suite in ("auth-refresh.spec.ts", "recovery.spec.ts"):
+        source = (WEB / "tests" / suite).read_text(encoding="utf-8")
+        assert "test.setTimeout" not in source, f"{suite} رُفعت مهلته بلا داعٍ"
+
+
+def test_the_journey_still_has_no_unbounded_or_sleeping_waits():
+    """الظرفُ الأوسع لا يعني انتظارًا بلا حدّ ولا نومًا ثابتًا."""
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    assert "waitForTimeout" not in spec, "نومٌ ثابت حيث توجد حالٌ تُنتظر"
+    # وكل انتظارٍ للشبكة محدود.
+    for chunk in spec.split("waitForResponse")[1:]:
+        head = chunk[:400]
+        assert "timeout:" in head, "انتظارُ شبكةٍ بلا حدّ"
