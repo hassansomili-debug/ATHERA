@@ -19,6 +19,8 @@ const config = [
       "node_modules/**",
       "next-env.d.ts",
       "**/*.json",
+      // اختبارات المتصفح تُثبَّت حزمتها في مهمّتها وحدها.
+      "tests/**",
     ],
   },
   ...nextCoreWebVitals,

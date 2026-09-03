@@ -4,7 +4,8 @@ import { useSyncExternalStore } from "react";
 
 import type { Locale, Messages } from "@/lib/i18n";
 import { translator } from "@/lib/i18n";
-import { clearSession, isSignedIn } from "@/lib/session";
+import { apiFetch } from "@/lib/api";
+import { clearSession, getRefreshToken, isSignedIn } from "@/lib/session";
 
 /**
  * دخول أو خروج | Sign in or out.
@@ -35,8 +36,26 @@ export function SessionControl({ locale, messages }: { locale: Locale; messages:
       type="button"
       className="session-link"
       onClick={() => {
-        clearSession();
-        window.location.assign(`/${locale}/login`);
+        // **المحو المحلي وحده ليس إبطالًا.** رمز التحديث يبقى صالحًا في
+        // الخادم بعد «الخروج»، فمن نسخه يظل قادرًا على إصدار رموز وصول.
+        // فيُبطَل عند مصدره أولًا، ثم تُمحى النسخة المحلية — والمحو يقع
+        // في الحالين، فخروجٌ يفشل لانقطاع شبكة لا يجوز أن يُبقي الباحث داخلًا.
+        void (async () => {
+          const refresh = getRefreshToken();
+          if (refresh) {
+            try {
+              await apiFetch<void>("/api/v1/auth/logout", {
+                method: "POST",
+                locale,
+                body: JSON.stringify({ refresh_token: refresh }),
+              });
+            } catch {
+              /* الإبطال تعذّر؛ المحو المحلي يقع على أي حال. */
+            }
+          }
+          clearSession();
+          window.location.assign(`/${locale}/login`);
+        })();
       }}
     >
       {t("auth.signOut")}

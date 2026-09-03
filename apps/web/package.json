@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:browser": "playwright test",
+    "test:refresh": "playwright test tests/auth-refresh.spec.ts",
+    "test:acceptance": "playwright test tests/acceptance.spec.ts"
   },
   "dependencies": {
     "next": "^16.0.0",

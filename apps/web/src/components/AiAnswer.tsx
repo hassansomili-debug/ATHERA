@@ -41,7 +41,11 @@ export function AiAnswerCard({
     : t("ai.evidenceNone");
 
   return (
-    <section className="card" style={{ marginBlockStart: 18, maxInlineSize: "78ch" }}>
+    <section
+      className="card"
+      data-testid="ai-answer"
+      style={{ marginBlockStart: 18, maxInlineSize: "78ch" }}
+    >
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockEnd: 10 }}>
         <span className={`chip ${data.evidence_state === "verified" ? "chip-ok" : "chip-stage"}`}>
           {evidenceLabel}
@@ -51,7 +55,9 @@ export function AiAnswerCard({
         ) : null}
       </div>
 
-      <p style={{ whiteSpace: "pre-wrap", marginBlock: 0 }}>{data.answer}</p>
+      <p data-testid="ai-answer-text" style={{ whiteSpace: "pre-wrap", marginBlock: 0 }}>
+        {data.answer}
+      </p>
 
       {data.limitations.length > 0 ? (
         <div className="gate" style={{ marginBlockStart: 14 }}>

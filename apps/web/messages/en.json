@@ -41,7 +41,17 @@
     "password": "Password",
     "totp": "Two-factor code",
     "submit": "Sign in",
-    "genericError": "Sign-in failed."
+    "genericError": "Sign-in failed.",
+    "createAccount": "Create an account",
+    "createAccountHint": "A new account opens a research workspace of your own. Joining an existing workspace needs an invitation from its administrators.",
+    "creating": "Creating your account…",
+    "fullName": "Full name",
+    "passwordRule": "At least 12 characters.",
+    "passwordTooShort": "Password is shorter than 12 characters.",
+    "needAccount": "No account? Create one",
+    "haveAccount": "Already have an account? Sign in",
+    "signingIn": "Signing in…",
+    "signingOut": "Signing out…"
   },
   "dashboard": {
     "title": "What do you want to accomplish?",

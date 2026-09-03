@@ -246,7 +246,12 @@ export function AtheraAiInput({
       ) : null}
 
       {notice ? <p style={{ marginBlockStart: 10 }}>{notice}</p> : null}
-      {error ? <p className="error" style={{ marginBlockStart: 10 }}>{error}</p> : null}
+      {/* الخطأ يُعلَن: «لم يحدث شيء» ليست حالة يجوز أن يراها الباحث. */}
+      {error ? (
+        <p className="error" role="alert" data-testid="ai-error" style={{ marginBlockStart: 10 }}>
+          {error}
+        </p>
+      ) : null}
       {answer ? <AiAnswerCard messages={messages} data={answer} /> : null}
 
       {/* السبب يُعرض كما هو — لا سببٌ واحد يُفترض لكل إغلاق. */}

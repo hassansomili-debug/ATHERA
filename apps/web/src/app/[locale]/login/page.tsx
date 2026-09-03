@@ -38,7 +38,11 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
       // فالتنقّل داخل العميل يترك الشريط الجانبي يعرض «تسجيل الدخول».
       // و`assign` استدعاء لا إسناد على `window` — الإسناد يرفضه
       // `react-hooks/immutability`.
-      window.location.assign(`/${locale}`);
+      // العودة إلى ما قصده الباحث قبل أن يُطلب منه الدخول — لا إلى
+      // الرئيسية دائمًا. والوجهة تُقبل فقط إن كانت مسارًا داخليًّا.
+      const next = new URLSearchParams(window.location.search).get("next");
+      const safe = next && next.startsWith("/") && !next.startsWith("//") ? next : `/${locale}`;
+      window.location.assign(safe);
     } catch (err) {
       // الخطأ يصل بلغتين؛ نعرض لغة الواجهة الحالية.
       setError(
@@ -83,11 +87,16 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
             autoComplete="one-time-code"
           />
         </label>
-        {error ? <p className="error">{error}</p> : null}
+        {error ? <p className="error" role="alert" data-testid="login-error">{error}</p> : null}
         <button type="submit" disabled={busy}>
           {busy ? t("app.loading") : t("auth.submit")}
         </button>
       </form>
+
+      {/* بابٌ إلى إنشاء حساب — بدونه صفحة الدخول طريق مسدود لمن لا حساب له. */}
+      <p style={{ marginBlockStart: 18 }}>
+        <a href={`/${locale}/register`}>{t("auth.needAccount")}</a>
+      </p>
     </>
   );
 }
