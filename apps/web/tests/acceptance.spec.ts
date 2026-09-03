@@ -22,6 +22,20 @@ const RUN = `قبول ${new Date().toISOString().slice(0, 19)}`;
 const FILENAME = `pubriva-acceptance-${Date.now()}.txt`;
 // مرجعٌ حقيقي بـDOI ثابت: الرحلة تستورده بنفسها، فلا تتّكئ على مكتبةٍ مأهولة.
 const DOI = "10.1037/0022-0663.99.1.83";
+const DOC_NAME = `pubriva-doc-${Date.now()}.txt`;
+/**
+ * وثيقةٌ **تركيبية** بالكامل — لا محتوى بحثٍ شخصي ولا بيانات أحد.
+ * وصياغتها تشبه رسالةً علمية لتُنتج مرشّحين عند الاستخراج.
+ */
+const DOC_TEXT = [
+  "مشكلة الدراسة: يعاني طلاب المرحلة الثانوية من ضعف في التفكير الناقد.",
+  "سؤال الدراسة: ما أثر برنامج تدريبي قائم على التعلّم النشط في التفكير الناقد؟",
+  "منهج الدراسة: منهج شبه تجريبي بتصميم المجموعتين مع قياس قبلي وبعدي.",
+  "عيّنة الدراسة: تكوّنت العيّنة من 60 طالبًا وُزّعوا عشوائيًّا على مجموعتين.",
+  "أداة الدراسة: اختبار التفكير الناقد المقنّن، وبلغ ثبات الأداة 0.87.",
+  "النتائج: وُجد فرق دال إحصائيًّا لصالح المجموعة التجريبية.",
+  "حدود الدراسة: اقتصرت على مدارس حكومية في مدينة واحدة خلال فصل دراسي.",
+].join("\n");
 // وعنوانه يُقرأ من الشاشة بعد الاستيراد — لا يُخمَّن ولا يُكتب معرّفه.
 
 /**
@@ -238,20 +252,106 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   });
 
   // ── ١٧–٢٠: بُبريفا AI تجيب بلا ترميز عقد ──
+  // ── ١٤–١٦: مستندٌ يُرفع ثم يُعالَج ثم تُراجَع معرفته ──
+  await test.step("upload a parseable synthetic document", async () => {
+    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await page.waitForURL(/\/library/);
+    await page.locator('input[type="file"]').setInputFiles({
+      name: DOC_NAME,
+      mimeType: "text/plain",
+      buffer: Buffer.from(DOC_TEXT, "utf-8"),
+    });
+    await expect(page.getByText("تم الحفظ")).toBeVisible({ timeout: 60_000 });
+
+    // الحال تُقرأ كما هي: «مخزَّن» لا «مُحلَّل».
+    const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect(card.getByText("لم تُعالَج بعد")).toBeVisible({ timeout: 30_000 });
+  });
+
+  await test.step("start document processing from the browser", async () => {
+    const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
+    // **زرٌّ حقيقي، لا استدعاء.** وغيابه فشلٌ لا تخطٍّ.
+    const process = card.getByRole("button", { name: "معالجة المستند" });
+    await expect(process, "no processing control for a parseable document").toBeVisible();
+    await process.click();
+
+    // ولا انتظارٌ بزمنٍ ثابت: تُنتظر حالٌ **مُعلَنة** من الحالات الصادقة.
+    const settled = card.getByText(
+      /بانتظار مراجعتك|مُعالَج|ينتظر إذن القراءة|تعذّرت المعالجة/,
+    );
+    await expect(settled, "processing never reached a declared state")
+      .toBeVisible({ timeout: 180_000 });
+
+    // فشلُ المعالجة يُعلَن فشلًا — لا يُبتلع ولا يُقرأ نجاحًا.
+    expect(await card.innerText(), "document processing failed")
+      .not.toContain("تعذّرت المعالجة");
+
+    // **DIC2: إذنُ الاستخراج الخارجي، حدٌّ علمي قائم بذاته.**
+    // القراءة المحلية والاستخراج الحتمي تمّا ولم يغادرا الخادم؛ وما يتجاوزه
+    // يحتاج إذنًا صريحًا. فإن وقفت المعالجة عنده مُنح **من المتصفح**.
+    if ((await card.innerText()).includes("ينتظر إذن القراءة")) {
+      await card.getByRole("link", { name: "افتح المراجعة" }).click();
+      await page.waitForURL(/\/theses/);
+      const grant = page.getByTestId("dic2-grant");
+      await expect(grant, "no DIC2 consent control while awaiting consent")
+        .toBeVisible({ timeout: 30_000 });
+      await grant.click();
+      await expect(page.getByTestId("dic2-grant")).toBeHidden({ timeout: 60_000 });
+
+      await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+      await page.waitForURL(/\/library/);
+      const back = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
+      await expect(back.getByText(/بانتظار مراجعتك|مُعالَج/))
+        .toBeVisible({ timeout: 180_000 });
+    }
+  });
+
+  await test.step("review the extracted knowledge and approve one fact", async () => {
+    const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
+    await card.getByRole("link", { name: "افتح المراجعة" }).click();
+    await page.waitForURL(/\/theses/);
+
+    // شاشة المراجعة تُفتح على الرسالة المستخرَجة من هذا المستند.
+    const open = page.getByRole("link", { name: /راجع|مراجعة/ }).first();
+    if (await open.count()) await open.click();
+    await page.waitForURL(/\/review/, { timeout: 30_000 });
+
+    // **اعتمادٌ واحد على الأقل** — والزرّ إن غاب فذلك فشلٌ يُعلَن.
+    const approve = page.getByRole("button", { name: "اعتمد" }).first();
+    await expect(approve, "no candidate was available to approve")
+      .toBeVisible({ timeout: 60_000 });
+    await approve.click();
+    await expect(page.getByText(/معتمَدة|اعتُمدت|approved/i).first())
+      .toBeVisible({ timeout: 30_000 });
+  });
+
+  // ── ١٧–٢٠: سؤالُ بُبريفا AI، وإذن DCC2 مستقلّ عن DIC2 ──
   await test.step("PUBRIVA AI answers with no contract markup", async () => {
     await page.goto(`/${LOCALE}`);
     const ask = page.getByRole("textbox").first();
-    await ask.fill("ما الفرق بين المنهج الوصفي وشبه التجريبي؟");
+    const question = "ما الفرق بين المنهج الوصفي وشبه التجريبي؟";
+    await ask.fill(question);
 
     // **الإرسال بالزرّ لا بمفتاح الإدخال.** الحقل `textarea` بلا نموذج ولا
-    // معالج مفاتيح، فالضغط على Enter يُدخل سطرًا ولا يرسل شيئًا — وكان
-    // الفحص ينتظر جوابًا لسؤالٍ لم يُرسَل. ولا يُضاف الإرسال بالمفتاح هنا:
-    // ذلك قرار تجربةٍ يُتّخذ على حدة، لا التفافٌ حول فحصٍ فاشل.
+    // معالج مفاتيح، فالضغط على Enter يُدخل سطرًا ولا يرسل شيئًا.
     const send = page.getByRole("button", { name: "ابدأ" });
     await expect(send).toBeEnabled({ timeout: 15_000 });
     await send.click();
 
+    // **إذن المحادثة (DCC2) منفصل عن إذن الاستخراج (DIC2).** فاعتمادُ
+    // معرفةٍ من مستند لا يأذن بإرسالها إلى مزوّد لأجل سؤال — إذنان لا
+    // يُدمجان ولا يُمنح أحدهما سلفًا.
+    const consent = page.getByRole("button", { name: "السماح والإجابة" });
     const answer = page.getByTestId("ai-answer");
+    await expect(answer.or(consent)).toBeVisible({ timeout: 180_000 });
+
+    if (await consent.count()) {
+      await consent.click();
+      // والسؤال الأصلي يُعاد بعد الإذن — لا يُطلب من الباحث كتابته ثانية.
+      await expect(answer).toBeVisible({ timeout: 180_000 });
+    }
+
     await expect(answer).toBeVisible({ timeout: 180_000 });
     const text = (await page.getByTestId("ai-answer-text").innerText()).trim();
     expect(text.length, "the answer was empty").toBeGreaterThan(20);
@@ -262,12 +362,30 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   });
 
   // ── ٢١–٢٢: خروجٌ ثم دخولٌ ثانٍ ──
-  await test.step("sign out and sign back in", async () => {
+  await test.step("sign out, prove server-side revocation, sign back in", async () => {
+    // الرمز يُلتقط قبل الخروج ليُختبر بعده — **والمحو المحلي ليس إبطالًا**.
+    const refresh = await page.evaluate(() =>
+      localStorage.getItem("athera_refresh_token"),
+    );
+    expect(refresh, "no refresh token before sign-out").toBeTruthy();
+
     await page.getByRole("button", { name: /خروج|sign out/i }).click();
     await page.waitForURL(/\/login/, { timeout: 30_000 });
-    expect(await page.evaluate(() => localStorage.getItem("athera_access_token"))).toBeNull();
 
+    // ٢٢أ — الجلسة المحلية مُسحت.
+    expect(await page.evaluate(() => localStorage.getItem("athera_access_token"))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem("athera_refresh_token"))).toBeNull();
+
+    // ٢٢ب — والرمز مُبطَل **عند الخادم**: من نسخه لا يستطيع إصدار وصولٍ به.
+    const revoked = await page.request.post(
+      `${process.env.PUBRIVA_API_URL ?? "https://athera-api.fly.dev"}/api/v1/auth/refresh`,
+      { data: { refresh_token: refresh }, failOnStatusCode: false },
+    );
+    expect(revoked.status(), "the refresh token survived sign-out").toBe(401);
+
+    // ٢٣ — ودخولٌ ثانٍ ينجح.
     await signIn(page, EMAIL!, PASSWORD!);
+    await expect(page).not.toHaveURL(/\/login/);
   });
 
   // لا خطأ JS صامتًا في أي خطوة.

@@ -15,6 +15,7 @@ from ..deps import Principal, get_locale, get_principal
 from ..errors import AtheraError, Unauthorized
 from ..models.identity import Membership, MfaFactor, RefreshToken, Role, Tenant, User
 from ..schemas.auth import (
+    ChangePasswordRequest,
     LoginRequest,
     MeResponse,
     MfaEnrollResponse,
@@ -30,6 +31,7 @@ from ..security import (
     new_refresh_token,
     new_totp_secret,
     totp_provisioning_uri,
+    password_policy_error,
     verify_password,
     verify_totp,
 )
@@ -293,6 +295,85 @@ async def logout(payload: RefreshRequest, principal: Principal = Depends(get_pri
             object_type="user",
             object_id=principal.user_id,
             actor_user_id=principal.user_id,
+        )
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: ChangePasswordRequest,
+    principal: Principal = Depends(get_principal),
+) -> None:
+    """غيّر كلمتك — **بكلمتك الحالية، ثم تُبطل كل جلساتك**.
+
+    ولم يكن للباحث مسارٌ إلى ذلك إطلاقًا: تسجيلٌ ودخولٌ وتجديدٌ وخروج، ولا
+    باب لتغيير كلمة. فمن انكشفت كلمته لا يملك إلا أن يطلب من غيره — أو
+    يترك الحساب مفتوحًا.
+
+    **ولا بابَ خلفيّ للإدارة.** إعادةُ ضبطٍ بلا الكلمة الحالية تُلغي معنى
+    الكلمة نفسها، وتجعل كل حسابٍ مفتوحًا لمن يملك دورًا. فالكلمة الحالية
+    شرطٌ لا يُستثنى منه أحد.
+
+    **وتغييرُ الكلمة يُبطل ما مضى.** ولو بقيت رموز التجديد صالحة لظلّ من
+    نسخ رمزًا قادرًا على إصدار رموز وصولٍ بعد التغيير — فالتغيير حينئذٍ
+    طمأنينةٌ كاذبة. فتُبطَل رموز المستخدم **في كل مستأجرٍ ينتمي إليه**، لا
+    في مستأجر الجلسة وحده.
+    """
+    policy_error = password_policy_error(payload.new_password)
+    if policy_error is not None:
+        raise AtheraError(policy_error, status_code=422)
+
+    async with system_session() as session:
+        await _bind_tenant(session, principal.tenant_id, principal.user_id)
+        user = (
+            await session.execute(select(User).where(User.id == principal.user_id))
+        ).scalar_one_or_none()
+        if user is None:
+            raise Unauthorized("auth.invalid_credentials")
+
+        # **الكلمة الحالية تُتحقَّق قبل أي كتابة.**
+        if not verify_password(user.password_hash, payload.current_password):
+            raise AtheraError("auth.current_password_wrong", status_code=403)
+        if payload.new_password == payload.current_password:
+            raise AtheraError("auth.password_unchanged", status_code=422)
+
+        user.password_hash = hash_password(payload.new_password)
+        await session.flush()
+
+        # كل مستأجرٍ ينتمي إليه المستخدم — الرموز مملوكة للمستأجر، والإبطال
+        # يجري داخل سياق كلٍّ منه تحت RLS، بلا تجاوزٍ للعزل.
+        tenant_ids = (
+            await session.execute(
+                select(Membership.tenant_id).where(Membership.user_id == user.id)
+            )
+        ).scalars().all()
+
+        now = dt.datetime.now(dt.UTC)
+        revoked = 0
+        for tenant_id in {principal.tenant_id, *tenant_ids}:
+            await _bind_tenant(session, tenant_id, principal.user_id)
+            tokens = (
+                await session.execute(
+                    select(RefreshToken).where(
+                        RefreshToken.user_id == user.id,
+                        RefreshToken.revoked_at.is_(None),
+                    )
+                )
+            ).scalars().all()
+            for token in tokens:
+                token.revoked_at = now
+                revoked += 1
+
+        await _bind_tenant(session, principal.tenant_id, principal.user_id)
+        await audit.record(
+            session,
+            tenant_id=principal.tenant_id,
+            action="user.password_changed",
+            object_type="user",
+            object_id=user.id,
+            actor_user_id=user.id,
+            # **لا كلمة ولا تجزئة ولا رمز** — العدد وحده يكفي للأثر.
+            state_after={"refresh_tokens_revoked": revoked},
+            reason="the researcher changed their own password; all sessions revoked",
         )
 
 

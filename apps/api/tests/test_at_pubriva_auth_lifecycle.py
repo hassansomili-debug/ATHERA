@@ -365,3 +365,55 @@ def test_the_ai_step_submits_through_the_button_the_product_provides():
     assert 'press("Enter")' not in ai, "الإرسال ما زال بمفتاح الإدخال"
     for markup in ("</answer_ar>", "<citations>", "</invoke>"):
         assert markup in ai, markup
+
+
+# ══════════ ١١. الرحلة تغطّي ما نقص: معالجةٌ ومراجعةٌ وإذنان وخروج ══════════
+
+def test_the_journey_covers_document_processing_and_review():
+    """١٤–١٦ كانت غائبة عن الرحلة كلها — فما لم يُفحص لا يُقال إنه يعمل."""
+    assert "upload a parseable synthetic document" in ACCEPTANCE
+    assert "start document processing from the browser" in ACCEPTANCE
+    assert "review the extracted knowledge and approve one fact" in ACCEPTANCE
+    # الوثيقة تركيبية بالكامل، تُصنع في الذاكرة.
+    assert "DOC_TEXT" in ACCEPTANCE and "Buffer.from(DOC_TEXT" in ACCEPTANCE
+
+
+def test_processing_states_are_asserted_truthfully_and_never_by_sleeping():
+    """`stored` و`processing` و`awaiting consent` و`awaiting review` و
+    `completed` و`failed` ستُّ حالات — ولا تُجمع في واحدة."""
+    assert "لم تُعالَج بعد" in ACCEPTANCE
+    assert "ينتظر إذن القراءة" in ACCEPTANCE
+    assert "بانتظار مراجعتك" in ACCEPTANCE
+    assert "تعذّرت المعالجة" in ACCEPTANCE, "الفشل غير مُختبَر"
+    # ولا انتظارٌ بزمنٍ ثابت حيث توجد حالٌ تُنتظر.
+    assert "waitForTimeout" not in ACCEPTANCE
+
+
+def test_dic2_and_dcc2_are_separate_boundaries_in_the_journey():
+    """**إذنان لا يُدمجان**: اعتمادُ معرفةٍ من مستند لا يأذن بإرسالها إلى
+    مزوّد لأجل سؤال."""
+    assert 'getByTestId("dic2-grant")' in ACCEPTANCE, "DIC2 غير مُغطّى"
+    assert "السماح والإجابة" in ACCEPTANCE, "DCC2 غير مُغطّى"
+    # ولا يُمنح أحدهما سلفًا في الشيفرة.
+    web_src = "\n".join(p.read_text(encoding="utf-8") for p in (WEB / "src").rglob("*.tsx"))
+    assert "decision=grant" not in web_src.replace(
+        'chat-consent?decision=grant', ''), "إذنٌ يُمنح سلفًا"
+
+
+def test_the_journey_proves_server_side_logout_not_only_a_local_clear():
+    """**المحو المحلي ليس إبطالًا**: من نسخ الرمز يظل قادرًا بدونه."""
+    out = ACCEPTANCE[ACCEPTANCE.index("sign out, prove server-side revocation"):]
+    assert "athera_refresh_token" in out
+    assert "/api/v1/auth/refresh" in out
+    assert "toBe(401)" in out, "لا إثبات أن الرمز مُبطَل عند الخادم"
+    assert "signIn(page" in out, "لا دخول ثانٍ بعد الخروج"
+
+
+def test_the_password_change_ui_exists_for_the_researcher():
+    """كلمةٌ انكشفت بلا بابٍ لتغييرها ليست مشكلةً أمنية وحدها — بل نقصُ منتج."""
+    page = (WEB / "src" / "components" / "ChangePassword.tsx").read_text(encoding="utf-8")
+    assert "/api/v1/auth/change-password" in page
+    assert "clearSession()" in page, "الجلسة لا تُمحى بعد التغيير"
+    settings = (WEB / "src" / "app" / "[locale]" / "settings"
+                / "page.tsx").read_text(encoding="utf-8")
+    assert "ChangePassword" in settings, "الشاشة غير مركَّبة في الإعدادات"

@@ -13,6 +13,8 @@ import pyotp
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
+from typing import Final
+
 from .config import get_settings
 
 _ph = PasswordHasher()
@@ -74,3 +76,28 @@ def totp_provisioning_uri(secret: str, email: str) -> str:
 def verify_totp(secret: str, code: str) -> bool:
     # نافذة ±30 ثانية لاستيعاب انحراف الساعة.
     return pyotp.TOTP(secret).verify(code, valid_window=1)
+
+# ══════════ سياسة كلمة المرور — **موضعٌ واحد** ══════════
+#
+# وكانت مكتوبةً في `RegisterRequest.password` وحدها (`min_length=12`). فأيّ
+# مسارٍ ثانٍ — تغييرُ كلمة، أو إنشاءُ حسابٍ من مكانٍ آخر — يكتب سياسته من
+# جديد، فتفترق السياستان ولا يعلم أحد أيّهما السارية. وهو الخطأ المتكرر
+# نفسه: قاعدةٌ تُكتب بجانب سجلّها بدل أن تُشتقّ منه.
+
+PASSWORD_MIN_LENGTH: Final = 12
+PASSWORD_MAX_LENGTH: Final = 1024
+
+
+def password_policy_error(password: str) -> str | None:
+    """مفتاحُ الرفض، أو `None` إن قُبلت.
+
+    ولا يُعاد نصّ الكلمة ولا جزءٌ منها في أي حال — الرسالة مفتاحٌ يُترجَم.
+    """
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return "auth.password_too_short"
+    # حدٌّ أعلى يمنع استنزاف المُجزِّئ بمدخلٍ ضخم.
+    if len(password) > PASSWORD_MAX_LENGTH:
+        return "auth.password_too_long"
+    if password.strip() == "":
+        return "auth.password_too_short"
+    return None

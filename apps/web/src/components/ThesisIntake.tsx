@@ -256,6 +256,9 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button
                   type="button"
+                  // مِقبضٌ ثابت: نصّ الزرّ يأتي من الخادم فيتغيّر، والحدّ
+                  // العلمي الذي يمثّله لا يتغيّر — فيُستهدف بما يصفه.
+                  data-testid="dic2-grant"
                   disabled={busy}
                   onClick={() => void decideConsent("grant")}
                   style={{
@@ -268,6 +271,7 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
                 </button>
                 <button
                   type="button"
+                  data-testid="dic2-decline"
                   disabled={busy || consent.state === "declined"}
                   onClick={() => void decideConsent("decline")}
                   style={{

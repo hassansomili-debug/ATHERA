@@ -3,6 +3,7 @@
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
+import { ChangePassword } from "@/components/ChangePassword";
 import { useDeferredLoad } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { ContextLinks } from "@/components/ContextLinks";
@@ -133,6 +134,10 @@ export default function SettingsPage({ params }: { params: Promise<{ locale: str
           </div>
         </>
       ) : null}
+
+      {/* الحساب أوّلًا: تغييرُ الكلمة فعلٌ يخصّ الباحث، لا إعدادَ نظام. */}
+      <h2>{t("settings.changePassword")}</h2>
+      <ChangePassword locale={locale} messages={getMessages(locale)} />
 
       <h2>{t("settings.notifications")}</h2>
       {notifications.length === 0 && !error ? (

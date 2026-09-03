@@ -36,6 +36,20 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class ChangePasswordRequest(BaseModel):
+    """تغيير كلمة المرور — **بالكلمة الحالية، لا بغيرها**.
+
+    ولا يوجد مسار إداريّ يتجاوزها: بابٌ خلفيّ للإدارة يُلغي معنى الكلمة
+    نفسها، ويجعل كل حسابٍ مفتوحًا لمن يملك دورًا.
+
+    والطول الأدنى يُفرض في الخدمة من `security.password_policy_error` —
+    موضعٌ واحد يشترك فيه التسجيل والتغيير، فلا تفترق سياستان.
+    """
+
+    current_password: str
+    new_password: str
+
+
 class MfaEnrollResponse(BaseModel):
     secret: str
     provisioning_uri: str
