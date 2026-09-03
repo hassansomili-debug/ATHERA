@@ -160,26 +160,47 @@ jobs:
   browser:
     name: Browser — قبول بمتصفّح حقيقي | real-browser acceptance
     runs-on: ubuntu-latest
+    env:
+      # يُرفع إلى مستوى المهمّة ليصير مقروءًا في شرط `if` — والشرط على
+      # `secrets` مباشرةً لا يُقيَّم في سياق الخطوة.
+      PUBRIVA_ACCEPT_EMAIL: ${{ secrets.PUBRIVA_ACCEPT_EMAIL }}
+      PUBRIVA_ACCEPT_PASSWORD: ${{ secrets.PUBRIVA_ACCEPT_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
       - run: cd apps/web && npm ci
+      # **`--no-save` عمدًا**: لا Node على جهاز التطوير لأعيد توليد ملف
+      # القفل، وإضافةُ الحزمة إلى `package.json` بلا قفلٍ مطابق تكسر
+      # `npm ci` في كل مهمّة. فتُثبَّت هنا وحدها ويبقى القفل صحيحًا.
+      - run: cd apps/web && npm install --no-save @playwright/test@1.49.1
       - run: cd apps/web && npx playwright install --with-deps chromium
-      # دورة حياة الجلسة تُختبر بشبكةٍ معترَضة، فلا تحتاج خادمًا خلفيًّا —
-      # وتعمل في كل PR. ورحلة القبول تحتاج حسابًا حقيقيًّا، فتُشغَّل حين
-      # يتوفّر سرّها وحده، ولا يُسكت غيابُها بقيّة الفحص.
-      - name: Session lifecycle (real browser)
+
+      # ── دورة حياة الجلسة: تبني شيفرة هذا الفرع وتشغّلها بشبكةٍ معترَضة ──
+      #
+      # لا تحتاج خادمًا خلفيًّا ولا حسابًا، فتعمل في **كل** PR — وهي التي
+      # تحرس العيب الذي أسقط القبول: 401 يمحو الجلسة بلا محاولة تجديد.
+      - name: Session lifecycle (real browser, this branch's build)
         run: cd apps/web && npm run test:refresh
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
-      - name: Acceptance journey (real browser, real backend)
-        if: ${{ env.PUBRIVA_ACCEPT_PASSWORD != '' }}
+
+      # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
+      #
+      # تشغيلُها من PR يفحص إنتاجًا لا يحمل شيفرة الـPR — نتيجةٌ مضلِّلة.
+      # وتُتخطّى بوضوح إن غاب الحساب، ولا تُعدّ نجاحًا.
+      - name: Acceptance journey (real browser, deployed production)
+        if: ${{ github.ref == 'refs/heads/main' && env.PUBRIVA_ACCEPT_PASSWORD != '' }}
         run: cd apps/web && npm run test:acceptance
         env:
           PUBRIVA_WEB_URL: https://athera-bay.vercel.app
-          PUBRIVA_ACCEPT_EMAIL: ${{ secrets.PUBRIVA_ACCEPT_EMAIL }}
-          PUBRIVA_ACCEPT_PASSWORD: ${{ secrets.PUBRIVA_ACCEPT_PASSWORD }}
+
+      - name: Report why acceptance did not run
+        if: ${{ github.ref == 'refs/heads/main' && env.PUBRIVA_ACCEPT_PASSWORD == '' }}
+        run: |
+          echo "::warning::acceptance journey skipped — PUBRIVA_ACCEPT_PASSWORD is not set."
+          echo "::warning::browser acceptance is NOT verified until that secret exists."
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
