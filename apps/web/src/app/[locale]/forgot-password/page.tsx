@@ -45,7 +45,7 @@ export default function ForgotPasswordPage({
     } catch (err) {
       // حتى الخطأ لا يفشي وجود الحساب: الخادم لا يردّ إلا بحدّ المعدّل
       // أو بعطبٍ حقيقي، وكلاهما لا يقول شيئًا عن البريد.
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("auth.genericError"));
+      setError(err instanceof AtheraApiError ? err.localized(locale) : t("auth.forgotFailed"));
     } finally {
       setBusy(false);
     }

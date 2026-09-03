@@ -517,3 +517,63 @@ def test_only_the_named_legacy_host_redirects_never_previews():
     assert "permanent: true" in config
     # والمسار يُحفظ في الوجهة.
     assert "${CANONICAL_ORIGIN}/:path*" in config
+
+
+# ══════════ ١٤. كل شاشة تقول عطبها هي ══════════
+
+def test_no_screen_reports_another_screens_failure():
+    """**عيبٌ رآه المالك في الإنتاج**: صفحة «نسيت كلمتي» تقول «تعذّر تسجيل
+    الدخول».
+
+    وخمس شاشات كانت تسقط إلى المفتاح نفسه — تسجيلٌ واستعادةٌ وتعيينٌ وتغيير
+    — وواحدةٌ فقط كانت محقّة. فرسالةٌ تصف فعلًا لم يقع تُربك الباحث وتُخفي
+    الفعل الذي فشل.
+    """
+    import json
+
+    from tests.tsscan import code_lines
+
+    catalog = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))["auth"]
+    # **المفتاح العام نُزع نزعًا**: ما دام موجودًا يبقى بابًا يسقط إليه أي
+    # مسارٍ جديد فيقول لباحثٍ يستعيد كلمته «تعذّر تسجيل الدخول».
+    assert "genericError" not in catalog, "المفتاح العام ما زال موجودًا"
+    for key in ("signInFailed", "registerFailed", "forgotFailed",
+                "resetFailed", "changeFailed"):
+        assert key in catalog, key
+        assert catalog[key].strip(), key
+
+    expected = {
+        "login/page.tsx": "auth.signInFailed",
+        "register/page.tsx": "auth.registerFailed",
+        "forgot-password/page.tsx": "auth.forgotFailed",
+        "reset-password/page.tsx": "auth.resetFailed",
+        "ChangePassword.tsx": "auth.changeFailed",
+    }
+    for suffix, key in expected.items():
+        matches = [p for p in (WEB / "src").rglob("*.tsx") if str(p).endswith(suffix)]
+        assert matches, suffix
+        source = matches[0].read_text(encoding="utf-8")
+        assert f't("{key}")' in source, f"{suffix} لا يستعمل {key}"
+        # ولا تقول شاشةٌ عطبَ غيرها.
+        for other in set(expected.values()) - {key}:
+            assert f't("{other}")' not in source, f"{suffix} يقول {other}"
+
+    # ولا مفتاح عام يعود من باب آخر.
+    for path in (WEB / "src").rglob("*.tsx"):
+        for _n, line in code_lines(path.read_text(encoding="utf-8")):
+            assert "auth.genericError" not in line, str(path.relative_to(WEB))
+
+
+def test_recovery_routes_never_tear_down_a_session():
+    """**من نسي كلمته ليس داخلًا.** ولو عُومل مسارا الاستعادة كغيرهما
+    لمحيا الجلسة عند أي ردٍّ يشبه الرفض، وقذفا الباحث إلى صفحة الدخول وهو
+    في منتصف استعادته."""
+    for path in ("/api/v1/auth/forgot-password", "/api/v1/auth/reset-password"):
+        assert f'"{path}"' in API_CLIENT, path
+    auth_block = API_CLIENT[API_CLIENT.index("const AUTH_PATHS"):
+                            API_CLIENT.index("const isAuthPath")]
+    for path in ("forgot-password", "reset-password", "login", "register",
+                 "refresh", "logout"):
+        assert path in auth_block, path
+    # **و`change-password` ليس منها**: مسارٌ مُصادَق يصحّ فيه التجديد المعتاد.
+    assert "change-password" not in auth_block
