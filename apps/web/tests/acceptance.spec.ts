@@ -321,8 +321,19 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await expect(page.getByText("تم الحفظ")).toBeVisible({ timeout: 60_000 });
 
     // الحال تُقرأ كما هي: «مخزَّن» لا «مُحلَّل».
+    //
+    // **والغياب يُقاس، لا يُقال «لم أجده».** «العنصر غير موجود» لا تفرّق
+    // بين قائمةٍ لم تُعرض أصلًا وقائمةٍ عُرضت بلا هذا الملف — وهما عطبان
+    // مختلفان تمامًا. فيُذكر عدد البطاقات المعروضة مع الغياب. والعدد لا
+    // يحمل اسمًا ولا سرًّا.
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
-    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(async () => ({
+              mine: await page.locator("article.card").filter({ hasText: DOC_NAME }).count(),
+              rendered: await page.locator("article.card").count(),
+            }),
+            { timeout: 30_000, message: "the uploaded document never appeared in My Library" })
+      .toMatchObject({ mine: 1 });
     // الحال تُقرأ من عقدها: «مخزَّن» لا «مُحلَّل».
     await expect(card.locator("[data-processing-state]"))
       .toHaveAttribute("data-processing-state", "not_processed", { timeout: 30_000 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import type { LibraryFile } from "@/lib/library";
@@ -25,6 +25,8 @@ const PARSEABLE = /\.(pdf|docx|txt|md)$/i;
 /** حال المعالجة نصًّا — **لا لونًا وحده**، ولا وعدًا بما لم يقع. */
 /** الحالات التي ما زال فيها عملٌ يجري — وما عداها مستقرّ يُنتظر عنده الباحث. */
 const RUNNING: ReadonlySet<string> = new Set(["parsing", "extracting"]);
+/** ومئتا استطلاع (نحو ثماني دقائق) حدُّ الانتظار — لا انتظارٌ مفتوح. */
+const MAX_POLLS = 200;
 
 const PROCESSING_LABEL: Record<string, string> = {
   not_processed: "library.notProcessed",
@@ -73,9 +75,24 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /**
+   * **جوابٌ متأخّر لا يمحو جوابًا أحدث منه.**
+   *
+   * صار للشاشة استطلاعٌ دوري، فصارت قراءتان تجريان معًا: واحدة يطلقها
+   * الاستطلاع، وأخرى يطلقها رفعُ ملفٍ للتوّ. ولا ترتيب بين ردَّيهما. فإن
+   * وصل ردُّ الاستطلاع — وقد صدر قبل الرفع ولا يعرف بالملف — **بعد** ردّ
+   * الرفع، حلّت القائمة الأقدم محلّ الأحدث: يرفع الباحث ملفه، يرى «تم
+   * الحفظ»، ثم لا يجد الملف في مكتبته. وإن كان في المكتبة ملفٌ عالق في
+   * حالٍ جارية بقي الاستطلاع دائرًا فتكرّر الأمر بلا انقطاع.
+   *
+   * فلكلّ قراءة رقمُها، ولا يُعرض إلا ردّ أحدثها. والقراءة الأحدث تصدر بعد
+   * الرفع دائمًا، فترى ما رُفع.
+   */
+  const latest = useRef(0);
   const loadFiles = useCallback(() => {
+    const ticket = (latest.current += 1);
     apiFetch<LibraryFile[]>("/api/v1/files", { locale })
-      .then(setFiles)
+      .then((next) => { if (ticket === latest.current) setFiles(next); })
       .catch((err) =>
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
       );
@@ -94,9 +111,16 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    * يُستخرَج منه، تُعاد القراءة؛ فإذا لم يبقَ شيءٌ جارٍ توقّفت — فلا قصفٌ
    * للـAPI بعد انتهاء العمل.
    */
+  const polls = useRef(0);
   useEffect(() => {
     if (!files.some((file) => RUNNING.has(file.processing_status))) return;
-    const timer = window.setTimeout(loadFiles, 2500);
+    // **وحدٌّ للانتظار.** تشغيلةٌ ماتت في منتصفها تترك حالًا «جارية» لا
+    // تنتهي أبدًا — ولولا حدٌّ لظلّت الشاشة تسأل عنها ما دامت مفتوحة.
+    if (polls.current >= MAX_POLLS) return;
+    const timer = window.setTimeout(() => {
+      polls.current += 1;
+      loadFiles();
+    }, 2500);
     return () => window.clearTimeout(timer);
   }, [files, loadFiles]);
 
