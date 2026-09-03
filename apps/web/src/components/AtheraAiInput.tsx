@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { AiAnswerCard, type AiAnswer } from "./AiAnswer";
@@ -34,8 +34,15 @@ const STATE_LABEL: Record<string, string> = {
 
 
 export function AtheraAiInput({
-  locale, messages, rows = 3, seed,
-}: { locale: Locale; messages: Messages; rows?: number; seed?: string }) {
+  locale, messages, rows = 3, seed, attachFileId,
+}: {
+  locale: Locale;
+  messages: Messages;
+  rows?: number;
+  seed?: string;
+  /** مستندٌ في مكتبته يسأل عنه — يُرفَق باسمه، ولا يُطلب منه رفعه ثانية. */
+  attachFileId?: string;
+}) {
   const t = translator(messages);
   const { modelEnabled, modelGateReason, loading } = usePosture(locale);
   const [value, setValue] = useState("");
@@ -54,6 +61,25 @@ export function AtheraAiInput({
   const [notice, setNotice] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const disabled = loading || !modelEnabled || busy;
+
+  // **المرفق قد يأتي من مكتبته لا من قرصه.** والاسم يُقرأ من الخادم: لا
+  // يُحمَل في الرابط اسمُ ملفٍ قد لا يكون له.
+  useEffect(() => {
+    if (!attachFileId) return;
+    let live = true;
+    void apiFetch<{ id: string; original_filename: string }>(
+      `/api/v1/files/${attachFileId}`, { locale },
+    )
+      .then((record) => {
+        if (live) setAttached({ id: record.id, name: record.original_filename });
+      })
+      .catch((err) => {
+        if (live) {
+          setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.askFailed"));
+        }
+      });
+    return () => { live = false; };
+  }, [attachFileId, locale, t]);
 
   /** يرفع الملف فعلًا عبر مسار الرفع القائم، ويُظهر ما أُرفق. */
   async function attach(file: File) {
@@ -182,7 +208,7 @@ export function AtheraAiInput({
       </div>
 
       {attached ? (
-        <p style={{ marginBlockStart: 10 }}>
+        <p data-testid="ai-attachment" style={{ marginBlockStart: 10 }}>
           📎 {t("ai.attached")}: {attached.name}{" "}
           <button type="button" onClick={() => setAttached(null)}>{t("ai.detach")}</button>
         </p>

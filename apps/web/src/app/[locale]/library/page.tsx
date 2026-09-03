@@ -23,6 +23,9 @@ const PARSEABLE = /\.(pdf|docx|txt|md)$/i;
 
 
 /** حال المعالجة نصًّا — **لا لونًا وحده**، ولا وعدًا بما لم يقع. */
+/** الحالات التي ما زال فيها عملٌ يجري — وما عداها مستقرّ يُنتظر عنده الباحث. */
+const RUNNING: ReadonlySet<string> = new Set(["parsing", "extracting"]);
+
 const PROCESSING_LABEL: Record<string, string> = {
   not_processed: "library.notProcessed",
   parsing: "library.processing",
@@ -77,6 +80,25 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
       );
   }, [locale]);
+
+  /**
+   * **المعالجة تجري، والبطاقة واقفة.**
+   *
+   * الحال تُقرأ مرّة واحدة عند فتح الشاشة ومرّة بعد ضغط «معالجة المستند»،
+   * ثم لا تُقرأ أبدًا. فالخادم يمضي: يقرأ، يستخرج، ثم يقف عند حدّ الإذن —
+   * والشاشة تبقى تقول «قيد المعالجة» إلى أن يعيد الباحث تحميلها بنفسه.
+   * وهو لا يعرف أن عليه ذلك، ولا شيء في الشاشة يقوله له. فيظن أن مستنده
+   * عالق، أو ينتظر شيئًا لا يأتي — بينما المنتج ينتظره هو.
+   *
+   * **والاستطلاع يقف عند حالٍ مستقرّة.** ما دام في المكتبة ملفٌ يُقرأ أو
+   * يُستخرَج منه، تُعاد القراءة؛ فإذا لم يبقَ شيءٌ جارٍ توقّفت — فلا قصفٌ
+   * للـAPI بعد انتهاء العمل.
+   */
+  useEffect(() => {
+    if (!files.some((file) => RUNNING.has(file.processing_status))) return;
+    const timer = window.setTimeout(loadFiles, 2500);
+    return () => window.clearTimeout(timer);
+  }, [files, loadFiles]);
 
   useEffect(() => {
     loadFiles();
@@ -172,8 +194,22 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
                       <span style={{ color: "var(--muted)" }}>{t("library.cannotProcess")}</span>
                     )
                   ) : null}
+                  {/* **إلى رسالته هو، لا إلى قائمةٍ يبحث فيها.** المعرّف
+                      معروفٌ هنا، فالرابط يقصده — ولا يُطلب من الباحث أن
+                      يتعرّف على مستنده بين بطاقاتٍ متشابهة. */}
                   {file.thesis_id ? (
-                    <a href={`/${locale}/theses`}>{t("library.openReview")}</a>
+                    <a href={`/${locale}/theses/${file.thesis_id}/review`}>
+                      {t("library.openReview")}
+                    </a>
+                  ) : null}
+                  {/* **المعرفة المعتمَدة كان لا يُسأل عنها.** الباحث يعالج
+                      مستنده ويعتمد منه معلومات، ثم يفتح بُبريفا AI فلا يجد
+                      طريقًا إليه: المرفق يقبل رفعًا جديدًا وحده، والنسخة
+                      الجديدة غير مقروءة — فما اعتُمد لا يُبلَغ إليه أبدًا.
+                      فمن هنا يُسأل عن هذا المستند بعينه. */}
+                  {file.processing_status === "awaiting_review"
+                    || file.processing_status === "completed" ? (
+                    <a href={`/${locale}/ai?file=${file.id}`}>{t("library.askAi")}</a>
                   ) : null}
                   <a href={`/${locale}/library`} onClick={(event) => {
                     event.preventDefault();

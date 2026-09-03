@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { use, useCallback, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
+import { Dic2Consent } from "@/components/Dic2Consent";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { useDeferredLoad } from "@/lib/useDeferredLoad";
 
@@ -73,6 +74,10 @@ export default function ReviewPage({
   const [draft, setDraft] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  // بعد الإذن يستأنف الاستخراج ثوانيَ — والشاشة كانت تقول «لا مقترحات بعد»
+  // وتبقى عليها. فتُعاد القراءة مرّاتٍ **معدودة**، ثم تتوقّف: رسالةُ «لا
+  // مقترحات» بعد ذلك صادقة، وليست انتظارًا بلا نهاية.
+  const [awaiting, setAwaiting] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -83,6 +88,16 @@ export default function ReviewPage({
   }, [locale, t, thesisId]);
 
   useDeferredLoad(load);
+
+  useEffect(() => {
+    // ويتوقّف فور وصول أول مقترح — لا يُكمل عدَّه بلا سبب.
+    if (awaiting === 0 || (review?.total ?? 0) > 0) return;
+    const timer = window.setTimeout(() => {
+      setAwaiting((left) => left - 1);
+      void load();
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [awaiting, review, load]);
 
   async function decide(
     candidate: Candidate,
@@ -128,6 +143,23 @@ export default function ReviewPage({
       </Link>
 
       {error ? <p className="error">{error}</p> : null}
+
+      {/* **الإذن قبل المراجعة.** المكتبة تقول للباحث إن المتابعة تنتظر
+          موافقته، وتحيله إلى هنا؛ فيجب أن يجد الباب حيث أُرسل — لا قائمةً
+          يبحث فيها عن رسالته ثم لا يجد فيها زرًّا يمنح به شيئًا. وما دام
+          الحدّ قائمًا فلا مرشّحات تُعرض أصلًا: الشاشة تطلب قرارًا واحدًا. */}
+      <Dic2Consent
+        locale={locale}
+        messages={getMessages(locale)}
+        thesisId={thesisId}
+        onDecision={(decision) => {
+          if (decision !== "grant") return;
+          void load();
+          // أربعٌ وعشرون محاولة على مدى دقيقة — حدٌّ معلن لا انتظارٌ مفتوح.
+          setAwaiting(24);
+        }}
+      />
+
       {review === null ? null : (
         <>
           <p className="metric-label" style={{ marginBlockStart: 16 }}>
@@ -169,6 +201,10 @@ export default function ReviewPage({
                         <strong>{field.label}</strong>
                         <span
                           className="metric-label"
+                          // الحال القانونية بجانب نصّها المترجَم — كما في
+                          // بطاقة المكتبة. والفرق بين «معتمَد» و«معتمَدة»
+                          // فرقُ حرفٍ في ترجمة، لا فرقٌ في ما وقع.
+                          data-candidate-status={field.status}
                           style={
                             isUnknown
                               ? {

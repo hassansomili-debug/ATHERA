@@ -10,6 +10,8 @@ import pathlib
 
 import pytest
 
+from tests.tsscan import code_lines
+
 WEB = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web"
 API_CLIENT = (WEB / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
 SESSION = (WEB / "src" / "lib" / "session.ts").read_text(encoding="utf-8")
@@ -359,7 +361,7 @@ def test_the_literature_step_performs_the_workflow_not_the_rule_text():
 def test_the_ai_step_submits_through_the_button_the_product_provides():
     """الحقل `textarea` بلا نموذج ولا معالج مفاتيح — فالضغط على Enter
     يُدخل سطرًا ولا يرسل شيئًا، وكان الفحص ينتظر جوابًا لسؤالٍ لم يُرسَل."""
-    ai = ACCEPTANCE[ACCEPTANCE.index("PUBRIVA AI answers"):]
+    ai = ACCEPTANCE[ACCEPTANCE.index("PUBRIVA AI reaches approved knowledge"):]
     assert 'getByRole("button", { name: "ابدأ" })' in ai
     assert "toBeEnabled" in ai, "لا إثبات أن الزرّ صالح للضغط"
     assert 'press("Enter")' not in ai, "الإرسال ما زال بمفتاح الإدخال"
@@ -723,3 +725,165 @@ def test_the_journey_still_has_no_unbounded_or_sleeping_waits():
     for chunk in spec.split("waitForResponse")[1:]:
         head = chunk[:400]
         assert "timeout:" in head, "انتظارُ شبكةٍ بلا حدّ"
+
+
+def test_the_consent_gate_has_exactly_one_definition():
+    """**بابٌ واحد لا نسختان.**
+
+    كان زرّ الإذن يعيش داخل مكوّن الرفع وحده، فمن رفع مستنده من «مكتبتي»
+    لم يجد له بابًا أصلًا. والعلاج الخاطئ أن يُنسخ الزرّ إلى الشاشة الأخرى —
+    فتفترق النسختان عند أول تعديل، ويصير الحدّ العلمي شيئين يُسمّيان باسم
+    واحد. فالتعريف واحد يُركَّب حيث يقف الباحث.
+    """
+    owners = [
+        path
+        for path in (WEB / "src").rglob("*.tsx")
+        if any('data-testid="dic2-grant"' in line for _, line in
+               code_lines(path.read_text(encoding="utf-8")))
+    ]
+    assert [p.name for p in owners] == ["Dic2Consent.tsx"], (
+        f"حدّ DIC2 معرَّف في أكثر من موضع: {[p.name for p in owners]}")
+
+
+def test_the_dic2_gate_is_mounted_where_the_library_sends_the_researcher():
+    """**الطلب يُعلَن فيُستجاب.**
+
+    المكتبة تقول «بانتظار موافقتك للمتابعة» وتحيل إلى مراجعة الرسالة. فإن
+    لم تكن البوابة مركَّبة هناك، فالباحث يصل إلى شاشةٍ تطلب منه شيئًا لا
+    يستطيع فعله — وطلبٌ بلا باب أسوأ من ألا يُطلب.
+    """
+    review = (WEB / "src" / "app" / "[locale]" / "theses" / "[thesisId]"
+              / "review" / "page.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(review))
+    assert "Dic2Consent" in code, "صفحة المراجعة بلا بوابة إذن"
+    assert "thesisId={thesisId}" in code, "البوابة غير مقيّدة برسالة الصفحة"
+
+
+def test_the_library_links_to_the_exact_thesis_not_to_a_list():
+    """**رسالته هو، لا قائمةٌ يبحث فيها.**
+
+    المعرّف معروفٌ في البطاقة، فالرابط يقصده. وإحالةٌ إلى قائمةٍ تجعل الباحث
+    يتعرّف على مستنده بين بطاقاتٍ متشابهة — وهو ما لا يُطلب من أحد.
+    """
+    library = (WEB / "src" / "app" / "[locale]" / "library"
+               / "page.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(library))
+    assert "theses/${file.thesis_id}/review" in code, "رابط المراجعة غير مقيّد بالرسالة"
+
+
+def test_the_journey_reaches_review_by_the_researchers_own_path():
+    """الرحلة تصل إلى المراجعة كما يصل الباحث: من بطاقة مستنده — لا بأخذ
+    أول رابطٍ نصُّه «راجع» في قائمةٍ راكمت رسائل تشغيلاتٍ سابقة."""
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    assert 'getByRole("link", { name: /راجع|مراجعة/ }).first()' not in code, (
+        "الرحلة تفتح أول مراجعةٍ تجدها")
+    assert code.count(r"waitForURL(/\/theses\/[^/]+\/review/") >= 2, (
+        "الرحلة لا تتحقّق أنها في مراجعة رسالةٍ بعينها")
+    assert "dic2-granted" in code, "الرحلة لا تُثبت أن الإذن مُنح فعلًا"
+
+
+def test_approved_knowledge_is_reachable_from_the_browser():
+    """**ما اعتُمد يجب أن يُسأل عنه.**
+
+    الباحث يعالج مستنده ويعتمد منه معلومات، ثم يفتح بُبريفا AI فيجد مرفقًا
+    يقبل رفعًا جديدًا وحده — والنسخة الجديدة غير مقروءة، فلا معلومة معتمَدة
+    فيها. فكانت المعرفة تُعتمد ثم لا يبلغها سؤال أبدًا: عملٌ يُطلب من الباحث
+    ولا يُستعمل.
+    """
+    library = (WEB / "src" / "app" / "[locale]" / "library"
+               / "page.tsx").read_text(encoding="utf-8")
+    lib_code = "\n".join(line for _, line in code_lines(library))
+    assert "/ai?file=${file.id}" in lib_code, "لا طريق من المستند إلى السؤال عنه"
+
+    ai_input = (WEB / "src" / "components" / "AtheraAiInput.tsx").read_text(encoding="utf-8")
+    ai_code = "\n".join(line for _, line in code_lines(ai_input))
+    assert "attachFileId" in ai_code, "المرفق لا يأتي إلا من قرص الباحث"
+    assert "/api/v1/files/${attachFileId}" in ai_code, "اسم المرفق يُخمَّن لا يُقرأ"
+
+    page = (WEB / "src" / "app" / "[locale]" / "ai" / "page.tsx").read_text(encoding="utf-8")
+    page_code = "\n".join(line for _, line in code_lines(page))
+    assert "attachFileId={attachFileId}" in page_code, "شاشة الذكاء تتجاهل المستند المُحال إليها"
+    assert 'get("file")' in page_code, "الإحالة لا تُقرأ من الرابط"
+
+
+def test_dcc2_is_proven_as_a_boundary_of_its_own():
+    """**إذنان لا يُدمجان.** واعتمادُ معرفةٍ من مستند (DIC2) لا يأذن بإرسالها
+    إلى مزوّد لأجل سؤال (DCC2). والرحلة تُثبت الحدّ الثاني مطلوبًا بعد منح
+    الأول — لا «إن ظهر»: شرطٌ يبتلع غيابَ الحدّ يجعل انهيارَ الحدّين نجاحًا.
+    """
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    assert "if (await consent.count())" not in code, "حدّ DCC2 يُفحص شرطيًّا"
+    assert 'name: "السماح والإجابة"' in code, "الرحلة لا تمسّ حدّ المحادثة"
+    assert "ai-attachment" in code, "الرحلة تسأل بلا مرفق فلا تبلغ المعرفة المعتمَدة"
+    # ولا يُمنح أحدهما سلفًا في الشيفرة.
+    ai_input = (WEB / "src" / "components" / "AtheraAiInput.tsx").read_text(encoding="utf-8")
+    ai_code = "\n".join(line for _, line in code_lines(ai_input))
+    assert "chat-consent?decision=grant" in ai_code, "إذن المحادثة لا يُطلب صراحةً"
+    assert 'needs === "chat_consent"' in ai_code, "الواجهة لا تحترم حدّ المحادثة"
+
+
+def test_the_approval_is_read_from_its_contract_not_from_translated_prose():
+    """**«معتمَد» و«معتمَدة» فرقُ حرفٍ في ترجمة، لا فرقٌ في ما وقع.**
+
+    وكان إثبات الاعتماد يطابق نصًّا لا تكتبه الشاشة أصلًا، بينما سطر
+    الحصيلة يحمل كلمة «معتمَد» في كل زيارة — فحصٌ يمرّ على شاشةٍ لم يُعتمد
+    فيها شيء، أو يسقط وقد اعتُمد. فالحال تُقرأ من سمتها.
+    """
+    review = (WEB / "src" / "app" / "[locale]" / "theses" / "[thesisId]"
+              / "review" / "page.tsx").read_text(encoding="utf-8")
+    assert "data-candidate-status={field.status}" in "\n".join(
+        line for _, line in code_lines(review)), "حال المرشّح بلا عقد يُقرأ"
+
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    assert 'toHaveAttribute("data-candidate-status", "approved"' in code, (
+        "الاعتماد يُثبت بنصٍّ مترجَم")
+    assert 'getByText(/معتمَدة|اعتُمدت|approved/i)' not in code, "النصّ المترجَم ما زال دليلًا"
+
+
+def test_the_library_keeps_reading_state_while_work_is_running():
+    """**المعالجة تجري والبطاقة واقفة.**
+
+    الحال كانت تُقرأ مرّتين ثم لا تُقرأ أبدًا: الخادم يقرأ المستند ويستخرج
+    منه ثم يقف عند حدّ الإذن، والشاشة باقية على «قيد المعالجة» حتى يعيد
+    الباحث تحميلها بنفسه — وهو لا يعرف أن عليه ذلك. فظنّ أن مستنده عالق،
+    والمنتج هو من ينتظره.
+    """
+    library = (WEB / "src" / "app" / "[locale]" / "library"
+               / "page.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(library))
+    assert "RUNNING.has(file.processing_status)" in code, "الشاشة لا تُعيد قراءة حالٍ جارية"
+    assert "window.setTimeout(loadFiles" in code, "لا إعادة قراءة مجدولة"
+    assert "window.clearTimeout" in code, "مؤقّتٌ بلا تنظيف"
+    # **ويقف عند حالٍ مستقرّة** — لا قصفَ للـAPI بعد انتهاء العمل.
+    assert "if (!files.some(" in code, "الاستطلاع بلا شرطٍ يوقفه"
+
+
+def test_the_running_states_and_their_label_cannot_drift():
+    """**سجلّان يصفان الشيء نفسه.**
+
+    `RUNNING` تقول أيّ الحالات ما زال فيها عمل، و`PROCESSING_LABEL` تقول
+    أيّها يُسمّى «قيد المعالجة». فإن افترقا صارت حالٌ تُعرض جاريةً ولا
+    تُستطلَع — أو تُستطلَع أبدًا وهي مستقرّة. وهو الخطأ المتكرّر نفسه:
+    قيمةٌ تُكتب بجانب سجلّها بدل أن تُشتقّ منه.
+    """
+    import re
+
+    library = (WEB / "src" / "app" / "[locale]" / "library"
+               / "page.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(library))
+
+    running = set(re.findall(r'"([a-z_]+)"', re.search(
+        r"const RUNNING: ReadonlySet<string> = new Set\(\[([^\]]*)\]\)", code).group(1)))
+    labels = dict(re.findall(r"(\w+):\s*\"(library\.\w+)\"", re.search(
+        r"const PROCESSING_LABEL: Record<string, string> = \{([^}]*)\}", code).group(1)))
+
+    assert running, "لا حالات جارية معرَّفة"
+    assert running <= set(labels), f"حالٌ جارية بلا نصّ يُعرض: {running - set(labels)}"
+    processing_labelled = {state for state, key in labels.items()
+                           if key == "library.processing"}
+    assert running == processing_labelled, (
+        f"سجلّا الحالة افترقا: جارية {sorted(running)} · "
+        f"معروضة «قيد المعالجة» {sorted(processing_labelled)}")

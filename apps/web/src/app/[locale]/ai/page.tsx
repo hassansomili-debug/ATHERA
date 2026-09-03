@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 
 import { AtheraAiInput } from "@/components/AtheraAiInput";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
@@ -23,6 +23,13 @@ const INTENTS = [
 
 export default function AiPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale: raw } = use(params);
+  // **مستندٌ جاء من المكتبة ليُسأل عنه.** ويُقرأ في المتصفّح لا عند التوليد:
+  // `searchParams` تُخرج الصفحة من التوليد المسبق وتطلب حدًّا للتعليق،
+  // وهذه قيمةٌ لا وجود لها أصلًا قبل أن ينقر الباحث.
+  const [attachFileId, setAttachFileId] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    setAttachFileId(new URLSearchParams(window.location.search).get("file") ?? undefined);
+  }, []);
   const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
   const messages = getMessages(locale);
   const t = translator(messages);
@@ -40,7 +47,13 @@ export default function AiPage({ params }: { params: Promise<{ locale: string }>
       </div>
 
       <section style={{ maxInlineSize: "78ch", marginBlockEnd: 30 }}>
-        <AtheraAiInput locale={locale} messages={messages} rows={4} seed={seed} />
+        <AtheraAiInput
+          locale={locale}
+          messages={messages}
+          rows={4}
+          seed={seed}
+          attachFileId={attachFileId}
+        />
       </section>
 
       <section style={{ marginBlockEnd: 30 }}>

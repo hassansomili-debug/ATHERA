@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
+
 import { expect, test, type Page } from "@playwright/test";
 
-import { LOCALE, signIn } from "./journey";
+import { LOCALE, isSignedInDestination, signIn } from "./journey";
 
 /**
  * رحلة القبول | The P1 acceptance journey — a real researcher, a real browser.
@@ -62,7 +64,16 @@ const sidebar = (page: Page) =>
  */
 test.use({ trace: "off", video: "off", screenshot: "off" });
 
-test.describe.configure({ mode: "serial" });
+/**
+ * **لا تسلسل يبتلع فحصًا مستقلًّا.**
+ *
+ * كان الملف كلّه في وضع `serial`، فإذا سقطت الرحلة تُخطّى تسجيلُ الباحث
+ * الجديد **بلا أن يُقال إنه لم يُفحص** — بابُ الدخول إلى المنتج يبقى غير
+ * مثبَتٍ بينما التقرير يعدّ الفحوص «مرّت أو خُطّيت» فحسب. وهو فحصٌ لا
+ * يعتمد على شيءٍ من الرحلة: حسابٌ جديد بعنوانٍ من صنعه.
+ *
+ * والتتابع مضمون أصلًا: `workers: 1` و`fullyParallel: false` في الإعداد.
+ */
 
 test.skip(
   !PASSWORD,
@@ -363,14 +374,18 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // والحال تُقال للباحث بلغته: انتظارُه هو، لا انتظارُ النظام.
     await expect(card.getByText("بانتظار موافقتك للمتابعة")).toBeVisible();
 
+    // **الرابط يقصد رسالته هو** — لا قائمةً يبحث فيها عن بطاقةٍ تشبه غيرها.
     await card.getByRole("link", { name: "افتح المراجعة" }).click();
-    await page.waitForURL(/\/theses/);
+    await page.waitForURL(/\/theses\/[^/]+\/review/, { timeout: 30_000 });
 
+    // والباب موجودٌ حيث أُرسل: غيابه هنا عطبُ منتج لا تخطٍّ في الفحص.
     const grant = page.getByTestId("dic2-grant");
-    await expect(grant, "no DIC2 consent control while awaiting consent")
+    await expect(grant, "no DIC2 consent control where the library sent the researcher")
       .toBeVisible({ timeout: 30_000 });
     await grant.click();
-    await expect(page.getByTestId("dic2-grant")).toBeHidden({ timeout: 60_000 });
+    // والإذن يُمنح فعلًا: البوابة تُستبدل بإقرارٍ صريح، لا تختفي وحسب.
+    await expect(page.getByTestId("dic2-granted")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId("dic2-grant")).toBeHidden();
 
     // وبعد الإذن تمضي المعالجة إلى حالٍ يراجعها الباحث.
     await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
@@ -384,29 +399,45 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   });
 
   await test.step("review the extracted knowledge and approve one fact", async () => {
+    // **إلى مراجعة هذا المستند مباشرة.** وكان الفحص يفتح القائمة ثم يأخذ
+    // أول رابطٍ نصُّه «راجع» — فحسابٌ راكم رسائل من تشغيلاتٍ سابقة يفتح
+    // رسالةً أخرى، ويُعتمد فيها مرشّحٌ ليس من هذا المستند.
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
     await card.getByRole("link", { name: "افتح المراجعة" }).click();
-    await page.waitForURL(/\/theses/);
-
-    const open = page.getByRole("link", { name: /راجع|مراجعة/ }).first();
-    if (await open.count()) await open.click();
-    await page.waitForURL(/\/review/, { timeout: 30_000 });
+    await page.waitForURL(/\/theses\/[^/]+\/review/, { timeout: 30_000 });
 
     // **اعتمادٌ واحد على الأقل** — والزرّ إن غاب فذلك فشلٌ يُعلَن.
-    const approve = page.getByRole("button", { name: "اعتمد" }).first();
-    await expect(approve, "no candidate was available to approve")
+    const approvable = page.locator("article.card")
+      .filter({ has: page.getByRole("button", { name: "اعتمد" }) }).first();
+    await expect(approvable, "no candidate was available to approve")
       .toBeVisible({ timeout: 60_000 });
-    await approve.click();
-    await expect(page.getByText(/معتمَدة|اعتُمدت|approved/i).first())
-      .toBeVisible({ timeout: 30_000 });
+    // اسم الحقل يُلتقط قبل النقر: بعد الاعتماد يختفي زرّه، فمرشّحٌ يُوصف
+    // بأنه «ما فيه زرّ اعتماد» يصير بطاقةً أخرى بمجرّد أن يُعتمد.
+    const field = (await approvable.locator("strong").first().innerText()).trim();
+    await approvable.getByRole("button", { name: "اعتمد" }).click();
+
+    // والاعتماد يُقرأ من عقده لا من نصّه.
+    const settled = page.locator("article.card").filter({ hasText: field }).first();
+    await expect(settled.locator("[data-candidate-status]"))
+      .toHaveAttribute("data-candidate-status", "approved", { timeout: 30_000 });
   });
 
-  // ── ١٧–٢٠: سؤالُ بُبريفا AI، وإذن DCC2 مستقلّ عن DIC2 ──
-  await test.step("PUBRIVA AI answers with no contract markup", async () => {
-    await page.goto(`/${LOCALE}`);
+  // ── ١٧–٢٠: سؤالُ بُبريفا AI عن معرفةٍ اعتمدها، وإذن DCC2 مستقلّ عن DIC2 ──
+  await test.step("PUBRIVA AI reaches approved knowledge only through DCC2", async () => {
+    // **طريق الباحث نفسه.** وكان السؤال يُطرح بلا مرفق، فلا يبلغ المعرفةَ
+    // التي اعتمدها للتوّ ولا يمسّ حدَّ المحادثة أصلًا — فيمرّ الفحص وهو
+    // لم يفحص شيئًا من الاثنين.
+    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await page.waitForURL(/\/library/);
+    const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
+    await card.getByRole("link", { name: "اسأل بُبريفا AI عن هذا المستند" }).click();
+    await page.waitForURL(/\/ai\?/, { timeout: 30_000 });
+
+    // والمرفق يُعلَن باسمه قبل السؤال — لا يُسأل عن مستندٍ لا يراه.
+    await expect(page.getByTestId("ai-attachment")).toContainText(DOC_NAME, { timeout: 30_000 });
+
     const ask = page.getByRole("textbox").first();
-    const question = "ما الفرق بين المنهج الوصفي وشبه التجريبي؟";
-    await ask.fill(question);
+    await ask.fill("ما منهج الدراسة المستخدم في هذا المستند؟");
 
     // **الإرسال بالزرّ لا بمفتاح الإدخال.** الحقل `textarea` بلا نموذج ولا
     // معالج مفاتيح، فالضغط على Enter يُدخل سطرًا ولا يرسل شيئًا.
@@ -416,17 +447,15 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
     // **إذن المحادثة (DCC2) منفصل عن إذن الاستخراج (DIC2).** فاعتمادُ
     // معرفةٍ من مستند لا يأذن بإرسالها إلى مزوّد لأجل سؤال — إذنان لا
-    // يُدمجان ولا يُمنح أحدهما سلفًا.
+    // يُدمجان ولا يُمنح أحدهما سلفًا. وظهورُ الإجابة هنا بلا إذنٍ ثانٍ
+    // يعني أن الحدّين انطبقا على بعضهما، وذلك إخفاقٌ لا نجاح.
     const consent = page.getByRole("button", { name: "السماح والإجابة" });
+    await expect(consent, "the chat answered from an approved document without DCC2")
+      .toBeVisible({ timeout: 180_000 });
+    await consent.click();
+
+    // والسؤال الأصلي يُعاد بعد الإذن — لا يُطلب من الباحث كتابته ثانية.
     const answer = page.getByTestId("ai-answer");
-    await expect(answer.or(consent)).toBeVisible({ timeout: 180_000 });
-
-    if (await consent.count()) {
-      await consent.click();
-      // والسؤال الأصلي يُعاد بعد الإذن — لا يُطلب من الباحث كتابته ثانية.
-      await expect(answer).toBeVisible({ timeout: 180_000 });
-    }
-
     await expect(answer).toBeVisible({ timeout: 180_000 });
     const text = (await page.getByTestId("ai-answer-text").innerText()).trim();
     expect(text.length, "the answer was empty").toBeGreaterThan(20);
@@ -468,18 +497,44 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 });
 
 test("a new researcher can create an account from the browser", async ({ page }) => {
-  // **باب التسجيل موجود ويعمل.** لا يُنشأ حسابٌ في كل تشغيلة: يُتحقّق أن
-  // الصفحة قائمة وتقبل المدخلات وتردّ خطأً مفهومًا على بريدٍ مأخوذ.
+  // **بابُ الدخول يُفتح فعلًا، لا يُجرَّب مغلقًا.** وكان الفحص يسجّل
+  // ببريدٍ مأخوذ ويكتفي برسالة الخطأ — فيُثبت أن الباب يردّ، لا أنه يفتح.
+  //
+  // والعنوان من صنع التشغيلة: `example.com` نطاقٌ محجوز للتوثيق لا يصل
+  // إليه بريد، ولا يُستعمل بريد أحد. وكلمة المرور تُولَّد عشوائيًّا هنا
+  // ولا تُكتب في المستودع ولا تُطبع.
+  const stamp = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const email = `pubriva-accept-${stamp}@example.com`;
+  const password = `${randomUUID()}-Aa1!`;
+
   await page.goto(`/${LOCALE}/login`);
   await page.getByRole("link", { name: /أنشئ واحدًا|Create one/i }).click();
   await page.waitForURL(/\/register/);
 
   await expect(page.getByRole("heading", { name: /أنشئ حسابًا/ })).toBeVisible();
-  await page.getByLabel("الاسم الكامل").fill("باحث القبول");
-  await page.getByLabel(/البريد/).fill(EMAIL ?? "taken@example.com");
-  await page.getByLabel(/كلمة المرور/).fill("a-very-long-password-123");
-  await page.getByRole("button", { name: /أنشئ حسابًا/ }).click();
+  await page.getByLabel("الاسم الكامل").fill("باحث القبول الجديد");
+  await page.getByLabel(/البريد/).fill(email);
+  await page.getByLabel(/كلمة المرور/).fill(password);
 
-  // بريدٌ مأخوذ يجب أن يُنتج رسالةً مفهومة، لا صمتًا.
+  const created = page.waitForResponse(
+    (r) => r.url().includes("/api/v1/auth/register") && r.request().method() === "POST",
+    { timeout: 60_000 },
+  );
+  await page.getByRole("button", { name: /أنشئ حسابًا/ }).click();
+  expect((await created).status(), "registration was refused").toBe(201);
+
+  // والحساب الجديد يدخل مساحته فعلًا — لا يقف عند الباب.
+  await page.waitForURL((url) => isSignedInDestination(url), { timeout: 30_000 });
+  expect(await page.evaluate(() => localStorage.getItem("athera_access_token"))).toBeTruthy();
+
+  // ثم يخرج، ويُثبَت أن العنوان صار مأخوذًا — رسالةٌ مفهومة لا صمت.
+  await sidebar(page).getByRole("button", { name: /خروج|sign out/i }).click();
+  await page.waitForURL(/\/login/, { timeout: 30_000 });
+
+  await page.goto(`/${LOCALE}/register`);
+  await page.getByLabel("الاسم الكامل").fill("باحث القبول الجديد");
+  await page.getByLabel(/البريد/).fill(email);
+  await page.getByLabel(/كلمة المرور/).fill(password);
+  await page.getByRole("button", { name: /أنشئ حسابًا/ }).click();
   await expect(page.getByTestId("register-error")).toBeVisible({ timeout: 30_000 });
 });
