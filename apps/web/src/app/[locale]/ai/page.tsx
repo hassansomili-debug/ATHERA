@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useState, useSyncExternalStore } from "react";
 
 import { AtheraAiInput } from "@/components/AtheraAiInput";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
@@ -21,8 +21,21 @@ const INTENTS = [
   "intentData", "intentManuscript", "intentJournal", "intentReview",
 ];
 
+/** الرابط لا يتغيّر بلا تنقّل، والتنقّل يعيد التركيب — فلا اشتراك. */
+const NO_SUBSCRIPTION = () => () => undefined;
+const attachedFile = (): string | undefined =>
+  new URLSearchParams(window.location.search).get("file") ?? undefined;
+
 export default function AiPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale: raw } = use(params);
+  // **مستندٌ جاء من المكتبة ليُسأل عنه.**
+  //
+  // ويُقرأ في المتصفّح لا عند التوليد: `searchParams` تُخرج الصفحة من
+  // التوليد المسبق وتطلب حدًّا للتعليق، وهذه قيمةٌ لا وجود لها أصلًا قبل
+  // أن ينقر الباحث. ولا يُضبط داخل `useEffect` — تصيير متتالٍ يمنعه
+  // `react-hooks/set-state-in-effect`، و`useSyncExternalStore` هي الأداة
+  // الموضوعة لهذا: لقطةٌ على العميل وأخرى على الخادم تمنع اختلاف الترطيب.
+  const attachFileId = useSyncExternalStore(NO_SUBSCRIPTION, attachedFile, () => undefined);
   const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
   const messages = getMessages(locale);
   const t = translator(messages);
@@ -40,7 +53,13 @@ export default function AiPage({ params }: { params: Promise<{ locale: string }>
       </div>
 
       <section style={{ maxInlineSize: "78ch", marginBlockEnd: 30 }}>
-        <AtheraAiInput locale={locale} messages={messages} rows={4} seed={seed} />
+        <AtheraAiInput
+          locale={locale}
+          messages={messages}
+          rows={4}
+          seed={seed}
+          attachFileId={attachFileId}
+        />
       </section>
 
       <section style={{ marginBlockEnd: 30 }}>

@@ -218,7 +218,8 @@
     "sourcesTab": "Sources and literature",
     "subtitle": "Every source with its access state, retraction status and last verification.",
     "title": "Research Library",
-    "uploaded": "Uploaded"
+    "uploaded": "Uploaded",
+    "askAi": "Ask PUBRIVA AI about this document"
   },
   "claims": {
     "title": "Claims ledger",

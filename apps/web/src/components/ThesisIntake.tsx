@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { type Locale, type Messages, translator } from "@/lib/i18n";
 import { usePosture } from "@/lib/posture";
+import { Dic2Consent } from "./Dic2Consent";
 
 /**
  * رفع الرسالة ثم متابعة قراءتها.
@@ -61,22 +62,6 @@ const STATE_KEY: Record<string, string> = {
   local_only: "theses.stateLocalOnly",
 };
 
-/** إذن إرسال هذا المستند إلى مزوّد خارجي — نصّه يأتي من الخادم لا من ترجمة. */
-interface Consent {
-  file_id: string;
-  state: "granted" | "declined" | "absent";
-  capability: string;
-  max_classification: string;
-  provider: string;
-  model: string | null;
-  title: string;
-  body: string;
-  accept_label: string;
-  decline_label: string;
-  revoke_label: string;
-  excluded_chunks: Record<string, number>;
-}
-
 const ACCEPT = ".pdf,.docx,.doc,.txt";
 
 export function ThesisIntake({ locale, messages }: { locale: Locale; messages: Messages }) {
@@ -89,7 +74,6 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
   const [state, setState] = useState<ExtractionState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [consent, setConsent] = useState<Consent | null>(null);
 
   const poll = useCallback(
     async (thesisId: string) => {
@@ -99,9 +83,6 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
         );
         setState(next);
         setPhase(next.status);
-        setConsent(
-          await apiFetch<Consent>(`/api/v1/theses/${thesisId}/consent`, { locale }),
-        );
       } catch (err) {
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
       }
@@ -133,26 +114,6 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
     } catch (err) {
       setPhase("idle");
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("upload.failed"));
-    }
-  }
-
-  async function decideConsent(decision: "grant" | "decline" | "revoke") {
-    if (!state) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setConsent(
-        await apiFetch<Consent>(`/api/v1/theses/${state.thesis_id}/consent`, {
-          method: "POST",
-          locale,
-          body: JSON.stringify({ decision }),
-        }),
-      );
-      if (decision === "grant") await poll(state.thesis_id);
-    } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -230,84 +191,16 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
           {state.error ? <span className="metric-label">{state.error}</span> : null}
 
           {/* ── بوابة الإذن ──
-              تظهر حين تمّت القراءة المحلية ولم يُحسم الإرسال الخارجي. ونصّها
-              يأتي من الخادم فيسمّي المزوّد المضبوط فعلًا — لا اسمًا مكتوبًا
-              في ترجمة قد تسبق تغييرَ المزوّد. */}
-          {consent && consent.state !== "granted" ? (
-            <div
-              style={{
-                marginBlockStart: 10, padding: 14, borderRadius: "var(--radius)",
-                border: "1px solid var(--border)",
-                background: "color-mix(in srgb, var(--athera-mint, #A7F3D0) 18%, transparent)",
-                display: "grid", gap: 8,
-              }}
-            >
-              <strong>{consent.title}</strong>
-              <p style={{ margin: 0, whiteSpace: "pre-line", fontSize: 14 }}>{consent.body}</p>
-              <p className="provenance-note" style={{ margin: 0 }}>
-                {t("theses.consentLocalDone")}
-              </p>
-              {Object.keys(consent.excluded_chunks).length > 0 ? (
-                <p className="metric-label" style={{ margin: 0 }}>
-                  {t("theses.consentExcluded")}:{" "}
-                  {Object.values(consent.excluded_chunks).reduce((a, b) => a + b, 0)}
-                </p>
-              ) : null}
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  // مِقبضٌ ثابت: نصّ الزرّ يأتي من الخادم فيتغيّر، والحدّ
-                  // العلمي الذي يمثّله لا يتغيّر — فيُستهدف بما يصفه.
-                  data-testid="dic2-grant"
-                  disabled={busy}
-                  onClick={() => void decideConsent("grant")}
-                  style={{
-                    padding: "8px 16px", border: "none", borderRadius: "var(--radius)",
-                    background: "var(--athera-teal)", color: "#fff", font: "inherit",
-                    cursor: "pointer",
-                  }}
-                >
-                  {consent.accept_label}
-                </button>
-                <button
-                  type="button"
-                  data-testid="dic2-decline"
-                  disabled={busy || consent.state === "declined"}
-                  onClick={() => void decideConsent("decline")}
-                  style={{
-                    padding: "8px 16px", border: "1px solid var(--border)",
-                    borderRadius: "var(--radius)", background: "transparent",
-                    color: "inherit", font: "inherit", cursor: "pointer",
-                  }}
-                >
-                  {consent.decline_label}
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          {consent && consent.state === "granted" ? (
-            <div className="metric-label" style={{ marginBlockStart: 8 }}>
-              {t("theses.consentGranted")} · {consent.provider}
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void decideConsent("revoke")}
-                style={{
-                  marginInlineStart: 10, padding: "4px 10px",
-                  border: "1px solid var(--border)", borderRadius: "var(--radius)",
-                  background: "transparent", color: "inherit", font: "inherit",
-                  cursor: "pointer", fontSize: 13,
-                }}
-              >
-                {consent.revoke_label}
-              </button>
-              {/* السحب لا يستردّ ما أُرسل — ولا تدّعي الشاشة غير ذلك. */}
-              <p className="provenance-note" style={{ margin: "4px 0 0" }}>
-                {t("theses.consentNotRecall")}
-              </p>
-            </div>
-          ) : null}
+              تعريفٌ واحد يُركَّب هنا وفي مراجعة الرسالة — فلا نسختان
+              تفترقان، ولا بابٌ يُفتح من شاشةٍ ويُغلق من أخرى. */}
+          <Dic2Consent
+            locale={locale}
+            messages={messages}
+            thesisId={state.thesis_id}
+            onDecision={(decision) => {
+              if (decision === "grant") void poll(state.thesis_id);
+            }}
+          />
 
           <div style={{ display: "flex", gap: 8, marginBlockStart: 6, flexWrap: "wrap" }}>
             {state.status === "awaiting_review" || state.status === "verified" ? (

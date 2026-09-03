@@ -998,6 +998,10 @@ import pathlib  # noqa: E402
 
 WEB = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web"
 INTAKE = (WEB / "src" / "components" / "ThesisIntake.tsx").read_text(encoding="utf-8")
+# **بوابةُ الإذن صارت مكوّنًا واحدًا** يُركَّب في شاشة الرفع وفي مراجعة
+# الرسالة معًا — لأن من رفع مستنده من «مكتبتي» كان يصل إلى شاشةٍ تطلب إذنه
+# ولا تملك زرًّا يمنحه به. فتُقرأ حيث تُعرَّف، لا حيث كانت تسكن.
+CONSENT_GATE = (WEB / "src" / "components" / "Dic2Consent.tsx").read_text(encoding="utf-8")
 REVIEW_PAGE = (
     WEB / "src" / "app" / "[locale]" / "theses" / "[thesisId]" / "review" / "page.tsx"
 ).read_text(encoding="utf-8")
@@ -2225,23 +2229,23 @@ async def test_consent_audit_names_provider_capability_and_no_content(two_tenant
 
 def test_consent_gate_is_rendered_before_external_processing():
     """§3 — بوابة الإذن تظهر، ونصّها من الخادم لا من ترجمة ثابتة."""
-    assert "consent.title" in INTAKE and "consent.body" in INTAKE
-    assert "consent.accept_label" in INTAKE and "consent.decline_label" in INTAKE
-    assert 'decideConsent("grant")' in INTAKE and 'decideConsent("decline")' in INTAKE
+    assert "consent.title" in CONSENT_GATE and "consent.body" in CONSENT_GATE
+    assert "consent.accept_label" in CONSENT_GATE and "consent.decline_label" in CONSENT_GATE
+    assert 'decideConsent("grant")' in CONSENT_GATE and 'decideConsent("decline")' in CONSENT_GATE
     # اسم المزوّد يُعرض من الحالة لا مكتوبًا.
-    assert "consent.provider" in INTAKE
-    assert "anthropic" not in INTAKE.lower()
+    assert "consent.provider" in CONSENT_GATE
+    assert "anthropic" not in CONSENT_GATE.lower()
 
 
 def test_consent_gate_declares_what_is_not_sent_and_what_stays_local():
-    assert "theses.consentExcluded" in INTAKE
-    assert "theses.consentLocalDone" in INTAKE
+    assert "theses.consentExcluded" in CONSENT_GATE
+    assert "theses.consentLocalDone" in CONSENT_GATE
 
 
 def test_revocation_ui_does_not_claim_recall():
     """§11 — لا تدّعي الشاشة استرداد ما أُرسل."""
-    assert "theses.consentNotRecall" in INTAKE
-    assert 'decideConsent("revoke")' in INTAKE
+    assert "theses.consentNotRecall" in CONSENT_GATE
+    assert 'decideConsent("revoke")' in CONSENT_GATE
 
 
 def test_declining_is_not_painted_as_an_error_in_the_ui():
