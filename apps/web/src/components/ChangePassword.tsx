@@ -51,7 +51,7 @@ export function ChangePassword({ locale, messages }: { locale: Locale; messages:
       clearSession();
       window.setTimeout(() => window.location.assign(`/${locale}/login`), 1500);
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("auth.genericError"));
+      setError(err instanceof AtheraApiError ? err.localized(locale) : t("auth.changeFailed"));
     } finally {
       setBusy(false);
     }

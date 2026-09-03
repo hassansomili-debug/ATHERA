@@ -46,7 +46,7 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
     } catch (err) {
       // الخطأ يصل بلغتين؛ نعرض لغة الواجهة الحالية.
       setError(
-        err instanceof AtheraApiError ? err.localized(locale) : t("auth.genericError"),
+        err instanceof AtheraApiError ? err.localized(locale) : t("auth.signInFailed"),
       );
     } finally {
       setBusy(false);

@@ -83,7 +83,7 @@ export default function ResetPasswordPage({
       clearSession();
       window.setTimeout(() => window.location.assign(`/${locale}/login`), 1800);
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("auth.genericError"));
+      setError(err instanceof AtheraApiError ? err.localized(locale) : t("auth.resetFailed"));
     } finally {
       setBusy(false);
     }

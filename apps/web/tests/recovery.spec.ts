@@ -86,3 +86,41 @@ test("the reset form refuses a weak or mismatched password before sending", asyn
   await expect(page.getByTestId("reset-mismatch")).toBeVisible();
   await expect(submit).toBeDisabled();
 });
+
+test("a failed recovery request never says the sign-in failed", async ({ page }) => {
+  // **عيبٌ رآه المالك في الإنتاج**: الصفحة كانت تقول «تعذّر تسجيل الدخول»
+  // لباحثٍ يستعيد كلمته. ورسالةٌ تصف فعلًا لم يقع تُخفي الفعل الذي فشل.
+  await page.route("**/api/v1/auth/forgot-password", (route) => route.abort("failed"));
+
+  for (const [locale, wrong, right] of [
+    ["ar", "تعذر تسجيل الدخول", "تعذر إرسال رابط الاستعادة"],
+    ["en", "Sign-in failed", "couldn't send the recovery link"],
+  ] as const) {
+    await page.goto(`/${locale}/forgot-password`);
+    await page.getByLabel(locale === "ar" ? /البريد/ : /email/i).fill("someone@fixtures.athera");
+    await page.getByRole("button").filter({ hasText: /أرسل|Send/ }).click();
+
+    const error = page.getByTestId("forgot-error");
+    await expect(error).toBeVisible({ timeout: 20_000 });
+    const text = await error.innerText();
+    expect(text, `${locale}: recovery reported a sign-in failure`).not.toContain(wrong);
+    expect(text).toContain(right);
+  }
+});
+
+test("a failed reset never says the sign-in failed", async ({ page }) => {
+  await page.route("**/api/v1/auth/reset-password", (route) => route.abort("failed"));
+  await page.goto("/en/reset-password#token=fragment-mechanics-check");
+
+  await page.getByLabel("كلمة المرور الجديدة", { exact: true })
+    .or(page.getByLabel("New password", { exact: true }))
+    .fill("a-long-enough-password");
+  await page.getByLabel("تأكيد كلمة المرور الجديدة")
+    .or(page.getByLabel("Confirm new password"))
+    .fill("a-long-enough-password");
+  await page.getByRole("button").filter({ hasText: /احفظ|Save/ }).click();
+
+  const error = page.getByTestId("reset-error");
+  await expect(error).toBeVisible({ timeout: 20_000 });
+  expect(await error.innerText()).not.toContain("Sign-in failed");
+});

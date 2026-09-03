@@ -53,7 +53,7 @@ export default function RegisterPage({ params }: { params: Promise<{ locale: str
       window.location.assign(`/${locale}`);
     } catch (err) {
       setError(
-        err instanceof AtheraApiError ? err.localized(locale) : t("auth.genericError"),
+        err instanceof AtheraApiError ? err.localized(locale) : t("auth.registerFailed"),
       );
     } finally {
       setBusy(false);
