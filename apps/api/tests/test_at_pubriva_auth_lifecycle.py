@@ -959,5 +959,12 @@ def test_the_ai_answer_is_read_after_consent_and_proved_grounded():
     ai = code[code.index("PUBRIVA AI reaches approved knowledge"):]
     assert "toBeHidden" in ai, "الجواب يُقرأ قبل أن تسقط البوابة"
     assert "مسنود بدليل موثّق" in ai, "لا إثبات أن الجواب مسنود لا مقترَح"
-    assert ai.index("toBeHidden") < ai.index("ai-answer-text"), (
-        "النصّ يُقرأ قبل سقوط البوابة")
+    # وقبل الإذن: الحدّ أمسك فعلًا — لا مجرّد أن زرًّا ظهر.
+    assert "اقتراح نموذج" in ai, "لا إثبات أن المعرفة لم تُرسل قبل الإذن"
+    assert "not.toBe(refusal)" in ai, "لا إثبات أن عمليةً جديدة جرت بعد الإذن"
+    # والنصّ يُقرأ مرّتين قصدًا: مرّةً قبل الإذن ليُحفظ نصُّ الرفض، ومرّةً
+    # بعد سقوط البوابة ليُقرأ الجواب. فالمقارنة على **آخر** قراءة.
+    assert ai.rindex("ai-answer-text") > ai.index("toBeHidden"), (
+        "الجواب النهائي يُقرأ قبل سقوط البوابة")
+    assert ai.index("refusal") < ai.index("consent.click()"), (
+        "نصّ الرفض يُلتقط بعد منح الإذن، فلا يفرّق شيئًا")

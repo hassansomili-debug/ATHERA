@@ -463,6 +463,15 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     const consent = page.getByRole("button", { name: "السماح والإجابة" });
     await expect(consent, "the chat answered from an approved document without DCC2")
       .toBeVisible({ timeout: 180_000 });
+
+    // **وقبل الإذن لم تُرسَل المعرفة.** الخادم يفرّغ ما اعتمده الباحث ما لم
+    // يكن الإذن قائمًا، فيصف جوابه بأنه اقتراح نموذج لا دليل. فهذه العبارة
+    // هنا إثباتُ أن الحدّ أمسك فعلًا — لا مجرّد أن زرًّا ظهر.
+    const before = page.getByTestId("ai-answer");
+    await expect(before, "the pre-consent answer already claimed grounded evidence")
+      .toContainText("اقتراح نموذج");
+    const refusal = (await page.getByTestId("ai-answer-text").innerText()).trim();
+
     await consent.click();
 
     // **والمقروء بعد الإذن لا قبله.** بطاقةُ الجواب معروضة قبل الإذن أيضًا:
@@ -484,6 +493,8 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
       .toContainText("مسنود بدليل موثّق");
     const text = (await page.getByTestId("ai-answer-text").innerText()).trim();
     expect(text.length, "the answer was empty").toBeGreaterThan(20);
+    // وعمليةٌ جديدة جرت فعلًا: النصّ ليس نصَّ الرفض نفسه معادًا.
+    expect(text, "the post-consent answer is the pre-consent refusal").not.toBe(refusal);
     for (const markup of ["</answer_ar>", "<answer_ar>", "<citations>", "</citations>",
                           "</invoke>", "<invoke"]) {
       expect(text, `contract markup leaked: ${markup}`).not.toContain(markup);
