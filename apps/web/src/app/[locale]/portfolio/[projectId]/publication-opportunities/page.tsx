@@ -130,7 +130,7 @@ export default function PublicationOpportunitiesPage({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [openEvidence, setOpenEvidence] = useState<string | null>(null);
-  const [tab, setTab] = useState<"thread" | "map" | "outline">("thread");
+  const [tab, setTab] = useState<"thread" | "outline">("thread");
 
   const load = useCallback(async () => {
     try {
@@ -438,15 +438,22 @@ export default function PublicationOpportunitiesPage({
         </section>
       ) : null}
 
-      {/* ── مساحة الفرصة المختارة: خيطٌ وخريطةٌ وهيكل ── */}
+      {/* ── مساحة الفرصة المختارة: خيطٌ وهيكل ──
+
+          **وكان لسانٌ ثالث لا يفعل شيئًا.** «خريطة الأدلة» تضبط `tab` إلى
+          `map`، واللوحة المعروضة شرطها `tab !== "outline"` — فهي بعينها لوحة
+          «الخيط»، حرفًا بحرف. فيضغط الباحث اللسان، ويراه يُضاء (`aria-pressed`)،
+          ولا يتغيّر تحته شيء: زرٌّ حيٌّ لا أثر له، وهو أسوأ من زرٍّ غائب.
+          وخريطةُ الأدلة معروضةٌ أصلًا داخل الخيط — تحت كل عنصرٍ شواهده
+          وموضعها. فيُزال اللسان المكرَّر ولا تُزال الخريطة. */}
       {selected ? (
         <section style={{ marginBlockStart: 26, display: "grid", gap: 12 }}>
           <h2>{t("publicationPlanning.workspace")}</h2>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {(["thread", "map", "outline"] as const).map((key) => (
+            {(["thread", "outline"] as const).map((key) => (
               <button key={key} type="button" className="action"
                       aria-pressed={tab === key} onClick={() => setTab(key)}>
-                {t(`publicationPlanning.${key === "map" ? "evidenceMap" : key}`)}
+                {t(`publicationPlanning.${key}`)}
               </button>
             ))}
           </div>

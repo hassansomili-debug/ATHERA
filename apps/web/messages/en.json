@@ -389,7 +389,8 @@
       "ready_to_submit": "Ready to submit",
       "converted": "Converted to a project",
       "rejected": "Rejected"
-    }
+    },
+    "noTheses": "No thesis is registered yet, and the opportunity map is derived from one. Start by uploading your thesis under “My Theses”."
   },
   "manuscripts": {
     "title": "Manuscript Studio",
@@ -643,7 +644,10 @@
     "submit": "Search",
     "gateTitle": "External search is not activated yet.",
     "gateBody": "The literature registry is set to offline, so no external registry is called and no results are shown. What works today: manual DOI import into your library.",
-    "empty": "No results yet."
+    "empty": "No results yet.",
+    "resultsLabel": "Results",
+    "retracted": "This paper is retracted — no claim may rest on it.",
+    "notStoredNote": "These are candidates from an external registry; none is stored in your library. Importing is a separate act, performed in"
   },
   "journalsPage": {
     "title": "Journals & Publishing",
