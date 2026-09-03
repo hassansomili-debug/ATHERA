@@ -290,3 +290,78 @@ def test_credentialed_acceptance_is_gated_behind_an_explicit_opt_in():
     assert "vars.PUBRIVA_ACCEPT_READY == 'true'" in workflow, "لا بوّابة قبل التشغيل باعتماد"
     # وسببُ عدم التشغيل يُقال، ولا يُقرأ الصمت نجاحًا.
     assert "browser acceptance is NOT verified while this gate is closed" in workflow
+
+
+# ══════════ ٩. ربطُ مرجعٍ بالبحث: مسارٌ في الخادم بلا بابٍ في المتصفح ══════════
+
+WORKSPACE_PAGE = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
+                  / "page.tsx").read_text(encoding="utf-8")
+
+
+def test_the_researcher_can_link_a_library_source_from_the_browser():
+    """**`POST …/sources` كان عاملًا بلا نافذةٍ تبلغه.**
+
+    فالباحث يرى مراجعه في مكتبته ولا يستطيع أن ينسبها إلى بحثه — والمسار
+    الوحيد إليها كان استدعاءً مباشرًا للـAPI. وذلك ليس منتجًا.
+    """
+    client = (WEB / "src" / "lib" / "workspace.ts").read_text(encoding="utf-8")
+    assert "export const linkSource" in client
+    assert "export const listLibrarySources" in client
+
+    assert "addSource" in WORKSPACE_PAGE, "لا فعل ربطٍ في الشاشة"
+    assert "availableSources" in WORKSPACE_PAGE, "لا قائمة مرشّحين"
+    assert 't("project.addSource")' in WORKSPACE_PAGE
+
+
+def test_the_source_picker_never_asks_for_an_identifier():
+    """يُختار المرجع بعنوانه وبياناته — **والباحث لا ينسخ UUID أبدًا**."""
+    assert "source.title" in WORKSPACE_PAGE
+    assert "source.publication_year" in WORKSPACE_PAGE
+    # ولا حقل إدخالٍ لمعرّف مصدر.
+    assert "asset_id" not in WORKSPACE_PAGE, "الشاشة تطلب معرّفًا بيد الباحث"
+
+
+def test_an_empty_library_is_never_a_silent_pass():
+    """فراغُ المكتبة حالٌ تُقال ومعها طريق — لا شاشةٌ صامتة."""
+    assert 'data-testid="no-candidate-sources"' in WORKSPACE_PAGE
+    assert 't("project.importSourceCta")' in WORKSPACE_PAGE
+    assert 'sourcesLoad === "loading"' in WORKSPACE_PAGE, "التحميل يُعرض فراغًا"
+
+
+def test_the_default_use_state_comes_from_the_server_not_the_screen():
+    """**الاستيراد ليس حكمًا بالصلاحية دليلًا**، والحال يقرّرها الخادم.
+
+    فلو كتبتها الواجهة من عندها لأخفت تغيّرها يومًا، ولقال الفحص «محفوظ
+    فقط» عن علاقةٍ ليست كذلك.
+    """
+    client = (WEB / "src" / "lib" / "workspace.ts").read_text(encoding="utf-8")
+    link = client[client.index("export const linkSource"):]
+    assert '"saved_only"' not in link.split("apiFetch")[0], "الواجهة تفترض الحال الابتدائية"
+
+
+# ══════════ ١٠. رحلة القبول تفحص فعلًا لا نصًّا ══════════
+
+ACCEPTANCE = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+
+
+def test_the_literature_step_performs_the_workflow_not_the_rule_text():
+    """**«النصّ ظاهر» ليست «الفعل وقع».** الصياغة السابقة كانت تثبت أن
+    القسم يقول قاعدته — وتلك جملةٌ في الشاشة لا رحلةُ باحث."""
+    assert "import a reference into My Library through the UI" in ACCEPTANCE
+    assert "link that reference to the project, defaulting to saved_only" in ACCEPTANCE
+    # الاستيراد من الشاشة لا من الـAPI.
+    assert "/api/v1/sources/import" not in ACCEPTANCE
+    # والحال الافتراضية تُفحص على العنصر بعينه.
+    assert 'toHaveAttribute("aria-pressed", "true")' in ACCEPTANCE
+    assert "sourceTitle" in ACCEPTANCE, "المطابقة ليست بالعنوان المقروء من الشاشة"
+
+
+def test_the_ai_step_submits_through_the_button_the_product_provides():
+    """الحقل `textarea` بلا نموذج ولا معالج مفاتيح — فالضغط على Enter
+    يُدخل سطرًا ولا يرسل شيئًا، وكان الفحص ينتظر جوابًا لسؤالٍ لم يُرسَل."""
+    ai = ACCEPTANCE[ACCEPTANCE.index("PUBRIVA AI answers"):]
+    assert 'getByRole("button", { name: "ابدأ" })' in ai
+    assert "toBeEnabled" in ai, "لا إثبات أن الزرّ صالح للضغط"
+    assert 'press("Enter")' not in ai, "الإرسال ما زال بمفتاح الإدخال"
+    for markup in ("</answer_ar>", "<citations>", "</invoke>"):
+        assert markup in ai, markup

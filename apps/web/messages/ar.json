@@ -927,6 +927,9 @@
     "notYet": "لم تُربط هذه المساحة بعد بمصدرها؛ افتح الأداة الكاملة.",
     "openTool": "افتح الأداة",
     "noCandidates": "لا ملف في مكتبتك يصلح للإضافة بعد.",
-    "sectionsLabel": "أقسام البحث"
+    "sectionsLabel": "أقسام البحث",
+    "addSource": "أضِف مرجعًا من مكتبتك",
+    "noCandidateSources": "لا مرجع في مكتبتك بعد.",
+    "importSourceCta": "استورد مرجعًا بـDOI"
   }
 }

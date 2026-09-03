@@ -141,3 +141,33 @@ export const setSourceUse = (
     method: "PATCH",
     body: JSON.stringify({ use_state: useState }),
   });
+
+/** مصدرٌ في مكتبة الباحث — مرشَّحٌ للربط ببحث. */
+export interface LibrarySource {
+  id: string;
+  title: string;
+  doi: string | null;
+  publication_year: number | null;
+  journal_name: string | null;
+  authors: string[] | null;
+}
+
+export const listLibrarySources = (locale: Locale) =>
+  apiFetch<LibrarySource[]>("/api/v1/sources", { locale });
+
+/**
+ * اربط مرجعًا من المكتبة بهذا البحث.
+ *
+ * **مسارٌ كان في الخادم بلا بابٍ في المتصفح.** `POST …/sources` قائمٌ
+ * ويُنشئ العلاقة بحال `saved_only`، ولم تكن في الواجهة نافذةٌ تبلغه —
+ * فالباحث يرى مراجعه ولا يستطيع أن ينسبها إلى بحثه.
+ *
+ * والحال الابتدائية تأتي من الخادم لا من هنا: **الاستيراد ليس حكمًا
+ * بالصلاحية دليلًا**، والترقية إلى «مُدرَج» قرارُ الباحث وحده.
+ */
+export const linkSource = (locale: Locale, id: string, sourceId: string) =>
+  apiFetch<ProjectSource>(`${base}/projects/${id}/sources`, {
+    locale,
+    method: "POST",
+    body: JSON.stringify({ asset_id: sourceId }),
+  });

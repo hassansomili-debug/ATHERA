@@ -10,9 +10,12 @@ import {
   type Impact,
   type ProjectFile,
   type ProjectOverview,
+  type LibrarySource,
   type ProjectSource,
   fileImpact,
   linkFile,
+  linkSource,
+  listLibrarySources,
   projectFiles,
   projectOverview,
   projectSources,
@@ -101,6 +104,8 @@ export default function ProjectWorkspacePage({
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [sources, setSources] = useState<ProjectSource[]>([]);
   const [library, setLibrary] = useState<LibraryFile[]>([]);
+  const [librarySources, setLibrarySources] = useState<LibrarySource[]>([]);
+  const [sourcesLoad, setSourcesLoad] = useState<"loading" | "ready" | "failed">("loading");
   const [pendingRemoval, setPendingRemoval] = useState<
     { fileId: string; impact: Impact } | null
   >(null);
@@ -147,6 +152,21 @@ export default function ProjectWorkspacePage({
         })
         .catch((err) => {
           setLibraryLoad("failed");
+          say(err);
+        });
+    }
+  }, [section, locale, say]);
+
+  // مراجع المكتبة تُجلب لتقديم قائمة اختيار — لا ليكتب الباحث معرّفًا.
+  useEffect(() => {
+    if (section === "literature") {
+      listLibrarySources(locale)
+        .then((rows) => {
+          setLibrarySources(rows);
+          setSourcesLoad("ready");
+        })
+        .catch((err) => {
+          setSourcesLoad("failed");
           say(err);
         });
     }
@@ -202,6 +222,24 @@ export default function ProjectWorkspacePage({
     }
   };
 
+  /**
+   * اربط مرجعًا بهذا البحث — **ويأتي «محفوظًا فقط» من الخادم**.
+   *
+   * ولا تُفترض الحال هنا: الخادم هو من يقرّرها، والواجهة تعرض ما أعاده.
+   * فلو تغيّر الافتراض يومًا ظهر التغيير، ولم تُخفِه واجهةٌ تكتبه من عندها.
+   */
+  const addSource = async (sourceId: string) => {
+    setBusy(true);
+    try {
+      await linkSource(locale, projectId, sourceId);
+      reload();
+    } catch (err) {
+      say(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const decide = async (sourceId: string, decision: ProjectSource["use_state"]) => {
     setBusy(true);
     try {
@@ -216,6 +254,9 @@ export default function ProjectWorkspacePage({
 
   const tool = toolPath(section, locale, projectId);
   const linkedIds = new Set(files.filter((f) => f.state === "active").map((f) => f.file_id));
+  // المرشّحون: مراجع المكتبة التي لم تُربط بهذا البحث بعد.
+  const linkedSourceIds = new Set(sources.map((s) => s.source_id));
+  const availableSources = librarySources.filter((s) => !linkedSourceIds.has(s.id));
   const unlinked = library.filter((file) => !linkedIds.has(file.id));
 
   return (
@@ -393,12 +434,18 @@ export default function ProjectWorkspacePage({
         <>
           <p className="metric-label">{t("project.useHint")}</p>
           {sources.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>{t("project.noSources")}</p>
+            <p data-testid="sources-empty" style={{ color: "var(--muted)" }}>
+              {t("project.noSources")}
+            </p>
           ) : null}
           <div style={{ display: "grid", gap: 6 }}>
             {sources.map((source) => (
               <article className="card" key={source.source_id}>
                 <strong>{source.title}</strong>
+                {/* بياناته تُعرض معه: بها يعرفه الباحث، لا بمعرّفٍ داخلي. */}
+                <div className="metric-label" style={{ marginBlockStart: 4 }} dir="ltr">
+                  {[source.doi, source.publication_year].filter(Boolean).join(" · ") || "—"}
+                </div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBlockStart: 8 }}>
                   {(["included", "saved_only", "excluded"] as const).map((state) => (
                     <button
@@ -417,6 +464,62 @@ export default function ProjectWorkspacePage({
             ))}
           </div>
         </>
+      ) : null}
+
+      {section === "literature" ? (
+        <section aria-label={t("project.addSource")} style={{ marginBlockStart: 26 }}>
+          <h2>{t("project.addSource")}</h2>
+
+          {sourcesLoad === "loading" ? (
+            <p data-testid="sources-candidates-loading" style={{ color: "var(--muted)" }}>
+              {t("app.loading")}
+            </p>
+          ) : availableSources.length === 0 ? (
+            // **ولا يُمرَّر الفراغ صامتًا.** إن لم يكن في المكتبة مرجعٌ بعد
+            // فللباحث طريقٌ معلَن إلى استيراد واحد — لا شاشةٌ فارغة تسكت.
+            <p data-testid="no-candidate-sources" style={{ color: "var(--muted)" }}>
+              {t("project.noCandidateSources")}{" "}
+              <Link href={`/${locale}/library`}>{t("project.importSourceCta")}</Link>
+            </p>
+          ) : (
+            <div style={{ display: "grid", gap: 6 }}>
+              {availableSources.map((source) => (
+                <article className="card" key={source.id}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    {/* يُعرَّف المرجع بعنوانه وبياناته — **ولا معرّف يُنسخ**. */}
+                    <span>
+                      <strong>{source.title}</strong>
+                      {source.publication_year || source.journal_name ? (
+                        <span style={{ color: "var(--muted)" }}>
+                          {" — "}
+                          {[source.journal_name, source.publication_year]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      ) : null}
+                    </span>
+                    <button
+                      type="button"
+                      className="chip chip-stage"
+                      disabled={busy}
+                      aria-label={`${t("project.addSource")}: ${source.title}`}
+                      onClick={() => addSource(source.id)}
+                    >
+                      +
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
       ) : null}
 
       {tool ? (

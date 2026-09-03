@@ -927,6 +927,9 @@
     "notYet": "This pane is not yet wired to its source; open the full tool.",
     "openTool": "Open the tool",
     "noCandidates": "No file in your library is available to add yet.",
-    "sectionsLabel": "Project sections"
+    "sectionsLabel": "Project sections",
+    "addSource": "Add a reference from your library",
+    "noCandidateSources": "No reference in your library yet.",
+    "importSourceCta": "Import one by DOI"
   }
 }
