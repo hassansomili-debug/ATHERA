@@ -240,7 +240,8 @@ async def test_a_valid_token_resets_the_password_and_cannot_be_reused(db_ready):
         assert stale.status_code == 401, "رمز تجديدٍ نجا من إعادة الضبط"
 
 
-async def _seed_token(user_email: str, token_hash: str, expires_at) -> None:
+async def _seed_token(user_email: str, token_hash: str, expires_at,
+                      created_at=None) -> None:
     from sqlalchemy import select
 
     from athera_api.db import system_session
@@ -249,8 +250,13 @@ async def _seed_token(user_email: str, token_hash: str, expires_at) -> None:
     async with system_session() as session:
         user = (await session.execute(
             select(User).where(User.email == user_email))).scalar_one()
-        session.add(PasswordResetToken(user_id=user.id, token_hash=token_hash,
-                                       expires_at=expires_at))
+        row = PasswordResetToken(user_id=user.id, token_hash=token_hash,
+                                 expires_at=expires_at)
+        if created_at is not None:
+            # القيد يشترط `expires_at > created_at`؛ فرمزٌ منتهٍ يُصنع
+            # بإنشاءٍ أقدم لا بانتهاءٍ يسبق إنشاءه.
+            row.created_at = created_at
+        session.add(row)
 
 
 @requires_db
@@ -263,8 +269,10 @@ async def test_an_expired_token_is_refused(db_ready):
     async with await _client() as client:
         await _register(client, email, "correct-horse-battery")
         raw, token_hash = pr.new_token()
-        past = dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)
-        await _seed_token(email, token_hash, past)
+        now = dt.datetime.now(dt.UTC)
+        await _seed_token(email, token_hash,
+                          expires_at=now - dt.timedelta(minutes=1),
+                          created_at=now - dt.timedelta(minutes=30))
 
         r = await client.post("/api/v1/auth/reset-password",
                               json={"token": raw, "new_password": "battery-staple-9x"})

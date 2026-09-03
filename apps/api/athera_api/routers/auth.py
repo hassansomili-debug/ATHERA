@@ -412,17 +412,27 @@ async def forgot_password(
                 logger.exception("password reset email delivery failed")
                 delivered = False
 
-            await audit.record(
-                session,
-                tenant_id=None,
-                action="auth.password_reset_requested",
-                object_type="user",
-                object_id=user.id,
-                actor_user_id=user.id,
-                # **لا رمز ولا رابط ولا بريد** — الحدث وحده ونجاح التسليم.
-                state_after={"delivered": delivered},
-                reason="a password recovery was requested for this account",
-            )
+            # `audit_events` مملوك لمستأجر، والاستعادة تقع بلا سياق. فيُقيَّد
+            # الحدث بأول مستأجرٍ ينتمي إليه المستخدم؛ ومن لا انتماء له لا
+            # حدث — **ولا يُختلق مستأجرٌ لأجل صفّ تدقيق**.
+            memberships = (
+                await session.execute(
+                    select(Membership.tenant_id).where(Membership.user_id == user.id)
+                )
+            ).scalars().all()
+            if memberships:
+                await _bind_tenant(session, memberships[0], user.id)
+                await audit.record(
+                    session,
+                    tenant_id=memberships[0],
+                    action="auth.password_reset_requested",
+                    object_type="user",
+                    object_id=user.id,
+                    actor_user_id=user.id,
+                    # **لا رمز ولا رابط ولا بريد** — الحدث ونجاح التسليم وحدهما.
+                    state_after={"delivered": delivered},
+                    reason="a password recovery was requested for this account",
+                )
 
     # الجواب نفسه في كل الحالات — ومن بعد العمل نفسه تقريبًا.
     return ForgotPasswordResponse(message_ar=GENERIC_RESET_AR,
@@ -492,19 +502,19 @@ async def reset_password(payload: ResetPasswordRequest) -> None:
                 select(Membership.tenant_id).where(Membership.user_id == user.id)
             )
         ).scalars().all()
-        audit_tenant = tenant_ids[0] if tenant_ids else None
-        if audit_tenant is not None:
-            await _bind_tenant(session, audit_tenant, user.id)
-        await audit.record(
-            session,
-            tenant_id=audit_tenant,
-            action="auth.password_reset_completed",
-            object_type="user",
-            object_id=user.id,
-            actor_user_id=user.id,
-            state_after={"refresh_tokens_revoked": revoked},
-            reason="password recovered through a single-use token; all sessions revoked",
-        )
+        if tenant_ids:
+            await _bind_tenant(session, tenant_ids[0], user.id)
+            await audit.record(
+                session,
+                tenant_id=tenant_ids[0],
+                action="auth.password_reset_completed",
+                object_type="user",
+                object_id=user.id,
+                actor_user_id=user.id,
+                # لا رمز ولا كلمة ولا تجزئة — العدد وحده.
+                state_after={"refresh_tokens_revoked": revoked},
+                reason="password recovered by single-use token; sessions revoked",
+            )
 
 
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)

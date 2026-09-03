@@ -450,3 +450,15 @@ def test_recovery_browser_tests_upload_no_credential_bearing_artifact():
     assert 'test.use({ trace: "off", video: "off", screenshot: "off" });' in spec
     # ولا رمز استعادةٍ حقيقي في الحزمة.
     assert "PUBRIVA_ACCEPT_PASSWORD" not in spec
+
+
+def test_no_acceptance_artifact_can_reach_the_upload():
+    """**المسجّلات مُطفأة لا تكفي.** `error-context.md` يُكتب على أي حال
+    ويحمل لقطة DOM لصفحةٍ فيها حقول اعتماد. فتُمحى مخرجات رحلة القبول قبل
+    أي رفع — ويبقى سجل الطرفية، وهو يكفي لمعرفة أين سقطت."""
+    workflow = (WEB.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    upload = workflow.index("name: playwright-report")
+    acceptance = workflow.index("Acceptance journey (real browser")
+    assert upload < acceptance, "الرفع يقع بعد رحلة القبول فيلتقط مخرجاتها"
+    assert "Destroy acceptance artifacts before any upload" in workflow
+    assert "rm -rf apps/web/playwright-report apps/web/test-results" in workflow

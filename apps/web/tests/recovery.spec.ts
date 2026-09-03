@@ -58,7 +58,7 @@ test("the reset token is read from the fragment, never shown, and stripped", asy
   await page.goto(`/${LOCALE}/reset-password#token=${placeholder}`);
 
   // النموذج ظهر — أي أن الرمز قُرئ من الجزء.
-  await expect(page.getByLabel("كلمة المرور الجديدة")).toBeVisible();
+  await expect(page.getByLabel("كلمة المرور الجديدة", { exact: true })).toBeVisible();
 
   // **ولا يُعرض في الصفحة.**
   expect(await page.locator("body").innerText()).not.toContain(placeholder);
@@ -71,17 +71,17 @@ test("the reset token is read from the fragment, never shown, and stripped", asy
 test("a link with no token says so instead of failing after submit", async ({ page }) => {
   await page.goto(`/${LOCALE}/reset-password`);
   await expect(page.getByTestId("reset-no-token")).toBeVisible();
-  await expect(page.getByLabel("كلمة المرور الجديدة")).toHaveCount(0);
+  await expect(page.getByLabel("كلمة المرور الجديدة", { exact: true })).toHaveCount(0);
 });
 
 test("the reset form refuses a weak or mismatched password before sending", async ({ page }) => {
   await page.goto(`/${LOCALE}/reset-password#token=fragment-mechanics-check`);
   const submit = page.getByRole("button", { name: /احفظ كلمة المرور الجديدة/ });
 
-  await page.getByLabel("كلمة المرور الجديدة").fill("short");
+  await page.getByLabel("كلمة المرور الجديدة", { exact: true }).fill("short");
   await expect(submit).toBeDisabled();
 
-  await page.getByLabel("كلمة المرور الجديدة").fill("a-long-enough-password");
+  await page.getByLabel("كلمة المرور الجديدة", { exact: true }).fill("a-long-enough-password");
   await page.getByLabel("تأكيد كلمة المرور الجديدة").fill("different-password-xx");
   await expect(page.getByTestId("reset-mismatch")).toBeVisible();
   await expect(submit).toBeDisabled();
