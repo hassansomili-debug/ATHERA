@@ -93,6 +93,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   page.on("pageerror", (e) => errors.push(String(e)));
   let projectUrl = "";
   let sourceTitle = "";
+  let processingState = "";
 
   // ── ١–٢: الدخول ──
   await test.step("sign in", async () => {
@@ -311,45 +312,75 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // الحال تُقرأ كما هي: «مخزَّن» لا «مُحلَّل».
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
     await expect(card).toBeVisible({ timeout: 30_000 });
-    await expect(card.getByText("لم تُعالَج بعد")).toBeVisible({ timeout: 30_000 });
+    // الحال تُقرأ من عقدها: «مخزَّن» لا «مُحلَّل».
+    await expect(card.locator("[data-processing-state]"))
+      .toHaveAttribute("data-processing-state", "not_processed", { timeout: 30_000 });
   });
 
-  await test.step("start document processing from the browser", async () => {
+  await test.step("start document processing, reaching a decision state", async () => {
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
     // **زرٌّ حقيقي، لا استدعاء.** وغيابه فشلٌ لا تخطٍّ.
     const process = card.getByRole("button", { name: "معالجة المستند" });
     await expect(process, "no processing control for a parseable document").toBeVisible();
     await process.click();
 
-    // ولا انتظارٌ بزمنٍ ثابت: تُنتظر حالٌ **مُعلَنة** من الحالات الصادقة.
-    const settled = card.getByText(
-      /بانتظار مراجعتك|مُعالَج|ينتظر إذن القراءة|تعذّرت المعالجة/,
-    );
-    await expect(settled, "processing never reached a declared state")
-      .toBeVisible({ timeout: 180_000 });
+    // **الحال تُقرأ من عقدها لا من نصّها.** وكان الفحص يطابق نصًّا مترجَمًا،
+    // فأخذ عبارةً من شاشة الذكاء وانتظرها في شاشة المكتبة — فبقي ينتظر
+    // ثلاث دقائق حالًا لا تُكتب هنا أصلًا، والمعالجة قد تمّت.
+    const state = card.locator("[data-processing-state]");
+    await expect
+      .poll(async () => state.getAttribute("data-processing-state"),
+            { timeout: 180_000, message: "processing never left the running states" })
+      .not.toMatch(/^(not_processed|parsing|extracting)$/);
 
-    // فشلُ المعالجة يُعلَن فشلًا — لا يُبتلع ولا يُقرأ نجاحًا.
-    expect(await card.innerText(), "document processing failed")
-      .not.toContain("تعذّرت المعالجة");
+    const reached = await state.getAttribute("data-processing-state");
+    // **والإخفاق إخفاق**: لا يُقرأ وصولًا إلى حالٍ نهائية.
+    expect(reached, `document processing failed in state ${reached}`)
+      .not.toMatch(/^(parse_failed|extract_failed)$/);
+    expect(
+      reached,
+      `unexpected processing state ${reached}`,
+    ).toMatch(/^(awaiting_consent|awaiting_review|completed)$/);
+    processingState = reached ?? "";
+  });
 
-    // **DIC2: إذنُ الاستخراج الخارجي، حدٌّ علمي قائم بذاته.**
-    // القراءة المحلية والاستخراج الحتمي تمّا ولم يغادرا الخادم؛ وما يتجاوزه
-    // يحتاج إذنًا صريحًا. فإن وقفت المعالجة عنده مُنح **من المتصفح**.
-    if ((await card.innerText()).includes("ينتظر إذن القراءة")) {
-      await card.getByRole("link", { name: "افتح المراجعة" }).click();
-      await page.waitForURL(/\/theses/);
-      const grant = page.getByTestId("dic2-grant");
-      await expect(grant, "no DIC2 consent control while awaiting consent")
-        .toBeVisible({ timeout: 30_000 });
-      await grant.click();
-      await expect(page.getByTestId("dic2-grant")).toBeHidden({ timeout: 60_000 });
-
-      await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
-      await page.waitForURL(/\/library/);
-      const back = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
-      await expect(back.getByText(/بانتظار مراجعتك|مُعالَج/))
-        .toBeVisible({ timeout: 180_000 });
+  await test.step("grant DIC2 in the browser when processing waits for it", async () => {
+    // **DIC2 حدٌّ علمي قائم بذاته.** القراءة المحلية والاستخراج الحتمي تمّا
+    // ولم يغادرا الخادم؛ وما يتجاوزه يحتاج إذنًا صريحًا. ولا يُمنح سلفًا.
+    //
+    // ولا تخطٍّ صامت: إن لم تقف المعالجة عند الحدّ فذلك مسارٌ **مُعلَن**
+    // يُثبَت — لا خطوةٌ تُبتلع. و`test.skip` هنا يُسقط الرحلة كلها لا خطوةً
+    // منها، فلا يُستعمل.
+    if (processingState !== "awaiting_consent") {
+      expect(
+        processingState,
+        `processing settled at ${processingState} without crossing DIC2`,
+      ).toMatch(/^(awaiting_review|completed)$/);
+      return;
     }
+
+    const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
+    // والحال تُقال للباحث بلغته: انتظارُه هو، لا انتظارُ النظام.
+    await expect(card.getByText("بانتظار موافقتك للمتابعة")).toBeVisible();
+
+    await card.getByRole("link", { name: "افتح المراجعة" }).click();
+    await page.waitForURL(/\/theses/);
+
+    const grant = page.getByTestId("dic2-grant");
+    await expect(grant, "no DIC2 consent control while awaiting consent")
+      .toBeVisible({ timeout: 30_000 });
+    await grant.click();
+    await expect(page.getByTestId("dic2-grant")).toBeHidden({ timeout: 60_000 });
+
+    // وبعد الإذن تمضي المعالجة إلى حالٍ يراجعها الباحث.
+    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await page.waitForURL(/\/library/);
+    const back = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
+    await expect
+      .poll(async () =>
+              back.locator("[data-processing-state]").getAttribute("data-processing-state"),
+            { timeout: 180_000, message: "processing did not resume after consent" })
+      .toMatch(/^(awaiting_review|completed)$/);
   });
 
   await test.step("review the extracted knowledge and approve one fact", async () => {
@@ -357,7 +388,6 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await card.getByRole("link", { name: "افتح المراجعة" }).click();
     await page.waitForURL(/\/theses/);
 
-    // شاشة المراجعة تُفتح على الرسالة المستخرَجة من هذا المستند.
     const open = page.getByRole("link", { name: /راجع|مراجعة/ }).first();
     if (await open.count()) await open.click();
     await page.waitForURL(/\/review/, { timeout: 30_000 });
