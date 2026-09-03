@@ -497,7 +497,14 @@
     "advancedLabel": "Advanced — transparency and administration",
     "advancedNote": "These two logs describe system execution rather than your research, and appear for administrative roles. The role is read from the server; the real boundary lives there, not in a hidden link.",
     "tracesHint": "Every run with its tools, cost, and latency.",
-    "auditHint": "An append-only log with a verifiable hash chain."
+    "auditHint": "An append-only log with a verifiable hash chain.",
+    "changePassword": "Change password",
+    "currentPassword": "Current password",
+    "newPassword": "New password",
+    "confirmPassword": "Confirm new password",
+    "passwordMismatch": "The two passwords do not match.",
+    "passwordRevokesSessions": "After the change every session on every device ends, and you sign in again with the new password.",
+    "passwordChanged": "Password changed. Signing you in again…"
   },
   "team": {
     "title": "Project team and decisions",

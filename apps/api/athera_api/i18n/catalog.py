@@ -212,6 +212,22 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "لا يمكن استبعاد مرجعٍ ما زال يُستشهد به في ادعاءات هذا البحث.",
         "en": "A source still cited by this project's claims cannot be excluded.",
     },
+    "auth.current_password_wrong": {
+        "ar": "كلمة المرور الحالية غير صحيحة.",
+        "en": "The current password is incorrect.",
+    },
+    "auth.password_too_short": {
+        "ar": "كلمة المرور الجديدة أقصر من ١٢ حرفًا.",
+        "en": "The new password is shorter than 12 characters.",
+    },
+    "auth.password_too_long": {
+        "ar": "كلمة المرور الجديدة أطول مما يُقبل.",
+        "en": "The new password is longer than allowed.",
+    },
+    "auth.password_unchanged": {
+        "ar": "كلمة المرور الجديدة مطابقة للحالية.",
+        "en": "The new password is the same as the current one.",
+    },
     "portfolio.profile_required": {
         "ar": "يلزم إنشاء الملف الأكاديمي قبل إنشاء مشروع بحثي.",
         "en": "An academic profile is required before creating a research project.",
