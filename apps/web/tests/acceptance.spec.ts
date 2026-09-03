@@ -20,6 +20,9 @@ const PASSWORD = process.env.PUBRIVA_ACCEPT_PASSWORD;
 const RUN = `قبول ${new Date().toISOString().slice(0, 19)}`;
 // اسمٌ فريد للملف كذلك، فلا تتعارض تشغيلتان في مكتبةٍ واحدة.
 const FILENAME = `pubriva-acceptance-${Date.now()}.txt`;
+// مرجعٌ حقيقي بـDOI ثابت: الرحلة تستورده بنفسها، فلا تتّكئ على مكتبةٍ مأهولة.
+const DOI = "10.1037/0022-0663.99.1.83";
+// وعنوانه يُقرأ من الشاشة بعد الاستيراد — لا يُخمَّن ولا يُكتب معرّفه.
 
 /**
  * التنقّل الجانبي بعينه.
@@ -57,6 +60,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   let projectUrl = "";
+  let sourceTitle = "";
 
   // ── ١–٢: الدخول ──
   await test.step("sign in", async () => {
@@ -168,25 +172,57 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   });
 
   // ── ١١–١٢: مرجعٌ يُضاف «محفوظًا فقط» ──
-  await test.step("the literature section states the saved_only rule", async () => {
-    // **لا تُقبل هذه الخطوة قبولًا.** الربط من الواجهة لم يُفحص بعد؛ وما
-    // يُفحص هنا أن القسم يُفتح ويقول قاعدته. فإن بلغت الرحلة هذا الحدّ
-    // وتعذّر على الباحث ربط مرجعٍ من الشاشة، فذلك عيب منتج لا عيب فحص —
-    // ويُصنَّف حينها، لا الآن.
+  // ── ١١–١٢: مرجعٌ يُستورد ثم يُربط، ويأتي «محفوظًا فقط» ──
+  //
+  // **ولا يُقبل «النصّ ظاهر» بديلًا عن «الفعل وقع».** الخطوة السابقة كانت
+  // تثبت أن القسم يقول قاعدته — وتلك جملةٌ في الشاشة لا رحلةُ باحث.
+  await test.step("import a reference into My Library through the UI", async () => {
+    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await page.waitForURL(/\/library/);
+
+    // DOI ثابت ومعروف — والاستيراد يقع من الشاشة لا من الـAPI.
+    await page.getByLabel(/DOI/i).first().fill(DOI);
+    await page.getByRole("button", { name: /استيراد|Import/ }).click();
+
+    // إمّا استُورد الآن، وإمّا كان مستوردًا من تشغيلةٍ سابقة — وكلاهما
+    // يترك المرجع في المكتبة، وهو الشرط. والفشل يُعلَن ولا يُبتلع.
+    const imported = page.locator("article.card").filter({ hasText: DOI }).first();
+    await expect(
+      imported.or(page.getByTestId("library-source-error")),
+    ).toBeVisible({ timeout: 90_000 });
+    // والفشل يُعلَن ولا يُبتلع: إن ظهر الخطأ سقطت الخطوة هنا بنصّه.
+    await expect(imported, "the DOI import did not produce a source card")
+      .toBeVisible({ timeout: 30_000 });
+
+    // العنوان يُقرأ من الشاشة، وبه يُطابَق المرجع لاحقًا — لا بمعرّف.
+    sourceTitle = (await imported.locator("strong").first().innerText()).trim();
+    expect(sourceTitle.length, "the imported source has no title").toBeGreaterThan(3);
+  });
+
+  await test.step("link that reference to the project, defaulting to saved_only", async () => {
     await page.goto(projectUrl);
     await page.getByRole("button", { name: "الأدبيات والمراجع" }).click();
-    await expect(page.getByText(/الاستيراد ليس حكمًا بأن المرجع دليل/)).toBeVisible({
-      timeout: 30_000,
-    });
+    await expect(page.getByText(/الاستيراد ليس حكمًا بأن المرجع دليل/)).toBeVisible();
 
-    // وإن وُجد مرجعٌ مرتبط، فحاله الافتراضية «محفوظ فقط» — بلا تخطٍّ صامت:
-    // إمّا لا مرجع بعد (وتلك حالٌ معلنة)، وإمّا مرجعٌ حاله مُثبَت.
-    const saved = page.getByRole("button", { name: "محفوظ فقط" });
-    const noSources = page.getByText("لا مرجع في هذا البحث بعد.");
-    await expect(saved.first().or(noSources)).toBeVisible({ timeout: 30_000 });
-    if (await saved.count()) {
-      await expect(saved.first()).toHaveAttribute("aria-pressed", "true");
-    }
+    // المرشّح يُعرَّف بعنوانه — **ولا معرّف يُكتب بيد**.
+    const candidate = page
+      .locator("article.card")
+      .filter({ hasText: sourceTitle })
+      .first();
+    await expect(candidate).toBeVisible({ timeout: 30_000 });
+    await candidate.getByRole("button", { name: "+" }).click();
+
+    // ظهر في البحث…
+    const linked = page.locator("article.card").filter({ hasText: sourceTitle }).first();
+    await expect(linked).toBeVisible({ timeout: 30_000 });
+
+    // …وحاله الافتراضية «محفوظ فقط» — لا «مُدرَج».
+    const saved = linked.getByRole("button", { name: "محفوظ فقط" });
+    await expect(saved).toBeVisible({ timeout: 30_000 });
+    await expect(saved).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      linked.getByRole("button", { name: "مُدرَج دليلًا" }),
+    ).toHaveAttribute("aria-pressed", "false");
   });
 
   // ── ١٣: أرشفة ثم سلّة ثم استعادة ──
@@ -206,15 +242,23 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await page.goto(`/${LOCALE}`);
     const ask = page.getByRole("textbox").first();
     await ask.fill("ما الفرق بين المنهج الوصفي وشبه التجريبي؟");
-    await ask.press("Enter");
 
-    const answer = page.locator("[data-testid='ai-answer'], .ai-answer").first();
-    await expect(answer).toBeVisible({ timeout: 120_000 });
-    const text = await answer.innerText();
-    for (const markup of ["</answer_ar>", "<answer_ar>", "<citations>", "</invoke>"]) {
-      expect(text).not.toContain(markup);
+    // **الإرسال بالزرّ لا بمفتاح الإدخال.** الحقل `textarea` بلا نموذج ولا
+    // معالج مفاتيح، فالضغط على Enter يُدخل سطرًا ولا يرسل شيئًا — وكان
+    // الفحص ينتظر جوابًا لسؤالٍ لم يُرسَل. ولا يُضاف الإرسال بالمفتاح هنا:
+    // ذلك قرار تجربةٍ يُتّخذ على حدة، لا التفافٌ حول فحصٍ فاشل.
+    const send = page.getByRole("button", { name: "ابدأ" });
+    await expect(send).toBeEnabled({ timeout: 15_000 });
+    await send.click();
+
+    const answer = page.getByTestId("ai-answer");
+    await expect(answer).toBeVisible({ timeout: 180_000 });
+    const text = (await page.getByTestId("ai-answer-text").innerText()).trim();
+    expect(text.length, "the answer was empty").toBeGreaterThan(20);
+    for (const markup of ["</answer_ar>", "<answer_ar>", "<citations>", "</citations>",
+                          "</invoke>", "<invoke"]) {
+      expect(text, `contract markup leaked: ${markup}`).not.toContain(markup);
     }
-    expect(text.trim().length).toBeGreaterThan(20);
   });
 
   // ── ٢١–٢٢: خروجٌ ثم دخولٌ ثانٍ ──

@@ -193,7 +193,11 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
             required
           />
         </label>
-        {error ? <p className="error">{error}</p> : null}
+        {error ? (
+          <p className="error" role="alert" data-testid="library-source-error">
+            {error}
+          </p>
+        ) : null}
         <button type="submit" disabled={busy}>
           {busy ? t("app.loading") : t("library.import")}
         </button>
