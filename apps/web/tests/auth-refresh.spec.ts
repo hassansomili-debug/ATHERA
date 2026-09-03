@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { isSignedInDestination } from "./journey";
+
 /**
  * دورة حياة الجلسة | The session lifecycle — in a real browser.
  *
@@ -218,5 +220,38 @@ test.describe("session lifecycle", () => {
     await page.waitForURL(/\/login/);
     // والوجهة محفوظة، فيعود إلى ما قصده.
     expect(page.url()).toContain("next=");
+  });
+});
+
+/**
+ * **حارسُ الشرط نفسه.** كان الفحص يقبل `/ar/login?next=%2Far` وجهةً بعد
+ * الدخول، فيمرّ وهو على صفحة الدخول ويُعلن نجاح خطوةٍ لم تقع. وهذا
+ * الاختبار يعمل في كل PR بلا حساب، فلا يعود الشرط فضفاضًا بصمت.
+ */
+test.describe("post-login destination", () => {
+  const at = (path: string) => new URL(`https://example.test${path}`);
+
+  test("accepts the locale root and nothing beneath it", () => {
+    expect(isSignedInDestination(at("/ar"))).toBe(true);
+    expect(isSignedInDestination(at("/ar/"))).toBe(true);
+  });
+
+  test("never accepts the login page", () => {
+    expect(isSignedInDestination(at("/ar/login"))).toBe(false);
+    expect(isSignedInDestination(at("/ar/login?next=%2Far"))).toBe(false);
+    expect(isSignedInDestination(at("/ar/login/"))).toBe(false);
+  });
+
+  test("never accepts any other page inside the locale", () => {
+    for (const path of ["/ar/portfolio", "/ar/library", "/ar/register", "/en"]) {
+      expect(isSignedInDestination(at(path)), path).toBe(false);
+    }
+  });
+
+  test("the discarded regex would have accepted the login page", () => {
+    // يُثبَّت العيب نفسه، فلا يعود أحدٌ إليه ظنًّا أنه كان يكفي.
+    const discarded = new RegExp("/ar(\\?|$|/)");
+    expect(discarded.test("https://x.test/ar/login?next=%2Far")).toBe(true);
+    expect(isSignedInDestination(at("/ar/login?next=%2Far"))).toBe(false);
   });
 });

@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { LOCALE, signIn } from "./journey";
+
 /**
  * رحلة القبول | The P1 acceptance journey — a real researcher, a real browser.
  *
@@ -11,7 +13,6 @@ import { expect, test } from "@playwright/test";
  *   PUBRIVA_ACCEPT_EMAIL     بريد حساب القبول (اختياري — يُنشأ إن غاب)
  *   PUBRIVA_ACCEPT_PASSWORD  كلمته
  */
-const LOCALE = "ar";
 const EMAIL = process.env.PUBRIVA_ACCEPT_EMAIL;
 const PASSWORD = process.env.PUBRIVA_ACCEPT_PASSWORD;
 
@@ -33,16 +34,15 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   // ── ١–٢: الدخول ──
   await test.step("sign in", async () => {
     await page.goto(`/${LOCALE}/login`);
-    await page.getByLabel(/البريد|email/i).fill(EMAIL!);
-    await page.getByLabel(/كلمة المرور|password/i).first().fill(PASSWORD!);
-    await page.getByRole("button", { name: /دخول|sign in/i }).click();
-    await page.waitForURL(new RegExp(`/${LOCALE}(\\?|$|/)`), { timeout: 30_000 });
+    // يفشل **هنا** إن فشل الدخول — لا بعد خطوتين في موضعٍ بريء.
+    await signIn(page, EMAIL!, PASSWORD!);
   });
 
   // ── ٣: الرئيسية بلا حلقة مصادقة ──
   await test.step("home loads without an auth loop", async () => {
+    // تنقّلٌ كامل بعد إثبات الدخول: هل تصمد الجلسة عبر تحميلٍ جديد؟
     await page.goto(`/${LOCALE}`);
-    await expect(page).not.toHaveURL(/login/);
+    await expect(page).not.toHaveURL(/\/login/);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     // الشعار يقول اسم المنتج ووعده.
     await expect(page.locator(".brand")).toContainText("بُبريفا");
@@ -140,11 +140,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await page.waitForURL(/\/login/, { timeout: 30_000 });
     expect(await page.evaluate(() => localStorage.getItem("athera_access_token"))).toBeNull();
 
-    await page.getByLabel(/البريد|email/i).fill(EMAIL!);
-    await page.getByLabel(/كلمة المرور|password/i).first().fill(PASSWORD!);
-    await page.getByRole("button", { name: /دخول|sign in/i }).click();
-    await page.waitForURL(new RegExp(`/${LOCALE}(\\?|$|/)`), { timeout: 30_000 });
-    await expect(page).not.toHaveURL(/login/);
+    await signIn(page, EMAIL!, PASSWORD!);
   });
 
   // لا خطأ JS صامتًا في أي خطوة.

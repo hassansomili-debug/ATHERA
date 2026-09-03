@@ -167,3 +167,44 @@ def test_no_credential_is_committed_in_the_acceptance_suite():
     assert "process.env.PUBRIVA_ACCEPT_PASSWORD" in source
     for leak in ("password:", "Passw0rd", "hunter2"):
         assert leak not in source, leak
+
+
+# ══════════ ٦. حزمة القبول تُثبت الدخول، ولا تكتفي بشكل الرابط ══════════
+
+def test_the_acceptance_suite_proves_login_by_the_server_response():
+    """**عيبٌ كشفه أول تشغيلٍ على الإنتاج.**
+
+    كان الفحص ينتظر `new RegExp("/ar(\\?|$|/)")` على الرابط كاملًا،
+    و`/ar/login?next=%2Far` يطابقها — بل و`/ar/portfolio`. فيمرّ الشرط
+    والصفحة ما زالت على الدخول، ويُعلَن نجاح خطوةٍ لم تقع.
+
+    وأسوأ من ذلك: الفحص كان يبدأ التنقّل قبل أن يردّ الدخول، فيُجهض الطلب
+    ويُعيد `AuthGate` التوجيه — **فيُتّهم المنتج بعيبٍ صنعه الفحص**.
+    """
+    journey = (WEB / "tests" / "journey.ts").read_text(encoding="utf-8")
+    acceptance = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+
+    # ١ — يُنتظر ردّ الخادم، وتُفحص حالته.
+    assert "waitForResponse" in journey
+    assert '"/api/v1/auth/login"' in journey
+    assert "response.status()" in journey
+
+    # ٢ — المسار يُطابَق بالضبط، لا بنمطٍ فضفاض.
+    assert "url.pathname === `/${LOCALE}`" in journey
+
+    # ٣ — والرمز محفوظ فعلًا.
+    assert "athera_access_token" in journey
+
+    # ٤ — ولا يعود النمط الفضفاض إلى حزمة القبول.
+    assert "(\\?|$|/)" not in acceptance, (
+        "النمط الفضفاض عاد إلى acceptance.spec.ts — وهو يقبل صفحة الدخول")
+    # وكلا الدخولين يمرّان بالمُثبِت نفسه.
+    assert acceptance.count("signIn(page") == 2, (
+        "أحد الدخولين لا يمرّ بالمُثبِت المشترك")
+
+
+def test_the_post_login_predicate_is_guarded_where_it_always_runs():
+    """الحارس في الحزمة التي تعمل بلا حساب — لا في التي تُتخطّى بدونه."""
+    lifecycle = (WEB / "tests" / "auth-refresh.spec.ts").read_text(encoding="utf-8")
+    assert "isSignedInDestination" in lifecycle
+    assert "never accepts the login page" in lifecycle
