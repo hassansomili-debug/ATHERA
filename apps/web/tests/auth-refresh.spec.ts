@@ -17,6 +17,10 @@ const API = "**/api/v1";
 /** جلسةٌ مزروعة قبل تحميل أي صفحة — كما لو دخل الباحث للتوّ. */
 async function seedSession(page: Page, opts: { expired?: boolean } = {}) {
   await page.addInitScript((expired) => {
+    // **البذر مرّة واحدة.** `addInitScript` يعمل عند كل انتقال، فكان يعيد
+    // كتابة الرموز بعد أن يمحوها العميل — فيبدو المحو الصحيح فشلًا.
+    if (sessionStorage.getItem("__seeded")) return;
+    sessionStorage.setItem("__seeded", "1");
     localStorage.setItem("athera_access_token", "access-v1");
     localStorage.setItem("athera_refresh_token", "refresh-v1");
     localStorage.setItem(

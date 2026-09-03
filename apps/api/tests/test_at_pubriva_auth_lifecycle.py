@@ -89,7 +89,8 @@ def test_the_application_is_protected_at_the_route_boundary():
     layout = (WEB / "src" / "app" / "[locale]" / "layout.tsx").read_text(encoding="utf-8")
     assert "AuthGate" in layout, "الحدّ غير مركَّب في التخطيط"
     assert '"/login"' in gate and '"/register"' in gate, "الصفحتان العامتان غير مستثنيتين"
-    assert "isSignedIn()" in gate
+    # الحدّ يستشير الجلسة — سواء استدعاها أو مرّرها لقطةً خارجية.
+    assert "isSignedIn" in gate
     # والوجهة تُحفظ: الباحث يعود إلى ما قصده لا إلى الرئيسية.
     assert "next=" in gate
 
