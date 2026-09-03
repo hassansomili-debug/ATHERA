@@ -18,7 +18,19 @@ export async function generateMetadata(
   const { locale } = await params;
   const active = isLocale(locale) ? locale : DEFAULT_LOCALE;
   const t = translator(getMessages(active));
-  return { title: `${t("app.name")} — ${t("app.tagline")}` };
+  return {
+    // **الأصل القانوني هو النطاق الذي يستعمله الباحث.**
+    // وبدونه تشتقّ Next الروابط المطلقة من اسم الاستضافة الذي صادف أن
+    // خدم الطلب — فتُعلن صفحاتُنا `athera-bay.vercel.app` أصلًا لنفسها،
+    // ويُفهرَس اسمٌ ليس هو المنتج.
+    metadataBase: new URL("https://pubriva.com"),
+    title: `${t("app.name")} — ${t("app.tagline")}`,
+    alternates: {
+      // اللغة المُتحقَّق منها لا الخام: مسارٌ غير صالح لا يُعلن أصلًا لنفسه.
+      canonical: `/${active}`,
+      languages: { ar: "/ar", en: "/en" },
+    },
+  };
 }
 
 export default async function LocaleLayout({

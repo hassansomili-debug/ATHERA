@@ -219,7 +219,7 @@ jobs:
                 && env.PUBRIVA_ACCEPT_PASSWORD != '' }}
         run: cd apps/web && npm run test:acceptance
         env:
-          PUBRIVA_WEB_URL: https://athera-bay.vercel.app
+          PUBRIVA_WEB_URL: https://pubriva.com
 
       # **ولا يُرفع شيء من رحلة القبول إطلاقًا — ولو فشلت.**
       # المسجّلات مُطفأة فيها، لكن `error-context.md` يُكتب على أي حال

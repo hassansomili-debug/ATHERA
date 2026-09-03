@@ -36,9 +36,31 @@ const csp = [
   "form-action 'self'",
 ].join("; ");
 
+/**
+ * اسم الاستضافة القديم المستقرّ — **يُوجَّه إلى النطاق ولا يُخدَم**.
+ *
+ * والشرط على المضيف **بعينه**، لا على `*.vercel.app`: أسماء المعاينات
+ * تتغيّر مع كل فرع، وتوجيهها إلى الإنتاج يُبطل المعاينة نفسها — فتُفحص
+ * فروعٌ لا تُرى. فيُسمّى المضيف الواحد الذي يُراد توجيهه، ويبقى ما عداه.
+ *
+ * والمسار والاستعلام يُحفظان: من حفظ `…/ar/login?next=/ar` يصل إلى ما قصده.
+ */
+const LEGACY_HOST = "athera-bay.vercel.app";
+const CANONICAL_ORIGIN = "https://pubriva.com";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: LEGACY_HOST }],
+        destination: `${CANONICAL_ORIGIN}/:path*`,
+        permanent: true,
+      },
+    ];
+  },
   async headers() {
     return [
       {
