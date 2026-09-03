@@ -3,7 +3,7 @@
 import datetime as dt
 import uuid
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -133,6 +133,36 @@ class RefreshToken(Base, TenantScoped, Timestamped):
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rotated_to: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+
+
+class PasswordResetToken(Base):
+    """رمز استعادةٍ واحد — **تجزئةً لا نصًّا**.
+
+    ولا وراثة لـ`TenantScoped`: «نسيتُ كلمتي» يقع قبل أي مصادقة، فلا سياق
+    مستأجرٍ حينها يُفلتر به. والجدول عابرٌ كما `users` نفسه.
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    invalidated_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+
+    def is_usable(self, now: dt.datetime) -> bool:
+        """صالحٌ للاستعمال — **مرّة واحدة، وقبل انتهائه**."""
+        return (self.consumed_at is None
+                and self.invalidated_at is None
+                and self.expires_at > now)
 
 
 class MfaFactor(Base, Timestamped):

@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test:browser": "playwright test",
     "test:refresh": "playwright test tests/auth-refresh.spec.ts",
-    "test:acceptance": "playwright test tests/acceptance.spec.ts"
+    "test:acceptance": "playwright test tests/acceptance.spec.ts",
+    "test:recovery": "playwright test tests/recovery.spec.ts"
   },
   "dependencies": {
     "next": "^16.0.0",

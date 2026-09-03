@@ -417,3 +417,51 @@ def test_the_password_change_ui_exists_for_the_researcher():
     settings = (WEB / "src" / "app" / "[locale]" / "settings"
                 / "page.tsx").read_text(encoding="utf-8")
     assert "ChangePassword" in settings, "الشاشة غير مركَّبة في الإعدادات"
+
+
+# ══════════ ١٢. الاستعادة: واجهةٌ وآليّاتٌ بلا سرٍّ في أثر ══════════
+
+def test_the_recovery_routes_exist_and_are_public():
+    web = WEB / "src" / "app" / "[locale]"
+    assert (web / "forgot-password" / "page.tsx").exists()
+    assert (web / "reset-password" / "page.tsx").exists()
+    gate = (WEB / "src" / "components" / "AuthGate.tsx").read_text(encoding="utf-8")
+    for route in ("/forgot-password", "/reset-password"):
+        assert route in gate, f"{route} محجوب خلف المصادقة — ومن نسي كلمته لا يدخل"
+    login = (web / "login" / "page.tsx").read_text(encoding="utf-8")
+    assert "/forgot-password" in login, "لا باب إلى الاستعادة من صفحة الدخول"
+
+
+def test_the_reset_page_never_shows_or_keeps_the_token():
+    """**ما بعد `#` لا يُرسَل في طلب HTTP** — ويُنزع بعد قراءته."""
+    page = (WEB / "src" / "app" / "[locale]" / "reset-password"
+            / "page.tsx").read_text(encoding="utf-8")
+    assert "window.location.hash" in page, "الرمز لا يُقرأ من الجزء"
+    assert "history.replaceState" in page, "الرمز يبقى في شريط العنوان والتاريخ"
+    # **والالتقاط يسبق النزع.** واشتقاقُه من الرابط عند كل تصيير يجعله
+    # يختفي بعد النزع، فيُقال للباحث «لا رمز» وهو يحمله.
+    assert "let captured" in page, "الرمز يُشتقّ من الرابط لا يُلتقط مرّة"
+    # ولا يُعرض في أي حقلٍ أو نصّ.
+    assert "value={token}" not in page
+    # ولا دخول تلقائيّ بعد النجاح.
+    assert "saveSession" not in page, "دخولٌ تلقائيّ يجعل سرقة الرابط سرقة جلسة"
+    assert "clearSession()" in page
+
+
+def test_recovery_browser_tests_upload_no_credential_bearing_artifact():
+    spec = (WEB / "tests" / "recovery.spec.ts").read_text(encoding="utf-8")
+    assert 'test.use({ trace: "off", video: "off", screenshot: "off" });' in spec
+    # ولا رمز استعادةٍ حقيقي في الحزمة.
+    assert "PUBRIVA_ACCEPT_PASSWORD" not in spec
+
+
+def test_no_acceptance_artifact_can_reach_the_upload():
+    """**المسجّلات مُطفأة لا تكفي.** `error-context.md` يُكتب على أي حال
+    ويحمل لقطة DOM لصفحةٍ فيها حقول اعتماد. فتُمحى مخرجات رحلة القبول قبل
+    أي رفع — ويبقى سجل الطرفية، وهو يكفي لمعرفة أين سقطت."""
+    workflow = (WEB.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    upload = workflow.index("name: playwright-report")
+    acceptance = workflow.index("Acceptance journey (real browser")
+    assert upload < acceptance, "الرفع يقع بعد رحلة القبول فيلتقط مخرجاتها"
+    assert "Destroy acceptance artifacts before any upload" in workflow
+    assert "rm -rf apps/web/playwright-report apps/web/test-results" in workflow

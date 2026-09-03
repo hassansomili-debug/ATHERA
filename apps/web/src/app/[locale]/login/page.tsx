@@ -97,6 +97,9 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
       <p style={{ marginBlockStart: 18 }}>
         <a href={`/${locale}/register`}>{t("auth.needAccount")}</a>
       </p>
+      <p>
+        <a href={`/${locale}/forgot-password`}>{t("auth.forgotTitle")}</a>
+      </p>
     </>
   );
 }

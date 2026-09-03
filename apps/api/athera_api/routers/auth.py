@@ -3,9 +3,10 @@
 كل مسار هنا يكتب حدث تدقيق داخل نفس المعاملة — بلا استثناء (AT-S0-04).
 """
 import datetime as dt
+import logging
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
@@ -13,15 +14,26 @@ from ..config import get_settings
 from ..db import system_session, tenant_session
 from ..deps import Principal, get_locale, get_principal
 from ..errors import AtheraError, Unauthorized
-from ..models.identity import Membership, MfaFactor, RefreshToken, Role, Tenant, User
+from ..models.identity import (
+    Membership,
+    MfaFactor,
+    PasswordResetToken,
+    RefreshToken,
+    Role,
+    Tenant,
+    User,
+)
 from ..schemas.auth import (
     ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
     MeResponse,
     MfaEnrollResponse,
     MfaVerifyRequest,
     RefreshRequest,
     RegisterRequest,
+    ResetPasswordRequest,
     TokenPair,
 )
 from ..security import (
@@ -30,12 +42,15 @@ from ..security import (
     issue_access_token,
     new_refresh_token,
     new_totp_secret,
-    totp_provisioning_uri,
     password_policy_error,
+    totp_provisioning_uri,
     verify_password,
     verify_totp,
 )
-from ..services import audit, rbac
+from ..services import audit, password_reset, rbac
+from ..services import email as email_service
+
+logger = logging.getLogger("athera.auth")
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 settings = get_settings()
@@ -298,6 +313,211 @@ async def logout(payload: RefreshRequest, principal: Principal = Depends(get_pri
         )
 
 
+async def _revoke_all_refresh_tokens(session, user_id: uuid.UUID,
+                                     now: dt.datetime) -> int:
+    """يُبطل كل رموز تجديد المستخدم **في كل مستأجرٍ ينتمي إليه**.
+
+    ولو بقي رمزٌ صالحًا لظلّ من نسخه قادرًا على إصدار رموز وصولٍ بعد تغيير
+    الكلمة أو استعادتها — والتغيير حينئذٍ طمأنينةٌ كاذبة.
+
+    والإبطال يجري داخل سياق كل مستأجر تحت RLS، بلا تجاوزٍ للعزل. وموضعه
+    **واحد** يقرؤه المساران، فلا يُصلَح أحدهما ويبقى الآخر.
+    """
+    # **بلا سياقٍ مسبق.** `memberships` مملوك لمستأجر ومحميّ بـRLS،
+    # والاستعادة تقع بلا مصادقة — فقراءته حينها تعود فارغة، ولا يُبطَل شيء،
+    # ويبقى من نسخ رمزًا قادرًا على إصدار وصولٍ بعد إعادة الضبط. وقد وقع
+    # ذلك فعلًا وأمسكه الاختبار. فيُسأل بابٌ مُعلَن يُجيب عن هذا وحده.
+    tenant_ids = (
+        await session.execute(
+            text("SELECT app_user_tenants(:uid)"), {"uid": str(user_id)})
+    ).scalars().all()
+
+    revoked = 0
+    for tenant_id in set(tenant_ids):
+        await _bind_tenant(session, tenant_id, user_id)
+        tokens = (
+            await session.execute(
+                select(RefreshToken).where(
+                    RefreshToken.user_id == user_id,
+                    RefreshToken.revoked_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        for token in tokens:
+            token.revoked_at = now
+            revoked += 1
+    return revoked
+
+
+GENERIC_RESET_AR = (
+    "إذا كان البريد مرتبطًا بحساب، فستصلك رسالة لإعادة تعيين كلمة المرور."
+)
+GENERIC_RESET_EN = (
+    "If that email is linked to an account, a password reset message is on its way."
+)
+
+
+@router.post("/forgot-password", response_model=ForgotPasswordResponse)
+async def forgot_password(
+    payload: ForgotPasswordRequest, request: Request
+) -> ForgotPasswordResponse:
+    """ابدأ الاستعادة — **بجوابٍ واحد مهما كان البريد**.
+
+    ولا يُفشى وجود الحساب: فرقٌ في النصّ يجعل هذا المسار أداة تعداد
+    حسابات، يجرّب المهاجم عناوين ويقرأ من الجواب أيّها مسجَّل.
+
+    **والرمز يُسلَّم بالبريد وحده.** لا يعود في جسم الاستجابة، ولا يُكتب في
+    سجلّ — ومن قرأ السجلّ حينئذٍ يُعيد ضبط كلمة أي حساب.
+    """
+    client = request.client.host if request.client else "unknown"
+    password_reset.check_rate(payload.email, client)
+
+    async with system_session() as session:
+        user = (
+            await session.execute(select(User).where(User.email == payload.email.lower()))
+        ).scalar_one_or_none()
+
+        if user is not None and user.is_active:
+            now = dt.datetime.now(dt.UTC)
+            # **رمزٌ واحد حيّ لكل مستخدم.** وطلبٌ جديد يُبطل ما قبله، فلا
+            # يبقى رابطٌ قديم في بريدٍ مسروق صالحًا بعد أن طلب صاحبه غيره.
+            previous = (
+                await session.execute(
+                    select(PasswordResetToken).where(
+                        PasswordResetToken.user_id == user.id,
+                        PasswordResetToken.consumed_at.is_(None),
+                        PasswordResetToken.invalidated_at.is_(None),
+                    )
+                )
+            ).scalars().all()
+            for token in previous:
+                token.invalidated_at = now
+
+            raw, token_hash = password_reset.new_token()
+            session.add(PasswordResetToken(
+                user_id=user.id, token_hash=token_hash,
+                expires_at=password_reset.expiry(now)))
+            await session.flush()
+
+            subject, body = password_reset.message_body(raw, user.preferred_locale)
+            try:
+                email_service.send(email_service.Message(
+                    to=user.email, subject=subject, body=body))
+                delivered = True
+            except email_service.EmailNotConfigured:
+                # **لا يُبتلع.** يُسجَّل أن الإرسال تعذّر — بلا رمز ولا رابط —
+                # فيُرى في السجل أن النشر بلا مزوّد بريد، ولا يُترك الباحث
+                # ينتظر رسالةً لن تصل بلا أن يعلم أحد.
+                logger.error("password reset email could not be sent: "
+                             "no email provider is configured")
+                delivered = False
+            except Exception:
+                logger.exception("password reset email delivery failed")
+                delivered = False
+
+            # `audit_events` مملوك لمستأجر، والاستعادة تقع بلا سياق. فيُقيَّد
+            # الحدث بأول مستأجرٍ ينتمي إليه المستخدم؛ ومن لا انتماء له لا
+            # حدث — **ولا يُختلق مستأجرٌ لأجل صفّ تدقيق**.
+            memberships = (
+                await session.execute(
+                    text("SELECT app_user_tenants(:uid)"), {"uid": str(user.id)})
+            ).scalars().all()
+            if memberships:
+                await _bind_tenant(session, memberships[0], user.id)
+                await audit.record(
+                    session,
+                    tenant_id=memberships[0],
+                    action="auth.password_reset_requested",
+                    object_type="user",
+                    object_id=user.id,
+                    actor_user_id=user.id,
+                    # **لا رمز ولا رابط ولا بريد** — الحدث ونجاح التسليم وحدهما.
+                    state_after={"delivered": delivered},
+                    reason="a password recovery was requested for this account",
+                )
+
+    # الجواب نفسه في كل الحالات — ومن بعد العمل نفسه تقريبًا.
+    return ForgotPasswordResponse(message_ar=GENERIC_RESET_AR,
+                                  message_en=GENERIC_RESET_EN)
+
+
+@router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_password(payload: ResetPasswordRequest) -> None:
+    """أكمل الاستعادة — **بلا جلسة، وبرمزٍ يعمل مرّة واحدة**.
+
+    ولا يُصدر رمز دخولٍ بعد النجاح: من يملك الرابط ليس بالضرورة من يملك
+    الحساب، ودخولٌ تلقائيّ يجعل سرقة الرابط سرقةَ جلسةٍ فورية. فيُطلب
+    الدخول بالكلمة الجديدة — وهي وحدها ما يثبت الملكية.
+
+    **ولا يُمسّ التحقق بخطوتين ولا الأدوار ولا العضويات.** إعادةُ ضبط كلمة
+    تستعيد عاملَ معرفةٍ واحدًا، ولا تُسقط عاملًا ثانيًا ولا ترفع صلاحية —
+    وإلا صارت الاستعادة طريقًا إلى تجاوز MFA.
+    """
+    policy_error = password_policy_error(payload.new_password)
+    if policy_error is not None:
+        raise AtheraError(policy_error, status_code=422)
+
+    token_hash = password_reset.hash_token(payload.token)
+    now = dt.datetime.now(dt.UTC)
+
+    async with system_session() as session:
+        record = (
+            await session.execute(
+                select(PasswordResetToken).where(
+                    PasswordResetToken.token_hash == token_hash)
+            )
+        ).scalar_one_or_none()
+
+        # رمزٌ مجهول، أو منتهٍ، أو مستهلَك، أو مُبطَل — **جوابٌ واحد**، فلا
+        # يُقال للمهاجم أيّها كان.
+        if record is None or not record.is_usable(now):
+            raise AtheraError("auth.reset_token_invalid", status_code=400)
+
+        user = (
+            await session.execute(select(User).where(User.id == record.user_id))
+        ).scalar_one_or_none()
+        if user is None or not user.is_active:
+            raise AtheraError("auth.reset_token_invalid", status_code=400)
+
+        user.password_hash = hash_password(payload.new_password)
+        record.consumed_at = now
+
+        # وكل رمزٍ آخر لهذا المستخدم يسقط معه.
+        others = (
+            await session.execute(
+                select(PasswordResetToken).where(
+                    PasswordResetToken.user_id == user.id,
+                    PasswordResetToken.id != record.id,
+                    PasswordResetToken.consumed_at.is_(None),
+                    PasswordResetToken.invalidated_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        for other in others:
+            other.invalidated_at = now
+        await session.flush()
+
+        revoked = await _revoke_all_refresh_tokens(session, user.id, now)
+
+        tenant_ids = (
+            await session.execute(
+                text("SELECT app_user_tenants(:uid)"), {"uid": str(user.id)})
+        ).scalars().all()
+        if tenant_ids:
+            await _bind_tenant(session, tenant_ids[0], user.id)
+            await audit.record(
+                session,
+                tenant_id=tenant_ids[0],
+                action="auth.password_reset_completed",
+                object_type="user",
+                object_id=user.id,
+                actor_user_id=user.id,
+                # لا رمز ولا كلمة ولا تجزئة — العدد وحده.
+                state_after={"refresh_tokens_revoked": revoked},
+                reason="password recovered by single-use token; sessions revoked",
+            )
+
+
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     payload: ChangePasswordRequest,
@@ -339,29 +559,10 @@ async def change_password(
         user.password_hash = hash_password(payload.new_password)
         await session.flush()
 
-        # كل مستأجرٍ ينتمي إليه المستخدم — الرموز مملوكة للمستأجر، والإبطال
-        # يجري داخل سياق كلٍّ منه تحت RLS، بلا تجاوزٍ للعزل.
-        tenant_ids = (
-            await session.execute(
-                select(Membership.tenant_id).where(Membership.user_id == user.id)
-            )
-        ).scalars().all()
-
+        # إبطالٌ من موضعٍ واحد يقرؤه هذا المسار ومسار الاستعادة معًا —
+        # فلا يُصلَح أحدهما ويبقى الآخر.
         now = dt.datetime.now(dt.UTC)
-        revoked = 0
-        for tenant_id in {principal.tenant_id, *tenant_ids}:
-            await _bind_tenant(session, tenant_id, principal.user_id)
-            tokens = (
-                await session.execute(
-                    select(RefreshToken).where(
-                        RefreshToken.user_id == user.id,
-                        RefreshToken.revoked_at.is_(None),
-                    )
-                )
-            ).scalars().all()
-            for token in tokens:
-                token.revoked_at = now
-                revoked += 1
+        revoked = await _revoke_all_refresh_tokens(session, user.id, now)
 
         await _bind_tenant(session, principal.tenant_id, principal.user_id)
         await audit.record(

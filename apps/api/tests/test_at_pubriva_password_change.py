@@ -48,16 +48,39 @@ def test_no_password_value_or_hash_is_ever_recorded():
     assert "print(" not in source and "logging" not in source
 
 
-def test_there_is_no_administrative_reset_backdoor():
-    """إعادةُ ضبطٍ بلا الكلمة الحالية تُلغي معنى الكلمة نفسها."""
+def test_no_path_changes_a_password_without_proving_ownership():
+    """**بابٌ خلفيّ إداريّ يُلغي معنى الكلمة نفسها.**
+
+    والقاعدة ليست «لا مسار اسمه reset» — فالاستعادة مسارٌ مشروع. القاعدة
+    أن **كل** مسارٍ يكتب `password_hash` يُثبت الملكية أولًا: إمّا بالكلمة
+    الحالية، وإمّا برمزٍ وصل بريد صاحبه ويعمل مرّة واحدة. ولا ثالث.
+    """
     import inspect
+    import re
 
     from athera_api.routers import auth
 
     source = inspect.getsource(auth)
-    assert "verify_password(user.password_hash, payload.current_password)" in source
-    for backdoor in ("reset-password", "force-password", "admin/password"):
-        assert backdoor not in source, backdoor
+    # الإسناد والوسيط المسمّى معًا: `password_hash = …` و`password_hash=…`.
+    writes = re.compile(r"password_hash\s*=[^=]")
+    writers = [name for name, fn in vars(auth).items()
+               if callable(fn) and getattr(fn, "__module__", "") == auth.__name__
+               and writes.search(inspect.getsource(fn))]
+    assert set(writers) == {"register", "change_password", "reset_password"}, (
+        f"مسارٌ غير متوقَّع يكتب كلمة مرور: {writers}")
+
+    # تغييرُ الكلمة يُثبت الملكية بالكلمة الحالية.
+    change = inspect.getsource(auth.change_password)
+    assert "verify_password(user.password_hash, payload.current_password)" in change
+
+    # والاستعادة برمزٍ يُجزَّأ ويُبحث به، ويُستهلك مرّة.
+    reset = inspect.getsource(auth.reset_password)
+    assert "password_reset.hash_token(payload.token)" in reset
+    assert "record.is_usable(now)" in reset
+    assert "record.consumed_at = now" in reset
+
+    # ولا مسارٌ يقبل معرّف مستخدمٍ أو بريدًا ليكتب كلمته.
+    assert not re.search(r'@router\.post\("/[^"]*(admin|force|override)', source)
 
 
 # ══════════ ٢. على قاعدةٍ حقيقية ══════════

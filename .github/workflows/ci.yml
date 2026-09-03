@@ -188,6 +188,12 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
+      # آليّات الاستعادة: بلا اعتماد وبلا رمزٍ حقيقي، فتعمل في كل PR.
+      - name: Recovery UI mechanics (real browser)
+        run: cd apps/web && npm run test:recovery
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
       # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
       #
       # تشغيلُها من PR يفحص إنتاجًا لا يحمل شيفرة الـPR — نتيجةٌ مضلِّلة.
@@ -198,6 +204,15 @@ jobs:
       # باعتمادٍ حتى يُعلن المالك أن الاعتماد المكشوف دُوّر، وأن السرّين
       # يخصّان حساب قبولٍ مخصَّصًا لا حسابًا شخصيًّا. والدمج وحده لا يكفي
       # إذنًا: يُضبط المتغيّر `PUBRIVA_ACCEPT_READY` إلى `true` قصدًا.
+      # ملفات فحوص دورة الحياة والاستعادة تُرفع عند الفشل — لا اعتماد فيها.
+      # وتُلتقط **قبل** رحلة القبول، فلا تختلط بها.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7
+
       - name: Acceptance journey (real browser, deployed production)
         if: ${{ github.ref == 'refs/heads/main'
                 && vars.PUBRIVA_ACCEPT_READY == 'true'
@@ -205,6 +220,14 @@ jobs:
         run: cd apps/web && npm run test:acceptance
         env:
           PUBRIVA_WEB_URL: https://athera-bay.vercel.app
+
+      # **ولا يُرفع شيء من رحلة القبول إطلاقًا — ولو فشلت.**
+      # المسجّلات مُطفأة فيها، لكن `error-context.md` يُكتب على أي حال
+      # ويحمل لقطة DOM لصفحةٍ فيها حقول اعتماد. فتُمحى مخرجاتها قبل أي
+      # رفع، ويبقى سجل الطرفية وحده — وهو يكفي لمعرفة أين سقطت.
+      - name: Destroy acceptance artifacts before any upload
+        if: always()
+        run: rm -rf apps/web/playwright-report apps/web/test-results
 
       - name: Report why acceptance did not run
         if: ${{ github.ref == 'refs/heads/main'
@@ -216,13 +239,6 @@ jobs:
           echo "::warning::(1) the exposed password is rotated and"
           echo "::warning::(2) the secrets belong to a dedicated acceptance account."
           echo "::warning::browser acceptance is NOT verified while this gate is closed."
-
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-report
-          path: apps/web/playwright-report/
-          retention-days: 7
 
   security:
     name: Security — أسرار وتبعيات | secrets and dependencies
