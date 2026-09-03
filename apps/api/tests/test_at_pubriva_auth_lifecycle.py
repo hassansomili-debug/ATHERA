@@ -941,3 +941,23 @@ def test_a_missing_document_is_reported_with_what_was_rendered():
     code = "\n".join(line for _, line in code_lines(spec))
     assert "rendered: await page.locator(\"article.card\").count()" in code, (
         "الغياب يُبلَّغ بلا سياق")
+
+
+def test_the_ai_answer_is_read_after_consent_and_proved_grounded():
+    """**المقروء بعد الإذن لا قبله.**
+
+    بطاقةُ الجواب معروضة قبل الإذن أيضًا، وفيها القيد معلنًا. فلو قُرئت
+    فورَ النقر لقُرئ نصُّ ما قبل الإذن — يطول عشرين حرفًا ولا يحمل ترميزًا،
+    فيمرّ الفحص **وهو لم يفحص جوابًا**.
+
+    و«مسنود بدليل موثّق» تفرّق بينهما: الخادم لا يقولها إلا حين يُبنى الجواب
+    على معرفةٍ اعتمدها الباحث، وقبل الإذن تُفرَّغ تلك المعرفة فيقول «اقتراح
+    نموذج — لا دليل».
+    """
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    ai = code[code.index("PUBRIVA AI reaches approved knowledge"):]
+    assert "toBeHidden" in ai, "الجواب يُقرأ قبل أن تسقط البوابة"
+    assert "مسنود بدليل موثّق" in ai, "لا إثبات أن الجواب مسنود لا مقترَح"
+    assert ai.index("toBeHidden") < ai.index("ai-answer-text"), (
+        "النصّ يُقرأ قبل سقوط البوابة")

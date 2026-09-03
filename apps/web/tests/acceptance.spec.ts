@@ -465,9 +465,23 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
       .toBeVisible({ timeout: 180_000 });
     await consent.click();
 
+    // **والمقروء بعد الإذن لا قبله.** بطاقةُ الجواب معروضة قبل الإذن أيضًا:
+    // فيها القيدُ نفسه معلنًا («الإجابة من هذا المستند تحتاج إذنك الصريح»).
+    // فلو قُرئت فورَ النقر لقُرئ نصُّ ما قبل الإذن — يطول عشرين حرفًا ولا
+    // يحمل ترميزًا، فيمرّ الفحص **وهو لم يفحص جوابًا**. وسقوطُ البوابة هو
+    // علامةُ أن السؤال أُعيد وقد صار الإذن قائمًا.
+    await expect(consent, "the chat consent gate never cleared after granting")
+      .toBeHidden({ timeout: 180_000 });
+
     // والسؤال الأصلي يُعاد بعد الإذن — لا يُطلب من الباحث كتابته ثانية.
     const answer = page.getByTestId("ai-answer");
     await expect(answer).toBeVisible({ timeout: 180_000 });
+    // **والجواب مسنود لا مقترَح.** الخادم يقول «مسنود بدليل موثّق» حين
+    // يُبنى على معرفةٍ اعتمدها الباحث، و«اقتراح نموذج — لا دليل» حين لا
+    // يُبنى عليها. وقبل الإذن كان الثاني بالضرورة: المعرفة تُفرَّغ ولا
+    // تُرسل. فهذه العبارة وحدها تفرّق بين جوابٍ بعد الإذن وجوابٍ قبله.
+    await expect(answer, "the answer was not grounded in the approved knowledge")
+      .toContainText("مسنود بدليل موثّق");
     const text = (await page.getByTestId("ai-answer-text").innerText()).trim();
     expect(text.length, "the answer was empty").toBeGreaterThan(20);
     for (const markup of ["</answer_ar>", "<answer_ar>", "<citations>", "</citations>",
