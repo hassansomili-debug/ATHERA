@@ -5,6 +5,7 @@
 منها يُسقط الحماية التي بُنيت فوقه.
 """
 import datetime as dt
+import pathlib
 import uuid
 
 import pytest
@@ -414,3 +415,29 @@ async def test_no_reset_secret_reaches_the_audit_payload(db_ready):
     blob = " ".join(str(r.state_after) + str(r.state_before) for r in rows)
     assert raw not in blob and token_hash not in blob
     assert "battery-staple-9x" not in blob
+
+
+def test_revocation_does_not_depend_on_a_pre_bound_tenant():
+    """**عيبٌ أمسكه الاختبار على قاعدةٍ حقيقية.**
+
+    `memberships` مملوك لمستأجر ومحميّ بـRLS، والاستعادة تقع بلا مصادقة —
+    فقراءته حينها تعود فارغة، ولا يُبطَل رمزٌ واحد، ويبقى من نسخ رمزًا
+    قادرًا على إصدار وصولٍ **بعد** إعادة الضبط.
+
+    فيُسأل بابٌ مُعلَن `SECURITY DEFINER` يُجيب عن هذا وحده — كما فعل
+    الترحيل 0018 لمسار الدخول. ولا يُلتف على العزل.
+    """
+    import inspect
+
+    from athera_api.routers import auth
+
+    source = inspect.getsource(auth._revoke_all_refresh_tokens)
+    assert "app_user_tenants" in source, "الإبطال يقرأ العضويات تحت RLS بلا سياق"
+    assert "select(Membership.tenant_id)" not in source
+
+    migration = (pathlib.Path(__file__).resolve().parents[3] / "infra" / "db"
+                 / "migrations" / "versions" / "0021_password_reset.py"
+                 ).read_text(encoding="utf-8")
+    assert "SECURITY DEFINER" in migration
+    assert "SET search_path = public, pg_temp" in migration, "حقنُ مخطط ممكن"
+    assert "REVOKE ALL ON FUNCTION app_user_tenants(uuid) FROM PUBLIC" in migration

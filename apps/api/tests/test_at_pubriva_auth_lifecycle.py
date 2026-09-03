@@ -438,6 +438,9 @@ def test_the_reset_page_never_shows_or_keeps_the_token():
             / "page.tsx").read_text(encoding="utf-8")
     assert "window.location.hash" in page, "الرمز لا يُقرأ من الجزء"
     assert "history.replaceState" in page, "الرمز يبقى في شريط العنوان والتاريخ"
+    # **والالتقاط يسبق النزع.** واشتقاقُه من الرابط عند كل تصيير يجعله
+    # يختفي بعد النزع، فيُقال للباحث «لا رمز» وهو يحمله.
+    assert "let captured" in page, "الرمز يُشتقّ من الرابط لا يُلتقط مرّة"
     # ولا يُعرض في أي حقلٍ أو نصّ.
     assert "value={token}" not in page
     # ولا دخول تلقائيّ بعد النجاح.

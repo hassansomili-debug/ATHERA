@@ -25,6 +25,28 @@ depends_on = None
 
 TS = sa.DateTime(timezone=True)
 
+# **مستأجرو المستخدم، بلا سياقٍ مسبق.**
+#
+# إبطالُ الجلسات بعد إعادة الضبط يحتاج معرفة مستأجري المستخدم — و`memberships`
+# مملوك لمستأجر ومحميّ بـRLS. والاستعادة تقع **بلا مصادقة ولا سياق**، فقراءة
+# العضويات حينها تعود فارغة، فلا يُبطَل شيء — ويبقى من نسخ رمزًا قادرًا على
+# إصدار وصولٍ بعد إعادة الضبط.
+#
+# وهو العيب نفسه الذي عالجه الترحيل 0018 لمسار الدخول: دالّة ضيّقة
+# `SECURITY DEFINER` تُجيب عن سؤالٍ واحد، ثم يُثبَّت السياق وتجري البقية تحت
+# RLS كاملةً. ولا يُلتف على العزل — يُسأل عنه بابٌ مُعلَن.
+USER_TENANTS = """
+CREATE OR REPLACE FUNCTION app_user_tenants(p_user_id uuid)
+RETURNS SETOF uuid
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT DISTINCT tenant_id FROM memberships WHERE user_id = p_user_id
+$$;
+"""
+
 
 def upgrade() -> None:
     op.create_table(
@@ -63,6 +85,12 @@ def upgrade() -> None:
         "GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_tokens TO athera_app"
     )
 
+    op.execute(USER_TENANTS)
+    # `public` يُنزع صراحةً: الدالّة تتجاوز RLS بحكم تعريفها، فلا تُترك
+    # مفتوحةً لكل دور.
+    op.execute("REVOKE ALL ON FUNCTION app_user_tenants(uuid) FROM PUBLIC")
+    op.execute("GRANT EXECUTE ON FUNCTION app_user_tenants(uuid) TO athera_app")
+
 
 def downgrade() -> None:
     """التنازل يرفض إن كان في الجدول رمزٌ حيّ.
@@ -80,5 +108,6 @@ def downgrade() -> None:
             "stranding a recovery already in progress. | "
             f"التنازل مرفوض: {live} رمز استعادة حيّ."
         )
+    op.execute("DROP FUNCTION IF EXISTS app_user_tenants(uuid)")
     op.drop_index("ix_password_reset_user_live", table_name="password_reset_tokens")
     op.drop_table("password_reset_tokens")

@@ -18,8 +18,25 @@ import { clearSession } from "@/lib/session";
  * الدخول بالكلمة الجديدة — وهي وحدها ما يثبت الملكية.
  */
 const NO_SUBSCRIPTION = () => () => undefined;
-const readFragment = () =>
-  typeof window === "undefined" ? "" : window.location.hash;
+
+/**
+ * الرمز يُلتقط **مرّة واحدة** ثم يُحفظ.
+ *
+ * وكان يُشتقّ من `location.hash` عند كل تصيير — ثم يُنزع الجزء من شريط
+ * العنوان (وهو المطلوب)، فيعود الاشتقاق فارغًا، فيختفي النموذج تحت الباحث
+ * ويقال له «هذا الرابط لا يحمل رمزًا» وهو يحمله. أمسكه فحص المتصفح.
+ *
+ * فالالتقاط يسبق النزع، والقيمة تبقى في الوحدة لا في الرابط.
+ */
+let captured: string | null = null;
+
+function readToken(): string {
+  if (captured !== null) return captured;
+  if (typeof window === "undefined") return "";
+  const hash = window.location.hash.replace(/^#/, "");
+  captured = new URLSearchParams(hash).get("token") ?? "";
+  return captured;
+}
 
 export default function ResetPasswordPage({
   params,
@@ -31,8 +48,7 @@ export default function ResetPasswordPage({
   const t = translator(getMessages(locale));
 
   // يُقرأ بعد التركيب: `location` لا وجود له على الخادم.
-  const fragment = useSyncExternalStore(NO_SUBSCRIPTION, readFragment, () => "");
-  const token = new URLSearchParams(fragment.replace(/^#/, "")).get("token") ?? "";
+  const token = useSyncExternalStore(NO_SUBSCRIPTION, readToken, () => "");
 
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -43,9 +59,9 @@ export default function ResetPasswordPage({
   // **الرمز يُنزع من شريط العنوان ومن سجل التنقّل حالما يُقرأ.**
   // فلا يبقى في تاريخ المتصفح ولا فيما يُشارَك من لقطة شاشة.
   useEffect(() => {
-    if (!fragment) return;
+    if (!window.location.hash) return;
     window.history.replaceState(null, "", window.location.pathname);
-  }, [fragment]);
+  }, [token]);
 
   const tooShort = next.length > 0 && next.length < 12;
   const mismatch = confirm.length > 0 && confirm !== next;

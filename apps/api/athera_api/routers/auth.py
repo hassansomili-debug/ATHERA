@@ -323,10 +323,13 @@ async def _revoke_all_refresh_tokens(session, user_id: uuid.UUID,
     والإبطال يجري داخل سياق كل مستأجر تحت RLS، بلا تجاوزٍ للعزل. وموضعه
     **واحد** يقرؤه المساران، فلا يُصلَح أحدهما ويبقى الآخر.
     """
+    # **بلا سياقٍ مسبق.** `memberships` مملوك لمستأجر ومحميّ بـRLS،
+    # والاستعادة تقع بلا مصادقة — فقراءته حينها تعود فارغة، ولا يُبطَل شيء،
+    # ويبقى من نسخ رمزًا قادرًا على إصدار وصولٍ بعد إعادة الضبط. وقد وقع
+    # ذلك فعلًا وأمسكه الاختبار. فيُسأل بابٌ مُعلَن يُجيب عن هذا وحده.
     tenant_ids = (
         await session.execute(
-            select(Membership.tenant_id).where(Membership.user_id == user_id)
-        )
+            text("SELECT app_user_tenants(:uid)"), {"uid": str(user_id)})
     ).scalars().all()
 
     revoked = 0
@@ -417,8 +420,7 @@ async def forgot_password(
             # حدث — **ولا يُختلق مستأجرٌ لأجل صفّ تدقيق**.
             memberships = (
                 await session.execute(
-                    select(Membership.tenant_id).where(Membership.user_id == user.id)
-                )
+                    text("SELECT app_user_tenants(:uid)"), {"uid": str(user.id)})
             ).scalars().all()
             if memberships:
                 await _bind_tenant(session, memberships[0], user.id)
@@ -499,8 +501,7 @@ async def reset_password(payload: ResetPasswordRequest) -> None:
 
         tenant_ids = (
             await session.execute(
-                select(Membership.tenant_id).where(Membership.user_id == user.id)
-            )
+                text("SELECT app_user_tenants(:uid)"), {"uid": str(user.id)})
         ).scalars().all()
         if tenant_ids:
             await _bind_tenant(session, tenant_ids[0], user.id)
