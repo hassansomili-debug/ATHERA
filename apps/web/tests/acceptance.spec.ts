@@ -102,6 +102,18 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));
+
+  // **ما جرى على الشبكة، لا ما ظهر على الشاشة.** «العنصر غير موجود» لا
+  // تقول أطُلبت القائمة أصلًا، ولا أجابت، ولا بأيّ حال. والطريقة والحال
+  // وحدهما — لا أجسام ولا روابط موقّعة.
+  const fileCalls: string[] = [];
+  page.on("response", (r) => {
+    try {
+      if (new URL(r.url()).pathname === "/api/v1/files") {
+        fileCalls.push(`${r.request().method()}:${r.status()}`);
+      }
+    } catch { /* رابطٌ لا يُحلَّل ليس دليلًا */ }
+  });
   let projectUrl = "";
   let sourceTitle = "";
   let processingState = "";
@@ -327,13 +339,16 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // مختلفان تمامًا. فيُذكر عدد البطاقات المعروضة مع الغياب. والعدد لا
     // يحمل اسمًا ولا سرًّا.
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
+    // **والغياب يُقاس.** و`toMatchObject` كانت تطبع المفاتيح المقارَنة وحدها،
+    // فضاع السياق الذي وُضع لأجله. فالمقروء نصٌّ واحد يُطبع كما هو.
+    const before = fileCalls.length;
     await expect
-      .poll(async () => ({
-              mine: await page.locator("article.card").filter({ hasText: DOC_NAME }).count(),
-              rendered: await page.locator("article.card").count(),
-            }),
+      .poll(async () =>
+              `mine=${await page.locator("article.card").filter({ hasText: DOC_NAME }).count()}`
+              + ` cards=${await page.locator("article.card").count()}`
+              + ` listCalls=[${fileCalls.slice(before).join(" ")}]`,
             { timeout: 30_000, message: "the uploaded document never appeared in My Library" })
-      .toMatchObject({ mine: 1 });
+      .toMatch(/^mine=1 /);
     // الحال تُقرأ من عقدها: «مخزَّن» لا «مُحلَّل».
     await expect(card.locator("[data-processing-state]"))
       .toHaveAttribute("data-processing-state", "not_processed", { timeout: 30_000 });

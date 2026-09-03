@@ -939,8 +939,11 @@ def test_a_missing_document_is_reported_with_what_was_rendered():
     يحمل اسمًا ولا سرًّا."""
     spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
     code = "\n".join(line for _, line in code_lines(spec))
-    assert "rendered: await page.locator(\"article.card\").count()" in code, (
-        "الغياب يُبلَّغ بلا سياق")
+    assert "listCalls=[" in code, "الغياب يُبلَّغ بلا سياق"
+    # والسياق يُطبع فعلًا: `toMatchObject` تطبع المفاتيح المقارَنة وحدها.
+    assert "toMatchObject({ mine:" not in code, "السياق يُجمع ثم لا يُطبع"
+    # ولا أجسام ولا روابط في الدليل — الطريقة والحال فقط.
+    assert "r.request().method()}:${r.status()}" in code, "الدليل يحمل أكثر مما يلزم"
 
 
 def test_the_ai_answer_is_read_after_consent_and_proved_grounded():
