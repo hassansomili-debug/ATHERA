@@ -192,17 +192,30 @@ jobs:
       #
       # تشغيلُها من PR يفحص إنتاجًا لا يحمل شيفرة الـPR — نتيجةٌ مضلِّلة.
       # وتُتخطّى بوضوح إن غاب الحساب، ولا تُعدّ نجاحًا.
+      # ── بوّابة صريحة قبل أي تشغيلٍ باعتماد ──
+      #
+      # **اعتمادُ حساب القبول ظهر في أثر تشغيلة إنتاجية.** فلا يُشغَّل شيء
+      # باعتمادٍ حتى يُعلن المالك أن الاعتماد المكشوف دُوّر، وأن السرّين
+      # يخصّان حساب قبولٍ مخصَّصًا لا حسابًا شخصيًّا. والدمج وحده لا يكفي
+      # إذنًا: يُضبط المتغيّر `PUBRIVA_ACCEPT_READY` إلى `true` قصدًا.
       - name: Acceptance journey (real browser, deployed production)
-        if: ${{ github.ref == 'refs/heads/main' && env.PUBRIVA_ACCEPT_PASSWORD != '' }}
+        if: ${{ github.ref == 'refs/heads/main'
+                && vars.PUBRIVA_ACCEPT_READY == 'true'
+                && env.PUBRIVA_ACCEPT_PASSWORD != '' }}
         run: cd apps/web && npm run test:acceptance
         env:
           PUBRIVA_WEB_URL: https://athera-bay.vercel.app
 
       - name: Report why acceptance did not run
-        if: ${{ github.ref == 'refs/heads/main' && env.PUBRIVA_ACCEPT_PASSWORD == '' }}
+        if: ${{ github.ref == 'refs/heads/main'
+                && (vars.PUBRIVA_ACCEPT_READY != 'true' || env.PUBRIVA_ACCEPT_PASSWORD == '') }}
         run: |
-          echo "::warning::acceptance journey skipped — PUBRIVA_ACCEPT_PASSWORD is not set."
-          echo "::warning::browser acceptance is NOT verified until that secret exists."
+          echo "::warning::acceptance journey did NOT run — it is gated."
+          echo "::warning::PUBRIVA_ACCEPT_READY=${{ vars.PUBRIVA_ACCEPT_READY || 'unset' }}"
+          echo "::warning::set the repository variable PUBRIVA_ACCEPT_READY=true only after"
+          echo "::warning::(1) the exposed password is rotated and"
+          echo "::warning::(2) the secrets belong to a dedicated acceptance account."
+          echo "::warning::browser acceptance is NOT verified while this gate is closed."
 
       - uses: actions/upload-artifact@v4
         if: failure()

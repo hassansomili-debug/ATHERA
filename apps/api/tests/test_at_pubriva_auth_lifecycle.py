@@ -281,3 +281,12 @@ def test_the_acceptance_suite_records_no_artifact_that_could_hold_a_secret():
     spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
     assert 'test.use({ trace: "off", video: "off", screenshot: "off" });' in spec, (
         "حزمة القبول تسجّل آثارًا قد تحمل الاعتماد")
+
+
+def test_credentialed_acceptance_is_gated_behind_an_explicit_opt_in():
+    """**الدمج ليس إذنًا.** بعد تسرّب الاعتماد في أثر تشغيلة، لا يعمل شيء
+    باعتمادٍ حتى يُضبط متغيّرٌ قصدًا — بعد التدوير وبعد حسابٍ مخصَّص."""
+    workflow = (WEB.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "vars.PUBRIVA_ACCEPT_READY == 'true'" in workflow, "لا بوّابة قبل التشغيل باعتماد"
+    # وسببُ عدم التشغيل يُقال، ولا يُقرأ الصمت نجاحًا.
+    assert "browser acceptance is NOT verified while this gate is closed" in workflow
