@@ -372,21 +372,81 @@ def test_the_ai_step_submits_through_the_button_the_product_provides():
 def test_the_journey_covers_document_processing_and_review():
     """١٤–١٦ كانت غائبة عن الرحلة كلها — فما لم يُفحص لا يُقال إنه يعمل."""
     assert "upload a parseable synthetic document" in ACCEPTANCE
-    assert "start document processing from the browser" in ACCEPTANCE
+    assert "start document processing, reaching a decision state" in ACCEPTANCE
+    assert "grant DIC2 in the browser when processing waits for it" in ACCEPTANCE
     assert "review the extracted knowledge and approve one fact" in ACCEPTANCE
     # الوثيقة تركيبية بالكامل، تُصنع في الذاكرة.
     assert "DOC_TEXT" in ACCEPTANCE and "Buffer.from(DOC_TEXT" in ACCEPTANCE
 
 
-def test_processing_states_are_asserted_truthfully_and_never_by_sleeping():
-    """`stored` و`processing` و`awaiting consent` و`awaiting review` و
-    `completed` و`failed` ستُّ حالات — ولا تُجمع في واحدة."""
-    assert "لم تُعالَج بعد" in ACCEPTANCE
-    assert "ينتظر إذن القراءة" in ACCEPTANCE
-    assert "بانتظار مراجعتك" in ACCEPTANCE
-    assert "تعذّرت المعالجة" in ACCEPTANCE, "الفشل غير مُختبَر"
+def test_processing_states_are_asserted_by_contract_not_translated_prose():
+    """**عيبٌ أوقف الرحلة ثلاث دقائق على حالٍ لا تُكتب في تلك الشاشة.**
+
+    كان الفحص يطابق نصًّا مترجَمًا، فأخذ «ينتظر إذن القراءة» من شاشة
+    الذكاء وانتظرها في شاشة المكتبة — وهي تكتب «بانتظار موافقتك للمتابعة».
+    والمعالجة كانت قد تمّت.
+
+    فالحال تُقرأ من عقدها: `data-processing-state` — اسمٌ قانونيّ واحد لا
+    يتغيّر بتحسين صياغة ولا يختلف بين شاشتين.
+    """
+    assert "data-processing-state" in ACCEPTANCE, "الحال ما زالت تُقرأ من النصّ"
+    # ولا قائمةُ نصوصٍ مترجَمة تُكتب باليد في الفحص.
+    for prose in ("ينتظر إذن القراءة", "قيد المعالجة", "لم تُعالَج بعد",
+                  "تعذّرت المعالجة"):
+        assert prose not in ACCEPTANCE, f"نصٌّ مترجَم يُطابَق في الفحص: {prose}"
+    # والحالات القانونية الخمس مذكورة بأسمائها.
+    for canonical in ("not_processed", "parsing", "extracting", "awaiting_consent",
+                      "awaiting_review", "completed", "parse_failed", "extract_failed"):
+        assert canonical in ACCEPTANCE, canonical
+    # **والإخفاق إخفاق**: لا يُقرأ وصولًا إلى حالٍ نهائية.
+    assert "document processing failed in state" in ACCEPTANCE
     # ولا انتظارٌ بزمنٍ ثابت حيث توجد حالٌ تُنتظر.
     assert "waitForTimeout" not in ACCEPTANCE
+
+
+def test_awaiting_consent_is_not_presented_as_processing():
+    """**انتظارُ الباحث ليس معالجةً جارية.**
+
+    فقولُ «قيد المعالجة» حين يكون النظام هو المنتظِر يجعل الباحث ينتظر
+    النظام — والنظام ينتظره — فلا يتحرّك أحد. والحالات الخمس تُميَّز:
+    معالجةٌ جارية، وانتظارُ إذن، وانتظارُ مراجعة، وتمامٌ، وإخفاق.
+    """
+    import json
+    import re
+
+    page = (WEB / "src" / "app" / "[locale]" / "library"
+            / "page.tsx").read_text(encoding="utf-8")
+    block = page[page.index("const PROCESSING_LABEL"):page.index("};", page.index("const PROCESSING_LABEL"))]
+    mapping = dict(re.findall(r'(\w+):\s*"([\w.]+)"', block))
+
+    assert mapping["awaiting_consent"] == "library.awaitingConsent", (
+        "انتظارُ الإذن ما زال يُعرض «قيد المعالجة»")
+    assert mapping["awaiting_review"] == "library.needsReview"
+    assert mapping["completed"] == "library.processed"
+    assert mapping["not_processed"] == "library.notProcessed"
+    # وتشارُكُ التحليل والاستخراج لافتةَ «قيد المعالجة» مشروع: كلاهما جارٍ.
+    assert mapping["parsing"] == mapping["extracting"] == "library.processing"
+    # والإخفاقان يبقيان إخفاقًا.
+    assert mapping["parse_failed"] == mapping["extract_failed"] == "library.failedState"
+
+    # ولكل حالٍ نصُّها بلغتَيها.
+    for locale in ("ar", "en"):
+        catalog = json.loads((WEB / "messages" / f"{locale}.json").read_text(encoding="utf-8"))
+        lib = catalog["library"]
+        for key in ("awaitingConsent", "needsReview", "processed", "notProcessed",
+                    "processing", "failedState"):
+            assert lib.get(key, "").strip(), f"{locale}: library.{key} فارغ"
+        assert lib["awaitingConsent"] != lib["processing"], (
+            f"{locale}: انتظارُ الإذن ونصُّ المعالفة سواء")
+
+
+def test_the_state_element_exposes_the_canonical_state():
+    """النصّ للإنسان، والسمة للآلة — ولا معرّف يُكشف لأجل فحص."""
+    page = (WEB / "src" / "app" / "[locale]" / "library"
+            / "page.tsx").read_text(encoding="utf-8")
+    assert 'data-processing-state={file.processing_status}' in page
+    # ولا تُكشف معرّفات داخلية في سمات الفحص.
+    assert "data-file-id" not in page and "data-thesis-id" not in page
 
 
 def test_dic2_and_dcc2_are_separate_boundaries_in_the_journey():

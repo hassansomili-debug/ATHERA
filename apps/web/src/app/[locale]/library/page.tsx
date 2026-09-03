@@ -27,7 +27,10 @@ const PROCESSING_LABEL: Record<string, string> = {
   not_processed: "library.notProcessed",
   parsing: "library.processing",
   extracting: "library.processing",
-  awaiting_consent: "library.processing",
+  // **انتظارُ الباحث ليس معالجةً جارية.** والقراءة المحلية والاستخراج
+  // الحتمي تمّا؛ وما يتوقف الآن هو أن يأذن صاحب المستند. فقولُ «قيد
+  // المعالجة» هنا يجعله ينتظر النظام — والنظام ينتظره هو، فلا يتحرّك أحد.
+  awaiting_consent: "library.awaitingConsent",
   awaiting_review: "library.needsReview",
   completed: "library.processed",
   extract_failed: "library.failedState",
@@ -128,7 +131,14 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
                   {new Date(file.created_at).toLocaleDateString(locale)}
                 </div>
                 {/* الحالة نصًّا صريحًا — ولا يُقال «حُلِّل» لملفٍ لم يُقرأ. */}
-                <div className="metric-label">
+                {/*
+                  الحال القانونية بجانب نصّها المترجَم.
+
+                  والنصّ للإنسان، والسمة للآلة: فحصٌ يطابق نصًّا مترجَمًا
+                  يسقط بأول تحسينٍ للصياغة، أو يقرأ نصَّ شاشةٍ أخرى ويظنّه
+                  هذه. وليس فيها سرٌّ ولا معرّف — الحال نفسها لا غير.
+                */}
+                <div className="metric-label" data-processing-state={file.processing_status}>
                   {t(PROCESSING_LABEL[file.processing_status] ?? "library.notProcessed")}
                   {file.candidates > 0
                     ? ` · ${file.candidates} ${t("library.candidatesCount")} · ${file.reviewed} ${t("library.reviewedCount")}`
