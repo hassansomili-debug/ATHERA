@@ -577,3 +577,38 @@ def test_recovery_routes_never_tear_down_a_session():
         assert path in auth_block, path
     # **و`change-password` ليس منها**: مسارٌ مُصادَق يصحّ فيه التجديد المعتاد.
     assert "change-password" not in auth_block
+
+
+# ══════════ ١٥. الزرّ يُطلب باسمه المُعلَن لا برسمه ══════════
+
+def test_the_source_add_control_is_found_by_its_accessible_name():
+    """**عيبُ فحصٍ اتُّهم به المنتج وهو فيه محسِن.**
+
+    زرُّ إضافة المرجع رسمُه «+»، واسمه المُعلَن لقارئ الشاشة «أضِف مرجعًا
+    من مكتبتك: <العنوان>». وكان الفحص يطلب الرسم، فلا يجده، فيسقط —
+    والاسمُ المُعلَن هو الصواب: زرٌّ اسمه «+» لا يقول لأعمى ما يفعل.
+
+    فيُمنع أن يعود الفحص إلى طلب الرسم في قسم المراجع.
+    """
+    source = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    block = source[source.index("link that reference to the project"):
+                   source.index("archive, trash and restore")]
+    assert 'name: /أضِف مرجعًا من مكتبتك:/' in block, "الزرّ يُطلب برسمه لا باسمه"
+    assert 'getByRole("button", { name: "+" })' not in block, "الرسم عاد"
+    # والاسم المُعلَن ما زال في المنتج — ولا يُضعَف لأجل فحص.
+    page = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
+            / "page.tsx").read_text(encoding="utf-8")
+    assert 'aria-label={`${t("project.addSource")}: ${source.title}`}' in page, (
+        "اسم الزرّ المُعلَن أُزيل — وذلك إضعافُ إتاحةٍ لأجل فحص")
+
+
+def test_the_link_is_proven_by_the_server_response_not_the_screen():
+    """**والحال الافتراضية تُقرأ من ردّ الخادم.** فلو كتبتها الواجهة من
+    عندها لقال الفحص «محفوظ فقط» عن علاقةٍ ليست كذلك."""
+    source = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    block = source[source.index("link that reference to the project"):
+                   source.index("archive, trash and restore")]
+    assert "waitForResponse" in block
+    assert "endsWith(\"/sources\")" in block
+    assert "toBe(201)" in block
+    assert 'linkedBody.use_state' in block and '.toBe("saved_only")' in block
