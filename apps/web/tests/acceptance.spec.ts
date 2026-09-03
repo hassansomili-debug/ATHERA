@@ -224,13 +224,40 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
       .filter({ hasText: sourceTitle })
       .first();
     await expect(candidate).toBeVisible({ timeout: 30_000 });
-    await candidate.getByRole("button", { name: "+" }).click();
 
-    // ظهر في البحث…
+    // **الزرّ يُطلب باسمه المُعلَن لا برسمه.** رسمُه «+»، واسمه المُعلَن
+    // لقارئ الشاشة «أضِف مرجعًا من مكتبتك: <عنوان المرجع>» — وهو الصواب:
+    // زرٌّ اسمه «+» لا يقول لأعمى ما يفعل. فكان الفحص يطلب الرسم فلا يجده،
+    // ويُتّهم المنتج بعيبٍ هو فيه محسِن.
+    const addButton = candidate.getByRole("button", {
+      name: /أضِف مرجعًا من مكتبتك:/,
+    });
+    await expect(addButton).toBeVisible({ timeout: 30_000 });
+    await expect(addButton).toBeEnabled();
+
+    // **وما يُثبت الربط هو ردّ الخادم، لا ما تعرضه الشاشة عن نفسها.**
+    const linkResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().includes("/api/v1/workspace/projects/") &&
+        response.url().endsWith("/sources"),
+      { timeout: 60_000 },
+    );
+    await addButton.click();
+    const response = await linkResponse;
+    expect(response.status(), "linking the source did not return 201").toBe(201);
+
+    // والحال الافتراضية تُقرأ من جسم الردّ — لا تُفترض في العميل.
+    const linkedBody = await response.json();
+    expect(linkedBody.use_state, "the server did not default to saved_only")
+      .toBe("saved_only");
+    expect(linkedBody.decided_at, "a fresh link already carries a decision")
+      .toBeNull();
+
+    // ثم يُرى في الشاشة كما أعاده الخادم.
     const linked = page.locator("article.card").filter({ hasText: sourceTitle }).first();
     await expect(linked).toBeVisible({ timeout: 30_000 });
 
-    // …وحاله الافتراضية «محفوظ فقط» — لا «مُدرَج».
     const saved = linked.getByRole("button", { name: "محفوظ فقط" });
     await expect(saved).toBeVisible({ timeout: 30_000 });
     await expect(saved).toHaveAttribute("aria-pressed", "true");
