@@ -78,7 +78,9 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
         setTheses(rows);
         if (rows.length > 0) setThesisId(rows[0]!.id);
       })
-      .catch(() => setTheses([]));
+      .catch((err) =>
+        setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
+      );
   }, [locale]);
 
   const load = useCallback(async () => {

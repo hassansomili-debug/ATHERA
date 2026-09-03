@@ -81,7 +81,7 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
 
   const reload = useCallback(() => {
     apiFetch<Project[]>("/api/v1/portfolio/projects", { locale }).then(setProjects).catch(say);
-    listProjects(locale, true).then(setTrashed).catch(() => setTrashed([]));
+    listProjects(locale, true).then(setTrashed).catch(say);
   }, [locale, say]);
 
   async function startProject(event: React.FormEvent) {
@@ -132,7 +132,7 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
         setPlan(referencePlan);
       })
       .catch(say);
-    listProjects(locale, true).then(setTrashed).catch(() => setTrashed([]));
+    listProjects(locale, true).then(setTrashed).catch(say);
   }, [locale, say]);
 
   return (

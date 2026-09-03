@@ -79,7 +79,9 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
         setProjects(rows);
         if (rows.length > 0) setProjectId(rows[0]!.id);
       })
-      .catch(() => setProjects([]));
+      .catch((err) =>
+        setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
+      );
   }, [locale]);
 
   useEffect(() => {

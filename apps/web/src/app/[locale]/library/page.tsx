@@ -70,14 +70,18 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
   const loadFiles = useCallback(() => {
     apiFetch<LibraryFile[]>("/api/v1/files", { locale })
       .then(setFiles)
-      .catch(() => setFiles([]));
+      .catch((err) =>
+        setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
+      );
   }, [locale]);
 
   useEffect(() => {
     loadFiles();
     apiFetch<Source[]>("/api/v1/sources", { locale })
       .then(setSources)
-      .catch(() => setSources([]));
+      .catch((err) =>
+        setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
+      );
   }, [locale, loadFiles]);
 
   async function importDoi(event: React.FormEvent) {

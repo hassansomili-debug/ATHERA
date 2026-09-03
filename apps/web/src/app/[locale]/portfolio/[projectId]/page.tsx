@@ -126,9 +126,9 @@ export default function ProjectWorkspacePage({
   // مكتبة الباحث تُجلب لتقديم قائمة اختيار — لا ليكتب معرّفًا بيده.
   useEffect(() => {
     if (section === "files") {
-      listLibraryFiles(locale).then(setLibrary).catch(() => setLibrary([]));
+      listLibraryFiles(locale).then(setLibrary).catch(say);
     }
-  }, [section, locale]);
+  }, [section, locale, say]);
 
   const attach = async (fileId: string) => {
     setBusy(true);

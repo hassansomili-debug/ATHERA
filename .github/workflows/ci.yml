@@ -157,6 +157,36 @@ jobs:
       - run: cd apps/web && npm run lint
       - run: cd apps/web && npm run build
 
+  browser:
+    name: Browser — قبول بمتصفّح حقيقي | real-browser acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: cd apps/web && npm ci
+      - run: cd apps/web && npx playwright install --with-deps chromium
+      # دورة حياة الجلسة تُختبر بشبكةٍ معترَضة، فلا تحتاج خادمًا خلفيًّا —
+      # وتعمل في كل PR. ورحلة القبول تحتاج حسابًا حقيقيًّا، فتُشغَّل حين
+      # يتوفّر سرّها وحده، ولا يُسكت غيابُها بقيّة الفحص.
+      - name: Session lifecycle (real browser)
+        run: cd apps/web && npm run test:refresh
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+      - name: Acceptance journey (real browser, real backend)
+        if: ${{ env.PUBRIVA_ACCEPT_PASSWORD != '' }}
+        run: cd apps/web && npm run test:acceptance
+        env:
+          PUBRIVA_WEB_URL: https://athera-bay.vercel.app
+          PUBRIVA_ACCEPT_EMAIL: ${{ secrets.PUBRIVA_ACCEPT_EMAIL }}
+          PUBRIVA_ACCEPT_PASSWORD: ${{ secrets.PUBRIVA_ACCEPT_PASSWORD }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7
+
   security:
     name: Security — أسرار وتبعيات | secrets and dependencies
     runs-on: ubuntu-latest

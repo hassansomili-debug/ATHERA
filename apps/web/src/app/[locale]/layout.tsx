@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
+import { AuthGate } from "@/components/AuthGate";
 import { SideNav } from "@/components/SideNav";
 import { DEFAULT_LOCALE, LOCALES, direction, getMessages, isLocale, translator } from "@/lib/i18n";
 import "../../styles/globals.css";
@@ -61,7 +62,9 @@ export default async function LocaleLayout({
             <SideNav locale={locale} messages={messages} />
             <LocaleSwitcher locale={locale} messages={messages} />
           </aside>
-          <main className="content">{children}</main>
+          <main className="content">
+            <AuthGate locale={locale}>{children}</AuthGate>
+          </main>
         </div>
       </body>
     </html>
