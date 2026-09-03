@@ -971,3 +971,20 @@ def test_the_ai_answer_is_read_after_consent_and_proved_grounded():
         "الجواب النهائي يُقرأ قبل سقوط البوابة")
     assert ai.index("refusal") < ai.index("consent.click()"), (
         "نصّ الرفض يُلتقط بعد منح الإذن، فلا يفرّق شيئًا")
+
+
+def test_the_upload_step_proves_the_library_not_the_uploader():
+    """**«رُفع إلى مكتبتي» تُثبَت في المكتبة.**
+
+    شارةُ النجاح تحمل اسم الملف («✓ تم الحفظ — اسم الملف»)، وكان الفحص
+    يطلب الاسم في الصفحة كلها — فيجده في الشارة ويمضي. فمكتبةٌ لا تُحدَّث
+    بعد الرفع كانت تمرّ سنينًا: الادّعاء أن الملف صار في المكتبة، والدليل
+    أن الرافع يقول إنه رفع.
+    """
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    upload = code[code.index("upload a file into My Library"):
+                  code.index("link that exact file to the project")]
+    assert "getByText(FILENAME)" not in upload, "الاسم يُطلب في الصفحة كلها"
+    assert 'locator("article.card").filter({ hasText: FILENAME })' in upload, (
+        "الرفع لا يُثبَت في قائمة المكتبة")

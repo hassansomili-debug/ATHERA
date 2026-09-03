@@ -181,7 +181,19 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
     // ج — الرفع أثبت نفسه: الحال «تم الحفظ» والاسم الفريد ظاهر.
     await expect(page.getByText("تم الحفظ")).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByText(FILENAME).first()).toBeVisible({ timeout: 30_000 });
+
+    // **وفي المكتبة، لا في شارة الرفع.**
+    //
+    // كان الفحص يطلب الاسم في الصفحة كلها — وشارةُ النجاح نفسها تحمله
+    // («✓ تم الحفظ — اسم الملف»). فكان يمرّ على مكتبةٍ لم تُحدَّث إطلاقًا:
+    // «رُفع إلى مكتبتي» تُثبَت بأن الرافع يقول إنه رفع. والخطوةُ تدّعي أن
+    // الملف صار في المكتبة، فتُثبَت في المكتبة.
+    const stored = page.locator("article.card").filter({ hasText: FILENAME });
+    await expect
+      .poll(async () =>
+              `mine=${await stored.count()} cards=${await page.locator("article.card").count()}`,
+            { timeout: 30_000, message: "the upload never reached the library list" })
+      .toMatch(/^mine=1 /);
   });
 
   await test.step("link that exact file to the project", async () => {
