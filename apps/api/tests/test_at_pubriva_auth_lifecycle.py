@@ -417,3 +417,36 @@ def test_the_password_change_ui_exists_for_the_researcher():
     settings = (WEB / "src" / "app" / "[locale]" / "settings"
                 / "page.tsx").read_text(encoding="utf-8")
     assert "ChangePassword" in settings, "الشاشة غير مركَّبة في الإعدادات"
+
+
+# ══════════ ١٢. الاستعادة: واجهةٌ وآليّاتٌ بلا سرٍّ في أثر ══════════
+
+def test_the_recovery_routes_exist_and_are_public():
+    web = WEB / "src" / "app" / "[locale]"
+    assert (web / "forgot-password" / "page.tsx").exists()
+    assert (web / "reset-password" / "page.tsx").exists()
+    gate = (WEB / "src" / "components" / "AuthGate.tsx").read_text(encoding="utf-8")
+    for route in ("/forgot-password", "/reset-password"):
+        assert route in gate, f"{route} محجوب خلف المصادقة — ومن نسي كلمته لا يدخل"
+    login = (web / "login" / "page.tsx").read_text(encoding="utf-8")
+    assert "/forgot-password" in login, "لا باب إلى الاستعادة من صفحة الدخول"
+
+
+def test_the_reset_page_never_shows_or_keeps_the_token():
+    """**ما بعد `#` لا يُرسَل في طلب HTTP** — ويُنزع بعد قراءته."""
+    page = (WEB / "src" / "app" / "[locale]" / "reset-password"
+            / "page.tsx").read_text(encoding="utf-8")
+    assert "window.location.hash" in page, "الرمز لا يُقرأ من الجزء"
+    assert "history.replaceState" in page, "الرمز يبقى في شريط العنوان والتاريخ"
+    # ولا يُعرض في أي حقلٍ أو نصّ.
+    assert "value={token}" not in page
+    # ولا دخول تلقائيّ بعد النجاح.
+    assert "saveSession" not in page, "دخولٌ تلقائيّ يجعل سرقة الرابط سرقة جلسة"
+    assert "clearSession()" in page
+
+
+def test_recovery_browser_tests_upload_no_credential_bearing_artifact():
+    spec = (WEB / "tests" / "recovery.spec.ts").read_text(encoding="utf-8")
+    assert 'test.use({ trace: "off", video: "off", screenshot: "off" });' in spec
+    # ولا رمز استعادةٍ حقيقي في الحزمة.
+    assert "PUBRIVA_ACCEPT_PASSWORD" not in spec

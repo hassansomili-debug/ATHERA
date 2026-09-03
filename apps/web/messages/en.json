@@ -51,7 +51,15 @@
     "needAccount": "No account? Create one",
     "haveAccount": "Already have an account? Sign in",
     "signingIn": "Signing in…",
-    "signingOut": "Signing out…"
+    "signingOut": "Signing out…",
+    "forgotTitle": "Forgot your password?",
+    "forgotHint": "Enter your email. If it is linked to an account, a reset link will arrive.",
+    "forgotSend": "Send the recovery link",
+    "resetTitle": "Choose a new password",
+    "resetHint": "The link works once, and only for a short time.",
+    "resetSubmit": "Save the new password",
+    "resetDone": "Password changed. Sign in again.",
+    "resetNoToken": "This link carries no recovery token. Request a new one:"
   },
   "dashboard": {
     "title": "What do you want to accomplish?",

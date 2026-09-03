@@ -36,6 +36,26 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    """جوابٌ **واحد** لبريدٍ موجود وبريدٍ ليس موجودًا.
+
+    وفرقٌ في النصّ يُحوّل هذا المسار إلى أداة تعداد حسابات: يجرّب المهاجم
+    عناوين ويقرأ من الجواب أيّها مسجَّل.
+    """
+
+    message_ar: str
+    message_en: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
 class ChangePasswordRequest(BaseModel):
     """تغيير كلمة المرور — **بالكلمة الحالية، لا بغيرها**.
 

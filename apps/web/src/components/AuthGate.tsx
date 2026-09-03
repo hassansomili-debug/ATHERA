@@ -26,7 +26,8 @@ import type { Locale } from "@/lib/i18n";
 const NO_SUBSCRIPTION = () => () => undefined;
 
 /** ما لا يحتاج جلسة — وهو ما يُنشئها أو يسترجعها. */
-const PUBLIC_SEGMENTS = ["/login", "/register"];
+const PUBLIC_SEGMENTS = ["/login", "/register", "/forgot-password",
+                         "/reset-password"];
 
 const readPath = () => (typeof window === "undefined" ? "" : window.location.pathname);
 const readServerPath = () => "";

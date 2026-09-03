@@ -188,6 +188,12 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
+      # آليّات الاستعادة: بلا اعتماد وبلا رمزٍ حقيقي، فتعمل في كل PR.
+      - name: Recovery UI mechanics (real browser)
+        run: cd apps/web && npm run test:recovery
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
       # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
       #
       # تشغيلُها من PR يفحص إنتاجًا لا يحمل شيفرة الـPR — نتيجةٌ مضلِّلة.

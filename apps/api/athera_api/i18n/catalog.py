@@ -228,6 +228,14 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "كلمة المرور الجديدة مطابقة للحالية.",
         "en": "The new password is the same as the current one.",
     },
+    "auth.reset_token_invalid": {
+        "ar": "رابط إعادة التعيين غير صالح أو انتهت صلاحيته. اطلب رابطًا جديدًا.",
+        "en": "This reset link is invalid or has expired. Request a new one.",
+    },
+    "auth.reset_rate_limited": {
+        "ar": "طُلبت الاستعادة مرات كثيرة. انتظر قليلًا ثم أعد المحاولة.",
+        "en": "Too many recovery requests. Wait a little, then try again.",
+    },
     "portfolio.profile_required": {
         "ar": "يلزم إنشاء الملف الأكاديمي قبل إنشاء مشروع بحثي.",
         "en": "An academic profile is required before creating a research project.",

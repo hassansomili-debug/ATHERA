@@ -43,6 +43,22 @@ class Settings(BaseSettings):
     # §36.3 — القيمة الافتراضية هي الأشد تقييدًا.
     model_external_send_max_classification: str = "C1"
 
+    # ── البريد الصادر ──
+    #
+    # الافتراض `none`: نشرٌ لم يُضبط فيه مزوّد **لا يرسل**، ويقول ذلك
+    # صراحةً بدل أن يبتلع الرسالة. و`console` للتطوير وحده — يُرفض في
+    # الإنتاج، فمسارُ تطويرٍ يصل الإنتاج بالسهو هو ما يجعل الاستعادة
+    # قابلة للسرقة من سجلّ.
+    email_provider: str = "none"
+    email_sender: str = ""
+    email_smtp_host: str = ""
+    email_smtp_port: int = 587
+    email_smtp_username: str = ""
+    email_smtp_password: str = ""
+    email_smtp_use_tls: bool = True
+    # جذر الواجهة — منه يُبنى رابط الاستعادة.
+    web_base_url: str = "http://localhost:3000"
+
     # §38.6.8 — النطاقات المسموح لها بمناداة الـAPI، مفصولة بفواصل.
     # الافتراض هو التطوير المحلي وحده: نشرٌ نُسي فيه ضبطها يفشل بوضوح في
     # المتصفح، ولا يفتح الـAPI لأي نطاق.
