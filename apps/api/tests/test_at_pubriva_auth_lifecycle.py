@@ -269,3 +269,15 @@ def test_the_two_navigation_landmarks_have_distinct_names():
     assert 'aria-label={t("project.sectionsLabel")}' in page
     # ولا يُسمّى معلَمٌ باسم عنصرٍ بداخله.
     assert 'aria-label={t("project.overview")}' not in page
+
+
+def test_the_acceptance_suite_records_no_artifact_that_could_hold_a_secret():
+    """**سرٌّ ظهر في أثر تشغيلة إنتاجية.**
+
+    أثرُ Playwright يسجّل وسائط كل فعل — ومنها ما يُملأ في حقل كلمة المرور
+    نصًّا صريحًا؛ ولقطتا الشاشة وDOM تحملان قيمة الحقل. وتُرفع هذه أثرًا في
+    CI يقرؤه كل ذي وصول. **وقابليةُ التشخيص لا تُشترى بتسريب كلمة مرور.**
+    """
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    assert 'test.use({ trace: "off", video: "off", screenshot: "off" });' in spec, (
+        "حزمة القبول تسجّل آثارًا قد تحمل الاعتماد")
