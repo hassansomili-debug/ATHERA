@@ -465,3 +465,55 @@ def test_no_acceptance_artifact_can_reach_the_upload():
     assert upload < acceptance, "الرفع يقع بعد رحلة القبول فيلتقط مخرجاتها"
     assert "Destroy acceptance artifacts before any upload" in workflow
     assert "rm -rf apps/web/playwright-report apps/web/test-results" in workflow
+
+
+# ══════════ ١٣. النطاق القانوني: pubriva.com وحده ══════════
+
+CANONICAL_HOST = "https://pubriva.com"
+
+
+def test_the_acceptance_journey_targets_the_researchers_domain():
+    """**القبول يفحص ما يستعمله الباحث** — لا اسم استضافة يصادف أن يخدمه."""
+    workflow = (WEB.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert f"PUBRIVA_WEB_URL: {CANONICAL_HOST}" in workflow
+    assert "PUBRIVA_WEB_URL: https://athera-bay.vercel.app" not in workflow
+
+
+def test_the_pages_declare_the_canonical_origin():
+    """بلا `metadataBase` تشتقّ Next الروابط المطلقة من اسم الاستضافة الذي
+    صادف أن خدم الطلب — فتُعلن الصفحة اسمًا ليس هو المنتج أصلًا لنفسها."""
+    layout = (WEB / "src" / "app" / "[locale]" / "layout.tsx").read_text(encoding="utf-8")
+    assert f'metadataBase: new URL("{CANONICAL_HOST}")' in layout
+    assert "canonical: `/${active}`" in layout, "الأصل يُشتقّ من لغةٍ غير متحقَّق منها"
+
+
+def test_no_user_facing_code_points_at_a_vercel_hostname():
+    """**ولا يُرسَل باحثٌ قصدًا إلى اسم استضافة.**
+
+    والاستثناء الوحيد المقبول هو ما يصف الإعداد أو يختبر تحليله — لا ما
+    يُبنى منه رابطٌ يُعطى لباحث.
+    """
+    from tests.tsscan import code_lines
+
+    offenders = []
+    for path in list((WEB / "src").rglob("*.tsx")) + list((WEB / "src").rglob("*.ts")):
+        for number, line in code_lines(path.read_text(encoding="utf-8")):
+            if "vercel.app" in line:
+                offenders.append(f"{path.relative_to(WEB)}:{number}")
+    assert not offenders, "شيفرة واجهة تشير إلى اسم استضافة: " + "; ".join(offenders)
+
+
+def test_only_the_named_legacy_host_redirects_never_previews():
+    """**توجيهُ `*.vercel.app` يُبطل المعاينات.**
+
+    أسماء المعاينات تتغيّر مع كل فرع؛ وتوجيهها إلى الإنتاج يجعل فرعًا
+    يُفحص وهو يعرض `main` — فيُقال إنه سليم وهو لم يُرَ. فيُسمّى المضيف
+    الواحد المقصود، ويبقى ما عداه.
+    """
+    config = (WEB / "next.config.mjs").read_text(encoding="utf-8")
+    assert 'const LEGACY_HOST = "athera-bay.vercel.app"' in config
+    assert '"*.vercel.app"' not in config and "'*.vercel.app'" not in config
+    assert 'type: "host", value: LEGACY_HOST' in config
+    assert "permanent: true" in config
+    # والمسار يُحفظ في الوجهة.
+    assert "${CANONICAL_ORIGIN}/:path*" in config

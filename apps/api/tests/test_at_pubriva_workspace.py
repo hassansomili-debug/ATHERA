@@ -66,36 +66,7 @@ def test_the_product_name_is_never_written_beside_the_catalog():
              json.loads((web / "messages" / "en.json").read_text(encoding="utf-8"))["app"]["name"],
              "ATHERA", "أثيرا"}
 
-    def code_lines(text: str):
-        """أسطر الشيفرة وحدها — **والتعليق يشرح ما أُزيل فلا يُحاسَب عليه**.
-
-        وحارسٌ يعاقب على شرحٍ صادق يُعطَّل ثم لا يحرس شيئًا. فتُتتبَّع حال
-        التعليق الكتلي سطرًا سطرًا بدل النظر إلى أول حرفٍ وحده.
-        """
-        in_block = False
-        for number, line in enumerate(text.splitlines(), 1):
-            rest, visible = line, ""
-            while rest:
-                if in_block:
-                    end = rest.find("*/")
-                    if end < 0:
-                        rest = ""
-                    else:
-                        rest, in_block = rest[end + 2:], False
-                else:
-                    start = rest.find("/*")
-                    slash = rest.find("//")
-                    if slash >= 0 and (start < 0 or slash < start):
-                        visible += rest[:slash]
-                        rest = ""
-                    elif start >= 0:
-                        visible += rest[:start]
-                        rest, in_block = rest[start + 2:], True
-                    else:
-                        visible += rest
-                        rest = ""
-            if visible.strip():
-                yield number, visible
+    from tests.tsscan import code_lines
 
     offenders = []
     for path in (web / "src").rglob("*.tsx"):

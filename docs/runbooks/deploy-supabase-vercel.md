@@ -123,7 +123,9 @@ NEXT_PUBLIC_API_BASE_URL=https://api.<نطاقك>
 بعد أول نشر، أضف نطاق Vercel إلى الـAPI:
 
 ```
-CORS_ALLOWED_ORIGINS=https://<المشروع>.vercel.app,https://<نطاقك المخصص>
+CORS_ALLOWED_ORIGINS=https://pubriva.com
+# النطاق القانوني وحده. وأسماء استضافة Vercel لا تُدرَج إلا نافذةَ
+# ترحيلٍ محدودة، وتُنزع بعدها — فما يُترك مسموحًا يبقى مسموحًا.
 ```
 
 نسيان هذا يعني واجهة تعمل ولا تصل إلى شيء. الافتراض هو `localhost` وحده
