@@ -99,8 +99,33 @@ STOPWORDS: Final = frozenset(_fold_all(_RAW_STOPWORDS))
 _ARTICLE_PREFIXES: Final = ("وال", "بال", "كال", "فال", "ال")
 
 
-def _strip_article(token: str) -> str:
+# **جذورٌ تبدأ بـ«وال» ولا واوَ عطفٍ فيها.**
+#
+# الشرطُ الموضعي يحمي أوّل اللفظ، ولا يحمي وسطه: «دور والدين في التحصيل»
+# تُنتج «دين». والعائلة صغيرة ومغلقة — كلُّ ما اشتُقّ من «والد» — فتُستثنى
+# بسابقةٍ واحدة لا بقائمة صيغ.
+#
+# وهذه معالجةٌ صرفيةٌ محافظة لا مُحلِّل صرفيّ: ما لم يُذكر هنا يبقى على
+# القاعدة العامة، وذلك حدٌّ معلومٌ لا عيبٌ مستور.
+_WAW_IS_RADICAL: Final = ("والد",)
+
+
+def _strip_article(token: str, *, leading: bool = False) -> str:
+    """ينزع سابقة التعريف، والواوَ العاطفة معها — **بشرط موضعها**.
+
+    و«وال» وحدها مشروطةٌ بألّا يكون الرمز أوّلَ اللفظ: الواو العاطفة لا
+    تبدأ عبارة، فما بدأ بها فواوُه من أصل الكلمة. ولولا هذا الشرط لصارت
+    «والدين» ← «دين»، فيُقرأ بناءٌ عن الوالدين بناءً عن التديّن — وهما
+    موضوعان لا يجمعهما شيء، ولا شيء في الشاشة يشتكي.
+
+    وبقيّةُ السوابق («ال» و«بال» و«كال» و«فال») لا يقع فيها هذا اللبس،
+    فتُنزع حيث وقعت.
+    """
+    if token.startswith(_WAW_IS_RADICAL):
+        return token
     for prefix in _ARTICLE_PREFIXES:
+        if prefix == "وال" and leading:
+            continue
         if (token.startswith(prefix)
                 and len(token) - len(prefix) >= MIN_TERM_LENGTH):
             return token[len(prefix):]
@@ -118,8 +143,8 @@ def term_forms(text: str | None) -> dict[str, str]:
     if not text:
         return out
     cleaned = _DIACRITICS.sub("", unicodedata.normalize("NFKC", text))
-    for raw in _WORD.findall(cleaned):
-        token = _strip_article(normalize(raw))
+    for position, raw in enumerate(_WORD.findall(cleaned)):
+        token = _strip_article(normalize(raw), leading=position == 0)
         if len(token) >= MIN_TERM_LENGTH and token not in STOPWORDS:
             out.setdefault(token, raw)
     return out

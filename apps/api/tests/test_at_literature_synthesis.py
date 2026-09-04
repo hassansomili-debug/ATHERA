@@ -1476,6 +1476,59 @@ async def test_a_decided_candidate_must_name_its_author(two_tenants):
 
 @requires_db
 @pytest.mark.asyncio
+async def test_the_database_accepts_the_review_state_it_is_meant_to_allow(two_tenants):
+    """**القيد يرفض ما يجب رفضه، ولا يرفض الحال المقصودة.**
+
+    القيدُ الأول كان `(status = 'generated') = (decided_by IS NULL)` بصيغةٍ
+    تمنع «يحتاج مراجعة» أصلًا — فكل وسمٍ بها يسقط بـ`IntegrityError`،
+    والدورةُ المشروعة `generated → needs_review → approved` مقطوعةٌ عند
+    خطوتها الوسطى. وفحصُ الخدمة لا يراها: القيد في القاعدة وحدها.
+
+    فيُثبَت الطرفان معًا على PostgreSQL حقيقية: بصاحبٍ ووقتٍ تُقبل، وبلا
+    صاحبٍ تُرفض. وإثباتُ الرفض وحده لا يكفي — حارسٌ يرفض كلَّ شيء يمرّ في
+    فحصٍ يختبر الرفض فقط.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+
+    from athera_api.db import tenant_session
+    from athera_api.models.synthesis import GapCandidate
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    project = await _seed_project(tid, "بحث المراجعة")
+
+    def _candidate(**over):
+        base = dict(
+            tenant_id=tid, project_id=project, gap_type="context_gap",
+            description_ar="وصف", why_suggested_ar="سبب", sources_considered=3,
+            search_scope={"indexes_searched": ["crossref"]},
+            source_scope_distribution={}, known_limitations_ar="حدود",
+            strength="weak_signal", generation_method="deterministic",
+            generated_at=_now())
+        base.update(over)
+        return GapCandidate(**base)
+
+    # ١) «يحتاج مراجعة» بصاحبها ووقتها — تُقبل.
+    async with tenant_session(tid, uid) as session:
+        session.add(_candidate(status="needs_review", decided_by=uid, decided_at=_now()))
+        await session.flush()
+    async with tenant_session(tid, uid) as session:
+        rows = (await session.execute(
+            select(GapCandidate).where(GapCandidate.project_id == project,
+                                       GapCandidate.status == "needs_review"))).scalars().all()
+        assert len(rows) == 1, "القاعدة رفضت الحال المقصودة"
+        assert rows[0].decided_by == uid
+
+    # ٢) وبلا صاحبٍ — تُرفض، فالمراجعة حكمُ إنسانٍ يُنسب إليه.
+    with pytest.raises(IntegrityError):
+        async with tenant_session(tid, uid) as session:
+            session.add(_candidate(status="needs_review"))
+            await session.flush()
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_a_gap_without_its_bounds_is_refused_by_the_database(two_tenants):
     """**فجوةٌ بلا حدودٍ معلنة دعوى** — والقاعدة ترفضها."""
     from sqlalchemy.exc import IntegrityError
@@ -1613,3 +1666,81 @@ def test_the_synthesis_routes_are_not_open_to_the_anonymous():
             answer = client.get(path)
             assert answer.status_code == 401, (
                 f"{path} ردّ {answer.status_code} على زائرٍ بلا هوية")
+
+
+# ══════════ التسوية العربية: تجمع ما هو واحد، ولا تخلط ما ليس واحدًا ══════════
+
+@pytest.mark.parametrize(("first", "second"), [
+    ("التدريب والأداء", "الأداء والتدريب"),
+    ("الأداء", "الاداء"),
+    ("الرِّضا الوظيفي", "الرضا الوظيفي"),
+])
+def test_two_writings_of_one_construct_set_meet(first, second):
+    """**الترتيب والتعريف والهمزة والتشكيل لا تصنع بناءين.**
+
+    ولولا ذلك لما تقابل بناءان مكتوبان بترتيبٍ مختلف أبدًا، ولخرج كاشفُ
+    التعارض صفرًا في كل مرّة — وهو أسوأ من ألّا يوجد: يقول «لا تعارض» عن
+    أدبياتٍ متعارضة.
+    """
+    from athera_api.services.synthesis.textual import terms
+
+    assert terms(first) == terms(second), f"{first!r} ≠ {second!r}"
+
+
+@pytest.mark.parametrize(("first", "second"), [
+    ("التدريب", "الأداء"),
+    ("الأداء التنظيمي", "الأداء المالي"),
+    ("التدريب والأداء", "الأداء المالي"),
+    ("الرضا الوظيفي", "الرضا عن الحياة"),
+])
+def test_two_different_constructs_do_not_meet(first, second):
+    """**واشتراكُ كلمةٍ ليس اتحادًا.** ولو ساوينا بينهما لصار كلُّ ما يذكر
+    «الأداء» بناءً واحدًا، ولأنتج الكاشفُ تعارضاتٍ بين دراساتٍ لا تتحدث عن
+    الشيء نفسه — وهو اختلاقٌ لا كشف."""
+    from athera_api.services.synthesis.textual import terms
+
+    assert terms(first) != terms(second), f"{first!r} == {second!r}"
+
+
+@pytest.mark.parametrize("word", ["وظيفي", "والدين", "ولاء", "وزارة", "وثائق", "وعي"])
+def test_a_word_whose_stem_begins_with_waw_is_not_mangled(word):
+    """**الواو العاطفة تُنزع، وواوُ الأصل لا تُمسّ.**
+
+    ونزعُ كل واوٍ في أوّل كلمة يجعل «وظيفي» ← «ظيفي» و«والدين» ← «دين»،
+    فيُقرأ بناءٌ عن الوالدين بناءً عن التديّن. فالنزع مشروطٌ بلحاق «ال»،
+    وبألّا يكون الرمز أوّل اللفظ، وبألّا يكون من عائلة «والد».
+    """
+    from athera_api.services.synthesis.textual import term_forms
+
+    keys = set(term_forms(word))
+    assert keys, f"{word!r} سقطت كلها"
+    for key in keys:
+        assert key.startswith("و"), f"{word!r} فقدت واوها: {key!r}"
+
+
+def test_the_conjunction_is_still_stripped_where_it_is_a_conjunction():
+    """والشرطُ الموضعي لا يُعطّل القاعدة: «والأداء» وسطَ اللفظ عطفٌ يُنزع."""
+    from athera_api.services.synthesis.textual import terms
+
+    assert terms("الرضا والأداء") == terms("الأداء والرضا")
+    assert "اداء" in terms("الرضا والأداء")
+
+
+def test_the_normalizer_misses_the_indefinite_conjunction_and_says_so():
+    """**حدٌّ معلومٌ خيرٌ من قاعدةٍ تفسد.**
+
+    الواو تُنزع بشرط لحاق «ال». فـ«والتدريب» تلتقي «التدريب»، و«وتدريب»
+    — واوُ عطفٍ على نكرة — لا تلتقي «تدريب».
+
+    والعلاج الظاهر أن تُنزع كلُّ واوٍ في أوّل كلمة، وهو يفسد «وظيفي» و«ولاء»
+    و«وعي»: أسماءٌ واوها من أصلها. فتُفوَّت مطابقةٌ صحيحة ولا تُختلق مطابقةٌ
+    كاذبة — وفي المقارنة العلمية، الجمعُ الخاطئ بين بناءين أضرُّ من تفويت
+    جمعٍ صحيح.
+
+    والفحص يثبّت الحدّ ليبقى مرئيًّا: من وسّع القاعدة يومًا سيسقط هنا،
+    فيقرأ لماذا كانت ضيّقة.
+    """
+    from athera_api.services.synthesis.textual import terms
+
+    assert terms("التدريب والأداء") == terms("الأداء والتدريب")
+    assert terms("أداء وتدريب") != terms("التدريب والأداء")
