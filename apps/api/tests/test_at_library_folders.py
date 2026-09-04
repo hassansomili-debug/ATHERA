@@ -147,6 +147,48 @@ def test_moving_a_file_writes_nothing_but_its_folder():
             f"مسار النقل يذكر {forbidden!r} — والنقل تنظيمٌ لا حالُ دليل")
 
 
+def test_nothing_in_the_library_surface_destroys_anything_permanently():
+    """**الإتلاف الدائم مؤجَّل — والتأجيل يُحرَس أو يُنقض بلا أن يُلاحظ.**
+
+    و«حذف» في كل مسارٍ هنا نقلٌ إلى سلّة: الكائن باقٍ في المخزن، والصفّ
+    باقٍ بكل حقوله، وربطُه ببحوثه باقٍ. والإتلاف الحقيقي قرارٌ ثانٍ لا
+    يقع بأثرٍ جانبي، ولا يُبنى حتى تُحلّ شروطه كلها: رسمُ التبعيات، وتحذيرٌ
+    صادق، وأثرُ الروابط، وحفظُ الإسناد، وتنظيفُ التخزين، وسلوكُ التعويض عند
+    الفشل، والتدقيق. فما دام واحدٌ منها غير محلول، بقاؤه مؤجَّلًا هو
+    الصواب — لا نقصًا يُسدّ على عجل.
+
+    والحارس يقرأ السطح كله: لا مسار `DELETE`، ولا حذفَ صفٍّ، ولا حذفَ
+    كائنٍ من المخزن إلا في مسارٍ واحد: تعويضُ رفعٍ سقطت قاعدتُه بعد نجاح
+    تخزينه — وذلك إزالةُ كائنٍ يتيم لا وجود لصفٍّ يدّعيه، لا إتلافُ ملفٍ
+    يملكه أحد.
+    """
+    import inspect
+
+    from athera_api.routers import files as files_router
+    from athera_api.routers import folders as folders_router
+    from athera_api.routers import library_bulk as bulk_router
+
+    for module in (files_router, folders_router, bulk_router):
+        for route in module.router.routes:
+            methods = getattr(route, "methods", set()) or set()
+            assert "DELETE" not in methods, (
+                f"مسارُ إتلافٍ في {module.__name__}: {route.path}")
+
+    for module in (folders_router, bulk_router):
+        source = inspect.getsource(module)
+        for forbidden in ("session.delete", "store.delete", "DELETE FROM"):
+            assert forbidden not in source, (
+                f"{module.__name__} يذكر {forbidden!r} — والإتلاف قرارٌ مؤجَّل")
+
+    # وفي موجّه الملفات موضعٌ واحد يحذف من المخزن، وهو التعويض بعينه.
+    deletes = [name for name, endpoint in vars(files_router).items()
+               if callable(endpoint) and getattr(endpoint, "__module__", "")
+               == files_router.__name__
+               and "store().delete" in inspect.getsource(endpoint)]
+    assert deletes == ["upload_file"], (
+        f"حذفٌ من المخزن في غير مسار التعويض: {deletes}")
+
+
 def test_the_cycle_check_is_locked_before_it_is_checked():
     """الفحصُ ثم الكتابة بلا قفلٍ يمرّ عليه نقلان متزامنان فيصنعان حلقة.
 
