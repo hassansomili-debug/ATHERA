@@ -108,6 +108,30 @@ def upgrade() -> None:
     op.create_check_constraint(
         "page_number_only_from_full_text", "literature_matrix_cells",
         "evidence_page IS NULL OR (source_scope = 'full_text' AND evidence_page > 0)")
+
+    # ── ٣. الاستخراج الحتمي يُسمّى باسمه، لا «نموذجًا» ──
+    #
+    # **نسبةٌ خاطئة أسوأ من نسبةٍ ناقصة.** الاستخراج المضاف هنا حتميّ: قواعد
+    # ودلائل لفظية، لا نموذج لغوي. وكان يُكتب `model` ليشمله قيدُ «ما كتبته
+    # آلة لا يعتمد نفسه» — إذ كان القيد يذكر `model` وحده. فيقرأ الباحث،
+    # وقارئُ التدقيق بعده، أن نموذجًا لغويًّا قال هذه القيمة، وهو لم يقلها.
+    #
+    # والثابتُ العلمي ليس «`model` لا يعتمد نفسه» بل **«ما كتبته آلةٌ لا
+    # يعتمد نفسه»**. فيتّسع القيد لِما يصفه، وتُسمّى الطريقة بما هي:
+    # `researcher` إنسان، و`metadata` بياناتٌ وصفية يقينية، و`deterministic`
+    # استخراجٌ بقواعد، و`model` نموذجٌ لغوي — أربعةٌ يفرّق بينها من يدقّق.
+    op.drop_constraint("ck_literature_matrix_cells_extraction_method",
+                       "literature_matrix_cells", type_="check")
+    op.create_check_constraint(
+        "extraction_method", "literature_matrix_cells",
+        "extraction_method IN ('researcher', 'metadata', 'deterministic', 'model')")
+
+    op.drop_constraint("ck_literature_matrix_cells_model_value_is_not_self_approved",
+                       "literature_matrix_cells", type_="check")
+    op.create_check_constraint(
+        "machine_needs_human_approval", "literature_matrix_cells",
+        "extraction_method NOT IN ('deterministic', 'model') "
+        "OR verification_status = 'unverified' OR verified_by IS NOT NULL")
     op.create_check_constraint(
         "section_only_from_full_text", "literature_matrix_cells",
         "evidence_section IS NULL OR source_scope = 'full_text'")
@@ -152,6 +176,19 @@ def downgrade() -> None:
 
     فيُطلب القرار أولًا — كما في 0016 و0020 و0022 و0023.
     """
+    # يُعاد القيدان إلى صيغتهما في 0023 قبل إسقاط الأعمدة.
+    op.drop_constraint("ck_literature_matrix_cells_machine_needs_human_approval",
+                       "literature_matrix_cells", type_="check")
+    op.create_check_constraint(
+        "model_value_is_not_self_approved", "literature_matrix_cells",
+        "extraction_method <> 'model' OR verification_status = 'unverified' "
+        "OR verified_by IS NOT NULL")
+    op.drop_constraint("ck_literature_matrix_cells_extraction_method",
+                       "literature_matrix_cells", type_="check")
+    op.create_check_constraint(
+        "extraction_method", "literature_matrix_cells",
+        "extraction_method IN ('researcher', 'metadata', 'model')")
+
     bind = op.get_bind()
 
     cited = bind.execute(sa.text(

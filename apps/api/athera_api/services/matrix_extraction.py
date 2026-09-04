@@ -653,9 +653,14 @@ async def extract_for_source(session: AsyncSession, *, tenant_id: uuid.UUID,
                 field_key=field_key, updated_by=actor_user_id)
             session.add(cell)
         cell.source_scope = scope.scope
-        # **ما لم يكتبه إنسان يبقى مرشَّحًا.** والقيد في القاعدة يمنع أن
-        # يُكتب معتمَدًا بلا مُعتمِدٍ يُسمّى — وهذا هو ما يُشمَل به.
-        cell.extraction_method = "model"
+        # **ما لم يكتبه إنسان يبقى مرشَّحًا** — والقيد في القاعدة يمنع أن
+        # يُكتب معتمَدًا بلا مُعتمِدٍ يُسمّى.
+        #
+        # والطريقة تُسمّى بما هي: هذا استخراجٌ **حتميّ** بقواعد ودلائل لفظية،
+        # لا نموذجٌ لغوي. وكان يُكتب `model` ليشمله القيد حين كان يذكر
+        # `model` وحده — فيقرأ الباحث أن نموذجًا قال القيمة وهو لم يقلها.
+        # فاتّسع القيد في 0024 ليشمل كل ما كتبته آلة، وصار الاسم صادقًا.
+        cell.extraction_method = "deterministic"
         cell.verification_status = "unverified"
         cell.verified_by, cell.verified_at = None, None
         cell.updated_by = actor_user_id
@@ -690,9 +695,13 @@ async def extract_for_source(session: AsyncSession, *, tenant_id: uuid.UUID,
     return outcome
 
 
+#: ما تكتبه آلة — يُراجَع ولا يعتمد نفسه. والقيد في القاعدة يذكرهما معًا.
+MACHINE_METHODS: frozenset[str] = frozenset({"deterministic", "model"})
+
+
 def _is_replaceable(cell: LiteratureMatrixCell) -> bool:
     """خليةٌ تجوز إعادةُ كتابتها آليًّا: كتبها آليٌّ ولم يحكم فيها إنسان."""
-    return (cell.extraction_method == "model"
+    return (cell.extraction_method in MACHINE_METHODS
             and cell.verification_status == "unverified")
 
 

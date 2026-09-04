@@ -611,13 +611,21 @@ def test_metadata_only_yields_no_reading_at_all():
 
 
 def test_everything_the_platform_writes_stays_a_candidate():
-    """`needs_review` و`unverified` و`model` — والقيد في القاعدة يشملها."""
+    """`needs_review` و`unverified` — والقيد في القاعدة يشملها.
+
+    **والطريقة تُسمّى بما هي.** كان يُكتب `model` ليشمله قيدُ «ما كتبته آلة
+    لا يعتمد نفسه» حين كان القيد يذكر `model` وحده. وهذا استخراجٌ حتميّ
+    بقواعد، لا نموذجٌ لغوي — فيقرأ الباحث، وقارئُ التدقيق بعده، أن نموذجًا
+    قال القيمة وهو لم يقلها. فاتّسع القيد في 0024 ليشمل ما كتبته آلة كائنًا
+    ما كانت، وصار الاسم صادقًا.
+    """
     import inspect
 
     from athera_api.services import matrix_extraction as mx
 
     source = inspect.getsource(mx.extract_for_source)
-    assert 'cell.extraction_method = "model"' in source
+    assert 'cell.extraction_method = "deterministic"' in source
+    assert '"model"' not in source, "الاستخراج الحتمي يُنسب إلى نموذج"
     assert 'cell.verification_status = "unverified"' in source
     assert 'cell.cell_state = "needs_review"' in source
     assert "cell.verified_by, cell.verified_at = None, None" in source
@@ -630,16 +638,22 @@ def test_a_researcher_cell_is_never_overwritten_by_a_machine_reading():
 
     mine = LiteratureMatrixCell(extraction_method="researcher",
                                 verification_status="unverified")
-    approved = LiteratureMatrixCell(extraction_method="model",
+    approved = LiteratureMatrixCell(extraction_method="deterministic",
                                     verification_status="approved")
-    rejected = LiteratureMatrixCell(extraction_method="model",
+    rejected = LiteratureMatrixCell(extraction_method="deterministic",
                                     verification_status="rejected")
-    fresh = LiteratureMatrixCell(extraction_method="model",
+    fresh = LiteratureMatrixCell(extraction_method="deterministic",
                                  verification_status="unverified")
     assert _is_replaceable(mine) is False
     assert _is_replaceable(approved) is False
     assert _is_replaceable(rejected) is False
     assert _is_replaceable(fresh) is True
+    # وما يكتبه نموذجٌ لغوي يومًا يخضع للحكم نفسه — السجلّ واحد.
+    from athera_api.services.matrix_extraction import MACHINE_METHODS
+
+    assert MACHINE_METHODS == frozenset({"deterministic", "model"})
+    assert _is_replaceable(LiteratureMatrixCell(
+        extraction_method="model", verification_status="unverified")) is True
 
 
 def test_a_page_number_is_never_derived_from_a_chunk_index():
@@ -1363,3 +1377,23 @@ async def test_the_matrix_of_one_project_never_reads_another_project_s_cell(
     method = next(cell for cell in rows[0].cells if cell.field_key == "method")
     assert method.cell_state == "missing"
     assert method.value_ar is None
+
+
+def test_the_guard_names_the_machine_not_one_of_its_kinds():
+    """**الثابتُ العلمي: ما كتبته آلةٌ لا يعتمد نفسه.**
+
+    وكان القيد يذكر `model` وحده، فاضطُرّ الاستخراج الحتمي أن يسمّي نفسه
+    نموذجًا ليدخل تحته — نسبةٌ خاطئة اشتُريت بها حمايةٌ صحيحة. والصواب أن
+    يتّسع القيد لِما يصفه، فتُسمّى كل طريقةٍ بما هي.
+    """
+    import pathlib
+
+    m = (pathlib.Path(__file__).resolve().parents[2] / "infra" / "db" / "migrations"
+         / "versions" / "0024_matrix_intelligence.py").read_text(encoding="utf-8")
+    assert "machine_needs_human_approval" in m, "القيد ما زال باسم نوعٍ واحد"
+    assert "extraction_method NOT IN ('deterministic', 'model')" in m, (
+        "القيد لا يشمل ما كتبته آلة كائنًا ما كانت")
+    assert "'researcher', 'metadata', 'deterministic', 'model'" in m, (
+        "المفردات لا تفرّق بين الحتمي والنموذج")
+    # واسمُ القيد دون حدّ الاسم في PostgreSQL — وقد بُتر اسمٌ من قبل فسقط التنازل.
+    assert len("ck_literature_matrix_cells_machine_needs_human_approval") <= 63
