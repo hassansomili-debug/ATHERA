@@ -1554,15 +1554,28 @@ async def test_permanent_deletion_previews_its_dependencies_then_refuses(
         assert error["messages"]["ar"].strip() and error["messages"]["en"].strip()
 
     # **والبحث باقٍ كما هو** — والوقف ليس إتلافًا مؤجَّلًا.
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     from athera_api.db import tenant_session
+    from athera_api.models.audit import AuditEvent
     from athera_api.models.portfolio import ResearchProject
 
     async with tenant_session(tid, uid) as session:
         row = (await session.execute(select(ResearchProject).where(
             ResearchProject.id == project_id))).scalar_one_or_none()
         assert row is not None, "بحثٌ أُتلف رغم أن الإتلاف موقوف"
+
+        # **ولا حدثَ تدقيقٍ نصفَ مكتوب.**
+        #
+        # `tenant_session` تُرجع المعاملة عند أيّ استثناء، فحدثٌ يُكتب قبل
+        # `raise` يُمحى بالرفض نفسه. وكان الموجّه يكتب واحدًا — فيبقى السطر
+        # يوهم أنّ المحاولة مسجَّلة، ولا صفَّ في القاعدة. فحُذف، ويُثبَّت
+        # الغياب هنا كي لا يعود سطرٌ يدّعي أثرًا لا يقع.
+        written = (await session.execute(
+            select(func.count(AuditEvent.id)).where(
+                AuditEvent.tenant_id == tid,
+                AuditEvent.object_id == project_id))).scalar_one()
+        assert written == 0, "حدثُ تدقيقٍ كُتب في معاملةٍ مرفوضة ثمّ أُرجع"
 
 
 @requires_db

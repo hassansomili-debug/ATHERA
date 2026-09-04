@@ -921,15 +921,15 @@ async def permanent_delete(
     preview = await _deletion_preview(session, principal, project_id)
     call = retention.verdict()
 
-    await audit.record(
-        session, tenant_id=principal.tenant_id,
-        action="project_management.permanent_delete_refused",
-        object_type="research_project", object_id=project_id,
-        actor_user_id=principal.user_id,
-        state_after={"reason": call.reason,
-                     "dependent_rows": preview.total_dependent_rows},
-        reason=("permanent deletion is refused while no enforceable retention "
-                "policy exists; scientific lineage is never destroyed on a guess"))
+    # **ولا حدثَ تدقيقٍ يُكتب هنا — وهذا مقصودٌ لا سهو.**
+    #
+    # `tenant_session` تفتح المعاملة وتُرجعها عند أيّ استثناء. فحدثٌ يُكتب
+    # قبل `raise` يُمحى بالرفض نفسه: يبقى السطر في الشيفرة يوهم أنّ الرفض
+    # مسجَّل، ولا صفَّ في القاعدة. **وسطرٌ يدّعي أثرًا لا يقع أسوأ من غيابه**،
+    # لأن من يبحث عن المحاولة بعد شهرٍ يصدّق الشيفرة ولا يجد شيئًا.
+    #
+    # ويوم يُرفع الوقف، يقع الإتلاف والحدثُ في معاملةٍ واحدة تُختم معًا —
+    # وذاك موضعُ الحدث الصحيح.
 
     if call.is_blocked:
         raise AtheraError(
