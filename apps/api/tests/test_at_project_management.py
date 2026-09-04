@@ -1392,12 +1392,24 @@ async def test_a_signed_in_researcher_drives_the_whole_chain_over_http(two_tenan
         assert event["followed_the_suggestion"] is True
 
         # ── والعودة إلى مرحلةٍ سابقة تُقبل وتُسمّى بما هي ──
+        #
+        # ويُعتمد مَعْلَمُ المرحلة أولًا ليكون **هناك اقتراحٌ يُخالَف**:
+        # فمخالفةُ اقتراحٍ لم يوجد ليست مخالفة، والحقل يقول `null` حينها
+        # لا `false` — وهو الصدق: لا يُقال «خالف» عمّن لم يُعرَض عليه شيء.
+        assert (await client.put(f"{base}/milestones/literature_review_completed",
+                                 json={"completed": True})).status_code == 200
+        offered = (await client.get(f"{base}/stage")).json()["suggestion"]
+        assert offered["stage"] == "gap_problem"
+
         back = await client.post(f"{base}/stage/confirm", json={
             "stage": "idea", "note_ar": "أعدتُ صياغة الفكرة"})
         assert back.status_code == 200, back.text
         history = (await client.get(f"{base}/stage/history")).json()
-        assert history["events"][-1]["is_return_to_earlier_stage"] is True
-        assert history["events"][-1]["followed_the_suggestion"] is False
+        returned = history["events"][-1]
+        assert returned["is_return_to_earlier_stage"] is True
+        # **والمنصّة اقترحت التقدّم، والباحث عاد — ويُحفظ الأمران معًا.**
+        assert returned["system_suggested_stage"] == "gap_problem"
+        assert returned["followed_the_suggestion"] is False
 
         # ── الخطُّ الزمني ──
         planned = await client.patch(f"{base}/plan", json={
