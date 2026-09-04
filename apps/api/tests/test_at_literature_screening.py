@@ -42,6 +42,15 @@ def _migration_text() -> str:
     return MIGRATION.read_text(encoding="utf-8")
 
 
+def _later_migrations_text() -> str:
+    """ما كُتب بعد 0023 — لأن الجدول يُمدّ ولا يُعاد إنشاؤه."""
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(MIGRATION.parent.glob("0*.py"))
+        if path.name > MIGRATION.name
+    )
+
+
 # ═════════════════ اختبارات خالصة: ما يُقرأ بلا قاعدة ═════════════════
 
 def test_the_migration_forces_row_level_security_not_merely_enables_it():
@@ -88,13 +97,18 @@ def test_the_migration_has_a_real_downgrade_that_refuses_to_erase_a_judgement():
 
 
 def test_the_model_and_the_migration_agree_column_by_column():
-    """عمودٌ في النموذج لا يقابله عمودٌ في الترحيل يسقط في الإنتاج وحده."""
+    """عمودٌ في النموذج لا يقابله عمودٌ في الترحيل يسقط في الإنتاج وحده.
+
+    والجدول يُمدّ بترحيلاتٍ لاحقة، فتُقرأ **كلّها**: قصرُ الفحص على الترحيل
+    الذي أنشأ الجدول يجعل كل عمودٍ يُضاف بعده يمرّ بلا مقابلة — وهو بالضبط
+    العطب الذي أُنشئ هذا الفحص ليمنعه.
+    """
     from athera_api.models.screening import LiteratureMatrixCell
 
-    text = _migration_text()
+    text = _migration_text() + _later_migrations_text()
     for column in LiteratureMatrixCell.__table__.columns:
         assert f'"{column.name}"' in text, (
-            f"العمود {column.name!r} في النموذج ولا وجود له في الترحيل 0023")
+            f"العمود {column.name!r} في النموذج ولا وجود له في أي ترحيل")
 
 
 def _migration_module():
@@ -384,17 +398,28 @@ def test_the_matrix_reads_included_sources_only():
 
 def test_the_decision_is_written_in_one_place_only():
     """**لا حقيقة موازية.** مسارٌ ثانٍ يكتب حال الاستعمال يصنع شاشتين
-    تفترقان: واحدةٌ تشترط سبب الاستبعاد وأخرى لا تشترطه."""
+    تفترقان: واحدةٌ تشترط سبب الاستبعاد وأخرى لا تشترطه.
+
+    وقد صار للفرز مساران في الـAPI — قرارٌ مفرد ودفعة على عشرين مرجعًا.
+    فالكاتب واحدٌ لهما: `screening.apply_decision`. ولو كتب أحدهما الحال
+    بنفسه لسمحت الدفعة يومًا بما يمنعه الفرد — وهي التي تقع على عشرين.
+    """
     import inspect
 
     from athera_api.routers import workspace as router
+    from athera_api.services import screening
 
     source = inspect.getsource(router)
     # الإسناد وحده يُعدّ: `==` مقارنةٌ تقرأ ولا تكتب.
-    writes = re.findall(r"\.use_state\s*=(?![=<>])", source)
+    assert not re.findall(r"\.use_state\s*=(?![=<>])", source), (
+        "المسار يكتب حال الاستعمال بنفسه — والكاتب واحدٌ في الخدمة")
+    writes = re.findall(r"\.use_state\s*=(?![=<>])",
+                        inspect.getsource(screening))
     assert len(writes) == 1, (
         f"حال الاستعمال تُكتب في {len(writes)} موضعًا — والموضع الواحد شرط")
     assert "exclusion_needs_reason" in source
+    # والدفعة تشترط السبب كالفرد سواء — لا استثناء لأنها كثيرة.
+    assert source.count("workspace.exclusion_needs_reason") == 2
 
 
 def test_a_model_extracted_value_never_writes_itself_approved():
@@ -865,6 +890,19 @@ async def test_a_review_without_a_named_reviewer_is_refused(two_tenants):
                 field_key="theory", value_ar="نظرية الحِمل المعرفي",
                 cell_state="known", source_scope="abstract_only",
                 extraction_method="model", verification_status="approved",
+                updated_by=a["user_id"]))
+            await session.flush()
+
+    # **والاستخراج الحتمي يخضع للحكم نفسه.** وُسّع القيد في 0024 ليشمل ما
+    # كتبته آلةٌ كائنًا ما كانت، لا `model` وحده — فلو بقي ضيّقًا لدخلت
+    # قيمةٌ حتمية معتمَدةً بلا مُعتمِدٍ يُسمّى، وهي معرفةٌ بلا صاحب.
+    with pytest.raises(IntegrityError):
+        async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+            session.add(LiteratureMatrixCell(
+                tenant_id=a["tenant_id"], project_id=project, source_id=source,
+                field_key="design", value_ar="شبه تجريبي",
+                cell_state="known", source_scope="abstract_only",
+                extraction_method="deterministic", verification_status="approved",
                 updated_by=a["user_id"]))
             await session.flush()
 
