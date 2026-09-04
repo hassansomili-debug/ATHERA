@@ -31,3 +31,6 @@ build/
 
 # بيئة افتراضية محلية للتحقق | local verification venv
 .venv*
+
+# أدواتُ الوكلاء المحلّية — لا تُدفع
+.claude/
