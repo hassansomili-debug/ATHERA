@@ -79,6 +79,23 @@ def _parsed_folder(folder_id: str | None) -> uuid.UUID | None:
         raise NotFound("library.folder_not_found") from exc
 
 
+async def _writable_folder(session: AsyncSession, principal: Principal,
+                           folder_id: uuid.UUID) -> None:
+    """المجلَّد قائمٌ في هذا المستأجر، وللباحث منحةُ كتابةٍ عليه — **وإلا فلا**.
+
+    **وموضعٌ واحد يقول ذلك لكل مسارٍ يضع ملفًا في مجلَّد.** الرفعُ المباشر
+    والنيّةُ الموقّعة والختمُ والنقلُ أربعةُ أبواب إلى الحقل نفسه؛ ولو كتب
+    كلٌّ منها فحصه لافترقت الأربعة بأول تعديل، فيُحرَس بابٌ ويُنسى ثلاثة.
+
+    والرموز تُقال كما هي: مجلَّدٌ لا وجود له — أو لمستأجرٍ آخر فالعزل يمنع
+    رؤيته أصلًا — يردّ 404، ومجلَّدٌ يراه الباحث ولا يملكه يردّ 403. ولا
+    يصعد من هنا خطأٌ مجهول يصير 500 عند الحافّة.
+    """
+    await library.get_folder(session, tenant_id=principal.tenant_id, folder_id=folder_id)
+    await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
+                                     FOLDER_OBJECT_TYPE, folder_id, "write")
+
+
 def _folder_scope(folder: str | None) -> tuple[bool, uuid.UUID | None]:
     """(أيُقيَّد بمجلَّد؟، أيّ مجلَّد) — و`None` مع `True` تعني الجذر."""
     if folder is None:
@@ -191,7 +208,31 @@ async def init_upload(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> FileInitResponse:
+    """نيّةُ رفعٍ عبر رابطٍ موقّع — **والملف ينزل حيث يقف الباحث**.
+
+    **وكان ينزل في الجذر دائمًا.** هذا المسار لم يكن يعرف `folder_id`
+    أصلًا، بينما يعرفه الرفعُ المباشر؛ فمن رفع من داخل «كتب المنهج» بعميلٍ
+    يستعمل الرابط الموقّع وجد ملفه في جذر المكتبة، ولا رسالةَ ولا سبب.
+    وكان البديل الوحيد نقلًا ثانيًا بعد الختم: طلبٌ زائد على كل رفع، ونافذةٌ
+    يظهر فيها الملف في غير موضعه، وسقوطٌ صامت لو فشل النقل بعد نجاح الرفع.
+
+    **والفحص هنا لا عند الختم وحده.** الوجهة تُفحص **قبل** أن يُصدر الخادم
+    رابطًا موقّعًا: فرفضٌ بعد أن يبثّ الباحث كتابه إلى المخزن هو الوعد
+    يُقطع بعد أن دُفع ثمنه. والصفّ يُكتب بموضعه في المعاملة نفسها التي
+    فُحص فيها المجلَّد.
+
+    **ومن ذلك يلزم أثرٌ حسن:** المجلَّد الذي فيه رفعٌ معلَّق لا يُحذف —
+    `trash_folder` يعدّ الملفات القائمة فيه ومنها المعلَّق، فيردّ
+    `library.folder_not_empty`. فلا يُختم رفعٌ في مجلَّدٍ صار في السلّة
+    بينما كان الباحث يبثّ.
+
+    **ولا يمسّ المجلَّدُ مفتاحَ التخزين.** المفتاح يُبنى من المستأجر
+    ومعرّف الملف، ولا يُحشر فيه مسارٌ: الموضع صفٌّ في القاعدة، والمفتاح
+    عنوانُ كائنٍ يشير إليه كلُّ رابطٍ موقّع وكلُّ سجلّ إسناد.
+    """
     storage.validate_upload(payload.content_type, payload.size_bytes)
+    if payload.folder_id is not None:
+        await _writable_folder(session, principal, payload.folder_id)
 
     file_id = uuid.uuid4()
     key = storage.build_storage_key(principal.tenant_id, file_id, payload.filename)
@@ -206,6 +247,7 @@ async def init_upload(
         is_untrusted_content=True,  # §33.3 — محتوى الملفات بيانات لا تعليمات.
         status="pending",
         uploaded_by=principal.user_id,
+        folder_id=payload.folder_id,
     )
     session.add(record)
     await session.flush()
@@ -227,7 +269,8 @@ async def init_upload(
         object_type="file",
         object_id=file_id,
         actor_user_id=principal.user_id,
-        state_after={"filename": payload.filename, "classification": payload.classification},
+        state_after={"filename": payload.filename, "classification": payload.classification,
+                     "folder_id": str(payload.folder_id) if payload.folder_id else None},
         request_id=principal.request_id,
         ip_address=principal.ip_address,
     )
@@ -237,6 +280,7 @@ async def init_upload(
         upload_url=storage.presign_put(key, payload.content_type),
         storage_key=key,
         expires_in=settings.s3_presign_ttl_seconds,
+        folder_id=payload.folder_id,
     )
 
 
@@ -247,13 +291,31 @@ async def complete_upload(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
+    """ختمُ الرفع الموقّع — **والموضع الذي أُعلن عند النيّة هو الذي يستقرّ**.
+
+    **والسكوتُ يُبقي، لا يُلغي.** جسمٌ بلا `folder_id` — وهو كل عميلٍ كُتب
+    قبل هذا التغيير — يترك الملف حيث أعلنت النيّة أنه سينزل. ولو عومل
+    الغياب معاملة «الجذر» لسحب كلُّ عميلٍ قديم ملفَّه إلى الجذر عند الختم،
+    فيصير المسار يعِد بموضعٍ ثم ينقضه في آخر خطوة.
+
+    وذكرُ الحقل صراحةً قولٌ أخير: الباحث غيّر وجهته بين النيّة والختم،
+    فيُفحص المجلَّد الجديد كما فُحص الأول — وجودًا ومستأجرًا ومنحة.
+
+    **ولا يتغيّر `storage_key` هنا ولا هناك.** سجلّ الإسناد أدناه يذكره
+    موضعًا للأصل، والمجلَّد لا يعدّل فيه حرفًا.
+    """
     record = (await session.execute(select(File).where(File.id == file_id,
                                             File.tenant_id == principal.tenant_id))).scalar_one_or_none()
     if record is None:
         raise NotFound("file.not_found")
     await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
                                      "file", file_id, "write")
+    if payload.folder_named and payload.folder_id is not None:
+        await _writable_folder(session, principal, payload.folder_id)
 
+    before_folder = record.folder_id
+    if payload.folder_named:
+        record.folder_id = payload.folder_id
     record.checksum_sha256 = payload.checksum_sha256
     record.status = "stored"
     record.completed_at = dt.datetime.now(dt.UTC)
@@ -278,8 +340,10 @@ async def complete_upload(
         object_type="file",
         object_id=file_id,
         actor_user_id=principal.user_id,
-        state_before={"status": "pending"},
-        state_after={"status": "stored", "checksum_sha256": payload.checksum_sha256},
+        state_before={"status": "pending",
+                      "folder_id": str(before_folder) if before_folder else None},
+        state_after={"status": "stored", "checksum_sha256": payload.checksum_sha256,
+                     "folder_id": str(record.folder_id) if record.folder_id else None},
         request_id=principal.request_id,
     )
     return FileResponse.model_validate(record, from_attributes=True)
@@ -441,11 +505,7 @@ async def upload_file(
     try:
         async with tenant_session(principal.tenant_id, principal.user_id) as session:
             if target_folder is not None:
-                await library.get_folder(session, tenant_id=principal.tenant_id,
-                                         folder_id=target_folder)
-                await rbac.require_object_action(
-                    session, principal.tenant_id, principal.user_id,
-                    FOLDER_OBJECT_TYPE, target_folder, "write")
+                await _writable_folder(session, principal, target_folder)
             record = File(
                 id=file_id,
                 tenant_id=principal.tenant_id,
@@ -595,10 +655,7 @@ async def move_file(
     """
     record = await _owned_file(session, principal, file_id, "write")
     if payload.folder_id is not None:
-        await library.get_folder(session, tenant_id=principal.tenant_id,
-                                 folder_id=payload.folder_id)
-        await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
-                                         FOLDER_OBJECT_TYPE, payload.folder_id, "write")
+        await _writable_folder(session, principal, payload.folder_id)
 
     before = record.folder_id
     record.folder_id = payload.folder_id
