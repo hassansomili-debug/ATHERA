@@ -17,6 +17,11 @@ from typing import Any
 # تصديره هنا لمن اعتاده. ونسختان منه تعنيان قاعدتَي قبولٍ تفترقان يومًا:
 # مُعرّفٌ يقبله الاستيراد ويرفضه البحث، فيُتّهم المنتج بأنه «لا يجد» ما
 # استورده هو نفسه.
+# وترويسةُ الهويّة واحدة كذلك: Crossref وOpenAlex يشترطان في أدب استعمالهما
+# هويّةً وجهةَ اتصال في **كل** طلب. وكان الاستيراد يمضي بلا ترويسة ما لم
+# يُضبط بريد — أي أنّ أكثر النشرات تطلب مجهولةً، وأول ما يُحجب المجهول
+# يسقط الاستيراد بلا أن يعرف أحد لماذا.
+from ...discovery.base import USER_AGENT
 from ...discovery.normalize import DOI_PATTERN as DOI_PATTERN  # noqa: PLC0414
 from ...discovery.normalize import normalize_doi as normalize_doi  # noqa: PLC0414
 
@@ -105,7 +110,9 @@ class OpenAlexRegistry(SourceRegistry):
 
         if self._mailto:
             params = {**params, "mailto": self._mailto}
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=self._timeout, headers={"User-Agent": USER_AGENT}
+        ) as client:
             response = await client.get(f"{self.BASE_URL}{path}", params=params)
             if response.status_code == 404:
                 raise SourceNotFound(path)
@@ -157,8 +164,10 @@ class CrossrefRegistry(SourceRegistry):
     async def _get(self, path: str, params: dict[str, Any]) -> dict:
         import httpx  # noqa: PLC0415
 
-        headers = {"User-Agent": f"ATHERA/0.1 (mailto:{self._mailto})"} if self._mailto else {}
-        async with httpx.AsyncClient(timeout=self._timeout, headers=headers) as client:
+        agent = USER_AGENT + (f" mailto:{self._mailto}" if self._mailto else "")
+        async with httpx.AsyncClient(
+            timeout=self._timeout, headers={"User-Agent": agent}
+        ) as client:
             response = await client.get(f"{self.BASE_URL}{path}", params=params)
             if response.status_code == 404:
                 raise SourceNotFound(path)
