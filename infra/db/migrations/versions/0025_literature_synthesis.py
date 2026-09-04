@@ -45,15 +45,15 @@ RLS تحمي بين المستأجرين ولا تحمي بين بحثين في 
 **بمفتاحٍ مركّب** `(parent_id, project_id)`: سندُ موضوعٍ لا يمكن أن يشير
 إلى خليةٍ من بحثٍ آخر، لا لأن الخدمة تصفّي، بل لأن القاعدة ترفض.
 
-Revision ID: 0024
+Revision ID: 0025
 """
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
-revision = "0024"
-down_revision = "0023"
+revision = "0025"
+down_revision = "0024"
 branch_labels = None
 depends_on = None
 

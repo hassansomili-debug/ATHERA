@@ -33,7 +33,7 @@ from tests.conftest import requires_db
 REPO = pathlib.Path(__file__).resolve().parents[3]
 WEB = REPO / "apps" / "web"
 MIGRATION = (REPO / "infra" / "db" / "migrations" / "versions"
-             / "0024_literature_synthesis.py")
+             / "0025_literature_synthesis.py")
 SCREEN = WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
 PAGES = ("themes", "contradictions", "gaps", "research-opportunities")
 
@@ -125,10 +125,16 @@ def test_the_migration_indexes_the_reads_the_screens_actually_make():
         assert index in text, f"قراءةٌ معروضة بلا فهرس: {index}"
 
 
-def test_the_migration_is_additive_and_follows_0023():
+def test_the_migration_is_additive_and_follows_the_matrix():
+    """**رقمٌ واحد لا يحمله ترحيلان.**
+
+    كُتب هذا الترحيل `0024` وكُتب ترحيل ذكاء المصفوفة `0024` كذلك — وهما
+    فرعان متوازيان. ولو دُمج الاثنان لصار لألمبيك رأسان، ولتوقّف ترحيل
+    الإنتاج كلّه. فذكاء المصفوفة يملك `0024`، والتركيب يليه `0025`.
+    """
     module = _migration_module()
-    assert module.revision == "0024"
-    assert module.down_revision == "0023"
+    assert module.revision == "0025"
+    assert module.down_revision == "0024"
     text = _migration_text()
     # لا `drop_column` ولا `drop_table` في الصعود — الترحيل يُضيف ولا يهدم.
     upgrade = text.split("def upgrade()")[1].split("def downgrade()")[0]
