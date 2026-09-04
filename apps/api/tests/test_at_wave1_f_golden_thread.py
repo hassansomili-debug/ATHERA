@@ -438,10 +438,19 @@ async def _seed_woven_project(tid: uuid.UUID, uid: uuid.UUID,
                             role="independent",
                             operational_definition_ar="مجموع درجات المقياس",
                             appears_in_title=True)
-        # متغيّر البناء الثاني بلا تعريف إجرائي ولا أداة.
+        # **متغيّر البناء الثاني له تعريفٌ إجرائي ولا أداة تقيسه** — وهذا
+        # بالضبط ما يُنتج التعارض: بحثٌ يُعلن أنّه يدرس بناءً، وأدواتُه
+        # المسجَّلة تقيس بُنًى أخرى.
+        #
+        # وأوّلُ صياغةٍ لهذه البذرة تركته بلا تعريفٍ إجرائي، فردّتها القاعدة
+        # بـ`ck_variable_construct_needs_operational_definition` (§16.1:
+        # متغيّرٌ مرتبط ببناءٍ بلا تعريفٍ إجرائي لا يُقاس، فلا يُقبل).
+        # **والقيد كان مُحقًّا والبذرةُ خاطئة**: كانت تطلب من القاعدة أن
+        # تخزّن حالةً يمنعها العلم، ثمّ تبني عليها دعوى.
         other = Variable(tenant_id=tid, project_id=project_id,
                          construct_id=unmeasured.id, name_ar="الالتزام",
-                         role="dependent")
+                         role="dependent",
+                         operational_definition_ar="مجموع درجات مقياس الالتزام")
         session.add_all([variable, other])
         await session.flush()
 
