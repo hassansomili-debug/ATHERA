@@ -116,6 +116,56 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "الملف غير موجود.",
         "en": "File not found.",
     },
+    # ── مجلَّدات المكتبة (الترحيل 0022) ──
+    #
+    # **الرسالة تقول ما يفعله الباحث الآن**، لا ما رفضه النظام فحسب. ومفتاحٌ
+    # تقنيّ بلا ترجمة يصل الباحث كما هو — وهو ليس رسالة.
+    "library.folder_not_found": {
+        "ar": "المجلَّد غير موجود.",
+        "en": "Folder not found.",
+    },
+    "library.folder_name_required": {
+        "ar": "اسم المجلَّد لا يكون فارغًا.",
+        "en": "A folder name cannot be empty.",
+    },
+    "library.folder_cycle": {
+        "ar": "لا يُنقل المجلَّد إلى نفسه ولا إلى مجلَّدٍ بداخله — "
+              "فذلك يقطع ما تحته عن مكتبتك.",
+        "en": "A folder cannot move into itself or into one of its own subfolders; "
+              "that would cut everything below it out of your library.",
+    },
+    "library.folder_depth_exceeded": {
+        "ar": "تجاوزتَ أقصى عمقٍ للمجلَّدات. اجعل التنظيم أقلّ تداخلًا.",
+        "en": "That exceeds the maximum folder depth. Use a flatter structure.",
+    },
+    "library.folder_not_empty": {
+        "ar": "المجلَّد ليس فارغًا. انقل ما فيه أو احذفه أولًا، ثم احذف المجلَّد.",
+        "en": "The folder is not empty. Move or delete what it holds first, then "
+              "delete the folder.",
+    },
+    "library.folder_in_trash": {
+        "ar": "هذا المجلَّد في سلّة المهملات.",
+        "en": "This folder is in the trash.",
+    },
+    "library.folder_not_in_trash": {
+        "ar": "هذا المجلَّد ليس في سلّة المهملات.",
+        "en": "This folder is not in the trash.",
+    },
+    "library.parent_in_trash": {
+        "ar": "المجلَّد الذي كان يحويه في سلّة المهملات. استعِده أولًا.",
+        "en": "The folder that held it is in the trash. Restore that folder first.",
+    },
+    "library.file_not_in_trash": {
+        "ar": "هذا الملف ليس في سلّة المهملات.",
+        "en": "This file is not in the trash.",
+    },
+    "library.file_linked_to_projects": {
+        "ar": "هذا الملف مرتبط ببحوثٍ قائمة، وحذفه يُخفيه عنها. "
+              "الحذف نقلٌ إلى السلّة ولا يُتلف شيئًا — أكّد إن أردت المتابعة.",
+        "en": "This file is linked to live projects, and deleting it hides it from "
+              "them. Deleting moves it to the trash and destroys nothing — confirm "
+              "to continue.",
+    },
     "file.checksum_mismatch": {
         "ar": "بصمة الملف لا تطابق المرفوع؛ لم يُعتمد الرفع.",
         "en": "Checksum mismatch; the upload was not accepted.",

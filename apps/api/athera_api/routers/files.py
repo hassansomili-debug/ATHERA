@@ -11,7 +11,7 @@ from time import perf_counter
 from fastapi import APIRouter, Depends, File as FormFile, Form, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -21,6 +21,8 @@ from ..errors import AtheraError, NotFound
 from ..models.audit import ProvenanceEvent
 from ..models.files import File, FileAccessLog
 from ..models.identity import ObjectGrant
+from ..models.library import FOLDER_OBJECT_TYPE, LibraryFolder
+from ..models.portfolio import ProjectFile
 from ..schemas.files import (
     FileCompleteRequest,
     FileDownloadResponse,
@@ -29,12 +31,22 @@ from ..schemas.files import (
     FileResponse,
     LibraryFile,
 )
-from ..services import audit, rbac, storage, workspace
+from ..schemas.library import FileMoveRequest, FileTrashView, TrashRequest
+from ..services import audit, library, rbac, storage, workspace
+from .folders import router as folders_router
 
 # مقطع الميجابايت: يوازن بين عدد الدورات وبصمة الذاكرة.
 CHUNK_BYTES = 1024 * 1024
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
+
+# **الضمّ هنا قبل كل شيء، لا في آخر الملف.** FastAPI يوفّق المسارات
+# بترتيب تسجيلها، و`GET /{file_id}` يسبق ما يُسجَّل بعده — فلو ضُمّ موجّه
+# المجلَّدات في الأسفل لالتقط `‎/api/v1/files/folders` مسارُ المعرّف أولًا،
+# وفشل تحويل «folders» إلى UUID، فيردّ 422 على قائمةٍ صحيحة. والترتيب هو
+# كل الفرق، ولا يظهر في أي اختبار وحدة يستدعي الدالّة مباشرةً.
+router.include_router(folders_router)
+
 settings = get_settings()
 
 
@@ -46,11 +58,46 @@ settings = get_settings()
 DEFAULT_PAGE = 25
 MAX_PAGE = 100
 
+# **الجذر يُطلب باسمه.** غيابُ `folder` يعني «كل الملفات» — وهو ما تحتاجه
+# قوائم الاختيار في شاشات أخرى، وما كان يفعله المسار قبل المجلَّدات. أمّا
+# `folder=root` فتعني جذر المكتبة وحده. ولو دلّ الغياب على الجذر لاختفت من
+# قوائم الاختيار كلُّ ورقةٍ نظّمها الباحث في مجلَّد — نقصٌ صامت لا رسالةَ له.
+ROOT = "root"
+
+
+def _parsed_folder(folder_id: str | None) -> uuid.UUID | None:
+    """معرّف مجلَّدٍ من نموذجٍ متعدّد الأجزاء — والفراغ جذرٌ لا خطأ.
+
+    `FormData` في المتصفح لا يعرف `null`؛ حقلٌ لم يُملأ يصل نصًّا فارغًا.
+    ولو عومل الفراغ خطأً لفشل كل رفعٍ من جذر المكتبة.
+    """
+    if not folder_id:
+        return None
+    try:
+        return uuid.UUID(folder_id)
+    except ValueError as exc:
+        raise NotFound("library.folder_not_found") from exc
+
+
+def _folder_scope(folder: str | None) -> tuple[bool, uuid.UUID | None]:
+    """(أيُقيَّد بمجلَّد؟، أيّ مجلَّد) — و`None` مع `True` تعني الجذر."""
+    if folder is None:
+        return False, None
+    if folder == ROOT:
+        return True, None
+    try:
+        return True, uuid.UUID(folder)
+    except ValueError as exc:
+        raise NotFound("library.folder_not_found") from exc
+
 
 @router.get("", response_model=list[LibraryFile])
 async def list_files(
     limit: int = Query(default=DEFAULT_PAGE, ge=1, le=MAX_PAGE),
     after: uuid.UUID | None = Query(default=None),
+    folder: str | None = Query(default=None,
+                               description="root للجذر، أو معرّف مجلَّد، أو لا شيء لكل الملفات"),
+    trash: bool = Query(default=False),
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[LibraryFile]:
@@ -80,13 +127,26 @@ async def list_files(
     نازلًا: `created_at` وحده لا يفصل ملفَّين رُفعا في المعاملة نفسها، فيتكرّر
     ملفٌ في صفحتين أو يسقط بينهما. ومؤشّرٌ إلى ملفٍ حُذف بين صفحتين يعطي
     صفحةً فارغة — لا خطأً: الحذف واقعةٌ مشروعة، وإعادة الفتح تصلحها.
+
+    **والمجلَّد شرطٌ في العبارة نفسها، لا مرشِّحٌ بعدها.** `folder_id` عمودٌ
+    مفهرس مع `(tenant_id, created_at, id)`، فالصفحة تُقتطع في القاعدة كما
+    كانت: عبارةٌ واحدة لكل صفحة مهما بلغ عدد المجلَّدات وعمقُها. ولا يُقرأ
+    مجلَّدٌ فرعيّ ولا تُحمَّل ذرّية — القائمة هي المجلَّد الحاليّ وحده.
+
+    **وما في السلّة ليس في المكتبة.** والقائمتان لا تختلطان: `trash=true`
+    تعرض المحذوف وحده، وهو الباب الذي تُستعاد منه الملفات.
     """
+    scoped, folder_id = _folder_scope(folder)
     page = (
         select(File)
-        .where(File.tenant_id == principal.tenant_id)
+        .where(File.tenant_id == principal.tenant_id,
+               File.trashed_at.is_not(None) if trash else File.trashed_at.is_(None))
         .order_by(File.created_at.desc(), File.id.desc())
         .limit(limit)
     )
+    if scoped and not trash:
+        page = (page.where(File.folder_id == folder_id) if folder_id is not None
+                else page.where(File.folder_id.is_(None)))
     if after is not None:
         anchor_created = (
             select(File.created_at)
@@ -107,20 +167,22 @@ async def list_files(
     rows = (await session.execute(
         select(window.c.id, window.c.original_filename, window.c.content_type,
                window.c.size_bytes, window.c.classification, window.c.status,
-               window.c.created_at, thesis_id, run_status, candidates, reviewed)
+               window.c.created_at, thesis_id, run_status, candidates, reviewed,
+               window.c.folder_id, window.c.trashed_at)
         .order_by(window.c.created_at.desc(), window.c.id.desc())
     )).all()
 
-    library: list[LibraryFile] = []
+    listing: list[LibraryFile] = []
     for row in rows:
         processing, seen, done, thesis = workspace.file_processing_state_of_row(
             row[7], row[8], row[9], row[10])
-        library.append(LibraryFile(
+        listing.append(LibraryFile(
             id=row[0], original_filename=row[1], content_type=row[2],
             size_bytes=row[3], classification=row[4], status=row[5],
             created_at=row[6], processing_status=processing,
-            thesis_id=thesis, candidates=seen, reviewed=done))
-    return library
+            thesis_id=thesis, candidates=seen, reviewed=done,
+            folder_id=row[11], trashed_at=row[12]))
+    return listing
 
 
 @router.post("", response_model=FileInitResponse, status_code=status.HTTP_201_CREATED)
@@ -290,6 +352,9 @@ def sha256_of(data: bytes) -> str:
 async def upload_file(
     upload: UploadFile = FormFile(...),
     classification: str = Form(default="C2"),
+    # **الملف ينزل حيث يقف الباحث.** والرفع إلى الجذر ثم نقلٌ ثانٍ يترك
+    # نافذةً يظهر فيها الملف في غير موضعه، ويكلّف طلبًا زائدًا على كل رفع.
+    folder_id: str | None = Form(default=None),
     principal: Principal = Depends(get_principal),
 ) -> FileResponse:
     """رفع يمرّ بالخادم لا بالمتصفح إلى التخزين.
@@ -305,6 +370,9 @@ async def upload_file(
     """
     declared = upload.content_type or "application/octet-stream"
     filename = upload.filename or "file"
+    # صيغةُ المعرّف تُفحص قبل بثّ بايت — وأمّا وجودُ المجلَّد والمنحةُ عليه
+    # فداخل المعاملة أدناه، حيث تُقرأ القاعدة أصلًا.
+    target_folder = _parsed_folder(folder_id)
 
     # النوع والامتداد أولًا: رفض مبكر قبل بثّ بايت واحد.
     storage.validate_type(declared, filename)
@@ -372,6 +440,12 @@ async def upload_file(
     # الكائن في التخزين، والصفّ في القاعدة.
     try:
         async with tenant_session(principal.tenant_id, principal.user_id) as session:
+            if target_folder is not None:
+                await library.get_folder(session, tenant_id=principal.tenant_id,
+                                         folder_id=target_folder)
+                await rbac.require_object_action(
+                    session, principal.tenant_id, principal.user_id,
+                    FOLDER_OBJECT_TYPE, target_folder, "write")
             record = File(
                 id=file_id,
                 tenant_id=principal.tenant_id,
@@ -385,6 +459,7 @@ async def upload_file(
                 status="stored",
                 uploaded_by=principal.user_id,
                 completed_at=dt.datetime.now(dt.UTC),
+                folder_id=target_folder,
             )
             session.add(record)
             await session.flush()
@@ -472,3 +547,143 @@ async def stream_file(
             "Cache-Control": "private, no-store",
         },
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# تنظيم المكتبة: نقلٌ إلى مجلَّد، وحذفٌ هو نقلٌ إلى سلّة
+# ══════════════════════════════════════════════════════════════════════
+async def _owned_file(session: AsyncSession, principal: Principal,
+                      file_id: uuid.UUID, action: str) -> File:
+    record = (await session.execute(select(File).where(
+        File.id == file_id, File.tenant_id == principal.tenant_id))).scalar_one_or_none()
+    if record is None:
+        raise NotFound("file.not_found")
+    await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
+                                     "file", file_id, action)
+    return record
+
+
+async def _active_project_links(session: AsyncSession, principal: Principal,
+                                file_id: uuid.UUID) -> int:
+    return (await session.execute(
+        select(func.count(ProjectFile.id)).where(
+            ProjectFile.tenant_id == principal.tenant_id,
+            ProjectFile.file_id == file_id,
+            ProjectFile.state == ProjectFile.ACTIVE)
+    )).scalar_one()
+
+
+@router.post("/{file_id}/move", response_model=FileResponse)
+async def move_file(
+    file_id: uuid.UUID,
+    payload: FileMoveRequest,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """نقلُ ملفٍّ إلى مجلَّد — و`folder_id: null` تعيده إلى الجذر.
+
+    **وهذا كلُّ ما يقع: عمودٌ واحد يتغيّر.**
+
+    ولا يُمسّ `storage_key`. المفتاح يُبنى مرّة عند الرفع، وتشير إليه
+    الروابط الموقّعة وسجلّ `provenance` موضعًا للأصل — فنقلُ الكائن في
+    المخزن مع كل تغيير مجلَّد يكسر الاثنين، ولا يشتري شيئًا: المجلَّد صفٌّ
+    في القاعدة لا مسارٌ في نظام ملفات.
+
+    ولا يُمسّ ربطُ الملف ببحث، ولا حالُ استعمال مصدره، ولا اعتمادُ مرشّحٍ
+    استُخرج منه، ولا استشهادٌ بُني عليه. **فالمجلَّد تنظيمٌ لا حالُ دليل**،
+    ومن رتّب مكتبته لا يجوز أن يجد ورقته وقد فقدت سندها.
+    """
+    record = await _owned_file(session, principal, file_id, "write")
+    if payload.folder_id is not None:
+        await library.get_folder(session, tenant_id=principal.tenant_id,
+                                 folder_id=payload.folder_id)
+        await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
+                                         FOLDER_OBJECT_TYPE, payload.folder_id, "write")
+
+    before = record.folder_id
+    record.folder_id = payload.folder_id
+    await session.flush()
+
+    await audit.record(
+        session, tenant_id=principal.tenant_id, action="library.file_moved",
+        object_type="file", object_id=file_id, actor_user_id=principal.user_id,
+        state_before={"folder_id": str(before) if before else None},
+        state_after={"folder_id": str(payload.folder_id) if payload.folder_id else None},
+        reason="a folder change is organisation only: storage key, project links and "
+               "evidence state are untouched",
+        request_id=principal.request_id, ip_address=principal.ip_address)
+    return FileResponse.model_validate(record, from_attributes=True)
+
+
+@router.post("/{file_id}/trash", response_model=FileTrashView)
+async def trash_file(
+    file_id: uuid.UUID,
+    payload: TrashRequest,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> FileTrashView:
+    """«حذف» ملفٍّ = نقلُه إلى السلّة. **ولا يُتلَف شيء هنا.**
+
+    الكائن باقٍ في المخزن، والصفّ باقٍ بكل حقوله، وربطُه ببحوثه باقٍ كما
+    هو — والاستعادة ترجعه كما كان. والإتلاف الحقيقي قرارٌ ثانٍ مستقل لا
+    يقع بأثرٍ جانبي لهذا المسار، ولا يُبنى إلا بعد أن يُقال للباحث ما
+    ينكسر: `unlink ≠ delete` فلسفةُ المنصّة، لا رأيًا في هذه الشاشة.
+
+    **ويُقال ما يترتّب قبل أن يقع، لا بعده.** ملفٌّ مرتبط ببحوث يختفي من
+    مكتبة صاحبه، فيُردّ 409 بعدد البحوث التي تستعمله، ولا يمضي إلا بإقرارٍ
+    صريح. والتحذير الصامت — أو الذي لا يُذكر فيه عدد — ليس تحذيرًا.
+    """
+    record = await _owned_file(session, principal, file_id, "delete")
+    links = await _active_project_links(session, principal, file_id)
+    if links and not payload.confirm:
+        raise AtheraError("library.file_linked_to_projects", status_code=409,
+                          projects=links)
+    if record.trashed_at is None:
+        record.trashed_at = dt.datetime.now(dt.UTC)
+        record.trashed_by = principal.user_id
+        await session.flush()
+
+    await audit.record(
+        session, tenant_id=principal.tenant_id, action="library.file_trashed",
+        object_type="file", object_id=file_id, actor_user_id=principal.user_id,
+        state_before={"trashed_at": None},
+        state_after={"trashed_at": "now", "project_links": links},
+        reason="deleting a file moves it to the trash; the object, the row and its "
+               "project links all survive",
+        request_id=principal.request_id, ip_address=principal.ip_address)
+    return FileTrashView(id=file_id, trashed_at=record.trashed_at, project_links=links)
+
+
+@router.post("/{file_id}/restore", response_model=FileResponse)
+async def restore_file(
+    file_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """استعادةٌ من السلّة إلى **موضعها الأول**، لا إلى الجذر.
+
+    ومجلَّدٌ في السلّة يوقف الاستعادة برسالةٍ تقول ما يلزم فعله. والبديل —
+    إعادةٌ صامتة إلى الجذر — تنقل الملف من حيث تركه صاحبه بلا أن يُقال له،
+    فيبحث عنه حيث كان فلا يجده، ويظنّ الاستعادة فشلت.
+    """
+    record = await _owned_file(session, principal, file_id, "write")
+    if record.trashed_at is None:
+        raise AtheraError("library.file_not_in_trash", status_code=409)
+    if record.folder_id is not None:
+        folder = (await session.execute(select(LibraryFolder).where(
+            LibraryFolder.id == record.folder_id,
+            LibraryFolder.tenant_id == principal.tenant_id))).scalar_one_or_none()
+        if folder is None or folder.trashed_at is not None:
+            raise AtheraError("library.parent_in_trash", status_code=409)
+
+    record.trashed_at = None
+    record.trashed_by = None
+    await session.flush()
+
+    await audit.record(
+        session, tenant_id=principal.tenant_id, action="library.file_restored",
+        object_type="file", object_id=file_id, actor_user_id=principal.user_id,
+        state_before={"trashed_at": "set"}, state_after={"trashed_at": None},
+        reason="the trash is a waiting room; restoring returns the file where it was",
+        request_id=principal.request_id, ip_address=principal.ip_address)
+    return FileResponse.model_validate(record, from_attributes=True)

@@ -43,6 +43,8 @@ class FileResponse(BaseModel):
     status: str
     created_at: dt.datetime
     completed_at: dt.datetime | None
+    # موضعُ الملف في المكتبة — `None` هو الجذر (الترحيل 0022).
+    folder_id: uuid.UUID | None = None
 
 
 class FileDownloadResponse(BaseModel):
@@ -71,3 +73,7 @@ class LibraryFile(BaseModel):
     thesis_id: uuid.UUID | None = None
     candidates: int = 0
     reviewed: int = 0
+    # **موضعٌ لا حال.** `folder_id` يقول أين وضع الباحث الملف في مكتبته،
+    # ولا يقول شيئًا عن كونه دليلًا ولا عن ربطه ببحث. و`None` هو الجذر.
+    folder_id: uuid.UUID | None = None
+    trashed_at: dt.datetime | None = None
