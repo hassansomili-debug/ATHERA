@@ -844,6 +844,10 @@ def test_the_approval_is_read_from_its_contract_not_from_translated_prose():
     assert "data-review-approved" in code, "الاعتماد لا يُقاس برقمٍ لا يلتبس"
     assert 'filter({ hasText: field }).first()' not in code, "البطاقة تُلتمس باسمها ثانيةً"
     assert "decide=[" in code, "حالُ نداء القرار لا تُذكر مع الإخفاق"
+    # **وطلبٌ لم يصل ليس طلبًا لم يُرسَل.** `response` لا يقع على طلبٍ أُجهض
+    # أو مُنع، فيبدو كأن النقرة لم تحدث — وهما عطبان مختلفان وعلاجان مختلفان.
+    assert 'page.on("requestfailed"' in code, "الطلب المُجهَض لا يُرصد"
+    assert "failed=[" in code, "الإجهاض لا يُذكر مع الإخفاق"
 
 
 def test_the_library_keeps_reading_state_while_work_is_running():

@@ -737,7 +737,8 @@
     "valuePlaceholder": "اكتب القيمة الصحيحة",
     "statusUnknownHint": "راجعتَه ولم تحسمه — ويمكنك العودة إليه متى شئت.",
     "revisit": "أعِد النظر",
-    "tallyLine": "معتمَد {approved} · مرفوض {rejected} · لا أعرف {unknown} · بانتظارك {pending}"
+    "tallyLine": "معتمَد {approved} · مرفوض {rejected} · لا أعرف {unknown} · بانتظارك {pending}",
+    "knownNotClaimed": "قرأها النظام من بيانات الملف نفسه — معلومة معروفة لا تحتاج تصديقك."
   },
   "publicationPlanning": {
     "advisory": "للمراجعة",
