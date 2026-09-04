@@ -500,6 +500,22 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "يوجد تنبيه تداخل لم يُحسم؛ يلزم الدمج أو تبرير معتمد.",
         "en": "An unresolved overlap alert exists; a merge or an approved justification is required.",
     },
+    # ── Wave 1-C: حدودُ إعادة المعالجة تُقال بلغة الباحث ──
+    "thesis.processing_in_flight": {
+        "ar": "المعالجة جارية على هذه الرسالة الآن؛ انتظر انتهاءها قبل طلب إعادتها.",
+        "en": "This thesis is being processed right now; wait for it to finish before asking again.",
+    },
+    # **حدٌّ يُعلَن ولا يُخفى خلف زرٍّ يخذل.** إعادة قراءة مستندٍ ممسوح
+    # ضوئيًّا تُنتج النتيجة نفسها حرفًا بحرف ما دام لا OCR.
+    "thesis.retry_needs_ocr": {
+        "ar": "المستند ممسوح ضوئيًّا بلا طبقة نصّ؛ إعادة القراءة لن تغيّر شيئًا "
+              "ما دامت القراءة الضوئية (OCR) غير متاحة.",
+        "en": "The document is scanned with no text layer; rereading changes nothing "
+              "while OCR is unavailable.",
+    },
+    "thesis.unknown_view": {
+        "ar": "خيار العرض غير معروف.", "en": "Unknown listing view.",
+    },
     "publishing.manuscript_not_found": {
         "ar": "المخطوطة غير موجودة.", "en": "Manuscript not found.",
     },
@@ -749,6 +765,37 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     },
     "trends.novelty_already_decided": {
         "ar": "بُتّ في فحص الجدة مسبقًا.", "en": "This novelty check was already decided.",
+    },
+    # ── إدارة المشروع البحثي (Wave1-B) ──
+    "project_management.project_not_found": {
+        "ar": "البحث غير موجود أو خارج نطاق صلاحيتك.",
+        "en": "Project not found or outside your scope.",
+    },
+    "project_management.project_not_in_trash": {
+        "ar": "هذا البحث ليس في السلّة — والإتلاف الدائم يسبقه نقلٌ إليها.",
+        "en": "This project is not in the trash; permanent deletion is preceded "
+              "by moving it there.",
+    },
+    "project_management.task_not_found": {
+        "ar": "المهمّة غير موجودة في هذا البحث.",
+        "en": "That task does not exist in this project.",
+    },
+    "project_management.member_not_in_project": {
+        "ar": "لا تُسنَد المهمّة إلا إلى عضوٍ في فريق هذا البحث.",
+        "en": "A task can only be assigned to a member of this project's team.",
+    },
+    "project_management.milestone_unknown": {
+        "ar": "مَعْلَمٌ غير معروف.",
+        "en": "Unknown milestone.",
+    },
+    "project_management.permanent_delete_blocked": {
+        "ar": "الإتلاف الدائم موقوف: لا سياسةَ احتفاظٍ قابلةً للتنفيذ في هذا "
+              "النظام، فلا يُتلَف ما لا تُعرف مشروعيّة إتلافه. والبحث باقٍ في "
+              "السلّة ويمكن استعادته كما هو.",
+        "en": "Permanent deletion is blocked: this system has no enforceable "
+              "retention policy, so nothing is destroyed whose destruction cannot "
+              "be shown to be lawful. The project stays in the trash and can be "
+              "restored unchanged.",
     },
     "validation.failed": {
         "ar": "البيانات المُرسلة غير صالحة.",

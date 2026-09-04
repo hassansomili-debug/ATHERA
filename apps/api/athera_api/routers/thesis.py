@@ -9,15 +9,15 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.files import File
 from ..models.portfolio import ResearchProject
-from ..models.research import ExtractionRun, ResearcherProfile
+from ..models.research import ResearcherProfile
 from ..models.thesis import (
     AuthorshipParty,
     CreditRoleAssignment,
@@ -47,8 +47,8 @@ from ..schemas.thesis import (
     ThesisResponse,
 )
 from ..services import audit
-from ..services.parsing import UnsupportedDocument, parse
-from ..services.thesis import aging, miner, overlap, rights, vocab
+from ..services.parsing import NoTextLayer, UnsupportedDocument, parse
+from ..services.thesis import aging, miner, overlap, processing, rights, vocab
 
 router = APIRouter(prefix="/api/v1", tags=["thesis"])
 
@@ -168,12 +168,51 @@ async def create_thesis(
         state_after={"degree": payload.degree, "rights_basis": payload.rights_basis},
         reason="thesis registered; rights basis is a claim, not an approval (§23.2)",
     )
-    return ThesisResponse(
-        id=thesis.id, title=_pick(principal.locale, thesis.title_ar, thesis.title_en),
-        title_ar=thesis.title_ar, degree=thesis.degree, defended_on=thesis.defended_on,
-        data_collected_on=thesis.data_collected_on, rights_basis=thesis.rights_basis,
-        parsed_at=None, sections_extracted=0, opportunities_found=0,
-    )
+    # اسمُ الملفّ يُقرأ حين يوجد ملفّ وحده — رحلةٌ واحدة في مسارٍ نادر، ولا
+    # تُقرأ في مسار التسجيل اليدوي الذي لا ملفّ فيه.
+    filename = None
+    if payload.file_id is not None:
+        filename = (await session.execute(
+            select(File.original_filename).where(
+                File.id == payload.file_id, File.tenant_id == principal.tenant_id)
+        )).scalar_one_or_none()
+    return _card(thesis, principal.locale, source_filename=filename,
+                 sections=0, opportunities=0)
+
+
+async def _remember_failure(
+    principal: Principal, thesis_id: uuid.UUID, *, state: str, code: str,
+    detail: str, action: str, reason: str, text_layer: str | None = None,
+) -> None:
+    """يكتب سببَ الفشل **في معاملةٍ مستقلّة تنجو من رفض الطلب**.
+
+    **وهذا ليس زخرفًا.** `tenant_session` تفتح معاملةَ الطلب وتُرجعها عند
+    أيّ استثناء؛ فكتابةُ الحال في معاملة الطلب ثمّ رفعُ ٤٢٢ تمحو الكتابة
+    وتُبقي الرسالة على حالها القديمة — والباحث يرى رسالة خطأٍ عابرة، ثم
+    يُحدّث الصفحة فتقول له البطاقة «٠ أقسام» بلا سبب. **وهو العطب بعينه.**
+
+    فتُفتح جلسةٌ ثانية قصيرة تكتب الحال والتدقيق وتُودِع، ثمّ يُرفع الخطأ.
+    والموجّه لا يختم معاملةً لا يملكها: `tenant_session` هي التي تختم
+    معاملتها هي، وهو النمط نفسه المستعمل في `_process` لتسجيل فشلٍ بعد
+    سقوط معاملةٍ أخرى.
+
+    **ولا تُنقل هنا رسالةُ استثناءٍ تحمل نصّ المستند**: الرمز صنفُ العطب،
+    والتفصيل صنفُ الاستثناء ورسالته مقصوصة — وكلاهما تشغيليّ لا محتوًى.
+    """
+    from ..db import tenant_session  # noqa: PLC0415 — يتجنّب استيرادًا دائريًا
+
+    async with tenant_session(principal.tenant_id, principal.user_id) as failure:
+        await processing.mark(
+            failure, tenant_id=principal.tenant_id, thesis_id=thesis_id,
+            state=state, failure_code=code, failure_detail=detail[:500],
+            text_layer=text_layer)
+        await audit.record(
+            failure, tenant_id=principal.tenant_id, action=action,
+            object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
+            state_after={"processing_state": state, "failure_code": code,
+                         "ocr_state": processing.OCR_UNAVAILABLE},
+            reason=reason,
+        )
 
 
 @router.post("/theses/{thesis_id}/parse", response_model=ParseResponse,
@@ -202,7 +241,22 @@ async def parse_thesis(
 
     try:
         chunks = parse(await _load_bytes(record), record.content_type, record.original_filename)
+    except NoTextLayer as exc:
+        # **مستندٌ ممسوح ضوئيًّا يُسمَّى باسمه، ولا يُترك «نوعًا غير مدعوم».**
+        await _remember_failure(
+            principal, thesis_id, state=processing.TEXT_LAYER_MISSING,
+            code="text_layer_missing", detail=str(exc),
+            text_layer=processing.TEXT_LAYER_ABSENT,
+            action="thesis.text_layer_missing",
+            reason="scanned document detected; OCR is not available and none was performed")
+        raise AtheraError("thesis.retry_needs_ocr", status_code=422,
+                          detail=str(exc)) from exc
     except UnsupportedDocument as exc:
+        await _remember_failure(
+            principal, thesis_id, state=processing.FAILED,
+            code="unsupported_document", detail=f"{type(exc).__name__}: {exc}",
+            action="thesis.parse_failed",
+            reason="the parser cannot read this file type; the reason is recorded, not swallowed")
         raise AtheraError("ingestion.unsupported_document", status_code=422,
                           detail=str(exc)) from exc
 
@@ -229,6 +283,20 @@ async def parse_thesis(
         sections += 1
 
     thesis.parsed_at = dt.datetime.now(dt.UTC)
+
+    # **تفكيكٌ نجح يُثبت أنّ طبقة النصّ موجودة** — فتُكتب، ولا تبقى
+    # «لم تُفحص». وإن كانت الرسالة موسومةً بفشلٍ سابق فقد بطل وسمُه: صفٌّ
+    # يقول «تعذّرت القراءة» وقد قُرئ للتوّ تناقضٌ يُقرأ في الشاشة كذبًا.
+    # وما عدا ذلك تبقى الحال كما هي — **ولا تُقفز بوابة الإذن من هنا**:
+    # DIC2 حدٌّ مستقلّ لا يُمنَح بأثرٍ جانبي لعمليةٍ أخرى.
+    settled = (processing.READY_FOR_REVIEW
+               if thesis.processing_state in (*processing.FAILURE_STATES,
+                                              processing.UPLOADED)
+               else thesis.processing_state)
+    await processing.mark(
+        session, tenant_id=principal.tenant_id, thesis_id=thesis_id,
+        state=settled, text_layer=processing.TEXT_LAYER_PRESENT)
+
     results = (
         await session.execute(select(ThesisResult).where(ThesisResult.thesis_id == thesis_id))
     ).scalars().all()
@@ -294,6 +362,12 @@ async def mine_opportunities(
             status="discovered",
         ))
         created += 1
+
+    # **«لم يُنقَّب بعد» ليست «نُقِّب فلم يُوجد».** بدون هذا الختم الزمنيّ
+    # يصير الخبران رقمًا واحدًا: «٠ فرص» — وهو أقسى ما يُقال لباحثٍ لم
+    # يبدأ التنقيب أصلًا. ويُكتب **وإن كان `created == 0`**: فحصٌ وقع
+    # ولم يجد واقعةٌ يجب أن تُسجَّل، لا صمتٌ يُقرأ نتيجة.
+    thesis.opportunities_mined_at = dt.datetime.now(dt.UTC)
     await session.flush()
 
     await audit.record(
@@ -600,47 +674,262 @@ async def convert_to_project(
     return _opportunity_response(opportunity, principal.locale)
 
 
+# ═════════════════ قائمة الرسائل: صدقٌ، وهويّة، وحدٌّ ═════════════════
+#
+# **ثلاثةُ عيوبٍ كانت في هذه النقطة الواحدة.**
+#
+# ١ **رصّةُ بطاقاتٍ لا يفرّق بينها شيء.** خمسُ رسائل مرفوعة تُعرض خمسَ
+#   بطاقاتٍ متطابقة تقول «لم يُستخرَج العنوان بعد» — بلا اسم ملفّ، فلا
+#   يعرف الباحث أيَّها ملفُّه.
+#
+# ٢ **«٠ أقسام · ٠ فرص» بلا سبب.** ستُّ حالاتٍ تُنتج هذا السطر ومعناها
+#   مختلف تمامًا، وأخطرُها أن يُقرأ فشلٌ نتيجةً صفرية: «حلّلنا رسالتك ولم
+#   نجد فيها شيئًا» بينما الذي وقع أنّ القراءة سقطت.
+#
+# ٣ **استعلامان لكلّ رسالة، بلا سقف.** الصياغة السابقة تقرأ كلّ رسائل
+#   المستأجر ثم تسأل القاعدة عن أقسام **كلّ رسالة** وفرصها على حدة. والـAPI
+#   في سنغافورة والقاعدة في مومباي: كلُّ عبارةٍ رحلةٌ بنحو ٣٣٠ مللي ثانية.
+#   عشرون رسالة ⇐ إحدى وأربعون رحلة ⇐ ثلاث عشرة ثانية من الشبكة وحدها،
+#   تزيد طردًا مع كلّ رسالةٍ تُرفع. **فالباحث يُعاقَب على استعماله المنتج.**
+#
+# والعلاج للثالث هو علاج المكتبة نفسه (`routers/files.py`): صفحةٌ تُقتطع
+# **في القاعدة** أولًا، ثم تُشتقّ أعدادُ ما فيها وحده باستعلاماتٍ فرعية
+# مرتبطة — **عبارةٌ واحدة مهما بلغ عدد الرسائل**.
+
+DEFAULT_PAGE = 25
+MAX_PAGE = 100
+
+#: عرضان مجمَّعان فوق الحالات المفردة — **ومفردةٌ واحدة لا معاملان**.
+#: ومعاملان يقولان الشيء نفسه أوّلُ طريقٍ إلى تصفيتين تفترقان.
+GROUPED_VIEWS: dict[str, tuple[str, ...]] = {
+    # الفشل حالان لا واحدة: سقوطٌ، ومستندٌ بلا طبقة نصّ. والباحث يبحث
+    # عن «ما لم ينجح» فيجدهما معًا.
+    "failed": processing.FAILURE_STATES,
+    "awaiting_action": (processing.AWAITING_CONSENT, processing.READY_FOR_REVIEW),
+}
+
+#: «الأحدث» ليست تصفية بل الترتيب الافتراضي — وتُقبل صراحةً لأنّ الشاشة
+#: تعرضها زرًّا، وزرٌّ يُرسل قيمةً يرفضها الخادم عطبٌ في المنتج.
+LISTING_VIEWS: tuple[str, ...] = (
+    ("all", "recent") + tuple(GROUPED_VIEWS) + processing.PROCESSING_STATES
+)
+
+
+def _view_predicate(view: str | None):
+    """شرطُ العرض في عبارة الصفحة نفسها — **ومجهولٌ يُردّ لا يُتجاهَل**.
+
+    وتجاهلُه أسوأ من ردّه: من ضغط «متعثّرة» فرأى رسائله كلّها ظنّ أنّها
+    كلّها متعثّرة. (وهي القاعدة نفسها المكتوبة في `library.unknown_filter`.)
+    """
+    if view is None or view in ("all", "recent"):
+        return None
+    if view in GROUPED_VIEWS:
+        return Thesis.processing_state.in_(GROUPED_VIEWS[view])
+    if view in processing.PROCESSING_STATES:
+        return Thesis.processing_state == view
+    raise AtheraError("thesis.unknown_view", status_code=422,
+                      views=" · ".join(LISTING_VIEWS))
+
+
+_LIKE_ESCAPE = "\\"
+
+
+def _escaped(term: str) -> str:
+    """`%` و`_` في يد الباحث حرفان لا محرفا بدل — وبحثٌ عن `%` لا يعيد كلَّ شيء."""
+    out = term.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+    return out.replace("%", f"{_LIKE_ESCAPE}%").replace("_", f"{_LIKE_ESCAPE}_")
+
+
+def _search_predicate(tenant_id: uuid.UUID, term: str | None):
+    """بحثٌ باسم الملفّ أو بالعنوان المستخرَج — **بشرطٍ واحد في العبارة**.
+
+    والاسم يُبحث لأنّ الرسالة قبل قراءتها لا عنوان لها: من رفع
+    `thesis-final-v3.pdf` ولمّا تُقرأ لا يجدها إلّا باسمها. و`EXISTS`
+    مرتبطٌ بصفّ الرسالة، لا قائمةُ معرّفاتٍ تُقرأ في عبارةٍ سابقة.
+    """
+    needle = (term or "").strip()
+    if not needle:
+        return None
+    pattern = f"%{_escaped(needle)}%"
+
+    def like(column):
+        return column.ilike(pattern, escape=_LIKE_ESCAPE)
+
+    named = (
+        select(File.id)
+        .where(File.tenant_id == tenant_id, File.id == Thesis.file_id,
+               like(File.original_filename))
+        .exists()
+    )
+    return or_(like(Thesis.title_ar), like(Thesis.title_en), named)
+
+
+_UNSET = object()
+
+
+def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
+          opportunities=_UNSET) -> ThesisResponse:
+    """بطاقةٌ واحدة — **والرقمُ فيها لا يخرج بلا سببه**.
+
+    ولا نسبةٌ مئوية ولا «٧٣٪ اكتمالًا»: خطُّ الأنابيب لا يقيس تقدّمًا، ورقمٌ
+    يُعرض بلا قياسٍ خلفه اختلاقٌ صغير يتكرّر في كلّ بطاقة.
+
+    و`row` صفُّ الصفحة أو كائنُ `Thesis` نفسه؛ والأعدادُ تُمرَّر صراحةً حين
+    لا يحملها الصفّ. **وصياغةٌ واحدة للبطاقة لا اثنتان** — فما يُعرض بعد
+    التسجيل هو ما يُعرض في القائمة حرفًا بحرف، ولا تفترقان بأول تعديل.
+    """
+    state = row.processing_state
+    sections = int(
+        (row.sections_extracted if sections is _UNSET else sections) or 0)
+    found = int(
+        (row.opportunities_found if opportunities is _UNSET else opportunities) or 0)
+    filename = row.source_filename if source_filename is _UNSET else source_filename
+
+    shown, extracted = processing.display_title(
+        row.title_ar, row.title_en, filename, locale)
+
+    sections_why = processing.section_outcome(state, sections)
+    opportunities_why = processing.opportunity_outcome(
+        state, found, row.opportunities_mined_at)
+
+    # **إعادةُ المحاولة تُعرض حيث تنفع وحدها**، ويُقال سببُ منعها حيث تُمنع.
+    can_retry = row.file_id is not None and state in processing.RETRYABLE
+    blocked = None
+    if not can_retry:
+        if state == processing.TEXT_LAYER_MISSING:
+            blocked = _pick(locale, *processing.FAILURE_LABELS["text_layer_missing"])
+        elif state in processing.IN_FLIGHT:
+            blocked = _pick(locale, *processing.STATE_LABELS[state])
+        elif row.file_id is None:
+            blocked = _pick(locale, "لا ملفّ مرفق بهذه الرسالة.",
+                            "No file is attached to this thesis.")
+
+    return ThesisResponse(
+        id=row.id,
+        title=_pick(locale, row.title_ar, row.title_en),
+        title_ar=row.title_ar,
+        degree=row.degree,
+        source_filename=filename,
+        display_title=shown,
+        title_is_extracted=extracted,
+        processing_state=state,
+        processing_state_label=_pick(locale, *processing.STATE_LABELS[state]),
+        processing_state_changed_at=row.processing_state_changed_at,
+        processing_attempts=int(row.processing_attempts or 0),
+        failure_code=row.failure_code,
+        failure_message=(_pick(locale, *processing.FAILURE_LABELS[row.failure_code])
+                         if row.failure_code else None),
+        can_retry=can_retry,
+        retry_blocked_reason=blocked,
+        text_layer_state=row.text_layer_state,
+        ocr_state=row.ocr_state,
+        # **ولا تُعلَن القراءة الضوئية متاحةً ما دامت غير متاحة.** والراية
+        # تُشتقّ من العمود لا من ثابتٍ في الشاشة، فيوم يصير OCR حقيقةً
+        # تتغيّر في موضعٍ واحد.
+        ocr_available=row.ocr_state != processing.OCR_UNAVAILABLE,
+        defended_on=row.defended_on,
+        data_collected_on=row.data_collected_on,
+        rights_basis=row.rights_basis,
+        parsed_at=row.parsed_at,
+        sections_extracted=sections,
+        sections_outcome=sections_why,
+        sections_outcome_label=_pick(
+            locale, *processing.SECTION_OUTCOME_LABELS[sections_why]),
+        opportunities_found=found,
+        opportunities_outcome=opportunities_why,
+        opportunities_outcome_label=_pick(
+            locale, *processing.OPPORTUNITY_OUTCOME_LABELS[opportunities_why]),
+        opportunities_mined_at=row.opportunities_mined_at,
+    )
+
+
 @router.get("/theses", response_model=list[ThesisResponse])
 async def list_theses(
+    limit: int = Query(default=DEFAULT_PAGE, ge=1, le=MAX_PAGE),
+    after: uuid.UUID | None = Query(
+        default=None, description="معرّف آخر رسالةٍ رآها العميل — مؤشّرٌ مفتاحيّ لا إزاحة"),
+    q: str | None = Query(default=None, max_length=200,
+                          description="بحثٌ في اسم الملفّ أو العنوان المستخرَج"),
+    view: str | None = Query(default=None, description=" · ".join(LISTING_VIEWS)),
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[ThesisResponse]:
-    rows = (
-        await session.execute(select(Thesis).order_by(Thesis.created_at.desc()))
-    ).scalars().all()
+    """رسائل الباحث — **صفحةٌ محدودة بعبارةٍ واحدة، وكلُّ رقمٍ معه سببه**.
 
-    # حالة أحدث تشغيلة قراءة لكل ملف — تُقرأ دفعةً واحدة لا استعلامًا لكل صفّ.
-    file_ids = [t.file_id for t in rows if t.file_id is not None]
-    processing: dict[uuid.UUID, str] = {}
-    if file_ids:
-        runs = (
-            await session.execute(
-                select(ExtractionRun).where(ExtractionRun.file_id.in_(file_ids))
-                .order_by(ExtractionRun.started_at.asc())
-            )
-        ).scalars().all()
-        for run in runs:
-            processing[run.file_id] = run.status  # الأحدث يغلب لأن الترتيب تصاعدي
+    **والمؤشّر مفتاحيّ لا إزاحة.** `after` معرّفُ آخر رسالةٍ رآها العميل،
+    ويُحلّ داخل العبارة نفسها فلا يكلّف رحلةً ثانية. والترتيب
+    `(created_at, id)` نازلًا: `created_at` وحده لا يفصل رسالتين رُفعتا في
+    المعاملة نفسها، فتتكرّر واحدة في صفحتين أو تسقط بينهما.
 
-    out: list[ThesisResponse] = []
-    for thesis in rows:
-        sections = (
-            await session.execute(
-                select(ThesisSection).where(ThesisSection.thesis_id == thesis.id)
-            )
-        ).scalars().all()
-        opportunities = (
-            await session.execute(
-                select(PublicationOpportunity)
-                .where(PublicationOpportunity.thesis_id == thesis.id)
-            )
-        ).scalars().all()
-        out.append(ThesisResponse(
-            id=thesis.id, title=_pick(principal.locale, thesis.title_ar, thesis.title_en),
-            title_ar=thesis.title_ar, degree=thesis.degree, defended_on=thesis.defended_on,
-            data_collected_on=thesis.data_collected_on, rights_basis=thesis.rights_basis,
-            parsed_at=thesis.parsed_at, sections_extracted=len(sections),
-            opportunities_found=len(opportunities),
-            processing_status=processing.get(thesis.file_id) if thesis.file_id else None,
-        ))
-    return out
+    **والعدّ يقع في القاعدة على صفوف الصفحة وحدها.** الاستعلامات الفرعية
+    مرتبطةٌ بـ`window.c.id` بعد الاقتطاع، لا بكلّ رسائل المستأجر — فكلفةُ
+    الصفحة ثابتة مهما بلغ عددُ الرسائل.
+
+    **والعزل مكتوبٌ في كلّ شرط.** RLS تحمي بين المستأجرين، **ولا تحمي بين
+    بحثين في المستأجر الواحد** — وهو عطبٌ وقع في هذا المنتج من قبل. فعدُّ
+    الفرص مشروطٌ بـ`thesis_id` **وبالمستأجر معًا**: فرصةٌ نشأت من بحثٍ آخر
+    (`project_id` مضبوط و`thesis_id` فارغ) لا تُعدّ على أيّ رسالة، لا لأنّ
+    بايثون تصفّيها بل لأنّ الشرط في `WHERE` أصلًا.
+    """
+    page = (
+        select(
+            Thesis.id, Thesis.title_ar, Thesis.title_en, Thesis.degree,
+            Thesis.defended_on, Thesis.data_collected_on, Thesis.rights_basis,
+            Thesis.parsed_at, Thesis.file_id, Thesis.created_at,
+            Thesis.processing_state, Thesis.processing_state_changed_at,
+            Thesis.processing_attempts, Thesis.failure_code,
+            Thesis.text_layer_state, Thesis.ocr_state, Thesis.opportunities_mined_at,
+        )
+        .where(Thesis.tenant_id == principal.tenant_id)
+        .order_by(Thesis.created_at.desc(), Thesis.id.desc())
+        .limit(limit)
+    )
+    chosen = _view_predicate(view)
+    if chosen is not None:
+        page = page.where(chosen)
+    matching = _search_predicate(principal.tenant_id, q)
+    if matching is not None:
+        page = page.where(matching)
+    if after is not None:
+        anchor_created = (
+            select(Thesis.created_at)
+            .where(Thesis.id == after, Thesis.tenant_id == principal.tenant_id)
+            .scalar_subquery()
+        )
+        anchor_id = (
+            select(Thesis.id)
+            .where(Thesis.id == after, Thesis.tenant_id == principal.tenant_id)
+            .scalar_subquery()
+        )
+        page = page.where(
+            tuple_(Thesis.created_at, Thesis.id) < tuple_(anchor_created, anchor_id))
+
+    window = page.subquery("page")
+
+    # اسمُ الملفّ — **هويّةُ البطاقة حين لا عنوان بعد**.
+    filename = (
+        select(File.original_filename)
+        .where(File.tenant_id == principal.tenant_id, File.id == window.c.file_id)
+        .limit(1).scalar_subquery()
+    )
+    sections = (
+        select(func.count(ThesisSection.id))
+        .where(ThesisSection.tenant_id == principal.tenant_id,
+               ThesisSection.thesis_id == window.c.id)
+        .scalar_subquery()
+    )
+    opportunities = (
+        select(func.count(PublicationOpportunity.id))
+        .where(PublicationOpportunity.tenant_id == principal.tenant_id,
+               PublicationOpportunity.thesis_id == window.c.id)
+        .scalar_subquery()
+    )
+
+    rows = (await session.execute(
+        select(window, filename.label("source_filename"),
+               sections.label("sections_extracted"),
+               opportunities.label("opportunities_found"))
+        .order_by(window.c.created_at.desc(), window.c.id.desc())
+    )).all()
+    return [_card(row, principal.locale) for row in rows]
+

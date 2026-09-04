@@ -27,20 +27,73 @@ class ThesisResponse(BaseModel):
 
     والواجهة تترجمها إلى حالة مفهومة («جارٍ استخراج عنوان الرسالة»)؛ فالعقد
     يبقى واقعيًّا والتسمية تبقى مسؤولية العرض.
+
+    ## وثلاثةُ عيوبٍ في الصدق يعالجها هذا العقد (Wave 1-C)
+
+    **١ — هويّة الملفّ.** `title` وحده كان يترك خمسَ رسائل مرفوعة خمسَ
+    بطاقاتٍ متطابقة تقول «لم يُستخرَج العنوان بعد». فيُضاف `source_filename`
+    و`display_title` ومعهما **رايةٌ صريحة** `title_is_extracted`: البطاقة
+    تعرف أنّها تعرض اسم ملفّ فتقوله، و`title_ar` في القاعدة يبقى `NULL`.
+
+    **٢ — الحال محفوظةٌ لا مشتقّة.** `processing_state` عمودٌ على
+    `theses` (ترحيل 0027)، لا حالُ آخر تشغيلةٍ على ملفّ. وإعادةُ التحميل
+    تعيدها كما هي لأنّها مكتوبة، لا لأنّ تشغيلةً بقيت.
+
+    **٣ — الرقمُ يُرافقه سببه.** «٠ أقسام · ٠ فرص» جملةٌ تُقال في ستّ
+    حالاتٍ معناها مختلف. فلكلّ عددٍ حقلُ `outcome` يقول أيَّها وقع.
     """
 
     id: uuid.UUID
     title: str | None
     title_ar: str | None
     degree: str | None
-    # حالة المعالجة — من آخر تشغيلة استخراج، لا من حالة الملف.
-    processing_status: str | None = None
+
+    # ── هويّةُ البطاقة ──
+    #
+    # `source_filename` اسمُ الملفّ كما رفعه صاحبه، و`display_title` ما
+    # يُكتب على البطاقة: العنوان المستخرَج إن وُجد، وإلّا اسمُ الملفّ.
+    # و`title_is_extracted` هي التي تمنع قراءةَ الثاني على أنّه الأول.
+    source_filename: str | None = None
+    display_title: str | None = None
+    title_is_extracted: bool = False
+
+    # ── حالُ المعالجة المحفوظة ──
+    processing_state: str
+    processing_state_label: str
+    processing_state_changed_at: dt.datetime | None = None
+    processing_attempts: int = 0
+
+    # ── الفشل: رمزٌ آمن ونصٌّ مفهوم — **ولا صفرٌ صامت** ──
+    failure_code: str | None = None
+    failure_message: str | None = None
+    can_retry: bool = False
+    # سببُ منع الإعادة حين تُمنع — «لا OCR بعد» لا زرٌّ مطفأ بلا تفسير.
+    retry_blocked_reason: str | None = None
+
+    # ── طبقةُ النصّ وOCR: يُقال ما وقع، ولا يُدّعى ما لم يقع ──
+    text_layer_state: str = "not_checked"
+    ocr_state: str = "unavailable"
+    ocr_available: bool = False
+
     defended_on: dt.date | None
     data_collected_on: dt.date | None
     rights_basis: str | None
     parsed_at: dt.datetime | None
+
     sections_extracted: int
+    # لماذا العدد هو ما هو: not_started · running · no_text_layer ·
+    # awaiting_consent · failed · completed_empty · found
+    sections_outcome: str
+    sections_outcome_label: str
+
     opportunities_found: int
+    opportunities_outcome: str
+    opportunities_outcome_label: str
+    opportunities_mined_at: dt.datetime | None = None
+
+    # §23 — الفرص **مرشَّحات** لا أوراق، ولا تتقدّم بلا اعتماد الحقوق.
+    # والراية تُرسَل مع كل صفّ فلا تُقرأ البطاقة وعدًا بالنشر.
+    opportunities_are_candidates: bool = True
 
 
 class ParseResponse(BaseModel):

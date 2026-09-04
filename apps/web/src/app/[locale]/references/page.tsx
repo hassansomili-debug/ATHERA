@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 import { AtheraApiError } from "@/lib/api";
@@ -149,6 +149,54 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
       alive = false;
     };
   }, [locale]);
+
+  /**
+   * بحثٌ جاء مع الرابط — **`?q=` من الرئيسية أو من رابطٍ محفوظ**.
+   *
+   * الرئيسية تسأل «ماذا تريد أن تنجز؟»، فمن لصق DOI فيها وصل إلى هنا.
+   * وأن يصل الباحث إلى شاشةٍ فيها معرّفه مكتوبٌ في المربّع ثم يُطلب منه
+   * أن يضغط «بحث» مرّةً أخرى هو أن تُقسَم نيّةٌ واحدة على فعلين — فيُنفَّذ
+   * ما قصده عند وصوله.
+   *
+   * **ولا حالة تُضبط في جسد التأثير مباشرةً**: `react-hooks/set-state-in-effect`
+   * يمنع ذلك، والوعدُ المؤجّل هو النمط المستعمل في هذا الملف أصلًا.
+   * والحارس `useRef` لا `useState` — فلا يُعيد تصييرًا ولا يدخل الاعتماديات.
+   */
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current) return;
+    const seed = new URLSearchParams(window.location.search).get("q")?.trim() ?? "";
+    if (!seed) return;
+    seeded.current = true;
+    let alive = true;
+    void Promise.resolve().then(() => {
+      if (!alive) return;
+      setQuery(seed);
+      setPhase("loading");
+      setError(null);
+      setNotices({});
+      setData(null);
+      return searchReferences(locale, seed, { acceptedTerms: [] })
+        .then((response) => {
+          if (!alive) return;
+          setData(response);
+          setAppliedTerms([]);
+          setPhase("ready");
+        })
+        .catch((err: unknown) => {
+          if (!alive) return;
+          // فشلُ البحث ليس «لا نتائج» — والفرق بينهما هو الفرق بين شبكةٍ
+          // معطوبة وموضوعٍ بكر، وأحدهما يُبنى عليه بحثٌ كامل.
+          setError(
+            err instanceof AtheraApiError ? err.localized(locale) : t("references.failed"),
+          );
+          setPhase("failed");
+        });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [locale, t]);
 
   function runSearch(terms: string[]) {
     setPhase("loading");

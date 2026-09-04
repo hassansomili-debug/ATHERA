@@ -6,7 +6,9 @@
 فهذه الاختبارات تحرس الواجهة من مصدرها، وتعمل في كل PR — والقبول بمتصفّح
 حقيقي في `apps/web/tests` لا يُستبدل بها، بل تسبقه.
 """
+import json
 import pathlib
+import re
 
 import pytest
 
@@ -263,14 +265,51 @@ def test_the_project_files_pane_tells_loading_from_empty():
 
 
 def test_the_two_navigation_landmarks_have_distinct_names():
-    """معلمان بالاسم نفسه يربكان قارئ الشاشة كما يربكان الفحص."""
+    """معلمان بالاسم نفسه يربكان قارئ الشاشة كما يربكان الفحص.
+
+    **وكان الحارس يقارن مفاتيح لا نصوصًا.** يفحص أن هذا المعلَم يحمل
+    `nav.dashboard` وذاك `project.sectionsLabel` — ومفتاحان مختلفان قد
+    يُترجَمان إلى الاسم نفسه، فيقع العطبُ المحروس منه والحارسُ راضٍ.
+
+    **وكان المعلَم الجانبي يستعير اسم عنصرٍ بداخله**: «الرئيسية» اسمُ أوّل
+    رابطٍ فيه، وكان اسمَ المعلَم كلّه. وهو العطبُ الذي يمنعه السطر الأخير
+    في صفحة البحث نفسها — ولم يكن مفحوصًا في الجانب.
+
+    فيُقرأ الاسمان من كتالوج الرسائل ويُقارَن **النصّان** — وذاك ما يسمعه
+    قارئ الشاشة فعلًا.
+    """
     page = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
             / "page.tsx").read_text(encoding="utf-8")
-    nav = (WEB / "src" / "components" / "SideNav.tsx").read_text(encoding="utf-8")
-    assert 'aria-label={t("nav.dashboard")}' in nav
-    assert 'aria-label={t("project.sectionsLabel")}' in page
-    # ولا يُسمّى معلَمٌ باسم عنصرٍ بداخله.
+    side = (WEB / "src" / "components" / "SideNav.tsx").read_text(encoding="utf-8")
+    links = (WEB / "src" / "components" / "NavLinks.tsx").read_text(encoding="utf-8")
+
+    # المعلَم الجانبي: الاسم يُمرَّر من `SideNav` ويُوضع على `<nav>` في
+    # `NavLinks` — والطرفان يُفحصان، فلا يسقط أحدهما بصمت.
+    key = re.search(r'label=\{t\("([^"]+)"\)\}', side)
+    assert key, "المعلَم الجانبي بلا اسم"
+    assert "aria-label={label}" in links, "الاسم يُمرَّر ولا يُوضع على المعلَم"
+
+    project = re.search(r'aria-label=\{t\("([^"]+)"\)\}', page)
+    assert project, "معلَم أقسام البحث بلا اسم"
+
+    catalog = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
+
+    def resolve(path: str) -> str:
+        node = catalog
+        for part in path.split("."):
+            node = node[part]
+        assert isinstance(node, str) and node.strip(), f"{path}: اسمٌ فارغ"
+        return node
+
+    sidebar_name = resolve(key.group(1))
+    project_name = resolve(project.group(1))
+    assert sidebar_name != project_name, (
+        f"معلَمان يُنطقان بالاسم نفسه: «{sidebar_name}»")
+
+    # ولا يُسمّى معلَمٌ باسم عنصرٍ بداخله — لا في البحث ولا في الجانب.
     assert 'aria-label={t("project.overview")}' not in page
+    assert sidebar_name != resolve("nav.dashboard"), (
+        "المعلَم الجانبي يستعير اسم «الرئيسية» — وهي عنصرٌ بداخله")
 
 
 def test_the_acceptance_suite_records_no_artifact_that_could_hold_a_secret():

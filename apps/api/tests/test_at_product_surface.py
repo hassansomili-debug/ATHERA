@@ -92,27 +92,69 @@ def test_no_enabled_button_is_left_without_a_handler():
         "أزرارٌ تُرسم قابلةً للنقر بلا معالج ولا إعلانِ تعطيل:\n" + "\n".join(dead))
 
 
-def test_the_literature_search_form_actually_calls_the_registry():
+def test_the_literature_search_surface_actually_calls_the_registry():
     """**النموذج كان `preventDefault` وحده**: لا نداء ولا نتيجة ولا رسالة.
 
     وكان مستورًا لأن البوابة تُعطّل الزرّ ما دام السجل «بلا شبكة» — أي
     زرٌّ ميت ينتظر أن يُفتح السجل ليُرى موته.
+
+    **وسطحُ البحث صار واحدًا.** كانت شاشتان تفعلان الشيء نفسه: `/search`
+    تنادي `/sources/search` فتتوقّف عند أوّل فهرسٍ ردّ بشيء ولا تفهم DOI
+    وتبقى معطَّلة ما دام `LITERATURE_REGISTRY=offline`؛ و`/references`
+    تنادي `/references/search` فتسأل الفهرسين معًا بلا إعداد. فأُحيلت
+    الأولى إلى الثانية.
+
+    والحارس يتبع السطح ولا يُلغى — **ويشتدّ**: كان يفحص نداءً واحدًا،
+    وصار يفحص ثلاثة أشياء لا يجوز سقوط واحدٍ منها:
+
+      ١ `/search` تحويلٌ صريح، فلا تعود صفحةً ميتة تُعرض ولا تنادي شيئًا.
+      ٢ سطحُ البحث الباقي ينادي عميل الاكتشاف، وعميلُ الاكتشاف ينادي
+        مسارًا **موجودًا في الموجِّه** — والسابقة تُقرأ منه لا تُكتب بجانبه.
+      ٣ والمسار القديم باقٍ في الخادم: الإحالة قرارُ واجهةٍ لا حذفُ عقد.
     """
-    code = dict(OWNED)["app/[locale]/search/page.tsx"]
+    owned = dict(OWNED)
+    retired = owned["app/[locale]/search/page.tsx"]
+    surface = owned["app/[locale]/references/page.tsx"]
+    client = (WEB / "src" / "lib" / "discovery.ts").read_text(encoding="utf-8")
     router = (
         pathlib.Path(__file__).resolve().parents[1]
         / "athera_api" / "routers" / "literature.py"
     ).read_text(encoding="utf-8")
 
-    # **وكان الحارس نفسه يحرس عنوانًا لا وجود له.** يُطالب الشاشة بنداء
+    # **والحارس كان يحرس عنوانًا لا وجود له.** يُطالب الشاشة بنداء
     # `/api/v1/literature/sources/search` ويُطالب الخادم بـ`"/sources/search"`،
     # ولا يجمع بينهما — فمرّ نداءٌ يعود ٤٠٤ وهو «محروس». والسابقة تُقرأ من
     # الموجِّه ويُركَّب المسار منها، فلا يُكتب العنوان مرّتين ولا يفترقان.
     prefix = re.search(r'APIRouter\(prefix="([^"]+)"', router)
     assert prefix, "لم تُعلَن سابقة الموجِّه"
+
+    # ١ — المسار المتقاعد يُحيل، ولا يُترك شاشةً بلا نداء.
+    assert "redirect(" in retired and "/references" in retired, (
+        "‎/search لم تعد تنادي شيئًا ولا تُحيل — وتلك صفحةٌ ميتة")
+
+    # ٢ — والسطح الباقي ينادي فهرسًا فعلًا، عبر عميلٍ ينادي مسارًا قائمًا.
+    assert "searchReferences(" in surface, "شاشة اكتشاف المراجع لا تنادي شيئًا"
+    assert '@router.post("/references/search"' in router, (
+        "عميل الاكتشاف ينادي مسارًا لا وجود له في الخادم")
+    assert f"{prefix.group(1)}/references/search" in client, (
+        "عميل الاكتشاف لا ينادي مسار الموجِّه")
+
+    # ٣ — والمسار القديم لم يُمَسّ في الخادم: أُحيلت الواجهة ولم يُحذف عقد.
     assert '@router.post("/sources/search"' in router, (
-        "الواجهة تنادي مسارًا لا وجود له في الخادم")
-    assert f"{prefix.group(1)}/sources/search" in code, "زرّ البحث لا ينادي شيئًا"
+        "‎/sources/search اختفى من الخادم — والإحالة كانت قرار واجهة")
+
+    # ٤ — **ولا يُعطَّل البحث برايةِ الرصد المجدول.**
+    #
+    # `literatureOnline` مشتقّةٌ من `LITERATURE_REGISTRY`، وهو يصف الرصد
+    # المجدول وحده — بينما اكتشاف المراجع ينادي Crossref وOpenAlex في كل
+    # بحث بلا مفتاحٍ ولا إعداد. وكانت الشاشة المتقاعدة تربط زرّها بها،
+    # فيبقى معطَّلًا في الإنتاج أمام قدرةٍ تعمل. وذاك «قريبًا» بصيغةٍ
+    # أخرى: منعٌ يُقرأ عجزًا، والمنصّة قادرة.
+    #
+    # ورفعه المسار د في `docs/integration/track-d-requests.md`، والحارس
+    # يمنع عودته إلى السطح الباقي مهما أُعيدت صياغة الراية.
+    assert "literatureOnline" not in surface, (
+        "بحثُ المراجع مُعطَّل برايةِ الرصد المجدول — وهي لا تصفه")
 
 
 def test_no_tab_switches_state_without_switching_content():

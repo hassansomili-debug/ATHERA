@@ -54,6 +54,20 @@ class UnsupportedDocument(Exception):
     """نوع لا نستطيع تفكيكه — نقولها صراحةً بدل إنتاج نص فارغ صامت."""
 
 
+class NoTextLayer(UnsupportedDocument):
+    """مستندٌ سليم بلا طبقة نصّ — **وهذه ليست «نوعًا غير مدعوم»**.
+
+    الفرق ليس تصنيفًا: مَن رفع ملفًّا لا يقرؤه المفكِّك يُقال له إن نوعه
+    غير مدعوم، ومَن رفع رسالةً ممسوحةً ضوئيًّا مستندُه مدعومٌ تمامًا —
+    والذي ينقصه أن يُقرأ ضوئيًّا. وطيُّ الحالين في رسالةٍ واحدة يجعل
+    الشاشة تعرض «أعد المحاولة» على مسحٍ ضوئيّ، فتَعِد بما لا يقع: إعادة
+    القراءة تُنتج النتيجة نفسها حرفًا بحرف.
+
+    وهي فرعٌ من `UnsupportedDocument` عمدًا: كلُّ `except` قائم في المستودع
+    يبقى يمسكها كما كان، والذي يُضاف هو **تمييزُ** من أراد التمييز.
+    """
+
+
 def _is_heading(line: str, *, is_whole_paragraph: bool = False) -> bool:
     """عنوان بالاسم، أو بالبنية.
 
@@ -149,8 +163,12 @@ def parse_pdf(data: bytes) -> list[ParsedChunk]:
     pages = [(index + 1, page.extract_text() or "") for index, page in enumerate(reader.pages)]
     if not any(text.strip() for _, text in pages):
         # PDF ممسوح ضوئيًا بلا طبقة نص — نقولها بدل إنتاج صفر حقائق صامتًا.
-        raise UnsupportedDocument(
-            "no extractable text layer (scanned PDF); OCR is out of scope for Sprint 1"
+        #
+        # **وبصنفٍ مميَّز لا برسالةٍ تُقرأ بـ`grep`.** خطُّ الأنابيب يحتاج أن
+        # يفرّق هذه عن «نوعٍ غير مدعوم» ليكتب الحال الصحيحة على الرسالة؛
+        # ومطابقةُ نصّ الاستثناء تنكسر بأول تحسينٍ للصياغة.
+        raise NoTextLayer(
+            "no extractable text layer (scanned PDF); OCR is not available yet"
         )
     return _build(pages)
 

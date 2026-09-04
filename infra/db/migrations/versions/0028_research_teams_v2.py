@@ -49,7 +49,7 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 revision = "0028"
 # المُكامِل يعيد توجيهها إلى "0027" بعد نزول المسارين B و C — وهذا متوقَّع.
-down_revision = "0025"
+down_revision = "0027"
 branch_labels = None
 depends_on = None
 
