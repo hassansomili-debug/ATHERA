@@ -76,6 +76,10 @@ export default function StudioPage({
   const [active, setActive] = useState<string | null>(null);
   const [asideOpen, setAsideOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // **«لا عوائق» كانت تُقال قبل أن تُقرأ الورقة.** من يفتح العمود الجانبي
+  // قبل عودة النظرة العامة يقرأ أن ورقته بلا عائق، وهي أهم دعوى في الشاشة
+  // وأخطرها إن قيلت بلا فحص. والشاشة كلّها كانت صامتة أثناء الانتظار.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -87,6 +91,8 @@ export default function StudioPage({
       setError(null);
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [manuscriptId, locale, t]);
 
@@ -96,7 +102,10 @@ export default function StudioPage({
   const pending = (overview?.sections ?? []).filter((s) => !s.enabled);
 
   return (
-    <main dir={locale === "ar" ? "rtl" : "ltr"}>
+    // `main` واحدٌ في الهيكل العام — وهذا كان ثانيًا داخله، وثالثٌ تحته في
+    // مساحة القسم. وقارئ الشاشة يتنقّل بالمعالم، فثلاثةُ «محتوى رئيسي» تعني
+    // ألّا معلَم أصلًا. والاتجاه يبقى معلَنًا كما كان.
+    <div dir={locale === "ar" ? "rtl" : "ltr"}>
       <header>
         <h1>{t("studio.title")}</h1>
         {overview ? (
@@ -106,6 +115,7 @@ export default function StudioPage({
           </p>
         ) : null}
         {error ? <p role="alert">{error}</p> : null}
+        {!loaded ? <p data-testid="studio-loading">{t("app.loading")}</p> : null}
       </header>
 
       <div>
@@ -174,7 +184,12 @@ export default function StudioPage({
           {asideOpen || (overview?.blocking ?? 0) > 0 ? (
             <div>
               <h2>{t("studio.blockers")}</h2>
-              {(overview?.issues ?? []).length === 0 ? (
+              {/* **والإخفاق ليس خلوًّا.** إن سقطت القراءة بقي `overview`
+                  فارغًا، فكانت الشاشة تقول «لا عوائق» وهي لم تقرأ الورقة
+                  أصلًا — ادّعاءُ براءةٍ مبنيٌّ على لا شيء. */}
+              {!loaded ? (
+                <p>{t("app.loading")}</p>
+              ) : error ? null : (overview?.issues ?? []).length === 0 ? (
                 <p>{t("studio.noBlockers")}</p>
               ) : (
                 <ul>
@@ -193,6 +208,6 @@ export default function StudioPage({
       </div>
 
       {overview ? <footer>{overview.note}</footer> : null}
-    </main>
+    </div>
   );
 }

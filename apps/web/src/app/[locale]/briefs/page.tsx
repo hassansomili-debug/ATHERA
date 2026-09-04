@@ -64,12 +64,17 @@ export default function BriefsPage({ params }: { params: Promise<{ locale: strin
   const [briefs, setBriefs] = useState<Brief[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // الشاشة كلّها مبنيّة على أن الصمت لا يكون غامضًا — ثم كانت تقول «لا
+  // نشرات» قبل أن يعود الطلب، فتصنع الغموض الذي أُنشئت لتمنعه.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setBriefs(await apiFetch<Brief[]>("/api/v1/briefs", { locale }));
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, t]);
 
@@ -93,7 +98,9 @@ export default function BriefsPage({ params }: { params: Promise<{ locale: strin
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("briefs.subtitle")}</p>
       <p className="provenance-note">{t("briefs.evidenceNote")}</p>
       {error ? <p className="error">{error}</p> : null}
-      {briefs.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : briefs.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("briefs.empty")}</p>
       ) : null}
 

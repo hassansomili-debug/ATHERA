@@ -50,11 +50,17 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // **«لا رسائل مسجّلة» بعد رفعٍ ناجح رسالةٌ تُفزع.** القائمة تبدأ فارغة،
+  // فكانت تُقال قبل عودة الطلب — ومن رفع رسالته للتوّ يقرأ أنها ليست هناك.
+  const [loaded, setLoaded] = useState(false);
+
   const load = useCallback(async () => {
     try {
       setTheses(await apiFetch<Thesis[]>("/api/v1/theses", { locale }));
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, t]);
 
@@ -127,7 +133,9 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       </div>
       <p className="provenance-note">{t("theses.rightsNote")}</p>
       {error ? <p className="error">{error}</p> : null}
-      {theses.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : theses.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("theses.empty")}</p>
       ) : null}
 

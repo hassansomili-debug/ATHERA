@@ -45,6 +45,9 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
   const [objectType, setObjectType] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // «لا أحداث» في سجلٍّ لا يقبل الحذف أصلًا دعوى ثقيلة — فلا تُقال قبل أن
+  // يعود الجواب. وكانت تُقال، فيبدو السجل المحمي فارغًا لحظةَ فتح الشاشة.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -55,6 +58,8 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
       setEvents(await apiFetch<AuditEvent[]>(`/api/v1/audit/events${query}`, { locale }));
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, objectType, t]);
 
@@ -80,7 +85,14 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
       {error ? <p className="error">{error}</p> : null}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockEnd: 12 }}>
+        {/* **النائب ليس اسمًا.** الحقل كان بلا `label` ولا `aria-label`،
+            فقارئ الشاشة لا يجد له اسمًا مُعلَنًا؛ والنائب يختفي بأول حرفٍ
+            يُكتب فلا يصلح بديلًا عن اسمٍ ثابت. */}
+        <label className="sr-only" htmlFor="audit-object-type">
+          {t("audit.filterPlaceholder")}
+        </label>
         <input
+          id="audit-object-type"
           type="text"
           placeholder={t("audit.filterPlaceholder")}
           value={objectType}
@@ -102,7 +114,9 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
         </p>
       ) : null}
 
-      {events.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : events.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("audit.empty")}</p>
       ) : null}
 

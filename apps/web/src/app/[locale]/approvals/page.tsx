@@ -55,6 +55,10 @@ export default function ApprovalsPage({ params }: { params: Promise<{ locale: st
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // **«لا قرارات تنتظرك» أخطر ما يُقال في هذه الشاشة كذبًا.** كانت تُعرض قبل
+  // عودة الطلب، فيقرأ الباحث أن صندوقه خالٍ ويغلق الشاشة — وفيه حاجبٌ يوقف
+  // عمله. والراية واحدة للنداءات الثلاثة: تُقرأ معًا فتُعلَن معًا.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -68,6 +72,8 @@ export default function ApprovalsPage({ params }: { params: Promise<{ locale: st
       setSummary(counts);
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, t]);
 
@@ -139,7 +145,9 @@ export default function ApprovalsPage({ params }: { params: Promise<{ locale: st
       ) : null}
 
       <h2>{t("approvals.pendingSection")}</h2>
-      {approvals.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : approvals.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("approvals.emptyApprovals")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>
@@ -186,7 +194,9 @@ export default function ApprovalsPage({ params }: { params: Promise<{ locale: st
       </div>
 
       <h2>{t("approvals.alertsSection")}</h2>
-      {alerts.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : alerts.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("approvals.emptyAlerts")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>

@@ -49,12 +49,17 @@ export default function ManuscriptsPage({ params }: { params: Promise<{ locale: 
   const [readiness, setReadiness] = useState<Record<string, Readiness>>({});
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // «لا مخطوطات» كانت تُعرض قبل عودة الطلب — والفرق بين «لم يصل الجواب»
+  // و«لا مخطوطة لك» هو الفرق بين انتظارٍ وبدايةٍ من الصفر.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setItems(await apiFetch<Manuscript[]>("/api/v1/manuscripts", { locale }));
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, t]);
 
@@ -93,7 +98,9 @@ export default function ManuscriptsPage({ params }: { params: Promise<{ locale: 
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("manuscripts.subtitle")}</p>
       <p className="provenance-note">{t("manuscripts.gateNote")}</p>
       {error ? <p className="error">{error}</p> : null}
-      {items.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : items.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("manuscripts.empty")}</p>
       ) : null}
 

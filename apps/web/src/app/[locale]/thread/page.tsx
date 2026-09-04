@@ -72,6 +72,10 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
   const [detailAr, setDetailAr] = useState("");
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // **«لا بحث مختار» كانت تُعرض على من له أبحاث.** `projectId` يبدأ `null`
+  // ولا يُملأ إلا بعد عودة قائمة الأبحاث، فكانت الرسالة تظهر في تلك النافذة
+  // — وهي دعوى عن محفظة الباحث لم تُقرأ بعد.
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
 
   useEffect(() => {
     apiFetch<Project[]>("/api/v1/portfolio/projects", { locale })
@@ -81,7 +85,8 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
       })
       .catch((err) =>
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
-      );
+      )
+      .finally(() => setProjectsLoaded(true));
   }, [locale]);
 
   useEffect(() => {
@@ -134,7 +139,10 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("thread.subtitle")}</p>
 
       {projects.length > 1 ? (
+        // قائمةُ اختيارٍ بلا اسمٍ مُعلَن: قارئ الشاشة يقول «قائمة» ولا يقول
+        // قائمةَ ماذا — والصفحة كلّها تتغيّر بها.
         <select
+          aria-label={t("thread.chooseProject")}
           value={projectId ?? ""}
           onChange={(e) => setProjectId(e.target.value)}
           style={{
@@ -156,7 +164,11 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
       ) : null}
 
       {error ? <p className="error">{error}</p> : null}
-      {!projectId ? <p style={{ color: "var(--muted)" }}>{t("thread.noProject")}</p> : null}
+      {!projectsLoaded || (projectId && !data && !error) ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : !projectId ? (
+        <p style={{ color: "var(--muted)" }}>{t("thread.noProject")}</p>
+      ) : null}
 
       {data ? (
         <>

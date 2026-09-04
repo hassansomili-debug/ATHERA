@@ -28,13 +28,19 @@ export default function AgentsPage({ params }: { params: Promise<{ locale: strin
 
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // **الفراغ كان صامتًا هنا.** لا رسالة تحميل ولا رسالة خلوّ: صفحةٌ بعنوان
+  // وحده، فلا يُفرَّق بين سجلٍّ لم يصل بعد وسجلٍّ لا أجنت فيه — وهما حالان
+  // مختلفتان تمامًا في شاشةٍ غرضها إعلان القيود.
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     apiFetch<AgentSpec[]>("/api/v1/brain/agents", { locale })
       .then(setAgents)
       .catch((err) =>
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
-      );
+      )
+      // في دالّة رد نداء لا في جسم التأثير — `react-hooks/set-state-in-effect`.
+      .finally(() => setLoaded(true));
   }, [locale, t]);
 
   return (
@@ -43,6 +49,11 @@ export default function AgentsPage({ params }: { params: Promise<{ locale: strin
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("agents.subtitle")}</p>
       <p className="provenance-note">{t("agents.toolsNote")}</p>
       {error ? <p className="error">{error}</p> : null}
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : agents.length === 0 && !error ? (
+        <p style={{ color: "var(--muted)" }}>{t("agents.empty")}</p>
+      ) : null}
 
       <div style={{ display: "grid", gap: "var(--space)" }}>
         {agents.map((agent) => (

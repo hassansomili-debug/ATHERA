@@ -140,7 +140,8 @@
     "guards": "Applied guardrails",
     "gate": "Approval gate",
     "noGate": "No gate",
-    "toolsNote": "No tool in the platform mutates raw data, decides an approval, or writes verified memory."
+    "toolsNote": "No tool in the platform mutates raw data, decides an approval, or writes verified memory.",
+    "empty": "No agents are registered in this deployment."
   },
   "traces": {
     "title": "Execution trace",
@@ -284,7 +285,8 @@
       "result": "Result",
       "discussion": "Discussion",
       "recommendation": "Recommendation"
-    }
+    },
+    "chooseProject": "Choose a research project"
   },
   "theses": {
     "title": "Thesis library",
@@ -389,7 +391,9 @@
       "ready_to_submit": "Ready to submit",
       "converted": "Converted to a project",
       "rejected": "Rejected"
-    }
+    },
+    "noTheses": "No thesis is registered yet, and the opportunity map is derived from one. Start by uploading your thesis under “My Theses”.",
+    "chooseThesis": "Choose a thesis"
   },
   "manuscripts": {
     "title": "Manuscript Studio",
@@ -539,7 +543,8 @@
     "superseded": "Superseded",
     "current": "Current",
     "supersedesEarlier": "Supersedes an earlier decision.",
-    "decisionHistoryNote": "Superseded decisions stay visible: hiding them makes the log look as if the current view were the only one ever held."
+    "decisionHistoryNote": "Superseded decisions stay visible: hiding them makes the log look as if the current view were the only one ever held.",
+    "noProject": "No research project yet. Team and decisions belong to a specific project — start one under “My Research” first."
   },
   "briefs": {
     "title": "Intelligence brief",
@@ -643,7 +648,10 @@
     "submit": "Search",
     "gateTitle": "External search is not activated yet.",
     "gateBody": "The literature registry is set to offline, so no external registry is called and no results are shown. What works today: manual DOI import into your library.",
-    "empty": "No results yet."
+    "empty": "No results yet.",
+    "resultsLabel": "Results",
+    "retracted": "This paper is retracted — no claim may rest on it.",
+    "notStoredNote": "These are candidates from an external registry; none is stored in your library. Importing is a separate act, performed in"
   },
   "journalsPage": {
     "title": "Journals & Publishing",

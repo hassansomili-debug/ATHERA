@@ -27,15 +27,30 @@ export default function MemoryPage({ params }: { params: Promise<{ locale: strin
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // **«لا معلومات موثّقة» كانت تُقال قبل أن يعود الجواب** — وهي أخطر ما
+  // يُقال في هذه الشاشة بالذات: الباحث يقرأ أن ذاكرته المعتمَدة فارغة وهي
+  // ليست كذلك، فيظن اعتماداته ضاعت.
+  //
+  // **والمحفوظ هو الاستعلام المُجاب لا رايةٌ ثنائية.** الشاشة تُعيد الطلب
+  // عند كل حرفٍ يُكتب، فرايةٌ تُطفأ في جسم التأثير تصييرٌ متتالٍ يمنعه
+  // `react-hooks/set-state-in-effect`. أمّا مقارنة الاستعلام المعروض
+  // بالمُجاب فمشتقّة من الحالة، ولا تُضبط إلا في دالّة رد نداء.
+  const [answered, setAnswered] = useState<string | null>(null);
+  const loading = answered !== query;
 
   useEffect(() => {
     const controller = new AbortController();
     const path = `/api/v1/memory${query ? `?q=${encodeURIComponent(query)}` : ""}`;
     apiFetch<MemoryItem[]>(path, { locale, signal: controller.signal })
-      .then(setItems)
+      .then((rows) => {
+        setItems(rows);
+        setAnswered(query);
+      })
       .catch((err) => {
+        // طلبٌ أُجهض ليس جوابًا: لا خطأ يُعلَن، ولا استعلام يُعدّ مُجابًا.
         if (controller.signal.aborted) return;
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+        setAnswered(query);
       });
     return () => controller.abort();
   }, [locale, query, t]);
@@ -45,7 +60,10 @@ export default function MemoryPage({ params }: { params: Promise<{ locale: strin
       <h1>{t("memory.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("memory.subtitle")}</p>
 
+      {/* حقل البحث كان بلا اسمٍ مُعلَن — والنائب يختفي بأول حرف. */}
+      <label className="sr-only" htmlFor="memory-query">{t("memory.search")}</label>
       <input
+        id="memory-query"
         placeholder={t("memory.search")}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
@@ -62,7 +80,11 @@ export default function MemoryPage({ params }: { params: Promise<{ locale: strin
       />
 
       {error ? <p className="error">{error}</p> : null}
-      {items.length === 0 ? <p style={{ color: "var(--muted)" }}>{t("memory.empty")}</p> : null}
+      {loading ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : items.length === 0 && !error ? (
+        <p style={{ color: "var(--muted)" }}>{t("memory.empty")}</p>
+      ) : null}
 
       <div style={{ display: "grid", gap: "var(--space)" }}>
         {items.map((item) => (

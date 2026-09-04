@@ -170,10 +170,15 @@ export function AtheraAiInput({
             placeholder={t("ai.placeholder")}
           />
           <div className="ai-tools">
+            {/* **`sr-only` تخفي بالعين وتُبقي في شجرة الإتاحة.** فكان قارئ
+                الشاشة يجد هنا حقل ملفٍّ بلا اسمٍ مُعلَن — «اختيار ملف» وحدها —
+                بينما زرّ «📎 أرفق ملفًا» بجانبه هو المدخل الحقيقي. فمدخلان
+                لفعلٍ واحد، أحدهما بلا اسم. و`hidden` تُخرجه من الشجرة ولا
+                تمنع `.click()` عليه — وهو ما يفعله `ThesisIntake` أصلًا. */}
             <input
               ref={fileInput}
               type="file"
-              className="sr-only"
+              hidden
               onChange={(e) => {
                 const picked = e.target.files?.[0];
                 if (picked) void attach(picked);

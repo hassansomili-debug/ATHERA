@@ -117,6 +117,12 @@ export default function ProjectWorkspacePage({
   // فيذهب يبحث عن ملفاته في مكانٍ آخر وهي في طريقها إليه.
   const [filesLoad, setFilesLoad] = useState<"loading" | "ready" | "failed">("loading");
   const [libraryLoad, setLibraryLoad] = useState<"loading" | "ready" | "failed">("loading");
+  // **والمراجع المرتبطة سقطت من ذلك الإصلاح.** الملفات ومرشّحو الإضافة
+  // ومرشّحو المراجع صار لكلٍّ منها حالُ تحميلها، وبقيت `sources` وحدها
+  // تُقرأ في `reload` بلا رايةٍ — فتقول الشاشة «لا مراجع مرتبطة» قبل أن
+  // يعود الجواب، وهو العطب نفسه في الموضع الرابع.
+  const [linkedSourcesLoad, setLinkedSourcesLoad] =
+    useState<"loading" | "ready" | "failed">("loading");
 
   const say = useCallback(
     (err: unknown) =>
@@ -137,7 +143,15 @@ export default function ProjectWorkspacePage({
         setFilesLoad("failed");
         say(err);
       });
-    projectSources(locale, projectId).then(setSources).catch(say);
+    projectSources(locale, projectId)
+      .then((rows) => {
+        setSources(rows);
+        setLinkedSourcesLoad("ready");
+      })
+      .catch((err) => {
+        setLinkedSourcesLoad("failed");
+        say(err);
+      });
   }, [locale, projectId, say]);
 
   useEffect(reload, [reload]);
@@ -354,11 +368,17 @@ export default function ProjectWorkspacePage({
       {section === "files" ? (
         <>
           <p className="metric-label">{t("project.removeKeepsFile")}</p>
+          {/* **والإخفاق كان يُقرأ خلوًّا.** الحالُ ثلاثية منذ أُصلح انتظارُ
+              التحميل، ثم لم يُستعمل منها إلا طرفان: «جارٍ» وما عداه. فسقوطُ
+              القراءة يترك القائمة فارغة، فتقول الشاشة «لا ملف مرتبط» وهي لم
+              تعرف — والخطأ معلَنٌ فوقها في الوقت نفسه. */}
           {filesLoad === "loading" ? (
             <p data-testid="files-loading" style={{ color: "var(--muted)" }}>
               {t("app.loading")}
             </p>
-          ) : files.filter((file) => file.state === "active").length === 0 ? (
+          ) : filesLoad === "failed" ? null : files.filter(
+              (file) => file.state === "active",
+            ).length === 0 ? (
             <p data-testid="files-empty" style={{ color: "var(--muted)" }}>
               {t("project.noFiles")}
             </p>
@@ -397,7 +417,7 @@ export default function ProjectWorkspacePage({
             <p data-testid="library-loading" style={{ color: "var(--muted)" }}>
               {t("app.loading")}
             </p>
-          ) : unlinked.length === 0 ? (
+          ) : libraryLoad === "failed" ? null : unlinked.length === 0 ? (
             <p data-testid="library-empty" style={{ color: "var(--muted)" }}>
               {t("project.noCandidates")}{" "}
               <Link href={`/${locale}/library`}>{t("nav.library")}</Link>
@@ -415,10 +435,16 @@ export default function ProjectWorkspacePage({
                   }}
                 >
                   <span>{file.original_filename}</span>
+                  {/* A11Y-1 — **زرٌّ اسمه «+» لا يقول لأعمى ما يفعل.** ولا على
+                      أيّ ملفٍ يقع: في القسم زرٌّ لكل ملف، وكلّها متطابقة
+                      الاسم، فلا يُميَّز بينها بالسمع إطلاقًا. والصواب كان
+                      بجانبه: زرُّ إضافة المرجع في القسم نفسه يحمل اسم مرجعه.
+                      والعلامة تبقى «+» بالعين — الاسم المُعلَن وحده ما تغيّر. */}
                   <button
                     type="button"
                     className="chip chip-stage"
                     disabled={busy}
+                    aria-label={`${t("project.addFile")}: ${file.original_filename}`}
                     onClick={() => attach(file.id)}
                   >
                     +
@@ -433,7 +459,11 @@ export default function ProjectWorkspacePage({
       {section === "literature" ? (
         <>
           <p className="metric-label">{t("project.useHint")}</p>
-          {sources.length === 0 ? (
+          {linkedSourcesLoad === "loading" ? (
+            <p data-testid="sources-loading" style={{ color: "var(--muted)" }}>
+              {t("app.loading")}
+            </p>
+          ) : linkedSourcesLoad === "failed" ? null : sources.length === 0 ? (
             <p data-testid="sources-empty" style={{ color: "var(--muted)" }}>
               {t("project.noSources")}
             </p>
@@ -474,7 +504,7 @@ export default function ProjectWorkspacePage({
             <p data-testid="sources-candidates-loading" style={{ color: "var(--muted)" }}>
               {t("app.loading")}
             </p>
-          ) : availableSources.length === 0 ? (
+          ) : sourcesLoad === "failed" ? null : availableSources.length === 0 ? (
             // **ولا يُمرَّر الفراغ صامتًا.** إن لم يكن في المكتبة مرجعٌ بعد
             // فللباحث طريقٌ معلَن إلى استيراد واحد — لا شاشةٌ فارغة تسكت.
             <p data-testid="no-candidate-sources" style={{ color: "var(--muted)" }}>
@@ -533,8 +563,16 @@ export default function ProjectWorkspacePage({
       ) : null}
 
       {pendingRemoval ? (
-        <div className="card" role="alertdialog" aria-modal="true">
-          <strong>{pendingRemoval.impact.summary}</strong>
+        // **حوارٌ بلا اسمٍ مُعلَن.** الدور والنمطية معلَنان، والاسم غائب —
+        // فقارئ الشاشة يقول «حوار تنبيه» ولا يقول على أيّ شيء يُنبّه. وخلاصة
+        // الأثر هي الاسم الصحيح: هي ما يُقرأ أوّلًا بالعين أصلًا.
+        <div
+          className="card"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="impact-summary"
+        >
+          <strong id="impact-summary">{pendingRemoval.impact.summary}</strong>
           <ul>
             {pendingRemoval.impact.consequences.map((consequence) => (
               <li key={consequence.kind}>
