@@ -429,10 +429,16 @@ export default function ProjectWorkspacePage({
                   }}
                 >
                   <span>{file.original_filename}</span>
+                  {/* A11Y-1 — **زرٌّ اسمه «+» لا يقول لأعمى ما يفعل.** ولا على
+                      أيّ ملفٍ يقع: في القسم زرٌّ لكل ملف، وكلّها متطابقة
+                      الاسم، فلا يُميَّز بينها بالسمع إطلاقًا. والصواب كان
+                      بجانبه: زرُّ إضافة المرجع في القسم نفسه يحمل اسم مرجعه.
+                      والعلامة تبقى «+» بالعين — الاسم المُعلَن وحده ما تغيّر. */}
                   <button
                     type="button"
                     className="chip chip-stage"
                     disabled={busy}
+                    aria-label={`${t("project.addFile")}: ${file.original_filename}`}
                     onClick={() => attach(file.id)}
                   >
                     +
