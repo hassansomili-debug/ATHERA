@@ -383,7 +383,16 @@
       "discussion": "Discussion",
       "recommendation": "Recommendation"
     },
-    "chooseProject": "Choose a research project"
+    "chooseProject": "Choose a research project",
+    "scoreNotComputed": "Consistency has not been computed yet: the core elements are incomplete.",
+    "countStructural": "Structural findings",
+    "countLinguistic": "Methodological alerts",
+    "conflicts": "Conflicts",
+    "missingHint": "Elements not yet recorded — an absence of what is checked, not a result.",
+    "structuralHint": "Missing links between elements that exist — these alone are consistency defects.",
+    "linguisticHint": "Wording that needs your review — a suggestion, not a verdict.",
+    "conflictsHint": "This check never sets row against row, so it cannot produce a conflict.",
+    "cleanPartial": "No defect was found among the recorded elements — what is not yet recorded was not checked, so this is not a certificate of consistency."
   },
   "theses": {
     "title": "Thesis library",
@@ -1379,7 +1388,22 @@
     "action_default": "Open the place named above and review it.",
     "rulesUnavailable": "The rule registry did not arrive, so each rule's status and provenance are not shown beside its alert.",
     "loadFailedNote": "This project's assessment could not be read — what you see is not 'nothing to report': the assessment did not arrive.",
-    "itemsCount": "items"
+    "itemsCount": "items",
+    "actionsHint": "Suggestions to read; they create nothing in your project. A task is created only on your acceptance.",
+    "actionsFailed": "Suggested actions could not be read — what you see is not 'nothing to do'.",
+    "previewButton": "Preview the suggested task",
+    "previewClose": "Close the preview",
+    "previewTitle": "Preview: this is what the task would be if you accepted it",
+    "previewFailed": "The preview could not be read.",
+    "previewSource": "Where the suggestion came from",
+    "previewUndetermined": "Fields not filled in here",
+    "previewNotCreated": "No task was created",
+    "acceptDisabled": "Acceptance is not available yet",
+    "actionState": "State",
+    "state_known": "Known",
+    "state_missing": "Missing",
+    "state_needs_review": "Needs review",
+    "state_conflicting": "Conflicting"
   },
   "goldenThread": {
     "title": "Golden Thread",
@@ -1414,7 +1438,10 @@
     "origin_instruments": "Instrument",
     "origin_analysis_runs": "Analysis run",
     "origin_analysis_outputs": "Analysis output",
-    "origin_interpretations": "A finding's managerial implication"
+    "origin_interpretations": "A finding's managerial implication",
+    "projectTitleLabel": "Project",
+    "projectTitleFallback": "This project has not been named yet — the name above is a fallback, not a title you recorded.",
+    "createdAtLabel": "Created"
   },
   "synthesis": {
     "themesTitle": "Themes",

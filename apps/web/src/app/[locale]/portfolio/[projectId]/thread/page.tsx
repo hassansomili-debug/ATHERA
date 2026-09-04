@@ -136,6 +136,29 @@ export default function GoldenThreadPage({
         </Link>
       </p>
       <h1 style={{ marginBlockStart: 0 }}>{t("goldenThread.title")}</h1>
+      {/* **اسمُ البحث يُعرض، ولا يُترك الباحث يخمّن أيَّ خيطٍ يقرأ.**
+          والعنوان يصل من عقد العرض: فارغُه يصير «مشروع بدون عنوان» **مُعلَنًا
+          بديلًا**، وتاريخُ الإنشاء حقلٌ مستقلّ لا جزءٌ من الاسم — ودمجُهما هو
+          أصلُ العناوين المشوَّهة التي ظهرت طابعًا زمنيًّا في مكان العنوان. */}
+      {thread ? (
+        <p style={{ marginBlockEnd: 4 }} data-testid="thread-project-title">
+          <span className="metric-label">{t("goldenThread.projectTitleLabel")}: </span>
+          <strong>{thread.title}</strong>
+          {thread.created_at ? (
+            <span className="metric-label" style={{ marginInlineStart: 8 }}>
+              {t("goldenThread.createdAtLabel")}:{" "}
+              {new Date(thread.created_at).toLocaleDateString(
+                locale === "ar" ? "ar" : "en",
+              )}
+            </span>
+          ) : null}
+        </p>
+      ) : null}
+      {thread?.title_is_fallback ? (
+        <p className="metric-label" data-testid="thread-title-fallback">
+          {t("goldenThread.projectTitleFallback")}
+        </p>
+      ) : null}
       <p className="metric-label">{t("goldenThread.lead")}</p>
       <p style={{ marginBlockEnd: 12 }}>
         <Link href={`/${locale}/portfolio/${projectId}/brain`}>
