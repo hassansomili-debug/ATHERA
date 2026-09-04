@@ -197,7 +197,7 @@ async def task_counts(session: AsyncSession, *, tenant_id: uuid.UUID,
             func.count().filter(ProjectTask.status == "blocked"),
             func.count().filter(ProjectTask.status == "completed"),
             func.count(),
-        ).where(scoped)
+        ).select_from(ProjectTask).where(scoped)
     )).one()
     return TaskCounts(open=row[0], overdue=row[1], awaiting_your_decision=row[2],
                       awaiting_review=row[3], blocked=row[4], completed=row[5],
@@ -271,8 +271,14 @@ async def recent_activity(session: AsyncSession, *, tenant_id: uuid.UUID,
     وتغييرُ مهمّة. ولا «زار الباحث الصفحة» — وهو أثرٌ لا معنى علميّ له
     وجمعُه سلوكُ مراقبةٍ لا إدارةَ مشروع.
     """
+    # **الثابت النصّي يُصبّ صراحةً.** و`literal("x")` يُصيَّر مُعامِلًا
+    # مربوطًا (`$1`)، وPostgreSQL في `UNION` لا يستنتج نوعه فيسقط الاستعلام
+    # بـ«could not determine data type of parameter». والصبّ يجعله معلومًا.
+    def kind(name: str):
+        return cast(literal(name), String).label("kind")
+
     stages = select(
-        literal("stage_confirmed").label("kind"),
+        kind("stage_confirmed"),
         ProjectStageEvent.occurred_at.label("at"),
         cast(ProjectStageEvent.to_stage, String).label("subject"),
         ProjectStageEvent.confirmed_by.label("actor"),
@@ -280,7 +286,7 @@ async def recent_activity(session: AsyncSession, *, tenant_id: uuid.UUID,
             ProjectStageEvent.project_id == project_id)
 
     milestones = select(
-        literal("milestone_completed"),
+        kind("milestone_completed"),
         ProjectMilestone.completed_at,
         cast(ProjectMilestone.milestone_key, String),
         ProjectMilestone.completed_by,
@@ -289,7 +295,7 @@ async def recent_activity(session: AsyncSession, *, tenant_id: uuid.UUID,
             ProjectMilestone.completed_at.is_not(None))
 
     tasks = select(
-        literal("task_updated"),
+        kind("task_updated"),
         ProjectTask.updated_at,
         cast(ProjectTask.title, String),
         ProjectTask.created_by,

@@ -947,22 +947,28 @@ def counting_statements():
 
 
 async def _seed_project(tenant_id, title="بحثُ قبولٍ لإدارة المشروع"):
-    from athera_api.db import system_session
+    """**بجلسةِ مستأجرٍ لا بجلسةٍ نظامية.**
+
+    و`system_session` لا تضبط سياق المستأجر، فـ`app_current_tenant()` فارغة
+    و`WITH CHECK` في سياسة `research_projects` ترفض الإدراج. والدور
+    `athera_app` لا يملك `BYPASSRLS` — وهو ما نريده بالضبط.
+    """
+    from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
 
-    async with system_session() as session:
+    async with tenant_session(tenant_id) as session:
         project = ResearchProject(tenant_id=tenant_id, working_title_ar=title,
-                                  status="planned")
+                                  status="planned", current_gate="G1")
         session.add(project)
         await session.flush()
         return project.id
 
 
 async def _seed_member(tenant_id, project_id, name="زميلٌ في الفريق"):
-    from athera_api.db import system_session
+    from athera_api.db import tenant_session
     from athera_api.models.portfolio import ProjectMember
 
-    async with system_session() as session:
+    async with tenant_session(tenant_id) as session:
         member = ProjectMember(tenant_id=tenant_id, project_id=project_id,
                                display_name=name, role="co_author")
         session.add(member)
