@@ -120,7 +120,61 @@
 
 ---
 
-## ٤) عيبُ درجة الاتساق — خبرٌ يُسجَّل، ولا يُطلب فيه شيء
+## ٤) **بوّابةٌ ناقصة: `research-brain-surface.spec.ts` لا تُشغَّل في CI**
+
+### الخبر
+
+الملفُّ `apps/web/tests/research-brain-surface.spec.ts` موجودٌ منذ الموجة
+السابقة، **ولا خطوةَ في `ci.yml` تشغّله ولا سطرَ في `package.json` يسمّيه**:
+
+| السكربت | الملف | يُشغَّل في CI؟ |
+|---|---|---|
+| `test:refresh` | `auth-refresh.spec.ts` | نعم (سطر ١٨٧) |
+| `test:recovery` | `recovery.spec.ts` | نعم (سطر ١٩٣) |
+| `test:surface` | `product-surface.spec.ts` | نعم (سطر ٢٠٣) |
+| `test:acceptance` | `acceptance.spec.ts` | بعد الدمج وحده (سطر ٢٣٠) |
+| — | **`research-brain-surface.spec.ts`** | **لا** |
+
+و`test:browser` (`playwright test` بلا تخصيص) يشملها، ولا خطوةَ تستدعيه.
+
+### ما الذي يسقط بدونه
+
+**فحوصُ المتصفّح لهاتين الشاشتين لم تُشغَّل قطّ** — لا فحوصُ هذا الـPR ولا
+فحوصُ الموجة السابقة. وملفٌّ فيه اثنا عشر فحصًا لا يُشغَّل أسوأ من غيابه:
+يُقرأ في المستودع تغطيةً قائمة، ويُبنى عليه اطمئنانٌ لا سند له.
+
+### المطلوب — سطران
+
+في `apps/web/package.json` تحت `scripts`:
+
+```json
+"test:brain-surface": "playwright test tests/research-brain-surface.spec.ts"
+```
+
+وفي `.github/workflows/ci.yml` بعد خطوة `Product surface` (سطر ~٢٠٣)،
+بالنمط نفسه — بلا اعتماد وبلا خادمٍ خلفي، فتعمل في كل PR:
+
+```yaml
+      - name: Research brain and golden thread (real browser)
+        run: cd apps/web && npm run test:brain-surface
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+```
+
+**ولم يُعدَّل أيٌّ من الملفّين في هذا المسار**: `ci.yml` بوّابةٌ للمُكامِل،
+و`package.json` قشرةُ التطبيق. ومسارٌ يضيف خطوةً إلى بوّابته بنفسه يفحص
+نفسه بنفسه.
+
+### وحتى ذلك الحين
+
+فحوصُ المتصفّح في هذا الـPR **لم تُلاحَظ خضراء** ولا يُدّعى أنّها كذلك.
+والمُثبَت هو فحوصُ الخادم: ٣٠ فحصًا في
+`apps/api/tests/test_at_wave1_f_golden_thread.py`، عشرةٌ منها عبر HTTP
+بهويّةٍ حقيقية، وتشغّلها بوّابةُ `API — اختبارات القبول` القائمة.
+
+---
+
+## ٥) عيبُ درجة الاتساق — خبرٌ يُسجَّل، ولا يُطلب فيه شيء
 
 **العقدُ المُتحقَّق موجود** (§15.3 في `services/golden_thread/score.py`، ومعه
 فحوصُه في `tests/test_at_s5_01_09_golden_thread.py`)، فلم تُحذف الدرجة.
