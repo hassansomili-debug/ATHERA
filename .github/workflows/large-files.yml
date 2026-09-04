@@ -1,0 +1,65 @@
+# الطبقة الثقيلة من اختبارات الرفع | The heavy upload tier.
+#
+# **ولماذا ليست في `ci.yml`؟** لأن بوابة الدمج تُقاس بما تكلّفه على كل
+# تعديل. رفعُ أربعمئة ميجابايت وتنزيلها والتحقق من بصمتها يضيف دقائق إلى
+# كل طلب دمج، بما فيه تعديل نصٍّ في واجهة لا يمسّ الرفع أصلًا. وبوابةٌ
+# بطيئة تُلتَف حولها ثم لا تحرس شيئًا — وهذا الدرس متكرر في هذا المستودع.
+#
+# فالطبقات معلنة، ولا واحدة منها تُعدّ ناجحة وهي لم تعمل:
+#
+#   الطبقة الأولى — خمسة ميجابايت. داخل `pytest` في `ci.yml`، على **كل**
+#   طلب دمج (`test_at_large_file_upload.py::…five_megabyte…`). تُثبت أن
+#   المسار كلّه يعمل لملفٍ أكبر من مقطع القراءة بخمسة أضعاف.
+#
+#   الطبقة الثانية — هذا الملف. مئتا ميجابايت ليلًا، وأي حجمٍ يُطلب يدويًّا
+#   حتى السقف المعلن (512 ميجابايت للمستندات). لا تعمل على طلبات الدمج.
+#
+# **ولا ملف ثنائي في المستودع.** الحمولات تُولَّد في وقت التشغيل من نمطٍ
+# معلوم — مستودعٌ يحمل ملفًا بمئتي ميجابايت يعاقب كل من يستنسخه إلى الأبد.
+name: Large files — الطبقة الثقيلة
+
+on:
+  workflow_dispatch:
+    inputs:
+      size_mb:
+        description: "حجم المستند بالميجابايت | document size in MB (max 512)"
+        required: true
+        default: "200"
+  schedule:
+    # ‏٠٣:٤٠ بتوقيت UTC — بعيدًا عن ساعات العمل، وليست الدقيقة صفر التي
+    # يزدحم عليها جدولُ GitHub فتتأخّر التشغيلة أو تُسقط.
+    - cron: "40 3 * * *"
+
+jobs:
+  heavy:
+    name: رفعٌ بحجم كتاب | book-sized upload
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: athera_owner
+          POSTGRES_PASSWORD: athera_owner_pw
+          POSTGRES_DB: athera
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U athera_owner -d athera"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://athera_app:athera_app_pw@localhost:5432/athera
+      DATABASE_MIGRATION_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera
+      JWT_SECRET: ci-only-not-a-real-secret
+      MODEL_PROVIDER: "null"
+      # التخزين في الذاكرة: سلوكٌ حقيقي بلا اعتماد إنتاج ولا دلوٍ حيّ.
+      STORAGE_PROVIDER: memory
+      ATHERA_LARGE_FILE_MB: ${{ github.event.inputs.size_mb || '200' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e "apps/api[dev]"
+      - name: Migrate
+        run: cd infra/db && alembic upgrade head
+      - name: Heavy upload tier
+        run: cd apps/api && pytest -v tests/test_at_large_file_upload.py
