@@ -664,6 +664,37 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     "trends.novelty_already_decided": {
         "ar": "بُتّ في فحص الجدة مسبقًا.", "en": "This novelty check was already decided.",
     },
+    # ── إدارة المشروع البحثي (Wave1-B) ──
+    "project_management.project_not_found": {
+        "ar": "البحث غير موجود أو خارج نطاق صلاحيتك.",
+        "en": "Project not found or outside your scope.",
+    },
+    "project_management.project_not_in_trash": {
+        "ar": "هذا البحث ليس في السلّة — والإتلاف الدائم يسبقه نقلٌ إليها.",
+        "en": "This project is not in the trash; permanent deletion is preceded "
+              "by moving it there.",
+    },
+    "project_management.task_not_found": {
+        "ar": "المهمّة غير موجودة في هذا البحث.",
+        "en": "That task does not exist in this project.",
+    },
+    "project_management.member_not_in_project": {
+        "ar": "لا تُسنَد المهمّة إلا إلى عضوٍ في فريق هذا البحث.",
+        "en": "A task can only be assigned to a member of this project's team.",
+    },
+    "project_management.milestone_unknown": {
+        "ar": "مَعْلَمٌ غير معروف.",
+        "en": "Unknown milestone.",
+    },
+    "project_management.permanent_delete_blocked": {
+        "ar": "الإتلاف الدائم موقوف: لا سياسةَ احتفاظٍ قابلةً للتنفيذ في هذا "
+              "النظام، فلا يُتلَف ما لا تُعرف مشروعيّة إتلافه. والبحث باقٍ في "
+              "السلّة ويمكن استعادته كما هو.",
+        "en": "Permanent deletion is blocked: this system has no enforceable "
+              "retention policy, so nothing is destroyed whose destruction cannot "
+              "be shown to be lawful. The project stays in the trash and can be "
+              "restored unchanged.",
+    },
     "validation.failed": {
         "ar": "البيانات المُرسلة غير صالحة.",
         "en": "The submitted data is invalid.",

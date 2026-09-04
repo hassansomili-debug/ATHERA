@@ -49,6 +49,17 @@ from .screening import (
     LiteratureMatrixCell,
     SourceAbstract,
 )
+from .project_management import (
+    MILESTONES,
+    STAGES,
+    TASK_PRIORITIES,
+    TASK_SOURCES,
+    TASK_STATUSES,
+    ProjectMilestone,
+    ProjectPlan,
+    ProjectStageEvent,
+    ProjectTask,
+)
 from .synthesis import (
     CONFLICT_KINDS,
     GAP_STRENGTHS,
@@ -174,4 +185,6 @@ __all__ = [
     "ThemeCandidate", "ThemeCandidateSupport", "ContradictionCandidate",
     "ContradictionSide", "GapCandidate", "GapCandidateSource", "ResearchOpportunity",
     "SYNTHESIS_STATUSES", "THEME_BASES", "CONFLICT_KINDS", "GAP_TYPES", "GAP_STRENGTHS",
+    "ProjectPlan", "ProjectStageEvent", "ProjectTask", "ProjectMilestone",
+    "STAGES", "TASK_STATUSES", "TASK_SOURCES", "TASK_PRIORITIES", "MILESTONES",
 ]
