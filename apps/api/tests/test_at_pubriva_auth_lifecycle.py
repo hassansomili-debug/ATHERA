@@ -353,8 +353,15 @@ def test_the_literature_step_performs_the_workflow_not_the_rule_text():
     assert "link that reference to the project, defaulting to saved_only" in ACCEPTANCE
     # الاستيراد من الشاشة لا من الـAPI.
     assert "/api/v1/sources/import" not in ACCEPTANCE
-    # والحال الافتراضية تُفحص على العنصر بعينه.
-    assert 'toHaveAttribute("aria-pressed", "true")' in ACCEPTANCE
+    # **والحال الافتراضية تُفحص على العنصر بعينه.**
+    #
+    # كانت تُقرأ من `aria-pressed` على زرّ «محفوظ فقط» في بطاقة البحث. ثم
+    # انتقل القرار إلى شاشة الفرز — حيث يُطلب سبب الاستبعاد — فلم تعد
+    # البطاقة تقرّر، وإنما تعرض. فالحال تُقرأ من عقدها على البطاقة نفسها،
+    # وهو أقوى من `aria-pressed`: نصٌّ مترجَم لا يدخل فيه.
+    assert 'toHaveAttribute("data-use-state", "saved_only"' in ACCEPTANCE
+    assert "linked.locator(\"[data-use-state]\")" in ACCEPTANCE, (
+        "الحال تُقرأ في الصفحة كلها لا في بطاقة المرجع")
     assert "sourceTitle" in ACCEPTANCE, "المطابقة ليست بالعنوان المقروء من الشاشة"
 
 
