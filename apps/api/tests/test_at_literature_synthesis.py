@@ -1572,3 +1572,44 @@ async def test_a_content_theme_support_must_point_at_a_cell(two_tenants):
                 source_id=source, role="supporting", basis_field_key="constructs",
                 matrix_cell_id=None, evidence_scope="abstract_only"))
             await session.flush()
+
+
+# ══════════ الطريق موجودٌ في التطبيق، لا في الملفّ وحده ══════════
+
+def test_the_synthesis_router_is_actually_mounted():
+    """**مسارٌ لا يُركَّب ليس مسارًا.**
+
+    خدماتُ التركيب كانت مفحوصةً كلَّها وتعمل، ولا واحدٌ منها يُبلَغ عبر
+    HTTP: `main.py` لم يذكر الموجّه. فكل نداءٍ من متصفّح يردّ `404`، وفحوصُ
+    الخدمة خضراء — وهي أخطرُ صورةٍ للأخضر الكاذب: الوحدات تعمل والمنتج لا
+    يعمل.
+
+    ولا يُفحص هذا بقراءة `main.py` نصًّا: قد يُذكر الاستيراد ولا يُركَّب،
+    أو يُركَّب تحت سابقةٍ أخرى. فيُسأل التطبيقُ نفسه عن مخطّطه.
+    """
+    from athera_api.main import app
+
+    paths = set(app.openapi()["paths"])
+    for required in (
+        "/api/v1/synthesis/projects/{project_id}/themes",
+        "/api/v1/synthesis/projects/{project_id}/contradictions",
+        "/api/v1/synthesis/projects/{project_id}/gaps",
+        "/api/v1/synthesis/projects/{project_id}/opportunities",
+    ):
+        assert required in paths, f"طريقُ التركيب غير مركَّب: {required}"
+
+
+def test_the_synthesis_routes_are_not_open_to_the_anonymous():
+    """طريقٌ مركَّبٌ بلا حارس أسوأ من طريقٍ غير مركَّب."""
+    from fastapi.testclient import TestClient
+
+    from athera_api.main import app
+
+    with TestClient(app) as client:
+        for path in (
+            "/api/v1/synthesis/projects/00000000-0000-0000-0000-000000000000/themes",
+            "/api/v1/synthesis/projects/00000000-0000-0000-0000-000000000000/gaps",
+        ):
+            answer = client.get(path)
+            assert answer.status_code == 401, (
+                f"{path} ردّ {answer.status_code} على زائرٍ بلا هوية")
