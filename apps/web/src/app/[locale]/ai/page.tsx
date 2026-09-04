@@ -25,6 +25,9 @@ const INTENTS = [
 const NO_SUBSCRIPTION = () => () => undefined;
 const attachedFile = (): string | undefined =>
   new URLSearchParams(window.location.search).get("file") ?? undefined;
+/** فكرةٌ كتبها الباحث في الرئيسية — تصل مكتوبةً في المربّع، لا تُطلب ثانية. */
+const askedQuestion = (): string =>
+  new URLSearchParams(window.location.search).get("q") ?? "";
 
 export default function AiPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale: raw } = use(params);
@@ -36,10 +39,12 @@ export default function AiPage({ params }: { params: Promise<{ locale: string }>
   // `react-hooks/set-state-in-effect`، و`useSyncExternalStore` هي الأداة
   // الموضوعة لهذا: لقطةٌ على العميل وأخرى على الخادم تمنع اختلاف الترطيب.
   const attachFileId = useSyncExternalStore(NO_SUBSCRIPTION, attachedFile, () => undefined);
+  // الرئيسية توجّه ولا تنفّذ — فما كتبه الباحث هناك يصل هنا مكتوبًا.
+  const asked = useSyncExternalStore(NO_SUBSCRIPTION, askedQuestion, () => "");
   const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
   const messages = getMessages(locale);
   const t = translator(messages);
-  const { items, modelEnabled, loading } = usePosture(locale);
+  const { modelEnabled, loading } = usePosture(locale);
   // **مقترحات البداية كانت أزرارًا ميتة.** تُرسم قابلةً للنقر بلا معالج:
   // يضغطها المستخدم فلا يحدث شيء، ولا رسالة تقول لماذا. وهي الآن تملأ
   // المدخل بنصّها، فيعدّله المستخدم ويرسله.
@@ -57,7 +62,7 @@ export default function AiPage({ params }: { params: Promise<{ locale: string }>
           locale={locale}
           messages={messages}
           rows={4}
-          seed={seed}
+          seed={seed || asked}
           attachFileId={attachFileId}
         />
       </section>
@@ -88,26 +93,26 @@ export default function AiPage({ params }: { params: Promise<{ locale: string }>
         </p>
       </section>
 
-      {items.length > 0 ? (
-        <section>
-          <p className="nav-label" style={{ paddingInline: 0, marginBlockEnd: 10 }}>
-            {t("ai.gateCheck")}
-          </p>
-          <div className="grid">
-            {items.map((item) => (
-              <article className="card" key={item.key}>
-                <div className="metric-label">{item.label}</div>
-                <div style={{ marginBlock: "6px 8px" }}>
-                  <span className={`chip ${item.value === "null" || item.value === "offline" || item.value === "0" ? "chip-muted" : "chip-ok"}`}>
-                    {item.value}
-                  </span>
-                </div>
-                <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>{item.detail}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      {/*
+        ── ما حُذف من هنا: شبكةُ «حالة التشغيل الحيّة» ──
+
+        كانت هذه الشاشة تعرض على الباحث بطاقاتٍ فيها قيمُ التشغيل الخام
+        كما يرسلها الخادم: `anthropic`، و`offline`، و`not_configured`،
+        و`s3`. وهي أسماءُ مزوّدين وحالاتُ بنيةٍ تحتية لا معنى لها في عملٍ
+        علمي — والباحث الذي يقرأ «anthropic» لا يعرف هل يستطيع أن يكمل
+        بحثه أم لا، وهو السؤال الوحيد الذي يخصّه.
+
+        **وكانت الشارة تلوّن ولا تقول.** `chip-ok` خضراء و`chip-muted`
+        رمادية، والقيمة الخام وحدها في وسطها؛ فمن لا يميّز اللونين يقرأ
+        كلمةً إنجليزية بلا حكم. لونٌ يحمل المعنى وحده.
+
+        وموضعُ هذه القيم «الإعدادات ← وضع التشغيل» — وهي معروضةٌ هناك
+        بالفعل، بعنوانٍ مترجَم وشرحٍ لكل بند. ولا تُنسخ هنا.
+
+        وما يخصّ الباحث من هذا كلّه شيءٌ واحد: هل يستطيع أن يسأل الآن؟
+        وذاك يقوله شريطُ البوابة في المربّع أعلاه — ومعه الفعل التالي
+        الصالح، لا حالةُ مزوّد.
+      */}
     </>
   );
 }

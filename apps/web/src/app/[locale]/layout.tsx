@@ -50,6 +50,10 @@ export default async function LocaleLayout({
     // الاتجاه يُحسم على عنصر <html> — لا مرآة CSS لاحقة (§38.4).
     <html lang={locale} dir={direction(locale)}>
       <body>
+        {/* أوّلُ ما يبلغه Tab — ولا يظهر لغيره. */}
+        <a className="skip-link" href="#main-content">
+          {t("common.skipToContent")}
+        </a>
         <div className="shell">
           <aside className="sidebar">
             <div className="brand">
@@ -74,7 +78,7 @@ export default async function LocaleLayout({
             <SideNav locale={locale} messages={messages} />
             <LocaleSwitcher locale={locale} messages={messages} />
           </aside>
-          <main className="content">
+          <main className="content" id="main-content" tabIndex={-1}>
             <AuthGate locale={locale}>{children}</AuthGate>
           </main>
         </div>

@@ -72,6 +72,27 @@ a { color: var(--teal); }
 /* ══════ الهيكل ══════ */
 .shell { display: flex; min-block-size: 100vh; }
 
+/*
+ * **قفزةٌ إلى المحتوى.** من يتنقّل بلوحة المفاتيح كان يمرّ على ثلاثة عشر
+ * رابطًا في القائمة قبل أن يبلغ أول عنصرٍ في الصفحة — في كل صفحة. والرابط
+ * مخفيٌّ حتى يُركَّز عليه، فيظهر عندها ظهورًا كاملًا لا خافتًا.
+ */
+.skip-link {
+  position: absolute;
+  inset-block-start: -100px;
+  inset-inline-start: 8px;
+  z-index: 50;
+  padding: 10px 16px;
+  border-radius: 0 0 10px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  color: var(--fg);
+  text-decoration: none;
+  font-weight: 600;
+}
+.skip-link:focus { inset-block-start: 0; }
+
 .sidebar {
   inline-size: 264px;
   flex: 0 0 264px;
@@ -101,20 +122,38 @@ a { color: var(--teal); }
 .brand span { color: var(--muted); font-size: 11px; display: block; line-height: 1.2; }
 
 /* ══════ التنقل ══════ */
+/*
+ * **الحالُ النشطة واحدة، ولا يحملها اللون وحده.**
+ *
+ * كانت هنا قاعدتان تكذبان معًا: `li:nth-child(2)` تلوّن العنصر الثاني من
+ * **كل** قائمة بلون الصفحة الجارية — فيبدو عنصران نشطين على أيّ صفحة —
+ * و`.nav-dot` تضع نقطةً ملوّنة بجانب كل رابط لا تعني شيئًا، وتشتدّ عند
+ * النشط. نقطةٌ لا معنى لها تُعلّم العينَ أن اللون في هذه الواجهة زينة،
+ * فتتوقّف عن قراءته حين يحمل معنى فعلًا.
+ *
+ * فما بقي حاملًا للحال: `aria-current="page"` (وهو ما ينطقه قارئ الشاشة)،
+ * وشريطٌ صلب على حافة البداية، ووزنُ خطٍّ أثقل، ثمّ الخلفية. ومن أطفأ
+ * الألوان أو قرأ بلا بصر يبقى عنده ثلاثةٌ من الأربعة.
+ */
+.nav-group + .nav-group { margin-block-start: 14px; }
 .nav-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .nav-list a {
   display: flex; align-items: center; gap: 9px;
   padding: 8px 11px;
   border-radius: 10px;
+  border-inline-start: 3px solid transparent;
   color: var(--fg-soft);
   text-decoration: none;
   font-size: 14.5px;
   transition: background .15s, color .15s;
 }
 .nav-list a:hover { background: var(--surface-2); color: var(--fg); }
-.nav-list a[aria-current="page"] { background: color-mix(in srgb, var(--aqua) 12%, transparent); color: var(--fg); font-weight: 560; }
-.nav-dot { inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--aqua); flex: 0 0 6px; opacity: .55; }
-.nav-list a[aria-current="page"] .nav-dot { opacity: 1; }
+.nav-list a[aria-current="page"] {
+  background: color-mix(in srgb, var(--aqua) 12%, transparent);
+  border-inline-start-color: var(--teal);
+  color: var(--fg);
+  font-weight: 640;
+}
 
 .nav-section {
   margin-block-start: 14px; padding-block-start: 12px;
@@ -122,12 +161,10 @@ a { color: var(--teal); }
 }
 .nav-label {
   font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--muted); padding-inline: 11px; margin-block-end: 6px;
+  color: var(--muted); padding-inline: 11px; margin-block: 0 6px;
+  font-weight: 600;
 }
-
-/* أثيرا AI: العنصر الوحيد الذي يحمل التدرّج في القائمة */
-.nav-list li:nth-child(2) a { background: var(--ai-tint); font-weight: 560; color: var(--fg); }
-.nav-list li:nth-child(2) .nav-dot { background: var(--violet); opacity: 1; }
+h2.nav-label { line-height: 1.6; }
 
 /* ══════ البطاقات ══════ */
 .card {
@@ -199,6 +236,29 @@ a { color: var(--teal); }
   cursor: pointer;
 }
 .ai-send:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ══════ مربّع البداية في الرئيسية — موجِّهٌ لا محادثة ══════ */
+.intake {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  padding: 14px 16px 12px;
+  display: grid;
+  gap: 10px;
+}
+.intake textarea {
+  inline-size: 100%; border: none; resize: vertical; background: transparent;
+  font: inherit; color: var(--fg); line-height: 1.6; padding: 2px;
+}
+.intake textarea::placeholder { color: var(--muted); }
+.intake textarea:focus { outline: none; }
+.intake-foot {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-block-start: 10px; border-block-start: 1px solid var(--border);
+}
+.intake-route { margin: 0; flex: 1 1 20ch; color: var(--muted); font-size: 13px; }
+.intake .ai-send { margin-inline-start: auto; }
 
 /* شرائح النوايا */
 .starters { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -283,8 +343,15 @@ a { color: var(--teal); }
     border-inline-end: none; border-block-end: 1px solid var(--border);
     padding: 12px;
   }
-  .nav-list { grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; gap: 6px; padding-block-end: 4px; }
-  .nav-list a { white-space: nowrap; }
+  /*
+   * **لفٌّ لا شريطُ تمرير أفقي.** كان `overflow-x: auto` يخفي نصف
+   * القائمة خارج الحافة على الهاتف — ومجموعةٌ دلالية نصفُها غير مرئي
+   * تساوي المطويّ الذي أُزيل. فتلتفّ العناصر وتبقى كلّها ظاهرة.
+   */
+  .nav-group + .nav-group { margin-block-start: 8px; }
+  .nav-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .nav-list a { white-space: nowrap; padding: 7px 10px; }
+  .nav-label { padding-inline: 2px; }
   .nav-section { margin-block-start: 10px; padding-block-start: 10px; }
   .content { padding: 22px 18px 56px; }
 }
