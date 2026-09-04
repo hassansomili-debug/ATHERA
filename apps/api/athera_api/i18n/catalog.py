@@ -327,6 +327,51 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "لا يمكن استبعاد مرجعٍ ما زال يُستشهد به في ادعاءات هذا البحث.",
         "en": "A source still cited by this project's claims cannot be excluded.",
     },
+    # ── طبقة التركيب: الموضوعات والتعارضات والفجوات المحتملة والفرص ──
+    #
+    # ولا رمز هنا يقول «فجوة» بلا «محتملة»: نصّ الخطأ يقرؤه الباحث في لحظة
+    # ضغطٍ على زرّ، وهو من أكثر ما يعلق في ذهنه عن معنى ما يفعله.
+    "synthesis.project_not_found": {
+        "ar": "لم يُعثر على هذا البحث.",
+        "en": "This project was not found.",
+    },
+    "synthesis.theme_not_found": {
+        "ar": "لم يُعثر على هذا الموضوع في هذا البحث.",
+        "en": "This theme was not found in this project.",
+    },
+    "synthesis.contradiction_not_found": {
+        "ar": "لم يُعثر على هذا التعارض في هذا البحث.",
+        "en": "This contradiction was not found in this project.",
+    },
+    "synthesis.gap_not_found": {
+        "ar": "لم يُعثر على هذه الفجوة المحتملة في هذا البحث.",
+        "en": "This gap candidate was not found in this project.",
+    },
+    "synthesis.opportunity_not_found": {
+        "ar": "لم يُعثر على هذه الفرصة البحثية في هذا البحث.",
+        "en": "This research opportunity was not found in this project.",
+    },
+    "synthesis.gap_not_approved": {
+        "ar": "الفرصة البحثية لا تُنشأ إلا من فجوةٍ محتملة اعتمدتها بنفسك. "
+              "راجِع الفجوة أولًا ثم اعتمدها إن رأيت متابعتها.",
+        "en": "A research opportunity may only come from a gap candidate you have "
+              "approved yourself. Review the gap first, then approve it if you "
+              "decide to pursue it.",
+    },
+    "synthesis.confirmation_required": {
+        "ar": "هذا الإجراء يحتاج تأكيدًا صريحًا. راجِع المعاينة ثم أكّد.",
+        "en": "This action needs an explicit confirmation. Review the preview, then confirm.",
+    },
+    "synthesis.gap_carries_an_opportunity": {
+        "ar": "لا يمكن سحب اعتماد فجوةٍ أُنشئت فوقها فرصة بحثية. "
+              "احذف الفرصة أولًا إن كنت تريد إعادة النظر في الفجوة.",
+        "en": "A gap that already carries a research opportunity cannot be "
+              "un-approved. Remove the opportunity first if you want to reconsider it.",
+    },
+    "synthesis.project_already_created": {
+        "ar": "سبق أن أُنشئ بحثٌ من هذه الفرصة.",
+        "en": "A project has already been created from this opportunity.",
+    },
     "auth.current_password_wrong": {
         "ar": "كلمة المرور الحالية غير صحيحة.",
         "en": "The current password is incorrect.",

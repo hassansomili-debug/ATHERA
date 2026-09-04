@@ -36,6 +36,7 @@ from .routers import publishing as publishing_router
 from .routers import settings as settings_router
 from .routers import team as team_router
 from .routers import tenants as tenants_router
+from .routers import synthesis as synthesis_router
 from .routers import thesis as thesis_router
 from .routers import trends as trends_router
 from .routers import workspace as workspace_router
@@ -170,4 +171,5 @@ app.include_router(publishing_router.router)
 app.include_router(manuscript_drafting_router.router)
 app.include_router(analysis_router.router)
 app.include_router(trends_router.router)
+app.include_router(synthesis_router.router)
 app.include_router(workspace_router.router)
