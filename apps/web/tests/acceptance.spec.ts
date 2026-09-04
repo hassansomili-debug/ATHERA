@@ -109,6 +109,17 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   const fileCalls: string[] = [];
   const processCalls: string[] = [];
   const decideCalls: string[] = [];
+  // **وطلبٌ لم يصل ليس طلبًا لم يُرسَل.** `response` لا يقع على طلبٍ
+  // أُجهض أو مُنع، فيبدو كأن النقرة لم تحدث أصلًا — وهما عطبان مختلفان.
+  const failedCalls: string[] = [];
+  page.on("requestfailed", (r) => {
+    try {
+      const path = new URL(r.url()).pathname;
+      if (path.startsWith("/api/v1/")) {
+        failedCalls.push(`${path.split("/").pop()}:${r.failure()?.errorText ?? "?"}`);
+      }
+    } catch { /* رابطٌ لا يُحلَّل ليس دليلًا */ }
+  });
   page.on("response", (r) => {
     try {
       const path = new URL(r.url()).pathname;
@@ -479,7 +490,12 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
       .filter({ has: page.getByRole("button", { name: "اعتمد" }) }).first();
     await expect(approvable, "no candidate was available to approve")
       .toBeVisible({ timeout: 60_000 });
-    await approvable.getByRole("button", { name: "اعتمد" }).click();
+
+    // **والزرّ يُثبَت صالحًا للضغط قبل الضغط.** زرٌّ معطَّل يُنقر عليه بلا
+    // أثر، فيبدو كأن الطلب أُرسل ولم يُجَب.
+    const approve = approvable.getByRole("button", { name: "اعتمد" });
+    await expect(approve, "the approve control is not clickable").toBeEnabled();
+    await approve.click();
 
     // **والاعتماد يُقاس بالحصيلة لا بإعادة العثور على البطاقة.**
     //
@@ -492,7 +508,9 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await expect
       .poll(async () =>
               `approved=${await tally.getAttribute("data-review-approved")}`
-              + ` decide=[${decideCalls.join(" ")}]`,
+              + ` decide=[${decideCalls.join(" ")}]`
+              + ` failed=[${failedCalls.join(" ")}]`
+              + ` err=${await page.locator(".error").count()}`,
             { timeout: 60_000, message: "the approval never took effect" })
       .toMatch(new RegExp(`^approved=${before + 1} `));
   });
