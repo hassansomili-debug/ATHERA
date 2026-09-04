@@ -157,8 +157,17 @@ def upgrade() -> None:
         "WHERE consent_recorded_at IS NOT NULL"
     )
 
-    op.create_unique_constraint(
-        "uq_project_members_project_scoped", "project_members", ["id", "project_id"])
+    # **القيدُ المركّب يملكه 0026، ولا يُنشأ مرّتين.**
+    #
+    # احتاجه المساران معًا للغرض نفسه — مرجعًا لمفتاحٍ أجنبيٍّ مركّب يمنع
+    # إسنادَ شيءٍ في بحثٍ إلى عضوٍ في بحثٍ آخر. وكلٌّ منهما كان معزولًا على
+    # 0025 فلم يرَ الآخر، فأنشأه الاثنان بالاسم نفسه والأعمدة نفسها. ولمّا
+    # صارت السلسلة 0026 ← 0027 ← 0028 سقط الترحيل الثاني:
+    #
+    #     DuplicateTable: relation "uq_project_members_project_scoped"
+    #                     already exists
+    #
+    # فيُترك لصاحبه الأسبق. وهذا الملفّ يبني عليه ولا يعيده.
     # حسابٌ واحدٌ لا يكون عضوين في بحثٍ واحد — وإلّا انقسمت صلاحياته وموافقته.
     op.execute(
         "CREATE UNIQUE INDEX uq_project_members_project_account "
@@ -477,8 +486,8 @@ def downgrade() -> None:
         op.execute("ALTER TABLE project_members DROP CONSTRAINT "
                    f"ck_project_members_{constraint}")
     op.execute("DROP INDEX IF EXISTS uq_project_members_project_account")
-    op.drop_constraint("uq_project_members_project_scoped", "project_members",
-                       type_="unique")
+    # ولا يُحذف هنا ما لم يُنشأ هنا: 0026 أنشأه، و0026 يحذفه. وحذفُه من
+    # هذا الموضع يقطع مفاتيح 0026 الأجنبية وهي قائمةٌ تحته.
 
     for column in ("removed_at", "suspended_at", "author_position", "is_author",
                    "consent_evidence_ar", "consent_method", "consent_recorded_by",
