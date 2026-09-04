@@ -325,6 +325,19 @@ export default function ProjectWorkspacePage({
           <p className="metric-label" style={{ marginBlockStart: 0 }}>
             {t("project.brainNote")}
           </p>
+          {/* **الشاشتان تُفتحان من البحث نفسه.** حقول «ما نعرفه» أدناه
+              حالاتٌ مختصرة، والتقييم الكامل بخاناته الخمس والخيط بوصلاته
+              شاشتان قائمتان — وقدرةٌ عاملة بلا مدخلٍ من مكانها ليست قدرة. */}
+          <div className="actions" style={{ marginBlockEnd: 12 }}>
+            <Link className="action" href={`/${locale}/portfolio/${projectId}/brain`}>
+              <strong>{t("brain.title")}</strong>
+              <span>{t("brain.lead")}</span>
+            </Link>
+            <Link className="action" href={`/${locale}/portfolio/${projectId}/thread`}>
+              <strong>{t("goldenThread.title")}</strong>
+              <span>{t("goldenThread.lead")}</span>
+            </Link>
+          </div>
           <div style={{ display: "grid", gap: 6 }}>
             {overview.brain.map((entry) => (
               <article className="card" key={entry.key}>

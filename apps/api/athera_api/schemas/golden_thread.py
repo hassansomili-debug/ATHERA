@@ -107,3 +107,74 @@ class ProtocolResponse(BaseModel):
     approved_gate: str | None
     approved_at: dt.datetime | None
     consistency: ConsistencyResponse | None
+
+
+class ThreadNodeView(BaseModel):
+    """عقدةٌ في الخيط — واسمُ الجدول الذي قُرئت منه معها.
+
+    و«نتيجة» في عناصر الخيط ليست «نتيجة» في مخرجات التحليل. ومن لا يعرف
+    ذلك يقرأ توصيةً مسنودةً إلى نصٍّ كتبه بيده مسنودةً إلى تحليل.
+    """
+
+    id: str
+    stage: str
+    label: str
+    origin: str
+    detail: str | None = None
+
+
+class ThreadStageView(BaseModel):
+    key: str
+    label: str
+    label_ar: str
+    label_en: str
+    nodes: list[ThreadNodeView] = Field(default_factory=list)
+
+
+class ThreadConnectionView(BaseModel):
+    """وصلةٌ أو غيابُ وصلة — ومعها الصفّ الذي يشهد لها إن وُجد.
+
+    والطرف الغائب يبقى `null`: ملؤه بأقرب عقدةٍ في مرحلته هو الخطّ المخترَع
+    الذي تمنعه هذه الشاشة كلها.
+    """
+
+    stage_from: str
+    stage_to: str
+    state: str = Field(pattern="^(known|needs_review|missing|conflicting)$")
+    detail: str
+    detail_ar: str
+    detail_en: str
+    source_id: str | None = None
+    source_label: str | None = None
+    target_id: str | None = None
+    target_label: str | None = None
+    basis: str | None = None
+
+
+class ThreadReadNoteView(BaseModel):
+    key: str
+    detail: str
+    detail_ar: str
+    detail_en: str
+
+
+class GoldenThreadView(BaseModel):
+    """الخيط الذهبي كما يُعرض للباحث — **بلا درجة ولا حقلٍ تُكتب فيه**.
+
+    و`ConsistencyResponse` تحمل درجةً لبوابة البروتوكول (§15.3)، وهي قرارٌ
+    آخر لجهةٍ أخرى. ونقلُها إلى هنا يعيد ما مُنع في «ما نعرفه»: رقمٌ يخفي
+    الفرق بين خيطٍ تنقصه وصلةٌ وخيطٍ ينقصه منهج.
+
+    و`counts` أعدادٌ بحالاتها لا مجموعُ نقاط: «ثلاث وصلات ناقصة» تُقرأ
+    فتُصحَّح، و«٧٤٪» تُقرأ فتُطمئن.
+    """
+
+    project_id: uuid.UUID
+    title: str
+    stages: list[ThreadStageView] = Field(default_factory=list)
+    connections: list[ThreadConnectionView] = Field(default_factory=list)
+    read_notes: list[ThreadReadNoteView] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+    note: str
+    note_ar: str
+    note_en: str
