@@ -35,6 +35,7 @@ from ..services.document_intelligence import fields as catalogue
 from ..services.document_intelligence import pipeline
 from ..services.document_intelligence.contracts import STATUS_EXTRACTED, ExtractionBatch
 from ..services.document_intelligence.states import Status
+from ..services.thesis import processing
 from .files import upload_file
 
 logger = logging.getLogger("athera.document_intelligence")
@@ -140,6 +141,25 @@ async def _model_reader(session_maker, *, tenant_id, actor_user_id, locale, gran
     return call
 
 
+async def _claim(session: AsyncSession, principal: Principal,
+                 thesis_id: uuid.UUID) -> str:
+    """يحجز الرسالة قبل جدولة المهمّة — **أو يردّ الطلب بسببه**.
+
+    **ولا معالجتان متزامنتان على ملفٍّ واحد.** ضغطتان على «أعد القراءة»
+    كانتا تُجدولان مهمّتين تكتبان مرشّحاتٍ مضاعفة على المستند نفسه، ثم
+    تُعرضان على الباحث كأنّهما اقتراحان مستقلّان. والحجز شرطٌ في عبارة
+    الكتابة نفسها لا فحصٌ قبلها، فالقاعدة هي الحَكَم لا ترتيبُ الطلبين.
+    """
+    try:
+        return await processing.claim_for_processing(
+            session, tenant_id=principal.tenant_id, thesis_id=thesis_id)
+    except processing.ProcessingConflict as conflict:
+        if conflict.code == "thesis.not_found":
+            raise NotFound("thesis.not_found") from conflict
+        raise AtheraError(conflict.code, status_code=409,
+                          state=conflict.state or "unknown") from conflict
+
+
 async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID,
                    locale: str) -> None:
     """القراءة كاملة — **ومعاملات قصيرة لا واحدة طويلة.**
@@ -163,6 +183,13 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
         if record is None:
             logger.warning("document_intelligence: file %s not visible to tenant %s",
                            file_id, tenant_id)
+            # **وانسحابٌ صامت يترك الرسالة في `queued` إلى الأبد.** الشاشة
+            # تقول «في انتظار الدور» ولا شيء ينتظر — وهو الكذب بالانتظار.
+            # فيُكتب الفشل باسمه قبل الخروج.
+            await processing.mark(
+                session, tenant_id=tenant_id, file_id=file_id,
+                state=processing.FAILED, failure_code="file_missing",
+                failure_detail="the file row is not visible to its tenant")
             return
         storage_key = record.storage_key
         run = ExtractionRun(
@@ -233,6 +260,14 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
                 failed_run.status = Status.EXTRACTION_FAILED.value
                 failed_run.error = f"{type(exc).__name__}: {exc}"[:500]
                 failed_run.finished_at = dt.datetime.now(dt.UTC)
+            # **والرسالة نفسها تحمل الخبر، لا التشغيلة وحدها.** الشاشة تقرأ
+            # الرسالة؛ وفشلٌ يُكتب في `extraction_runs` فقط يصل إليها
+            # «٠ أقسام» بلا سبب — وهو بعينه «الصفر الصامت».
+            await processing.mark(
+                session, tenant_id=tenant_id, file_id=file_id,
+                state=processing.FAILED, failure_code="extraction_failed",
+                # صنفُ الاستثناء ورسالتُه مقصوصة — **ولا مقتطف من المستند**.
+                failure_detail=f"{type(exc).__name__}: {exc}"[:500])
 
 
 @router.post("/upload", response_model=ExtractionStateResponse,
@@ -258,6 +293,9 @@ async def upload_thesis(
     thesis, created = await pipeline.ensure_thesis_for_file(
         session, tenant_id=principal.tenant_id, file_id=stored.id,
     )
+    # حالُ الرسالة تُحجز للمعالجة قبل الجدولة (ترحيل 0027) — فلا تبقى
+    # `uploaded` بينما مهمّةٌ تعمل عليها، ولا تُجدوَل تشغيلتان معًا.
+    await _claim(session, principal, thesis.id)
     await audit.record(
         session, tenant_id=principal.tenant_id,
         action="thesis.auto_registered" if created else "thesis.upload_reused",
@@ -281,11 +319,13 @@ async def upload_thesis(
 
     background.add_task(_process, principal.tenant_id, principal.user_id,
                         stored.id, principal.locale)
+    # **و«جارٍ قراءة الملف» لم تكن قد وقعت بعد.** المهمّة لم تبدأ حين تُرسَل
+    # هذه الاستجابة؛ والحال الصادقة `queued`، وتصير `parsing` حين تصير.
     return ExtractionStateResponse(
-        thesis_id=thesis.id, file_id=stored.id, status=Status.PARSING.value,
+        thesis_id=thesis.id, file_id=stored.id, status=processing.QUEUED,
         chunks=0, candidates=0,
-        message=_t(principal.locale, "تم رفع الرسالة · جارٍ قراءة الملف",
-                   "Thesis uploaded · reading document"),
+        message=_t(principal.locale, "تم رفع الرسالة · في انتظار الدور",
+                   "Thesis uploaded · queued for reading"),
     )
 
 
@@ -330,6 +370,7 @@ async def process_stored_file(
 
     thesis, created = await pipeline.ensure_thesis_for_file(
         session, tenant_id=principal.tenant_id, file_id=record.id)
+    await _claim(session, principal, thesis.id)
     await audit.record(
         session, tenant_id=principal.tenant_id,
         action="document.processing_requested",
@@ -343,9 +384,10 @@ async def process_stored_file(
     background.add_task(_process, principal.tenant_id, principal.user_id,
                         record.id, principal.locale)
     return ExtractionStateResponse(
-        thesis_id=thesis.id, file_id=record.id, status=Status.PARSING.value,
+        thesis_id=thesis.id, file_id=record.id, status=processing.QUEUED,
         chunks=0, candidates=0,
-        message=_t(principal.locale, "جارٍ قراءة المستند", "Reading the document"),
+        message=_t(principal.locale, "في انتظار الدور لقراءة المستند",
+                   "Queued for reading"),
     )
 
 
@@ -434,11 +476,19 @@ async def extraction_state(
         )
     ).scalar_one_or_none()
     if run is None:
+        # **«لم تبدأ القراءة» ليست جوابًا واحدًا.** رسالةٌ رُفعت للتوّ غير
+        # رسالةٍ حُجزت للمعالجة وتنتظر دورها، وغيرُهما رسالةٌ سقطت قبل أن
+        # تُنشأ لها تشغيلة أصلًا — وهذه الأخيرة كانت تُعرض «محفوظ» فيقف
+        # الباحث ينتظر ما لن يأتي. فتُقرأ الحال المحفوظة على الرسالة نفسها.
+        ar, en = processing.STATE_LABELS.get(
+            thesis.processing_state, ("لم تبدأ القراءة بعد.", "Processing has not started."))
         return ExtractionStateResponse(
-            thesis_id=thesis_id, file_id=thesis.file_id, status="stored",
-            chunks=0, candidates=0,
-            message=_t(principal.locale, "لم تبدأ القراءة بعد.",
-                       "Processing has not started."),
+            thesis_id=thesis_id, file_id=thesis.file_id,
+            status=thesis.processing_state, chunks=0, candidates=0,
+            error=(processing.FAILURE_LABELS[thesis.failure_code][
+                0 if principal.locale != "en" else 1]
+                if thesis.failure_code else None),
+            message=_t(principal.locale, ar, en),
         )
     ar, en = _STATE_MESSAGES.get(run.status, ("قيد المعالجة", "Processing"))
     return ExtractionStateResponse(
@@ -786,10 +836,23 @@ async def reprocess(
     التشغيلة الجديدة تكتب صفوفًا جديدة ولا تعدّل صفًّا محسومًا. فإن خالف
     اقتراحها قيمةً معتمَدة ظهر ذلك **تعارضًا يُعرض في المراجعة**، لا استبدالًا
     يقع بصمت.
+
+    **وهي بابُ إعادة المحاولة بعد الفشل** (Wave 1-C). وثلاثةُ حدودٍ عليها:
+
+      • **لا تشغيلتان معًا.** الحجز شرطٌ في عبارة الكتابة، فطلبان متزامنان
+        يصيب أحدهما صفًّا ويُردّ الآخر بـ409 — بدل مرشّحاتٍ مضاعفة تُعرض
+        اقتراحين مستقلّين على المستند نفسه.
+      • **ولا إعادةَ محاولةٍ على مستندٍ ممسوح ضوئيًّا.** لا OCR بعد،
+        فالنتيجة ستكون هي هي حرفًا بحرف؛ ويُقال ذلك بـ`thesis.retry_needs_ocr`
+        بدل زرٍّ يَعِد ويخذل.
+      • **والاستجابة تقول `queued` لا `extracting`.** المهمّة لم تبدأ بعد
+        حين تُرسَل، وادّعاءُ طورٍ لم يُبلَغ هو الكذب الصغير الذي يجعل
+        الشاشة كلّها غير موثوقة.
     """
     thesis = await _guard(session, principal, thesis_id)
     if thesis.file_id is None:
         raise AtheraError("thesis.no_file", status_code=422)
+    previous = await _claim(session, principal, thesis.id)
 
     rows = (
         await session.execute(
@@ -804,7 +867,7 @@ async def reprocess(
     await audit.record(
         session, tenant_id=principal.tenant_id, action="thesis.reprocess_requested",
         object_type="thesis", object_id=thesis.id, actor_user_id=principal.user_id,
-        state_after={"decisions_preserved": preserved},
+        state_after={"decisions_preserved": preserved, "state_before": previous},
         reason="reprocessing appends candidates; no human decision is ever overwritten",
         request_id=principal.request_id,
     )
@@ -813,11 +876,11 @@ async def reprocess(
     background.add_task(_process, principal.tenant_id, principal.user_id,
                         thesis.file_id, principal.locale)
     return ExtractionStateResponse(
-        thesis_id=thesis_id, file_id=thesis.file_id, status=Status.EXTRACTING.value,
+        thesis_id=thesis_id, file_id=thesis.file_id, status=processing.QUEUED,
         chunks=0, candidates=0,
         message=_t(
             principal.locale,
-            f"جارٍ إعادة القراءة · {sum(preserved.values())} قرارًا محفوظًا",
-            f"Reprocessing · {sum(preserved.values())} decisions preserved",
+            f"في انتظار الدور لإعادة القراءة · {sum(preserved.values())} قرارًا محفوظًا",
+            f"Queued for reprocessing · {sum(preserved.values())} decisions preserved",
         ),
     )

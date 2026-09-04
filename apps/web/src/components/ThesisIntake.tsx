@@ -31,7 +31,19 @@ type Phase =
   | "parse_failed"
   | "extract_failed"
   | "awaiting_consent"
-  | "local_only";
+  | "local_only"
+  // ── حالُ الرسالة المحفوظة (ترحيل 0027) ──
+  //
+  // `/extraction` يردّ حالَ **التشغيلة** حين توجد تشغيلة، وحالَ **الرسالة**
+  // حين لا توجد بعد. وكانت تلك الحالة تُقال «stored» دائمًا — فرسالةٌ سقطت
+  // قبل أن تُنشأ لها تشغيلة كانت تُعرض «محفوظ · لم تبدأ القراءة»، فيقف
+  // الباحث ينتظر ما لن يأتي. فتُقرأ المفردتان معًا هنا.
+  | "uploaded"
+  | "queued"
+  | "ready_for_review"
+  | "completed"
+  | "failed"
+  | "text_layer_missing";
 
 interface ExtractionState {
   thesis_id: string;
@@ -47,6 +59,10 @@ const TERMINAL: ReadonlySet<string> = new Set([
   "awaiting_review", "verified", "parse_failed", "extract_failed",
   // الانتظار والرفض حالتان مستقرّتان — لا يُستطلَع بعدهما.
   "awaiting_consent", "local_only",
+  // ومن مفردة الرسالة: ما استقرّ منها لا يُستطلَع بعده. و`uploaded` منها
+  // عمدًا — رسالةٌ لم يُطلب لها شيء لا يغيّرها انتظارٌ، واستطلاعٌ عليها
+  // قصفٌ للـAPI بلا سبب.
+  "uploaded", "ready_for_review", "completed", "failed", "text_layer_missing",
 ]);
 
 const STATE_KEY: Record<string, string> = {
@@ -60,6 +76,13 @@ const STATE_KEY: Record<string, string> = {
   extract_failed: "theses.stateExtractionFailed",
   awaiting_consent: "theses.stateAwaitingConsent",
   local_only: "theses.stateLocalOnly",
+  // ── حالُ الرسالة المحفوظة ──
+  uploaded: "theses.stateUploaded",
+  queued: "theses.stateQueued",
+  ready_for_review: "theses.stateAwaitingReview",
+  completed: "theses.stateVerified",
+  failed: "theses.stateFailed",
+  text_layer_missing: "theses.stateTextLayerMissing",
 };
 
 const ACCEPT = ".pdf,.docx,.doc,.txt";
@@ -134,8 +157,11 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
     }
   }
 
-  // رفض الإرسال قرارٌ يُحترم، لا عطبٌ يُلوَّن بلون الخطأ.
-  const failed = phase === "parse_failed" || phase === "extract_failed";
+  // رفض الإرسال قرارٌ يُحترم، لا عطبٌ يُلوَّن بلون الخطأ. و«لا طبقة نصّ»
+  // ليست عطبًا أيضًا — لكنها تحتاج انتباهًا، فتُلوَّن معها لا تُخفى.
+  const failed =
+    phase === "parse_failed" || phase === "extract_failed" ||
+    phase === "failed" || phase === "text_layer_missing";
 
   return (
     <section className="card" style={{ display: "grid", gap: 10 }}>
@@ -203,7 +229,8 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
           />
 
           <div style={{ display: "flex", gap: 8, marginBlockStart: 6, flexWrap: "wrap" }}>
-            {state.status === "awaiting_review" || state.status === "verified" ? (
+            {state.status === "awaiting_review" || state.status === "verified"
+              || state.status === "ready_for_review" || state.status === "completed" ? (
               <Link
                 href={`/${locale}/theses/${state.thesis_id}/review`}
                 style={{
@@ -214,7 +241,9 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
                 {t("theses.reviewCta")}
               </Link>
             ) : null}
-            {TERMINAL.has(state.status) ? (
+            {/* **ولا زرَّ إعادةٍ على مستندٍ ممسوح ضوئيًّا.** الخادم يردّه
+                بـ409 ما دام لا OCR، وزرٌّ يَعِد ثمّ يُردّ أسوأ من غيابه. */}
+            {TERMINAL.has(state.status) && state.status !== "text_layer_missing" ? (
               <button
                 type="button"
                 onClick={() => void reprocess()}
