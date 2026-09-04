@@ -46,7 +46,10 @@ def _passes(candidate: ReferenceCandidate, *, year_from: int | None, year_to: in
         return False
     if year_to is not None and (year is None or year > year_to):
         return False
-    if work_type and (candidate.type or "").lower() != work_type.lower():
+    # التصفية على السلّة الموحّدة لا على نصّ الفهرس الخام: `journal-article`
+    # و`article` اسمان لشيءٍ واحد، ومقارنةُ الحرف تُخفي نصف النتائج بحسب
+    # أيّ فهرسٍ ردّ أوّلًا.
+    if work_type and candidate.work_type != work_type.strip().lower():
         return False
     # «المفتوح فقط» يُقصي المجهول أيضًا، وهو المقصود: إدراجُ ما لم يُعلَن
     # مفتوحًا تحت عنوان «مفتوح الوصول» ادّعاءُ حقٍّ لم يمنحه أحد.

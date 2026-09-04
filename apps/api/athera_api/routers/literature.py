@@ -84,7 +84,7 @@ def _claim_views(candidate: ReferenceCandidate) -> list[ProviderClaimView]:
             venue=claim.venue, volume=claim.volume, issue=claim.issue, pages=claim.pages,
             abstract=claim.abstract, url=claim.url, open_access=claim.open_access,
             citation_count=claim.citation_count, type=claim.type,
-            retraction_status=claim.retraction_status,
+            work_type=claim.work_type, retraction_status=claim.retraction_status,
         )
         for claim in candidate.ordered_claims
     ]
@@ -236,6 +236,7 @@ async def discover_references(
                 year=candidate.year, venue=candidate.venue, volume=candidate.volume,
                 issue=candidate.issue, pages=candidate.pages, abstract=candidate.abstract,
                 url=candidate.url, open_access=candidate.open_access, type=candidate.type,
+                work_type=candidate.work_type,
                 retraction_status=candidate.retraction_status,
                 providers=list(candidate.providers),
                 citation_counts=candidate.citation_counts,

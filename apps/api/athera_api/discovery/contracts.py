@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .normalize import canonical_work_type
+
 # ترتيب الأسبقية عند اختيار قيمةٍ واحدة للعرض. ليس حكمًا بأن مزوّدًا أصدق،
 # بل قاعدةٌ ثابتة ومُعلَنة تمنع أن يتغيّر المعروض بتغيّر ترتيب وصول الردود.
 PROVIDER_PRECEDENCE: tuple[str, ...] = ("crossref", "openalex")
@@ -58,6 +60,11 @@ class ProviderClaim:
     def canonical_id(self) -> str:
         """المعرّف القانوني لهذا الادعاء داخل فهرس مزوّده."""
         return f"{self.provider}:{self.provider_id}"
+
+    @property
+    def work_type(self) -> str | None:
+        """سلّة النوع للتصفية. و`type` يبقى نصّ الفهرس الخام كما قاله."""
+        return canonical_work_type(self.type)
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +144,15 @@ class ReferenceCandidate:
     @property
     def type(self) -> str | None:
         return self._first("type")
+
+    @property
+    def work_type(self) -> str | None:
+        """سلّة النوع الموحّدة عبر الفهارس — عليها تُطبَّق التصفية وحدها."""
+        for claim in self.ordered_claims:
+            bucket = claim.work_type
+            if bucket is not None:
+                return bucket
+        return None
 
     @property
     def open_access(self) -> bool | None:

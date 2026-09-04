@@ -41,6 +41,42 @@ BLOCKED_HOSTS: frozenset[str] = frozenset({
 })
 
 
+# كل فهرسٍ يسمّي أنواع الأعمال بمفرداته: Crossref يقول `journal-article`
+# وOpenAlex يقول `article` عن الشيء نفسه. ومرشِّحُ نوعٍ يقارن الحرفَ بالحرف
+# يُخفي نصف النتائج بحسب من ردّ أولًا. فالتصنيف هنا **سلّةُ عرضٍ معلنة**،
+# والنصّ الخام يبقى في ادعاء كل فهرس ليُقرأ كما قاله صاحبه.
+_WORK_TYPES: dict[str, str] = {
+    "journal-article": "journal-article",
+    "article": "journal-article",
+    "proceedings-article": "conference-paper",
+    "proceedings": "conference-paper",
+    "conference-paper": "conference-paper",
+    "book-chapter": "book-chapter",
+    "book-section": "book-chapter",
+    "book": "book",
+    "book-part": "book-chapter",
+    "monograph": "book",
+    "edited-book": "book",
+    "posted-content": "preprint",
+    "preprint": "preprint",
+    "dissertation": "thesis",
+    "thesis": "thesis",
+    "dataset": "dataset",
+    "report": "report",
+    "review": "review",
+    "peer-review": "review",
+}
+
+WORK_TYPES: frozenset[str] = frozenset(_WORK_TYPES.values()) | {"other"}
+
+
+def canonical_work_type(raw: str | None) -> str | None:
+    """سلّةُ النوع للعرض والتصفية. `None` تعني «لم يقل الفهرس نوعًا»."""
+    if not raw:
+        return None
+    return _WORK_TYPES.get(raw.strip().lower(), "other")
+
+
 def _fold(text: str) -> str:
     """طيُّ الاختلافات الإملائية التي لا تغيّر الورقة المقصودة."""
     folded = unicodedata.normalize("NFKD", text or "")

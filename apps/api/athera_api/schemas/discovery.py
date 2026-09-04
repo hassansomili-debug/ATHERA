@@ -40,7 +40,10 @@ class ProviderClaimView(BaseModel):
     url: str | None = None
     open_access: bool | None = None
     citation_count: int | None = None
+    # `type` نصّ الفهرس كما قاله، و`work_type` سلّة العرض الموحّدة. يُعرضان
+    # معًا لأن طيّهما في حقلٍ واحد يُخفي إمّا لغة الفهرس وإمّا قابلية المقارنة.
     type: str | None = None
+    work_type: str | None = None
     retraction_status: str
 
 
@@ -59,6 +62,7 @@ class ReferenceCandidateView(BaseModel):
     url: str | None = None
     open_access: bool | None = None
     type: str | None = None
+    work_type: str | None = None
     retraction_status: str
     providers: list[str] = []
     # عدّاد كل فهرسٍ منسوبًا إليه — لا مجموع ولا متوسّط.

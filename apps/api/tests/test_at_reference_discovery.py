@@ -289,6 +289,24 @@ def test_the_easy_filters_narrow_without_rewriting_the_records(kwargs, expected_
     assert {candidate.doi for candidate in result.candidates} == expected_dois
 
 
+def test_two_indexes_naming_one_kind_differently_land_in_one_basket():
+    """Crossref يقول `journal-article` وOpenAlex يقول `article` عن الشيء نفسه.
+
+    ولو صُفّي على الحرف لاختفت نصف النتائج بحسب أيّ فهرسٍ ردّ أوّلًا —
+    ونصّ كل فهرس يبقى مقروءًا في ادعائه كما قاله.
+    """
+    crossref, openalex = _crossref_claims()[0], _openalex_claims()[0]
+    assert (crossref.type, openalex.type) == ("journal-article", "article")
+    assert crossref.work_type == openalex.work_type == "journal-article"
+    assert _openalex_claims()[1].work_type == "conference-paper"
+
+
+def test_filtering_by_kind_uses_the_shared_basket_not_the_index_wording():
+    openalex = _StubProvider("openalex", _openalex_claims())
+    result = asyncio.run(discover([openalex], "education", work_type="conference-paper"))
+    assert {candidate.doi for candidate in result.candidates} == {"10.5555/conf.2020.4412"}
+
+
 def test_open_access_only_excludes_what_no_index_declared_open():
     """«مفتوح الوصول» حقٌّ يُعلَن، والمجهول لا يُدرَج تحته."""
     crossref = _StubProvider("crossref", _crossref_claims())
