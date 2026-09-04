@@ -171,7 +171,14 @@ export default function ReviewPage({
 
       {review === null ? null : (
         <>
-          <p className="metric-label" style={{ marginBlockStart: 16 }}>
+          {/* الحصيلة بجانب نصّها: عددُ ما اعتُمد حالٌ قانونية، والنصّ
+              مترجَمٌ بصيغةٍ تتغيّر. ولا معرّف فيها ولا سرّ — عددٌ لا غير. */}
+          <p
+            className="metric-label"
+            data-review-approved={review.approved}
+            data-review-total={review.total}
+            style={{ marginBlockStart: 16 }}
+          >
             {t("thesisReview.progress")
               .replace("{approved}", String(review.approved))
               .replace("{total}", String(review.total))

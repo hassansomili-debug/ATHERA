@@ -108,6 +108,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   // وحدهما — لا أجسام ولا روابط موقّعة.
   const fileCalls: string[] = [];
   const processCalls: string[] = [];
+  const decideCalls: string[] = [];
   page.on("response", (r) => {
     try {
       const path = new URL(r.url()).pathname;
@@ -116,6 +117,8 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
       } else if (path.startsWith("/api/v1/theses/process-file/")) {
         // المعرّف لا يُسجَّل — الطريقة والحال وحدهما.
         processCalls.push(`${r.request().method()}:${r.status()}`);
+      } else if (path.endsWith("/decide")) {
+        decideCalls.push(`${r.request().method()}:${r.status()}`);
       }
     } catch { /* رابطٌ لا يُحلَّل ليس دليلًا */ }
   });
@@ -468,19 +471,30 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await page.waitForURL(/\/theses\/[^/]+\/review/, { timeout: 30_000 });
 
     // **اعتمادٌ واحد على الأقل** — والزرّ إن غاب فذلك فشلٌ يُعلَن.
+    const tally = page.locator("[data-review-approved]");
+    await expect(tally, "the review never reported its tally").toBeVisible({ timeout: 60_000 });
+    const before = Number(await tally.getAttribute("data-review-approved"));
+
     const approvable = page.locator("article.card")
       .filter({ has: page.getByRole("button", { name: "اعتمد" }) }).first();
     await expect(approvable, "no candidate was available to approve")
       .toBeVisible({ timeout: 60_000 });
-    // اسم الحقل يُلتقط قبل النقر: بعد الاعتماد يختفي زرّه، فمرشّحٌ يُوصف
-    // بأنه «ما فيه زرّ اعتماد» يصير بطاقةً أخرى بمجرّد أن يُعتمد.
-    const field = (await approvable.locator("strong").first().innerText()).trim();
     await approvable.getByRole("button", { name: "اعتمد" }).click();
 
-    // والاعتماد يُقرأ من عقده لا من نصّه.
-    const settled = page.locator("article.card").filter({ hasText: field }).first();
-    await expect(settled.locator("[data-candidate-status]"))
-      .toHaveAttribute("data-candidate-status", "approved", { timeout: 30_000 });
+    // **والاعتماد يُقاس بالحصيلة لا بإعادة العثور على البطاقة.**
+    //
+    // كان الفحص يلتقط اسم الحقل ثم يبحث عنه ثانيةً بعد النقر. وأسماء
+    // الحقول تتكرّر — حقلٌ قد يحمل مرشّحين — فتُقرأ بطاقةٌ غير التي نُقر
+    // عليها، فيُقال «لم يُعتمد» وقد اعتُمد. والحصيلة رقمٌ واحد لا يلتبس.
+    //
+    // وحالُ النداء تُذكر مع الإخفاق: «بقيت `unverified`» لا تفرّق بين نقرةٍ
+    // لم تُرسل، وطلبٍ رُفض، وردٍّ نجح ولم تُقرأ نتيجته.
+    await expect
+      .poll(async () =>
+              `approved=${await tally.getAttribute("data-review-approved")}`
+              + ` decide=[${decideCalls.join(" ")}]`,
+            { timeout: 60_000, message: "the approval never took effect" })
+      .toMatch(new RegExp(`^approved=${before + 1} `));
   });
 
   // ── ١٧–٢٠: سؤالُ بُبريفا AI عن معرفةٍ اعتمدها، وإذن DCC2 مستقلّ عن DIC2 ──
