@@ -12,7 +12,7 @@
     "test:refresh": "playwright test tests/auth-refresh.spec.ts",
     "test:acceptance": "playwright test tests/acceptance.spec.ts",
     "test:recovery": "playwright test tests/recovery.spec.ts",
-    "test:surface": "playwright test tests/product-surface.spec.ts",
+    "test:surface": "playwright test tests/product-surface.spec.ts tests/product-experience.spec.ts",
     "test:brain": "playwright test tests/research-brain-surface.spec.ts",
     "test:project-management": "playwright test tests/project-management.spec.ts"
   },
