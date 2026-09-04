@@ -1,6 +1,11 @@
 from .audit import Approval, AuditEvent, IntegrityAlert, ProvenanceEvent
 from .base import Base
 from .brain import GuardrailCheck
+from .collaboration import (
+    ProjectInvitation,
+    ProjectMemberEvent,
+    ProjectMemberPermission,
+)
 from .golden_thread import (
     Construct,
     Instrument,
@@ -179,6 +184,7 @@ __all__ = [
     "RULE_TYPES",
     "ResearchProgram", "ResearchProject", "ProjectMember", "ProjectDecision",
     "ProjectFile", "ProjectSource",
+    "ProjectInvitation", "ProjectMemberPermission", "ProjectMemberEvent",
     "LiteratureMatrixCell", "SourceAbstract",
     "MATRIX_FIELDS", "CELL_STATES", "SOURCE_SCOPES",
     "EXCLUSION_REASON_CODES", "EXTRACTION_METHODS",

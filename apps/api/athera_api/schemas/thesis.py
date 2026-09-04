@@ -178,6 +178,16 @@ class AuthorAddRequest(BaseModel):
     credit_roles: list[str] = []
 
 
+class ConsentRequest(BaseModel):
+    """§24 — سندُ الموافقة حين لا يسجّلها صاحبُها بحسابه.
+
+    ويُترك فارغًا حين يوافق الطرفُ بنفسه: حسابُه المصادَق هو السند. وحين
+    يسجّلها غيرُه فلا بدّ من ورقةٍ يُشار إليها — وإلّا فهي دعوى بلا دليل.
+    """
+
+    evidence_ar: str | None = Field(default=None, max_length=2000)
+
+
 class AuthorResponse(BaseModel):
     agreement_id: uuid.UUID
     party_id: uuid.UUID

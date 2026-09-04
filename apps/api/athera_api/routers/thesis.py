@@ -34,6 +34,7 @@ from ..schemas.thesis import (
     AgingResponse,
     AuthorAddRequest,
     AuthorResponse,
+    ConsentRequest,
     DimensionResponse,
     GateStatusResponse,
     MineResponse,
@@ -541,12 +542,19 @@ async def add_author(
 async def record_consent(
     opportunity_id: uuid.UUID,
     agreement_id: uuid.UUID,
+    payload: ConsentRequest | None = None,
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> AuthorResponse:
+    """§24 — الموافقةُ تُنسب إلى مَن سجّلها، ولا تُكتب عن أحدٍ صامتة.
+
+    فإن كان الطالبُ هو الطرفَ نفسه (حسابٌ مربوط) فهي موافقتُه. وإن كان
+    غيرَه فلا تُقبل إلّا بسندٍ مكتوب، وتُوسم `administrative` في السجلّ.
+    """
     agreement = await rights.record_consent(
         session, tenant_id=principal.tenant_id, agreement_id=agreement_id,
         actor_user_id=principal.user_id,
+        evidence_ar=payload.evidence_ar if payload else None,
     )
     party = (
         await session.execute(select(AuthorshipParty).where(

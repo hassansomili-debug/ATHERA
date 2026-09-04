@@ -344,6 +344,16 @@ class AuthorshipAgreement(Base, TenantScoped, Timestamped):
     consent_recorded_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # **موافقةٌ بلا صاحبٍ للموافقة ليست موافقة** (الترحيل 0028).
+    #
+    # كان الاتفاق يحمل `consent_status = 'granted'` ووقتَه، ولا يحمل مَن
+    # سجّلها. فكان أيُّ مصادَقٍ في المستأجر يمنح موافقةَ أيِّ مؤلف، ولا
+    # يبقى في السجلّ ما يميّز موافقةَ صاحبها من موافقةٍ كُتبت عنه.
+    consent_recorded_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    consent_method: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    consent_evidence_ar: Mapped[str | None] = mapped_column(Text, nullable=True)
     # §24.2 — كل تغيير في الترتيب يُسجَّل بتاريخه.
     order_change_log: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
