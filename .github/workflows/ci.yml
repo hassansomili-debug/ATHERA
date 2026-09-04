@@ -194,6 +194,16 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
+      # ── سطح المنتج: أزرارٌ ميتة، وحالاتٌ تكذب ──
+      #
+      # بلا اعتماد وبلا خادمٍ خلفي: الجلسة مزروعة والشبكة معترَضة، فتعمل في
+      # **كل** PR. وهي التي تحرس ألّا تعود شاشةٌ تقول «لا يوجد» قبل أن تسأل،
+      # ولا «جارٍ التحميل» بعد أن رُدّ عليها.
+      - name: Product surface (real browser, dead UI and lying states)
+        run: cd apps/web && npm run test:surface
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
       # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
       #
       # تشغيلُها من PR يفحص إنتاجًا لا يحمل شيفرة الـPR — نتيجةٌ مضلِّلة.
