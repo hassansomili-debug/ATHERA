@@ -91,6 +91,40 @@ class ProjectSourceView(BaseModel):
     reason_ar: str | None = None
 
 
+class AssessmentItemView(BaseModel):
+    """سطرٌ واحد في خانةٍ من خانات التقييم — بسببه وموضعه."""
+
+    key: str
+    detail: str
+    # معرّف القاعدة إن كان السطر حكمَ قاعدة — فيُعرف من أين جاء ويُراجَع.
+    rule_id: str | None = None
+    entity_ids: list[str] = Field(default_factory=list)
+    excerpt: str | None = None
+
+
+class ProjectAssessmentView(BaseModel):
+    """تقييم البحث — **خمس خانات ولا نسبة**.
+
+    و«جاهزٌ بنسبة ٨٢٪» لا تُحسب هنا ولا تُعرض: النسبة تخفي الفرق بين بحثٍ
+    ينقصه سطرٌ وبحثٍ ينقصه منهج. والقرار نفسه متّخذ في `ProjectOverview`.
+    """
+
+    project_id: uuid.UUID
+    title: str
+    known: list[AssessmentItemView] = Field(default_factory=list)
+    missing: list[AssessmentItemView] = Field(default_factory=list)
+    needs_review: list[AssessmentItemView] = Field(default_factory=list)
+    conflicts: list[AssessmentItemView] = Field(default_factory=list)
+    methodological_alerts: list[AssessmentItemView] = Field(default_factory=list)
+    # ما تعذّرت قراءته من البحث — يُعلَن ولا يُبتلع.
+    read_notes: list[AssessmentItemView] = Field(default_factory=list)
+    # **استشاريٌّ دائمًا اليوم**: كل قاعدة `DRAFT` حتى يراجعها مختصّ.
+    is_advisory_only: bool = True
+    blocking_count: int = 0
+    advisory_note: str
+    note: str
+
+
 class LinkRequest(BaseModel):
     """ربط أصلٍ من المكتبة العامة بهذا البحث — بلا نسخ."""
 
@@ -125,7 +159,7 @@ class ImpactView(BaseModel):
     consequences: list[dict] = Field(default_factory=list)
 
 
-__all__ = ["BrainEntryView", "ImpactView", "LinkRequest", "NextAction",
-           "ProjectCreateRequest", "ProjectFileView", "ProjectOverview",
-           "ProjectRenameRequest", "ProjectSourceView", "ProjectSummary",
-           "SourceUseRequest"]
+__all__ = ["AssessmentItemView", "BrainEntryView", "ImpactView", "LinkRequest",
+           "NextAction", "ProjectAssessmentView", "ProjectCreateRequest",
+           "ProjectFileView", "ProjectOverview", "ProjectRenameRequest",
+           "ProjectSourceView", "ProjectSummary", "SourceUseRequest"]

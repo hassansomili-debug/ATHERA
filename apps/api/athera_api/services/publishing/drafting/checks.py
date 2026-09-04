@@ -436,5 +436,17 @@ def fabrications(issues: list[DraftIssue]) -> list[DraftIssue]:
     return [i for i in issues if i.issue_key in FABRICATION_ISSUES]
 
 
+def sample_numbers(text: str) -> set[str]:
+    """البابُ المعلَن إلى محلّل أرقام العيّنة — **محلّلٌ واحد لا اثنان**.
+
+    يحتاجه جسرُ العقل البحثي ليقرأ أرقام العيّنة من نصّ المخطوطة. وكتابةُ
+    محلّلٍ ثانٍ هناك تجعل الرقم نفسه يُعدّ مخترَعًا في شاشةٍ ومسنَدًا في
+    أخرى، وهو أكثر عطبٍ تكرارًا في هذا المستودع. فيُفتح البابُ على القائم
+    ولا يُنسخ ما خلفه — والدرسان المسجَّلان في `_sample_numbers` (الأرقام
+    العربية الهندية، والكسور العشرية) يبقيان في موضعٍ واحد.
+    """
+    return _sample_numbers(text)
+
+
 __all__ = ["FABRICATION_ISSUES", "INTERNAL_MARKERS", "DraftIssue", "fabrications",
-           "outputs_carrying", "run"]
+           "outputs_carrying", "run", "sample_numbers"]
