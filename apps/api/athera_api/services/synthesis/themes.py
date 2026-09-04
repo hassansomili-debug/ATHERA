@@ -92,24 +92,31 @@ def _scope_summary(corpus: CorpusSnapshot,
     return out
 
 
-def _content_hits(study: StudySnapshot) -> dict[str, tuple[str, uuid.UUID | None, str]]:
-    """مفاتيحُ المحتوى في هذه الدراسة: مفتاح ← (العمود، الخلية، المدى).
+def _content_hits(study: StudySnapshot
+                  ) -> dict[str, tuple[str, uuid.UUID | None, str, str]]:
+    """مفاتيحُ المحتوى: مفتاح ← (العمود، الخلية، المدى، **الكلمة كما كُتبت**).
 
     وأوّلُ عمودٍ يذكر المفتاح هو سنده — فلا يُسجَّل السند مرّتين لكلمةٍ
     تكرّرت في عمودين، ولا يُعدّ موضوعٌ واحد دراستين.
     """
-    hits: dict[str, tuple[str, uuid.UUID | None, str]] = {}
+    hits: dict[str, tuple[str, uuid.UUID | None, str, str]] = {}
     for field_key in THEME_SOURCE_FIELDS:
         cell = study.stated(field_key)
         if cell is None or cell.source_scope == "metadata_only":
             continue
-        for term in textual.terms(cell.value_ar):
-            hits.setdefault(term, (field_key, cell.cell_id, cell.source_scope))
+        for term, surface in textual.term_forms(cell.value_ar).items():
+            hits.setdefault(term, (field_key, cell.cell_id, cell.source_scope, surface))
     return hits
 
 
-def _title_terms(study: StudySnapshot) -> frozenset[str]:
-    return textual.terms(study.title)
+def _display(term: str, forms: dict[str, set[str]]) -> str:
+    """اسمُ الموضوع كما يقرؤه الباحث — **لا المفتاح المسوّى**.
+
+    والاختيار حتميّ (أول الصور أبجديًّا) لا «أوّل ما صادفناه»: مخرَجٌ يتبدّل
+    اسمه بترتيب القراءة يجعل مقارنة قائمتين مستحيلة.
+    """
+    seen = forms.get(term)
+    return sorted(seen)[0] if seen else term
 
 
 def propose_themes(corpus: CorpusSnapshot) -> tuple[ThemeProposal, ...]:
@@ -123,14 +130,17 @@ def propose_themes(corpus: CorpusSnapshot) -> tuple[ThemeProposal, ...]:
 
     content_by_term: dict[str, list[ThemeSupport]] = {}
     title_by_term: dict[str, list[ThemeSupport]] = {}
+    forms: dict[str, set[str]] = {}
 
     for study in corpus.studies:
-        for term, (field_key, cell_id, scope) in _content_hits(study).items():
+        for term, (field_key, cell_id, scope, surface) in _content_hits(study).items():
+            forms.setdefault(term, set()).add(surface)
             content_by_term.setdefault(term, []).append(ThemeSupport(
                 source_id=study.source_id, role="supporting",
                 basis_field_key=field_key, evidence_scope=scope,
                 matrix_cell_id=cell_id))
-        for term in _title_terms(study):
+        for term, surface in textual.term_forms(study.title).items():
+            forms.setdefault(term, set()).add(surface)
             title_by_term.setdefault(term, []).append(ThemeSupport(
                 source_id=study.source_id, role="supporting",
                 basis_field_key=METADATA_BASIS_FIELD, evidence_scope="metadata_only"))
@@ -145,11 +155,12 @@ def propose_themes(corpus: CorpusSnapshot) -> tuple[ThemeProposal, ...]:
             continue
         source_ids = tuple(dict.fromkeys(s.source_id for s in usable))
         summary = _scope_summary(corpus, source_ids)
+        shown = _display(term, forms)
         proposals.append(ThemeProposal(
-            label_ar=term,
+            label_ar=shown,
             description_ar=(
                 f"تركيبٌ من محتوى {len(source_ids)} دراسةً مُدرَجة: ذكرت كلٌّ منها "
-                f"«{term}» في أعمدة المحتوى بالمصفوفة. والسند خليةٌ لكل دراسة "
+                f"«{shown}» في أعمدة المحتوى بالمصفوفة. والسند خليةٌ لكل دراسة "
                 "يمكن فتحها ورؤية شاهدها ومدى ما قُرئ منه."),
             basis=CONTENT_SYNTHESIS,
             supports=usable,
@@ -164,11 +175,12 @@ def propose_themes(corpus: CorpusSnapshot) -> tuple[ThemeProposal, ...]:
         if len(source_ids) < MIN_STUDIES_PER_THEME:
             continue
         summary = _scope_summary(corpus, source_ids)
+        shown = _display(term, forms)
         proposals.append(ThemeProposal(
-            label_ar=term,
+            label_ar=shown,
             description_ar=(
                 f"تجميعٌ موضوعي من العناوين وحدها: {len(source_ids)} دراسةً "
-                f"يشترك عنوانها في «{term}». **وهذا ترتيبٌ للقائمة لا نتيجة** — "
+                f"يشترك عنوانها في «{shown}». **وهذا ترتيبٌ للقائمة لا نتيجة** — "
                 "لم يُقرأ من هذه الدراسات محتوًى يسند موضوعًا، ولا يصلح سندًا "
                 "لفجوةٍ ولا لتعارض."),
             basis=TOPIC_CLUSTER,

@@ -29,7 +29,15 @@ _LETTER_FOLD: Final = str.maketrans({
     "ؤ": "و",
 })
 
-_NON_WORD: Final = re.compile(r"[^\w؀-ۿ]+", re.UNICODE)
+# **الفاصلة العربية حرفٌ في نطاق العربية.** ولو كُتب صفُّ المحارف
+# `[^\w؀-ۿ]` — أي «احتفظ بكل ما في نطاق العربية» — لبقيت «،» و«؛» و«؟»
+# ملتصقةً بالكلمات، فصارت «التدريب،» كلمةً غير «التدريب»، ولم يتقابل بناءان
+# متطابقان أبدًا. فالمعيار `\w` وحده، وهو يعرف الحروف العربية.
+_NON_WORD: Final = re.compile(r"[\W_]+", re.UNICODE)
+
+# الكلمة كما كُتبت — تُستعمل للعرض وحده. والمسوّاة تُقارن ولا تُعرض: لا
+# يُكتب للباحث «احصاييا» في اسم موضوع.
+_WORD: Final = re.compile(r"[^\W_]+", re.UNICODE)
 
 # **كلماتٌ لا تميّز شيئًا.** موضوعٌ اسمه «على» أو «الدراسة» ليس موضوعًا؛
 # وبدون هذه القائمة يصير أكثر «الموضوعات» حروف جرّ.
@@ -47,6 +55,13 @@ _RAW_STOPWORDS: Final = frozenset({
     "the", "a", "an", "of", "in", "on", "and", "or", "to", "for", "with",
     "study", "studies", "research", "effect", "impact", "role", "between",
     "among", "level", "degree", "this", "that", "is", "are", "was", "were",
+    # **ألفاظُ وصفِ النتيجة ليست موضوعات.** «إحصائيًّا» و«دالّة» و«إيجابية»
+    # تتكرّر في كل خلية نتائج، فتتصدّر قائمة «الموضوعات» بلا أن تعني شيئًا —
+    # ويقرأ الباحث موضوعًا اسمه «دالة» فيفقد الثقة في القائمة كلّها.
+    "احصائيا", "احصائية", "داله", "دال", "دلاله", "معنويه",
+    "ايجابيه", "ايجابي", "سلبيه", "سلبي", "موجب", "سالب", "ارتباط",
+    "significant", "significance", "positive", "negative", "correlation",
+    "association", "relationship",
 })
 
 # أقلّ طولٍ لكلمةٍ تصلح مفتاحًا. وما دونه حروفٌ لا تميّز.
@@ -82,18 +97,34 @@ def _strip_article(token: str) -> str:
     return token
 
 
+def term_forms(text: str | None) -> dict[str, str]:
+    """المفتاح المسوّى ← **الكلمة كما كتبها الباحث**.
+
+    والحاجة إليها أن المسوّاة لا تُعرض: «إحصائيًّا» تصير «احصاييا» بعد توحيد
+    الهمزات، وموضوعٌ اسمه «احصاييا» يقرؤه الباحث عطبًا لا نتيجة. فتُحفظ
+    الصورة الأصلية للعرض، وتبقى المسوّاة للمقارنة وحدها.
+    """
+    out: dict[str, str] = {}
+    if not text:
+        return out
+    cleaned = _DIACRITICS.sub("", unicodedata.normalize("NFKC", text))
+    for raw in _WORD.findall(cleaned):
+        token = _strip_article(normalize(raw))
+        if len(token) >= MIN_TERM_LENGTH and token not in STOPWORDS:
+            out.setdefault(token, raw)
+    return out
+
+
 def terms(text: str | None) -> frozenset[str]:
     """المفاتيح المميِّزة في نصّ خلية — **مجموعةٌ لا ترتيب**.
 
     والترتيب لا يعني شيئًا هنا: «الرضا والأداء» و«الأداء والرضا» بناءان
     متطابقان، ومقارنتهما نصًّا تُنتج تعارضًا من ترتيب كلمتين.
+
+    وتُشتقّ من `term_forms` ولا تُحسب مرّةً ثانية: حسابان للشيء نفسه
+    يفترقان بأول تعديل، فيُقارَن مفتاحٌ لا وجود له في قائمة العرض.
     """
-    out = set()
-    for raw in normalize(text).split():
-        token = _strip_article(raw)
-        if len(token) >= MIN_TERM_LENGTH and token not in STOPWORDS:
-            out.add(token)
-    return frozenset(out)
+    return frozenset(term_forms(text))
 
 
 # ── قراءة النتيجة: الاتجاه والدلالة والخلاصة ──
@@ -257,5 +288,6 @@ __all__ = [
     "normalize",
     "significance_of",
     "stance_of",
+    "term_forms",
     "terms",
 ]
