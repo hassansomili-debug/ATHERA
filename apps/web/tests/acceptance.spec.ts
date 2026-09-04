@@ -107,10 +107,15 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   // تقول أطُلبت القائمة أصلًا، ولا أجابت، ولا بأيّ حال. والطريقة والحال
   // وحدهما — لا أجسام ولا روابط موقّعة.
   const fileCalls: string[] = [];
+  const processCalls: string[] = [];
   page.on("response", (r) => {
     try {
-      if (new URL(r.url()).pathname === "/api/v1/files") {
+      const path = new URL(r.url()).pathname;
+      if (path === "/api/v1/files") {
         fileCalls.push(`${r.request().method()}:${r.status()}`);
+      } else if (path.startsWith("/api/v1/theses/process-file/")) {
+        // المعرّف لا يُسجَّل — الطريقة والحال وحدهما.
+        processCalls.push(`${r.request().method()}:${r.status()}`);
       }
     } catch { /* رابطٌ لا يُحلَّل ليس دليلًا */ }
   });
@@ -385,11 +390,20 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // **الحال تُقرأ من عقدها لا من نصّها.** وكان الفحص يطابق نصًّا مترجَمًا،
     // فأخذ عبارةً من شاشة الذكاء وانتظرها في شاشة المكتبة — فبقي ينتظر
     // ثلاث دقائق حالًا لا تُكتب هنا أصلًا، والمعالجة قد تمّت.
+    // **وحالٌ لا تتحرّك: هل لم تبدأ، أم بدأت ولم تُقرأ؟** سؤالان مختلفان،
+    // و«ما زالت `not_processed`» لا تجيب أيًّا منهما. فيُذكر مع الحال: هل
+    // قُبل طلبُ المعالجة أصلًا، وكم قراءةً للقائمة جرت بعده، وهل تقول
+    // الشاشة خطأً.
     const state = card.locator("[data-processing-state]");
+    const filesBefore = fileCalls.length;
     await expect
-      .poll(async () => state.getAttribute("data-processing-state"),
+      .poll(async () =>
+              `state=${await state.getAttribute("data-processing-state")}`
+              + ` process=[${processCalls.join(" ")}]`
+              + ` listCalls=${fileCalls.length - filesBefore}`
+              + ` error=${await page.locator(".error").count()}`,
             { timeout: 180_000, message: "processing never left the running states" })
-      .not.toMatch(/^(not_processed|parsing|extracting)$/);
+      .not.toMatch(/^state=(not_processed|parsing|extracting) /);
 
     const reached = await state.getAttribute("data-processing-state");
     // **والإخفاق إخفاق**: لا يُقرأ وصولًا إلى حالٍ نهائية.

@@ -857,8 +857,10 @@ def test_the_library_keeps_reading_state_while_work_is_running():
     assert "RUNNING.has(file.processing_status)" in code, "الشاشة لا تُعيد قراءة حالٍ جارية"
     assert "window.setTimeout(" in code and "loadFiles();" in code, "لا إعادة قراءة مجدولة"
     assert "window.clearTimeout" in code, "مؤقّتٌ بلا تنظيف"
-    # **ويقف عند حالٍ مستقرّة** — لا قصفَ للـAPI بعد انتهاء العمل.
-    assert "if (!files.some(" in code, "الاستطلاع بلا شرطٍ يوقفه"
+    # **ويقف عند حالٍ مستقرّة** — لا قصفَ للـAPI بعد انتهاء العمل. والشرط
+    # صار يشمل ما طُلبت معالجته أيضًا، فيُقرأ من متغيّره لا من صيغته.
+    assert "if (!watching) return;" in code, "الاستطلاع بلا شرطٍ يوقفه"
+    assert "const watching = files.some(" in code, "الشرط لا يُشتقّ من القائمة"
 
 
 def test_the_running_states_and_their_label_cannot_drift():
@@ -1011,3 +1013,33 @@ def test_the_file_add_control_is_named_by_what_it_does():
     assert 'getByRole("button", { name: "+" })' not in spec_code, (
         "الرحلة ما زالت تطلب الزرّ برسمه")
     assert "/^أضِف ملفًّا من مكتبتك:/" in spec_code, "الرحلة لا تطلبه باسمه المُعلَن"
+
+
+def test_a_requested_processing_keeps_being_watched():
+    """**طلبُ المعالجة سببٌ للمراقبة، لا الحالُ المعروضة وحدها.**
+
+    الاستطلاع كان يدور ما دام في القائمة ملفٌ في حالٍ جارية. وطلبُ المعالجة
+    يُنشئ التشغيلة في مهمّةٍ خلفية، فالقراءة التي تلي الطلب قد تسبقها فتعود
+    بـ`not_processed` — وليست حالًا جارية، فلا يدور الاستطلاع ولا تُقرأ
+    الحال ثانيةً أبدًا. فتبقى البطاقة تقول «لم تُعالَج بعد» وقد بدأت
+    معالجتها، إلى أن يعيد الباحث التحميل بنفسه.
+    """
+    library = (WEB / "src" / "app" / "[locale]" / "library"
+               / "page.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(library))
+    assert "requested.current.add(file.id)" in code, "الطلب لا يُسجَّل"
+    assert 'requested.current.has(file.id) && file.processing_status === "not_processed"' in code, (
+        "الطلب لا يُبقي المراقبة")
+    # والحدّ باقٍ: مراقبةٌ بلا نهاية ليست صبرًا.
+    assert "polls.current >= MAX_POLLS" in code, "المراقبة بلا حدّ"
+
+
+def test_a_stuck_processing_state_says_which_question_failed():
+    """«ما زالت `not_processed`» لا تقول: هل لم تبدأ المعالجة، أم بدأت ولم
+    تُقرأ؟ سؤالان مختلفان وعلاجان مختلفان — فيُذكر مع الحال هل قُبل الطلب،
+    وكم قراءةً جرت بعده، وهل تقول الشاشة خطأً. والمعرّف لا يُسجَّل."""
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    assert "process=[" in code and "listCalls=" in code, "الحال العالقة تُبلَّغ بلا سياق"
+    assert 'path.startsWith("/api/v1/theses/process-file/")' in code, "طلب المعالجة لا يُرصد"
+    assert "r.request().method()}:${r.status()}" in code, "الدليل يحمل أكثر مما يلزم"

@@ -84,6 +84,20 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    */
   const [filesLoad, setFilesLoad] = useState<"loading" | "ready" | "failed">("loading");
   const [processing, setProcessing] = useState<string | null>(null);
+  /**
+   * **ما طُلبت معالجته يُراقَب حتى تتحرّك حاله.**
+   *
+   * كان الاستطلاع يدور ما دام في القائمة ملفٌ في حالٍ **جارية**. وطلبُ
+   * المعالجة يُنشئ التشغيلة في مهمّةٍ خلفية، فالقراءة التي تلي الطلب قد
+   * تسبقها فتعود بـ`not_processed` — وهي ليست حالًا جارية، فلا يدور
+   * الاستطلاع، ولا تُقرأ الحال ثانيةً أبدًا. فتبقى البطاقة تقول «لم
+   * تُعالَج بعد» وقد بدأت معالجتها فعلًا، إلى أن يعيد الباحث التحميل
+   * بنفسه — وهو لا يعرف أن عليه ذلك. وهذا ما سقطت عليه رحلة القبول: حالٌ
+   * ثابتة على `not_processed` ثلاث دقائق كاملة.
+   *
+   * فالطلب نفسه سببٌ للمراقبة، لا الحالُ المعروضة وحدها.
+   */
+  const requested = useRef<Set<string>>(new Set());
   const [sources, setSources] = useState<Source[]>([]);
   const [doi, setDoi] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -196,7 +210,11 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    */
   const polls = useRef(0);
   useEffect(() => {
-    if (!files.some((file) => RUNNING.has(file.processing_status))) return;
+    const watching = files.some(
+      (file) => RUNNING.has(file.processing_status)
+        || (requested.current.has(file.id) && file.processing_status === "not_processed"),
+    );
+    if (!watching) return;
     // **وحدٌّ للانتظار.** تشغيلةٌ ماتت في منتصفها تترك حالًا «جارية» لا
     // تنتهي أبدًا — ولولا حدٌّ لظلّت الشاشة تسأل عنها ما دامت مفتوحة.
     if (polls.current >= MAX_POLLS) return;
@@ -299,6 +317,8 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
                         disabled={processing === file.id}
                         onClick={() => {
                           setProcessing(file.id);
+                          requested.current.add(file.id);
+                          polls.current = 0;
                           setError(null);
                           void apiFetch(`/api/v1/theses/process-file/${file.id}`, {
                             method: "POST", locale,
