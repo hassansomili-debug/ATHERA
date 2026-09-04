@@ -985,7 +985,7 @@ async def test_a_page_number_is_refused_for_anything_but_full_text(two_tenants):
             session.add(LiteratureMatrixCell(
                 tenant_id=a["tenant_id"], project_id=project, source_id=source,
                 field_key="sample", value_ar="425", cell_state="needs_review",
-                source_scope="abstract_only", extraction_method="model",
+                source_scope="abstract_only", extraction_method="deterministic",
                 evidence_page=14, updated_by=a["user_id"]))
             await session.flush()
 
@@ -1018,7 +1018,7 @@ async def test_a_cell_that_cites_an_abstract_must_have_been_read_from_one(two_te
             session.add(LiteratureMatrixCell(
                 tenant_id=a["tenant_id"], project_id=project, source_id=source,
                 field_key="method", value_ar="استبانة", cell_state="needs_review",
-                source_scope="full_text", extraction_method="model",
+                source_scope="full_text", extraction_method="deterministic",
                 source_abstract_id=abstract_id, updated_by=a["user_id"]))
             await session.flush()
 
@@ -1282,7 +1282,7 @@ async def test_the_extraction_writes_candidates_and_records_what_it_read(two_ten
 
     assert cells["sample"].value_ar == "425"
     assert cells["sample"].cell_state == "needs_review"
-    assert cells["sample"].extraction_method == "model"
+    assert cells["sample"].extraction_method == "deterministic"
     assert cells["sample"].verification_status == "unverified"
     assert cells["sample"].verified_by is None
     # ملخّصٌ لا صفحات له — والمُحدِّد كلمةٌ صريحة.

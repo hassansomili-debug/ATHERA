@@ -893,6 +893,19 @@ async def test_a_review_without_a_named_reviewer_is_refused(two_tenants):
                 updated_by=a["user_id"]))
             await session.flush()
 
+    # **والاستخراج الحتمي يخضع للحكم نفسه.** وُسّع القيد في 0024 ليشمل ما
+    # كتبته آلةٌ كائنًا ما كانت، لا `model` وحده — فلو بقي ضيّقًا لدخلت
+    # قيمةٌ حتمية معتمَدةً بلا مُعتمِدٍ يُسمّى، وهي معرفةٌ بلا صاحب.
+    with pytest.raises(IntegrityError):
+        async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+            session.add(LiteratureMatrixCell(
+                tenant_id=a["tenant_id"], project_id=project, source_id=source,
+                field_key="design", value_ar="شبه تجريبي",
+                cell_state="known", source_scope="abstract_only",
+                extraction_method="deterministic", verification_status="approved",
+                updated_by=a["user_id"]))
+            await session.flush()
+
 
 @requires_db
 @pytest.mark.asyncio
