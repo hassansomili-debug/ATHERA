@@ -230,14 +230,18 @@ export default function ScreeningPage({
                 ].join(" · ")}
               </div>
 
-              {/* المعرّف يُعرض متحقَّقًا أو لا يُعرض: معرّفٌ لم يُفحص معروضًا
-                  بجانب دراسةٍ يُقرأ إثباتًا فيُنسخ في قائمة المراجع. */}
-              <div className="metric-label" style={{ marginBlockStart: 4 }} dir="ltr">
-                {card.doi ?? ""}
-              </div>
-              {card.doi === null ? (
-                <div className="metric-label">{t("screening.doiUnverified")}</div>
-              ) : null}
+              {/* **المعرّف يُعرض متحقَّقًا أو لا يُعرض.** معرّفٌ لم يُحلّ في
+                  فهرسٍ معروضًا بجانب دراسةٍ يُقرأ إثباتًا فيُنسخ في قائمة
+                  المراجع بلا فحص. وغيابه يُقال صراحةً ولا يُترك فراغًا. */}
+              {card.doi ? (
+                <div className="metric-label" style={{ marginBlockStart: 4 }} dir="ltr">
+                  {card.doi}
+                </div>
+              ) : (
+                <div className="metric-label" style={{ marginBlockStart: 4 }}>
+                  {t("screening.doiUnverified")}
+                </div>
+              )}
 
               <div className="metric-label" style={{ marginBlockStart: 4 }}>
                 {t("screening.originLabel")}:{" "}
