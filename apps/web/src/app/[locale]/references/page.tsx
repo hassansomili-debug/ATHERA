@@ -8,6 +8,7 @@ import {
   saveToLibrary,
   searchReferences,
   type ProviderStatus,
+  type RankReason,
   type ReferenceCandidate,
   type ReferenceSearchResponse,
 } from "@/lib/discovery";
@@ -29,6 +30,15 @@ import { linkSource, listProjects, type ProjectSummary } from "@/lib/workspace";
  *
  * **والرقم يُنسب إلى قائله.** Crossref يقول ١٢٠ استشهادًا وOpenAlex يقول
  * ١٣٤ عن الورقة نفسها؛ فلا يُعرض رقمٌ واحد لا يقوله أحد.
+ *
+ * **ولا نسبة صلة على هذه الشاشة.** «٩٧٪ مرتبطة» رقمٌ بلا وحدة ولا مرجع،
+ * يقرؤه الباحث حكمًا كميًّا على ورقةٍ لم يقرأها فيصدّقه. وما يُعرض بدلًا
+ * منه أسبابٌ بلغته يستطيع التحقق من كلٍّ منها بعينه — والخادم لا يرسل
+ * درجةً أصلًا، فالعقد نفسه يمنع أن تُخترع هنا نسبةٌ يومًا.
+ *
+ * **والاقتراح ليس تنفيذًا.** المصطلحات المقترحة تُعرض ليقبلها الباحث أو
+ * يرفضها، ونصّه يبقى ظاهرًا جوارها. ومن وسّع بحثه نيابةً عنه بدّل سؤاله
+ * البحثي ثم أراه نتائج سؤالٍ آخر على أنها نتائج سؤاله.
  */
 
 type Phase = "idle" | "loading" | "ready" | "failed";
@@ -65,6 +75,23 @@ function yearOf(raw: string): number | null {
   return Number(trimmed);
 }
 
+/**
+ * نصُّ سببٍ واحد: جملةٌ من الكتالوج، ثم ما يُكمّلها من بيانات الخادم.
+ *
+ * **والاستشهاد لا يُذكر بلا قائله**: «٢٤٠٠ في OpenAlex» جملةٌ يستطيع
+ * الباحث التحقق منها في ذلك الفهرس بعينه؛ و«٢٤٠٠ استشهادًا» دعوى منصّةٍ
+ * على فهرسٍ لم يقلها، ولا يعرف الباحث أين يراجعها.
+ */
+function reasonText(reason: RankReason, t: (path: string) => string): string {
+  const head = t(`references.reasons.${reason.code}`);
+  if (reason.provider !== null && reason.count !== null) {
+    return `${head} ${reason.count} ${t("references.reasonIn")} ${reason.provider}`;
+  }
+  if (reason.year !== null) return `${head} ${reason.year}`;
+  if (reason.terms.length > 0) return `${head} ${reason.terms.join("، ")}`;
+  return head;
+}
+
 export default function ReferencesPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale: raw } = use(params);
   const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
@@ -86,6 +113,17 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
 
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [notices, setNotices] = useState<Record<string, Notice>>({});
+
+  /**
+   * المصطلحات المقبولة — **حالةٌ مستقلة عن نتائج البحث الجارية**.
+   *
+   * `accepted` ما اختاره الباحث الآن، و`appliedTerms` ما كان مطبَّقًا في
+   * النتائج المعروضة. وافتراقُهما هو ما يُظهر «أعد البحث»: بلا هذا الفصل
+   * تتغيّر الأسباب تحت البطاقات بنقرةٍ على مصطلح، فيقرأ الباحث تفسيرًا
+   * لبحثٍ لم يُجرَ بعد.
+   */
+  const [accepted, setAccepted] = useState<string[]>([]);
+  const [appliedTerms, setAppliedTerms] = useState<string[]>([]);
 
   /**
    * أبحاث الباحث تُحمَّل مرّة — **ولا حالة تُضبط داخل التأثير مباشرةً**.
@@ -112,8 +150,7 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
     };
   }, [locale]);
 
-  function onSearch(event: React.FormEvent) {
-    event.preventDefault();
+  function runSearch(terms: string[]) {
     setPhase("loading");
     setError(null);
     setNotices({});
@@ -125,9 +162,13 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
       yearTo: yearOf(yearTo),
       workType: workType || null,
       openAccessOnly,
+      acceptedTerms: terms,
     })
       .then((response) => {
         setData(response);
+        // ما طُبِّق فعلًا يُسجَّل من الطلب الذي نجح وحده: لو سُجّل قبل
+        // الردّ لقالت الشاشة إن التوسيع مطبَّق وهو لم يصل إلى فهرس.
+        setAppliedTerms(terms);
         setPhase("ready");
       })
       .catch((err: unknown) => {
@@ -136,6 +177,24 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
         );
         setPhase("failed");
       });
+  }
+
+  function onSearch(event: React.FormEvent) {
+    event.preventDefault();
+    runSearch(accepted);
+  }
+
+  /** قبول مصطلحٍ أو رفضه — **ولا يُعاد البحث تلقائيًّا**.
+   *
+   * إعادةُ البحث عند كل نقرة تجعل الباحث يوسّع بحثه وهو يستكشف الخيارات،
+   * ثم يقرأ نتائج توسيعٍ لم يقصده. فالقبول اختيارٌ، والتنفيذ نقرةٌ ثانية.
+   */
+  function toggleTerm(term: string) {
+    setAccepted((current) =>
+      current.includes(term)
+        ? current.filter((one) => one !== term)
+        : [...current, term],
+    );
   }
 
   function onSave(candidate: ReferenceCandidate) {
@@ -198,6 +257,17 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
 
   const providersDown: ProviderStatus[] = (data?.providers ?? []).filter((one) => !one.ok);
   const canSubmit = query.trim().length >= 2 && phase !== "loading";
+
+  const understanding = data?.query_understanding ?? null;
+  const suggestions = understanding?.suggestions ?? [];
+  // ما قبله الباحث ولم يُطبَّق بعد. المقارنة على المجموعة لا على الطول:
+  // إزالةُ مصطلحٍ وإضافةُ آخر تُبقي العدد ويتبدّل البحث.
+  const pending =
+    accepted.length !== appliedTerms.length ||
+    accepted.some((term) => !appliedTerms.includes(term));
+  // نصّان يُعرضان معًا حين يختلفان وحده — وتساويهما هو الحال الطبيعية.
+  const rewritten =
+    understanding !== null && understanding.sent.trim() !== understanding.raw.trim();
 
   return (
     <>
@@ -306,6 +376,113 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
         </div>
       ) : null}
 
+      {/* ما فُهم من السؤال، ونصّه كما كُتب. يُعرضان معًا فلا يقع تبديلٌ خفيّ. */}
+      {phase === "ready" && understanding ? (
+        <section
+          aria-label={t("references.understandingLabel")}
+          style={{ marginBlockStart: 18 }}
+          data-testid="references-understanding"
+        >
+          <p className="nav-label" style={{ paddingInline: 0, marginBlockEnd: 6 }}>
+            {t("references.understandingLabel")}
+          </p>
+          <p className="metric-label" style={{ marginBlock: 0 }}>
+            {t("references.queryLabel")}: <span dir="auto">{understanding.raw}</span>
+          </p>
+          {rewritten ? (
+            <p className="metric-label" style={{ marginBlock: 0 }} data-testid="references-query-sent">
+              {t("references.querySentLabel")}: <span dir="auto">{understanding.sent}</span>
+            </p>
+          ) : (
+            <p className="provenance-note" style={{ marginBlock: 0 }}>
+              {t("references.queryUnchanged")}
+            </p>
+          )}
+          <ul
+            style={{ display: "flex", gap: 8, flexWrap: "wrap", listStyle: "none", padding: 0, marginBlockStart: 6 }}
+          >
+            {understanding.doi ? (
+              <li className="chip">
+                {t("references.understandingDoi")}: <span dir="ltr">{understanding.doi}</span>
+              </li>
+            ) : null}
+            {understanding.authors.map((name) => (
+              <li className="chip" key={`author-${name}`}>
+                {t("references.understandingAuthors")}: {name}
+              </li>
+            ))}
+            {understanding.year !== null ? (
+              <li className="chip">
+                {t("references.understandingYear")}: {understanding.year}
+              </li>
+            ) : null}
+            {understanding.phrase ? (
+              <li className="chip">
+                {t("references.understandingPhrase")}: {understanding.phrase}
+              </li>
+            ) : null}
+            {understanding.keywords.length > 0 ? (
+              <li className="chip">
+                {t("references.understandingKeywords")}: {understanding.keywords.join("، ")}
+              </li>
+            ) : null}
+          </ul>
+        </section>
+      ) : null}
+
+      {/* مصطلحاتٌ مقترحة: تُعرض ولا تُطبَّق حتى يقبلها الباحث ويعيد البحث. */}
+      {phase === "ready" && suggestions.length > 0 ? (
+        <section
+          aria-label={t("references.suggestionsLabel")}
+          style={{ marginBlockStart: 18 }}
+          data-testid="references-suggestions"
+        >
+          <p className="nav-label" style={{ paddingInline: 0, marginBlockEnd: 6 }}>
+            {t("references.suggestionsLabel")}
+          </p>
+          <p className="provenance-note" style={{ marginBlockStart: 0 }}>
+            {t("references.suggestionsNote")}
+          </p>
+          <ul style={{ display: "flex", gap: 8, flexWrap: "wrap", listStyle: "none", padding: 0 }}>
+            {suggestions.map((one) => {
+              const on = accepted.includes(one.term);
+              return (
+                <li key={one.term}>
+                  {/* كل زرٍّ مكرَّر يسمّي هدفه: «أضف إلى بحثي: الذكاء الاصطناعي». */}
+                  <button
+                    type="button"
+                    className="chip chip-stage"
+                    aria-pressed={on}
+                    aria-label={`${on ? t("references.suggestionRemove") : t("references.suggestionAccept")}: ${one.term}`}
+                    onClick={() => toggleTerm(one.term)}
+                  >
+                    {one.term}
+                    {" · "}
+                    {one.kind === "acronym"
+                      ? t("references.suggestionKindAcronym")
+                      : t("references.suggestionKindTranslation")}
+                    {on ? ` · ${t("references.suggestionAccepted")}` : ""}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          {pending ? (
+            <p role="status" data-testid="references-suggestions-pending">
+              {t("references.acceptedPending")}{" "}
+              <button
+                type="button"
+                className="chip chip-stage"
+                disabled={!canSubmit}
+                onClick={() => runSearch(accepted)}
+              >
+                {t("references.suggestionRerun")}
+              </button>
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       {/* حال كل فهرس — الفشل يُعلَن باسم صاحبه، ولا يُقرأ رفًّا فارغًا. */}
       {phase === "ready" && data && data.providers.length > 0 ? (
         <section aria-label={t("references.providersLabel")} style={{ marginBlockStart: 18 }}>
@@ -351,8 +528,16 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
 
       {phase === "ready" && data && data.candidates.length > 0 ? (
         <section aria-label={t("references.resultsLabel")} style={{ marginBlockStart: 18 }}>
-          <p className="nav-label" style={{ paddingInline: 0, marginBlockEnd: 10 }}>
+          <p className="nav-label" style={{ paddingInline: 0, marginBlockEnd: 4 }}>
             {t("references.resultsLabel")}
+          </p>
+          {/* الباحث يفترض الترتيب الزمني في شاشات البحث، فيقرأ الأولى
+              «الأحدث». فيُقال بأيّ شيء رُتِّبت، ويُقال لماذا لا نسبة. */}
+          <p className="metric-label" style={{ marginBlock: 0 }} data-testid="references-ordering">
+            {t("references.orderedByLabel")}
+          </p>
+          <p className="provenance-note" style={{ marginBlockStart: 2, marginBlockEnd: 10 }}>
+            {t("references.noPercentNote")}
           </p>
 
           {/* البحث المستهدف يُختار مرّة، فلا يُسأل عنه في كل بطاقة. */}
@@ -426,9 +611,30 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
                   </div>
 
                   {candidate.retraction_status === "retracted" ? (
-                    <p className="error" style={{ marginBlock: "6px 0" }}>
+                    <p className="error" style={{ marginBlock: "6px 0" }} role="alert">
                       {t("references.retracted")}
                     </p>
+                  ) : null}
+
+                  {/* لماذا وقع هنا. أسبابٌ يتحقق منها بعينه — **ولا نسبة**:
+                      الخادم لا يرسل درجة، فلا تستطيع الشاشة اختراع واحدة. */}
+                  {candidate.reasons.length > 0 ? (
+                    <ul
+                      aria-label={`${t("references.reasonsLabel")}: ${candidate.title}`}
+                      data-testid="reference-reasons"
+                      style={{ listStyle: "none", padding: 0, margin: "8px 0 0", display: "grid", gap: 2 }}
+                    >
+                      {candidate.reasons.map((reason) => (
+                        <li
+                          key={reason.code}
+                          className={reason.kind === "caution" ? "error" : "metric-label"}
+                          style={{ marginBlock: 0 }}
+                        >
+                          {reason.kind === "caution" ? "⚠ " : "· "}
+                          {reasonText(reason, t)}
+                        </li>
+                      ))}
+                    </ul>
                   ) : null}
 
                   {/* من قال ماذا: كل فهرسٍ بسطره، وعدّاده باسمه. */}
