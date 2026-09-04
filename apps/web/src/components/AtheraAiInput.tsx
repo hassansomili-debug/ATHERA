@@ -177,7 +177,7 @@ export function AtheraAiInput({
       });
       setNotice(`${t("ai.refSaved")} — ${doi}`);
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.refSaveFailed"));
+      setError(failure(err, t("ai.refSaveFailed")));
     } finally {
       setBusy(false);
     }
