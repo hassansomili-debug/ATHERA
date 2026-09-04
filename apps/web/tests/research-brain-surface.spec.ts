@@ -174,12 +174,67 @@ const THREAD_VIEW = {
   ],
   counts: { known: 1, needs_review: 1, missing: 1, conflicting: 1 },
   note: "لا تُعرض درجة اتساق هنا.",
+  // اسمُ البحث يصل من عقد العرض، ومعه رايةُ البديل وتاريخُ الإنشاء منفصلًا.
+  title_is_fallback: false,
+  created_at: "2026-03-01T09:00:00Z",
+};
+
+/**
+ * فعلٌ مقترح على الكشف المنهجي — **ولا شيء فيه يُنشئ التزامًا**.
+ *
+ * و`finding_key` و`entity_ids` يطابقان سطر `methodological_alerts` في
+ * التقييم: المطابقةُ بالمفتاح والمواضع معًا هي ما يمنع ضمَّ اقتراح متغيّرٍ
+ * إلى سطر متغيّرٍ آخر.
+ */
+const ACTIONS = {
+  project_id: PROJECT,
+  actions: [
+    {
+      key: `methodological_alerts:${RULE_CAUSALITY}:claim:9`,
+      finding_key: RULE_CAUSALITY,
+      category: "methodological_alerts",
+      state: "needs_review",
+      action_kind: "review_causal_language",
+      title: "راجع لغة السببية في نصّك، أو سجّل تصميمًا تجريبيًّا يسندها.",
+      detail: "لغةٌ سببية في دراسةٍ ارتباطية.",
+      rule_id: RULE_CAUSALITY,
+      rule_status: "DRAFT",
+      rule_is_enforceable: false,
+      provenance: "§15.2 والكشف اللغوي التاسع.",
+      excerpt: "أدّى البرنامج إلى",
+      entity_ids: ["claim:9"],
+      has_evidence: true,
+      creates_obligation: false,
+    },
+  ],
+  advisory_note: "كل ما في هذه الصفحة مشورةٌ تُقرأ ولا تُوقف عملًا.",
+};
+
+/** المعاينة: ما ستكون عليه المهمّة **لو** قَبِل الباحث. */
+const PREVIEW = {
+  action_key: `methodological_alerts:${RULE_CAUSALITY}:claim:9`,
+  title: "راجع لغة السببية في نصّك، أو سجّل تصميمًا تجريبيًّا يسندها.",
+  detail: "لغةٌ سببية في دراسةٍ ارتباطية.",
+  source: `قاعدة ${RULE_CAUSALITY} — رتبتها: DRAFT — مصدرها: §15.2`,
+  excerpt: "أدّى البرنامج إلى",
+  entity_ids: ["claim:9"],
+  undetermined_fields: [
+    { key: "assignee", label: "المسؤول" },
+    { key: "due_date", label: "تاريخ الاستحقاق" },
+    { key: "priority", label: "الأولوية" },
+  ],
+  is_preview: true,
+  created: false,
+  not_created_note: "هذه معاينة: لم تُنشأ مهمّة، ولا شيء سُجّل في بحثك.",
+  pending_contract_note: "عقد إنشاء المهام لم يصل بعد، فزرّ القبول غير مفعَّل.",
 };
 
 const BODIES = new Map<string, unknown>([
   [`/api/v1/workspace/projects/${PROJECT}/assessment`, ASSESSMENT],
   ["/api/v1/brain/rules", RULES],
   [`/api/v1/projects/${PROJECT}/thread/golden-view`, THREAD_VIEW],
+  [`/api/v1/projects/${PROJECT}/brain/suggested-actions`, ACTIONS],
+  [`/api/v1/projects/${PROJECT}/brain/suggested-actions/preview`, PREVIEW],
   [
     "/api/v1/settings/posture",
     { tenant_name: "فحص السطح", locale: AR, supported_locales: ["ar", "en"], roles: [],
@@ -399,5 +454,116 @@ test.describe("the research brain and the golden thread", () => {
 
     await page.getByRole("link", { name: "افتح العقل البحثي لهذا البحث" }).click();
     await expect(page).toHaveURL(new RegExp(`${PROJECT}/brain$`));
+  });
+
+  /**
+   * **الخيط يقول أيَّ بحثٍ يعرض.**
+   *
+   * وشاشةٌ عنوانها «الخيط الذهبي» وحدها تُقرأ على أيّ بحث، والباحث الذي
+   * فتح تبويبين لا يعرف أيّهما أمامه.
+   */
+  test("the thread names the project it is drawing", async ({ page }) => {
+    await stubApi(page);
+    await page.goto(THREAD);
+    await expect(page.getByText(LOADING_AR)).toHaveCount(0, { timeout: 20_000 });
+
+    await expect(page.getByTestId("thread-project-title")).toContainText("أثر برنامج تدريبي");
+    // وعنوانٌ حقيقي لا يُوسَم بديلًا.
+    await expect(page.getByTestId("thread-title-fallback")).toHaveCount(0);
+  });
+
+  test("a nameless project is named a fallback, and says so", async ({ page }) => {
+    await page.route("**/api/v1/**", (route: Route) => {
+      const path = new URL(route.request().url()).pathname;
+      const body = path.endsWith("/thread/golden-view")
+        ? { ...THREAD_VIEW, title: "مشروع بدون عنوان", title_is_fallback: true }
+        : BODIES.has(path)
+          ? BODIES.get(path)
+          : [];
+      return route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(body),
+      });
+    });
+    await page.goto(THREAD);
+    await expect(page.getByText(LOADING_AR)).toHaveCount(0, { timeout: 20_000 });
+
+    await expect(page.getByTestId("thread-project-title")).toContainText("مشروع بدون عنوان");
+    // **والبديل يُعلَن بديلًا**، وإلّا قُرئ عنوانًا سجّله الباحث بنفسه.
+    await expect(page.getByTestId("thread-title-fallback")).toBeVisible();
+  });
+
+  /**
+   * **الكشف لا يُنشئ التزامًا** — وهذا هو الفحص الذي يحرس السلسلة.
+   *
+   * والمعاينة تُفتح، وتقول بنصّها إنّ شيئًا لم يُنشأ، وزرُّ القبول معطَّل
+   * لأنّ عقد المهامّ لم يصل. وزرٌّ يَعِد بما لا يقع أسوأ من غيابه: من ضغطه
+   * مرّةً بلا أثرٍ لا يضغطه حين يعمل.
+   */
+  test("an advisory finding previews a task without creating one", async ({ page }) => {
+    const seen = watch(page);
+    const writes: string[] = [];
+    await page.route("**/api/v1/**", (route: Route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      // **أيُّ كتابةٍ على مسار الاقتراحات دعوى.** وتُلتقط هنا لا تُفترض غائبة.
+      if (request.method() !== "GET" && path.includes("suggested-actions")) {
+        writes.push(`${request.method()} ${path}`);
+      }
+      return route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(BODIES.has(path) ? BODIES.get(path) : []),
+      });
+    });
+    await page.goto(BRAIN);
+    await expect(page.getByText(LOADING_AR)).toHaveCount(0, { timeout: 20_000 });
+
+    // الفعل المقترح معروضٌ على الكشف قبل أيّ نقرة.
+    await expect(
+      page.getByText("راجع لغة السببية في نصّك، أو سجّل تصميمًا تجريبيًّا يسندها.").first(),
+    ).toBeVisible();
+
+    // ولا معاينة قبل أن يطلبها الباحث.
+    await expect(page.getByTestId("brain-preview")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "عاين المهمّة المقترحة", exact: true }).click();
+    const preview = page.getByTestId("brain-preview");
+    await expect(preview).toBeVisible();
+
+    // والسند ينتقل إلى المعاينة: مهمّةٌ بلا ما أثارها لا تُراجَع.
+    await expect(preview).toContainText("أدّى البرنامج إلى");
+    await expect(preview).toContainText(RULE_CAUSALITY);
+    // وما لا يُعرف يُسمَّى ولا يُملأ باختراع.
+    for (const label of ["المسؤول", "تاريخ الاستحقاق", "الأولوية"]) {
+      await expect(preview.getByText(label, { exact: true }).first()).toBeVisible();
+    }
+
+    // **«لم تُنشأ مهمّة» يُقال بنصّه** لا يُستنتج من صمت.
+    await expect(page.getByTestId("brain-preview-not-created")).toContainText(
+      "لم تُنشأ مهمّة",
+    );
+    // وزرّ القبول معطَّل — ويبقى معطَّلًا لأنّ العقد لم يصل.
+    await expect(page.getByTestId("brain-accept-disabled")).toBeDisabled();
+
+    // ولا طلبَ كتابةٍ واحد خرج من الشاشة في هذه الرحلة كلها.
+    expect(writes, "the preview wrote to the server").toEqual([]);
+    expect(seen.serverErrors).toEqual([]);
+    expect(seen.errors).toEqual([]);
+  });
+
+  /**
+   * **سقوطُ الاقتراحات ليس «لا فعل مطلوب».**
+   *
+   * والتقييم قد يصل وهي تسقط، فتُعرض الكشوف بلا أفعالها — ويقرؤها الباحث
+   * «لا شيء عليّ أن أفعله» عن جوابٍ لم يصل أصلًا.
+   */
+  test("failed suggestions are announced, not read as nothing to do", async ({ page }) => {
+    await stubApi(page, ["suggested-actions"]);
+    await page.goto(BRAIN);
+    await expect(page.getByText(LOADING_AR)).toHaveCount(0, { timeout: 20_000 });
+
+    // التقييم نفسه وصل، فالخانات معروضة.
+    await expect(page.getByText("لغةٌ سببية في دراسةٍ ارتباطية.").first()).toBeVisible();
+    // والاقتراحات سقطت، ويُقال ذلك بنصّه.
+    await expect(page.getByTestId("brain-actions-failed").first()).toBeVisible();
   });
 });

@@ -376,7 +376,16 @@
       "discussion": "المناقشة",
       "recommendation": "التوصية"
     },
-    "chooseProject": "اختر البحث"
+    "chooseProject": "اختر البحث",
+    "scoreNotComputed": "لم يُحسب الاتساق بعد لعدم اكتمال العناصر الأساسية.",
+    "countStructural": "عيوب بنيوية",
+    "countLinguistic": "تنبيهات منهجية",
+    "conflicts": "تعارضات",
+    "missingHint": "عناصر لم تُسجَّل بعد — غيابُ ما يُفحص، لا نتيجةُ فحص.",
+    "structuralHint": "علاقاتٌ ناقصة بين عناصر موجودة — هذه وحدها «عيوب اتساق».",
+    "linguisticHint": "صياغةٌ تحتاج مراجعتك — اقتراحٌ لا حكم.",
+    "conflictsHint": "لا مقارنة بين صفٍّ وصفّ في هذا الفحص، فلا تعارض يخرج منه.",
+    "cleanPartial": "لم يقع عيبٌ بين العناصر المسجَّلة — وما لم يُسجَّل بعد لم يُفحص، فليست هذه شهادةَ اتساق."
   },
   "theses": {
     "title": "مكتبة الرسائل",
@@ -1362,7 +1371,22 @@
     "action_default": "افتح الموضع المذكور أعلاه وراجعه.",
     "rulesUnavailable": "لم يصل سجل القواعد، فرتبة كل قاعدة ومصدرها غير معروضين مع تنبيهاتها.",
     "loadFailedNote": "تعذّر قراءة تقييم هذا البحث — وما تراه ليس «لا شيء يُذكر»: التقييم لم يصل.",
-    "itemsCount": "سطر"
+    "itemsCount": "سطر",
+    "actionsHint": "اقتراحاتٌ تُقرأ ولا تُنشئ شيئًا في بحثك. والمهمّة لا تُنشأ إلا بقبولك.",
+    "actionsFailed": "تعذّرت قراءة الأفعال المقترحة — وما تراه ليس «لا فعل مطلوب».",
+    "previewButton": "عاين المهمّة المقترحة",
+    "previewClose": "أغلق المعاينة",
+    "previewTitle": "معاينة: هذا ما ستكون عليه المهمّة لو قبلتَها",
+    "previewFailed": "تعذّرت قراءة المعاينة.",
+    "previewSource": "من أين جاء الاقتراح",
+    "previewUndetermined": "حقولٌ لا تُملأ هنا",
+    "previewNotCreated": "لم تُنشأ مهمّة",
+    "acceptDisabled": "القبول غير متاح بعد",
+    "actionState": "الحال",
+    "state_known": "معلوم",
+    "state_missing": "ناقص",
+    "state_needs_review": "يحتاج مراجعة",
+    "state_conflicting": "متعارض"
   },
   "goldenThread": {
     "title": "الخيط الذهبي",
@@ -1397,7 +1421,10 @@
     "origin_instruments": "أداة قياس",
     "origin_analysis_runs": "تشغيلة تحليل",
     "origin_analysis_outputs": "مخرَج تحليل",
-    "origin_interpretations": "دلالة إدارية لنتيجة"
+    "origin_interpretations": "دلالة إدارية لنتيجة",
+    "projectTitleLabel": "البحث",
+    "projectTitleFallback": "هذا البحث لم يُسمَّ بعد — والاسم أعلاه بديلٌ لا عنوانٌ سجّلتَه.",
+    "createdAtLabel": "أُنشئ في"
   },
   "synthesis": {
     "themesTitle": "الموضوعات",
