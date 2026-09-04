@@ -4,6 +4,9 @@ import { use, useCallback, useEffect, useRef, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import {
+  bulkLink,
+  bulkMove,
+  bulkTrash,
   createFolder,
   listFolders,
   listLibraryFilePage,
@@ -109,6 +112,11 @@ type Panel =
   | { kind: "link"; id: string; name: string }
   | { kind: "rename"; id: string; name: string }
   | { kind: "confirmDelete"; id: string; name: string; projects: number }
+  /* ولوحاتُ المختار تحمل عدده مكان اسمه: «نقل ١٢ ملفًا» تقول ما تعمل
+     عليه كما يقوله اسمُ ملفٍ واحد — والعدد هو اسمُ المختار. */
+  | { kind: "bulkMove"; count: number }
+  | { kind: "bulkLink"; count: number }
+  | { kind: "bulkTrash"; count: number; projects: number }
   | null;
 
 export default function LibraryPage({ params }: { params: Promise<{ locale: string }> }) {
@@ -141,6 +149,17 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    * أُرسل فعلًا إلى الخادم. ولولا الفصل لصدر طلبٌ عند كل حرف — عشرة طلبات
    * لكلمةٍ واحدة، تسع منها لا يُنتظر جوابها.
    */
+  /**
+   * ما اختاره الباحث — **قائمةُ معرّفات لا شرطٌ يوصف**.
+   *
+   * و«كل ما يطابق» فعلٌ يمسّ ما لم يره حين ضغط: لو تغيّرت القائمة تحت يده
+   * لأصاب غير ما قصد. والمعرّفات تُرسل كما هي، فالخادم يفعل بما رآه لا
+   * بما يستنتجه.
+   */
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  /** ما وقع بعدده — يُعرض بعد الفعل، ويُمحى عند الفعل الذي يليه. */
+  const [outcome, setOutcome] = useState<string | null>(null);
+
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [kind, setKind] = useState<LibraryFilter | null>(null);
@@ -279,6 +298,10 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
     shown.current = [];
     setFiles([]);
     setHasMore(false);
+    // **والمختارُ يُطرح مع القائمة التي اختير منها.** فمعرّفٌ لملفٍ صار في
+    // السلّة أو انتقل إلى رفٍّ آخر يبقى في الاختيار بلا أن يُرى، فيقع
+    // عليه الفعل التالي وصاحبه لا يعلم أنه اختاره.
+    setPicked(new Set());
     loadFolders();
     loadFiles();
   }, [loadFiles, loadFolders]);
@@ -306,6 +329,8 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
     setSearch("");
     setKind(null);
     setWholeLibrary(false);
+    setPicked(new Set());
+    setOutcome(null);
   }, []);
 
   /**
@@ -440,6 +465,11 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
       setFiles([]);
       setHasMore(false);
       setPanel(null);
+      // **ولا يبقى مختارٌ لا يُرى.** فمرشّحٌ جديد يُخفي ملفاتٍ اختيرت قبله،
+      // فيقول الشريط «١٢ ملفًا مختارًا» وفي الشاشة ثلاثة — ثم يقع الفعل
+      // على تسعةٍ لا يراها صاحبها.
+      setPicked(new Set());
+      setOutcome(null);
       shown.current = [];
     }, []);
 
@@ -501,7 +531,59 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
       .finally(() => setBusy(null));
   }
 
+  /**
+   * ── الأفعال على المختار ──
+   *
+   * **والدفعة تقع كلها أو لا يقع منها شيء.** الخادم يفحص كل ملفٍ قبل أن
+   * يكتب، ورفضُ واحدٍ يردّ الجميع — فلا يُقال «تم» وقد بقي ثلاثةٌ في
+   * مكانها بلا أن يعرف صاحبها أيُّها. والقراءة بعد الفعل تُعيد بناء
+   * القائمة من الخادم، فما يراه هو ما وقع فعلًا لا ما توقّعته الشاشة.
+   */
+  const chosen = Array.from(picked);
+
+  const said = useCallback((key: string, result: { changed: number; already: number }) => {
+    const parts = [`${t(key)} ${result.changed}`];
+    if (result.already > 0) {
+      parts.push(`${t("library.bulkLinkedAlready")} ${result.already}`);
+    }
+    return parts.join(" · ");
+  }, [locale]);
+
+  function runBulk(
+    action: Promise<{ changed: number; already: number }>,
+    key: string,
+  ) {
+    setBusy("bulk");
+    setActionError(null);
+    setOutcome(null);
+    action
+      .then((result) => {
+        setOutcome(said(key, result));
+        setPicked(new Set());
+        setPanel(null);
+        refresh();
+      })
+      .catch((err) => {
+        // **ما يسند بحوثًا لا يختفي بلا أن يُقال بكم.** الخادم يردّ العدد،
+        // فتُعرض جملةٌ فيها رقمٌ حقيقي قبل أن يقع الحذف.
+        if (err instanceof AtheraApiError
+            && err.payload.code === "library.selection_linked_to_projects") {
+          setPanel({
+            kind: "bulkTrash", count: chosen.length,
+            projects: Number(err.payload.context?.projects ?? 0),
+          });
+          return;
+        }
+        say(err);
+      })
+      .finally(() => setBusy(null));
+  }
+
   function chooseFolderTarget(target: string | null) {
+    if (panel?.kind === "bulkMove") {
+      runBulk(bulkMove(locale, chosen, target), "library.bulkMoved");
+      return;
+    }
     if (!panel) return;
     const { id, kind } = panel;
     setBusy(id);
@@ -569,6 +651,10 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
   }
 
   function linkToProject(projectId: string) {
+    if (panel?.kind === "bulkLink") {
+      runBulk(bulkLink(locale, chosen, projectId), "library.bulkLinked");
+      return;
+    }
     if (panel?.kind !== "link") return;
     const { id } = panel;
     setBusy(id);
@@ -983,12 +1069,154 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
                 : folderId === null ? t("library.noFiles") : t("library.emptyFolder")}
           </p>
         ) : (
+          <>
+          {/* ── شريطُ المختار ──
+              **ولا يُعرض إلا وفيه ما يُعمل عليه.** شريطُ أفعالٍ قائمٌ
+              دائمًا بأزرارٍ معطَّلة ضجيجٌ يزاحم القائمة؛ وظهورُه هو نفسه
+              ما يقول للباحث إن اختياره وقع. */}
+          {!inTrash && chosen.length > 0 ? (
+            <div className="card" data-testid="library-bulk-bar"
+                 style={{ display: "flex", gap: 8, flexWrap: "wrap",
+                          alignItems: "center", marginBlockEnd: 12 }}>
+              <strong data-testid="library-bulk-count">
+                {chosen.length} {t("library.selectedCount")}
+              </strong>
+              <button
+                type="button"
+                disabled={busy === "bulk"}
+                aria-label={`${t("library.bulkMove")}: ${chosen.length}`}
+                onClick={() => {
+                  setActionError(null);
+                  setOutcome(null);
+                  setPanel({ kind: "bulkMove", count: chosen.length });
+                }}
+              >
+                {busy === "bulk" ? t("library.bulkBusy") : t("library.bulkMove")}
+              </button>
+              <button
+                type="button"
+                disabled={busy === "bulk"}
+                aria-label={`${t("library.bulkLink")}: ${chosen.length}`}
+                onClick={() => {
+                  setActionError(null);
+                  setOutcome(null);
+                  setPanel({ kind: "bulkLink", count: chosen.length });
+                }}
+              >
+                {busy === "bulk" ? t("library.bulkBusy") : t("library.bulkLink")}
+              </button>
+              <button
+                type="button"
+                disabled={busy === "bulk"}
+                aria-label={`${t("library.bulkTrash")}: ${chosen.length}`}
+                onClick={() => runBulk(bulkTrash(locale, chosen, false),
+                                       "library.bulkTrashed")}
+              >
+                {busy === "bulk" ? t("library.bulkBusy") : t("library.bulkTrash")}
+              </button>
+              <button
+                type="button"
+                aria-label={`${t("library.clearSelection")}: ${chosen.length}`}
+                onClick={() => {
+                  setPicked(new Set());
+                  setPanel(null);
+                }}
+              >
+                {t("library.clearSelection")}
+              </button>
+            </div>
+          ) : null}
+
+          {/* والوجهةُ تُختار مرّةً للمختار كله — لا مرّةً لكل ملف. */}
+          {panel?.kind === "bulkMove" ? (
+            <FolderPicker
+              locale={locale}
+              messages={getMessages(locale)}
+              targetName={`${panel.count} ${t("library.selectedCount")}`}
+              currentFolderId={folderId}
+              busy={busy === "bulk"}
+              onChoose={chooseFolderTarget}
+              onCancel={() => setPanel(null)}
+            />
+          ) : null}
+
+          {panel?.kind === "bulkLink" ? (
+            <ProjectPicker
+              locale={locale}
+              messages={getMessages(locale)}
+              fileName={`${panel.count} ${t("library.selectedCount")}`}
+              busy={busy === "bulk"}
+              onChoose={linkToProject}
+              onCancel={() => setPanel(null)}
+            />
+          ) : null}
+
+          {/* **التحذير الجماعيّ بعدده، قبل أن يقع.** ضغطةٌ واحدة تُخفي
+              عشرين ملفًا، وقد يسند بعضها بحوثًا قائمة — والحذف نقلٌ إلى
+              السلّة لا إتلاف، ويُقال ذلك صراحةً. */}
+          {panel?.kind === "bulkTrash" ? (
+            <div data-testid="library-bulk-confirm" role="alert" className="card"
+                 style={{ marginBlockEnd: 12, padding: 12 }}>
+              <strong>⚠ {t("library.bulkConfirmTitle")}</strong>
+              <p style={{ marginBlockStart: 4 }}>
+                {t("library.bulkConfirmBody")} {panel.projects}
+              </p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  disabled={busy === "bulk"}
+                  aria-label={`${t("library.bulkConfirmYes")}: ${panel.count}`}
+                  onClick={() => runBulk(bulkTrash(locale, chosen, true),
+                                         "library.bulkTrashed")}
+                >
+                  {t("library.bulkConfirmYes")}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`${t("library.bulkConfirmNo")}: ${panel.count}`}
+                  onClick={() => setPanel(null)}
+                >
+                  {t("library.bulkConfirmNo")}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {outcome ? (
+            <p className="note" role="status" aria-live="polite"
+               data-testid="library-bulk-outcome">{outcome}</p>
+          ) : null}
+
           <div className="cards">
             {files.map((file) => (
               // بطاقةُ ملفٍ تُميَّز عن بطاقةِ مرجع: `article.card` يطابق
               // الاثنتين، فعدُّها لا يفرّق بين مكتبةٍ بلا ملفات ومكتبةٍ لم
               // تُقرأ — والسمة لا تحمل اسمًا ولا سرًّا.
               <article className="card" data-testid="library-file-card" key={file.id}>
+                {/* الاختيار لا يُعرض في السلّة: أفعالُ المختار الثلاثة
+                    لا معنى لواحدٍ منها على محذوف، وصندوقٌ لا يفعل شيئًا
+                    أسوأ من غيابه. */}
+                {inTrash ? null : (
+                  <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      type="checkbox"
+                      checked={picked.has(file.id)}
+                      data-testid="library-pick"
+                      aria-label={`${t("library.selectFile")}: ${file.original_filename}`}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setOutcome(null);
+                        setPicked((previous) => {
+                          const next = new Set(previous);
+                          if (checked) next.add(file.id);
+                          else next.delete(file.id);
+                          return next;
+                        });
+                      }}
+                    />
+                    <span className="metric-label">{t("library.selectFile")}</span>
+                  </label>
+                )}
                 <h3>{file.original_filename}</h3>
                 <div className="metric-label">
                   {file.content_type} · {Math.max(1, Math.round(file.size_bytes / 1024))} KB ·{" "}
@@ -1177,6 +1405,7 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
               </article>
             ))}
           </div>
+          </>
         )}
         {/* ما عُرض لا يُستبدل بما يُضاف: الزرّ يُلحق ولا يعيد البناء. */}
         {filesLoad === "ready" && hasMore ? (

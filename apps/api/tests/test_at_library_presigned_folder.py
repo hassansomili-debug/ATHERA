@@ -142,10 +142,12 @@ def test_the_folder_guard_answers_with_a_code_not_with_a_five_hundred():
     مجلَّد غيرك أصلًا فلا يفشي التخمينُ خبرًا)، والثاني «تراه ولا تملكه».
     وجمعُهما في رمزٍ واحد يترك الباحث لا يعرف أيّ الأمرين وقع.
     """
-    from athera_api.routers import files as router
+    from athera_api.services import library
 
-    source = inspect.getsource(router._writable_folder)
-    assert "library.get_folder" in source, "لا فحص لوجود المجلَّد"
+    # والتعريف في الخدمة لا في الموجّه: الفعل الجماعيّ في موجّهٍ ثانٍ يقرأ
+    # الحارس نفسه، ونسختان منه تفترقان بأول تعديل.
+    source = inspect.getsource(library.assert_writable)
+    assert "get_folder" in source, "لا فحص لوجود المجلَّد"
     assert "require_object_action" in source, "لا فحص للمنحة على المجلَّد"
     assert "except" not in source, "الفحص يبتلع استثناءً فيصير الرفض صامتًا"
 

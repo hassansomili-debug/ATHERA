@@ -11,7 +11,7 @@ from time import perf_counter
 from fastapi import APIRouter, Depends, File as FormFile, Form, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -21,8 +21,7 @@ from ..errors import AtheraError, NotFound
 from ..models.audit import ProvenanceEvent
 from ..models.files import File, FileAccessLog
 from ..models.identity import ObjectGrant
-from ..models.library import FOLDER_OBJECT_TYPE, LibraryFolder
-from ..models.portfolio import ProjectFile
+from ..models.library import LibraryFolder
 from ..schemas.files import (
     FileCompleteRequest,
     FileDownloadResponse,
@@ -34,6 +33,7 @@ from ..schemas.files import (
 from ..schemas.library import FileMoveRequest, FileTrashView, TrashRequest
 from ..services import audit, library, rbac, storage, workspace
 from .folders import router as folders_router
+from .library_bulk import router as bulk_router
 
 # مقطع الميجابايت: يوازن بين عدد الدورات وبصمة الذاكرة.
 CHUNK_BYTES = 1024 * 1024
@@ -45,7 +45,12 @@ router = APIRouter(prefix="/api/v1/files", tags=["files"])
 # المجلَّدات في الأسفل لالتقط `‎/api/v1/files/folders` مسارُ المعرّف أولًا،
 # وفشل تحويل «folders» إلى UUID، فيردّ 422 على قائمةٍ صحيحة. والترتيب هو
 # كل الفرق، ولا يظهر في أي اختبار وحدة يستدعي الدالّة مباشرةً.
+#
+# والأفعالُ الجماعية كذلك: `‎/api/v1/files/bulk/move` يلتقطه
+# `POST /{file_id}/move` لو سُجّل بعده، فيحاول قراءة «bulk» معرّفًا ويردّ
+# 422 على فعلٍ صحيح.
 router.include_router(folders_router)
+router.include_router(bulk_router)
 
 settings = get_settings()
 
@@ -81,19 +86,15 @@ def _parsed_folder(folder_id: str | None) -> uuid.UUID | None:
 
 async def _writable_folder(session: AsyncSession, principal: Principal,
                            folder_id: uuid.UUID) -> None:
-    """المجلَّد قائمٌ في هذا المستأجر، وللباحث منحةُ كتابةٍ عليه — **وإلا فلا**.
+    """الوجهة قائمةٌ ومملوكة — والفحص نفسه يقرأه المفرد والجماعيّ.
 
-    **وموضعٌ واحد يقول ذلك لكل مسارٍ يضع ملفًا في مجلَّد.** الرفعُ المباشر
-    والنيّةُ الموقّعة والختمُ والنقلُ أربعةُ أبواب إلى الحقل نفسه؛ ولو كتب
-    كلٌّ منها فحصه لافترقت الأربعة بأول تعديل، فيُحرَس بابٌ ويُنسى ثلاثة.
-
-    والرموز تُقال كما هي: مجلَّدٌ لا وجود له — أو لمستأجرٍ آخر فالعزل يمنع
-    رؤيته أصلًا — يردّ 404، ومجلَّدٌ يراه الباحث ولا يملكه يردّ 403. ولا
-    يصعد من هنا خطأٌ مجهول يصير 500 عند الحافّة.
+    والتعريف في `services/library.py` لا هنا: الفعلُ الجماعيّ في موجّهٍ
+    ثانٍ، ونسخةٌ ثانية من الحارس تفترق عن الأولى بأول تعديل — فيُشدَّد
+    المفرد ويبقى الجماعيّ يقبل ما لا يقبله، وهو أخطرهما لأنه يمرّ على
+    عشرين ملفًا لا على واحد.
     """
-    await library.get_folder(session, tenant_id=principal.tenant_id, folder_id=folder_id)
-    await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
-                                     FOLDER_OBJECT_TYPE, folder_id, "write")
+    await library.assert_writable(session, tenant_id=principal.tenant_id,
+                                  user_id=principal.user_id, folder_id=folder_id)
 
 
 def _folder_scope(folder: str | None) -> tuple[bool, uuid.UUID | None]:
@@ -686,23 +687,21 @@ async def stream_file(
 # ══════════════════════════════════════════════════════════════════════
 async def _owned_file(session: AsyncSession, principal: Principal,
                       file_id: uuid.UUID, action: str) -> File:
-    record = (await session.execute(select(File).where(
-        File.id == file_id, File.tenant_id == principal.tenant_id))).scalar_one_or_none()
-    if record is None:
-        raise NotFound("file.not_found")
-    await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
-                                     "file", file_id, action)
-    return record
+    """قراءةٌ محروسة — **والحارس نفسه يقرأه الفعل الجماعيّ**.
+
+    ونسختان منه تفترقان بأول تعديل: يُشدَّد المفرد ويبقى الجماعيّ يقبل ما
+    لا يقبله — وهو أخطرهما، فهو يمرّ على عشرين ملفًا لا على واحد.
+    """
+    return await library.owned_file(session, tenant_id=principal.tenant_id,
+                                    user_id=principal.user_id, file_id=file_id,
+                                    action=action)
 
 
 async def _active_project_links(session: AsyncSession, principal: Principal,
                                 file_id: uuid.UUID) -> int:
-    return (await session.execute(
-        select(func.count(ProjectFile.id)).where(
-            ProjectFile.tenant_id == principal.tenant_id,
-            ProjectFile.file_id == file_id,
-            ProjectFile.state == ProjectFile.ACTIVE)
-    )).scalar_one()
+    """كم بحثًا قائمًا يستعمل هذا الملف؟ — والعدد هو التحذير لا نصُّه."""
+    return await library.active_project_links(
+        session, tenant_id=principal.tenant_id, file_ids=[file_id])
 
 
 @router.post("/{file_id}/move", response_model=FileResponse)

@@ -242,3 +242,48 @@ export const trashFile = (locale: Locale, id: string, confirm: boolean) =>
 
 export const restoreFile = (locale: Locale, id: string) =>
   apiFetch<StoredFile>(`/api/v1/files/${id}/restore`, { method: "POST", locale });
+
+// ══════════════════════════════════════════════════════════════════════
+// الأفعال على المختار | Bulk actions
+//
+// **من رفع ثلاثين ورقةً في الجذر لا ينظّمها بثلاثين ضغطة.** والمجلَّدات
+// صارت موجودة، لكنّ الطريق إليها بقي ملفًا ملفًا — فالتنظيم لا يقع أصلًا.
+//
+// وثلاثةٌ لا رابع لها: نقلٌ، وحذفٌ إلى السلّة، وربطٌ ببحث. **ولا إتلاف
+// دائم** — لا هنا ولا في الخادم، وهو قرارٌ مؤجَّل بشروطٍ لم تُحلّ بعد.
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * ما وقع بعدده — **لا «تم» تصلح لكل شيء**.
+ *
+ * و«اخترتَ عشرين، تغيّر منها اثنا عشر، وكان ثمانيةٌ كذلك من قبل» جملةٌ
+ * يفهمها صاحبها. أمّا «تم» فتُقرأ «وقع لعشرين»، فيبحث عن أثرٍ لم يقع
+ * لثمانيةٍ منها ولا يجده.
+ */
+export interface BulkOutcome {
+  selected: number;
+  changed: number;
+  already: number;
+  project_links: number;
+}
+
+const BULK = "/api/v1/files/bulk";
+
+export const bulkMove = (locale: Locale, ids: string[], folder: string | null) =>
+  apiFetch<BulkOutcome>(`${BULK}/move`, {
+    method: "POST", locale,
+    body: JSON.stringify({ file_ids: ids, folder_id: folder }),
+  });
+
+/** و`confirm` ليست زينة: الخادم يردّ 409 بعدد ما يسنده المختار أولًا. */
+export const bulkTrash = (locale: Locale, ids: string[], confirm: boolean) =>
+  apiFetch<BulkOutcome>(`${BULK}/trash`, {
+    method: "POST", locale,
+    body: JSON.stringify({ file_ids: ids, confirm }),
+  });
+
+export const bulkLink = (locale: Locale, ids: string[], projectId: string) =>
+  apiFetch<BulkOutcome>(`${BULK}/link`, {
+    method: "POST", locale,
+    body: JSON.stringify({ file_ids: ids, project_id: projectId }),
+  });

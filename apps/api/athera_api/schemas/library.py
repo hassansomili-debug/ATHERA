@@ -45,6 +45,52 @@ class TrashRequest(BaseModel):
     confirm: bool = False
 
 
+# ── الأفعال على المختار ────────────────────────────────────────────────
+#
+# **من رفع ثلاثين ورقةً في الجذر لا ينظّمها بثلاثين ضغطة.** والاختيار قائمة
+# معرّفات لا «كل الملفات» ولا مرشِّح: فعلٌ يُوصف بشرطٍ يمسّ ما لم يره الباحث
+# حين ضغط — ولو تغيّرت القائمة تحت يده لأصاب الفعلُ غير ما قصد.
+
+
+class BulkMoveRequest(BaseModel):
+    """نقلُ المختار إلى مجلَّد، و`None` إلى الجذر — **وعمودٌ واحد يتغيّر**."""
+
+    file_ids: list[uuid.UUID] = Field(min_length=1)
+    folder_id: uuid.UUID | None = None
+
+
+class BulkTrashRequest(BaseModel):
+    """حذفُ المختار إلى السلّة — والإقرار بعد أن يُقال ما يترتّب لا قبله.
+
+    والتحذير الجماعيّ أخطر من المفرد: ضغطةٌ واحدة تُخفي عشرين ملفًا، وقد
+    يسند بعضها بحوثًا قائمة. فيُقال عددُها ثم يُقرّر الباحث.
+    """
+
+    file_ids: list[uuid.UUID] = Field(min_length=1)
+    confirm: bool = False
+
+
+class BulkLinkRequest(BaseModel):
+    """ربطُ المختار ببحثٍ قائم — بلا نسخٍ وبلا نقلٍ من مجلَّده."""
+
+    file_ids: list[uuid.UUID] = Field(min_length=1)
+    project_id: uuid.UUID
+
+
+class BulkOutcome(BaseModel):
+    """ما وقع بعدده — **لا «تم» تصلح لكل شيء**.
+
+    و«اخترتَ عشرين، تغيّر منها اثنا عشر، وكان ثمانيةٌ كذلك من قبل» جملةٌ
+    يفهمها صاحبها ويصدّقها. أمّا «تم» فتُقرأ «وقع لعشرين»، فيبحث عن أثرٍ
+    لم يقع لثمانيةٍ منها ولا يجده.
+    """
+
+    selected: int = 0
+    changed: int = 0
+    already: int = 0
+    project_links: int = 0
+
+
 class Crumb(BaseModel):
     id: uuid.UUID
     name: str
