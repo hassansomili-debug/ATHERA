@@ -32,6 +32,13 @@ const PARSEABLE = /\.(pdf|docx|txt|md)$/i;
 const RUNNING: ReadonlySet<string> = new Set(["parsing", "extracting"]);
 /** ومئتا استطلاع (نحو ثماني دقائق) حدُّ الانتظار — لا انتظارٌ مفتوح. */
 const MAX_POLLS = 200;
+/**
+ * ترقّبُ ما بعد الإذن: أربعٌ وعشرون قراءة (نحو دقيقة).
+ *
+ * والخادم يستأنف في خمسٍ وثلاثين ثانية — قِيس في الإنتاج. فالدقيقة تكفي
+ * وتزيد، ولا تُبقي الشاشة تسأل عن حالٍ قد تدوم أيامًا.
+ */
+const CONSENT_WATCH_POLLS = 24;
 
 const PROCESSING_LABEL: Record<string, string> = {
   not_processed: "library.notProcessed",
@@ -208,11 +215,38 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    * يُستخرَج منه، تُعاد القراءة؛ فإذا لم يبقَ شيءٌ جارٍ توقّفت — فلا قصفٌ
    * للـAPI بعد انتهاء العمل.
    */
+  /**
+   * **إذنٌ يُمنح في شاشةٍ أخرى يجب أن يُرى في هذه.**
+   *
+   * `awaiting_consent` حالٌ مستقرّة بحقّ: المنتج ينتظر الباحث، وقد ينتظره
+   * أيامًا — فاستطلاعُها دائمًا قصفٌ بلا سبب. لكنّ الباحث يمنح الإذن في
+   * صفحة مراجعة الرسالة ثم يعود إلى مكتبته، والخادم يكون قد استأنف فعلًا:
+   * قِيس في الإنتاج فمضى `parsing` ← `extracting` ← `awaiting_review` في
+   * خمسٍ وثلاثين ثانية. والبطاقة تبقى «بانتظار موافقتك للمتابعة» إلى أن
+   * يعيد الباحث التحميل بنفسه — تطلب منه إذنًا **قد منحه**.
+   *
+   * فالعودة إلى الشاشة سببُ ترقّبٍ **محدود**: ميزانيةٌ تُمنح عند التركيب
+   * وعند رجوع الرؤية، وتُستهلك بالقراءة. فإن تحرّكت الحال تولّى الترقّبَ
+   * شرطُ «حالٍ جارية»، وإن لم تتحرّك سكتت الشاشة ولم تسأل بلا نهاية.
+   */
+  const consentWatch = useRef(CONSENT_WATCH_POLLS);
+  useEffect(() => {
+    const wake = () => {
+      if (document.visibilityState !== "visible") return;
+      consentWatch.current = CONSENT_WATCH_POLLS;
+      polls.current = 0;
+      loadFiles();
+    };
+    document.addEventListener("visibilitychange", wake);
+    return () => document.removeEventListener("visibilitychange", wake);
+  }, [loadFiles]);
+
   const polls = useRef(0);
   useEffect(() => {
     const watching = files.some(
       (file) => RUNNING.has(file.processing_status)
-        || (requested.current.has(file.id) && file.processing_status === "not_processed"),
+        || (requested.current.has(file.id) && file.processing_status === "not_processed")
+        || (file.processing_status === "awaiting_consent" && consentWatch.current > 0),
     );
     if (!watching) return;
     // **وحدٌّ للانتظار.** تشغيلةٌ ماتت في منتصفها تترك حالًا «جارية» لا
@@ -220,6 +254,7 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
     if (polls.current >= MAX_POLLS) return;
     const timer = window.setTimeout(() => {
       polls.current += 1;
+      if (consentWatch.current > 0) consentWatch.current -= 1;
       loadFiles();
     }, 2500);
     return () => window.clearTimeout(timer);
