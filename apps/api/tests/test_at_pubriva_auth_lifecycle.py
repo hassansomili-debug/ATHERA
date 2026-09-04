@@ -242,7 +242,7 @@ def test_navigation_links_are_scoped_to_their_landmark():
     for ambiguous in ('page.getByRole("link", { name: "مكتبتي" })',
                       'page.getByRole("link", { name: "أبحاثي" })'):
         assert ambiguous not in spec, f"رابط تنقّل بلا موضع: {ambiguous}"
-    assert 'getByRole("navigation", { name: "الرئيسية" })' in spec
+    assert 'getByRole("navigation", { name: "الرئيسية", exact: true })' in spec
 
 
 # ══════════ ٨. التحميل ليس فراغًا ولا عطبًا ══════════
@@ -362,7 +362,7 @@ def test_the_ai_step_submits_through_the_button_the_product_provides():
     """الحقل `textarea` بلا نموذج ولا معالج مفاتيح — فالضغط على Enter
     يُدخل سطرًا ولا يرسل شيئًا، وكان الفحص ينتظر جوابًا لسؤالٍ لم يُرسَل."""
     ai = ACCEPTANCE[ACCEPTANCE.index("PUBRIVA AI reaches approved knowledge"):]
-    assert 'getByRole("button", { name: "ابدأ" })' in ai
+    assert 'getByRole("button", { name: "ابدأ", exact: true })' in ai
     assert "toBeEnabled" in ai, "لا إثبات أن الزرّ صالح للضغط"
     assert 'press("Enter")' not in ai, "الإرسال ما زال بمفتاح الإدخال"
     for markup in ("</answer_ar>", "<citations>", "</invoke>"):
@@ -851,6 +851,10 @@ def test_the_approval_is_read_from_its_contract_not_from_translated_prose():
     # وخطأٌ يقع داخل معالج React لا يترك أثرًا في الشبكة ولا في الشاشة.
     assert 'page.on("console"' in code, "رسائل الطرفية لا تُجمع"
     assert "pageErrors=" in code, "خطأ الصفحة لا يُذكر مع الإخفاق"
+    # **و«لم يصل ردّ» غير «لم يُرسَل طلب».** الرصد على `response` وحده يجعل
+    # طلبًا معلّقًا يبدو كأنه لم يُرسَل — وهما علّتان في موضعين مختلفين.
+    assert "waitForRequest" in code, "الإرسال نفسه لا يُرصد"
+    assert "sent=${dispatched}" in code, "لا يُقال هل خرج الطلب"
 
 
 def test_the_library_keeps_reading_state_while_work_is_running():
@@ -1103,3 +1107,27 @@ def test_the_journey_waits_for_a_live_page_before_it_clicks():
     assert 'getByTestId("dic2-granted")' in approve, "الفحص ينقر على صفحةٍ قد لا تكون حيّة"
     assert approve.index("dic2-granted") < approve.index('name: "اعتمد"'), (
         "إثباتُ الحياة يقع بعد النقر")
+
+
+def test_every_named_locator_matches_exactly():
+    """**مطابقةُ الاسم في Playwright جزئيةٌ افتراضًا — وهذا كلّفنا أربع دورات.**
+
+    `getByRole("button", { name: "اعتمد" })` يطابق أيضًا «عدّل ثم اعتمد»،
+    وهما زرّان في البطاقة نفسها. وحقلٌ بلا اقتباس لا يُعرض له زرّ اعتماد
+    ويُعرض له زرّ تعديل — فكان الفحص يختار بطاقته، وينقر «عدّل ثم اعتمد»،
+    فيُفتح المحرِّر: لا طلبَ في الشبكة، ولا خطأ، ولا تغيّر في الحصيلة.
+    وبدا العطب في المنتج ثلاث مرّات وهو في المُحدِّد.
+
+    فكل مُحدِّدٍ باسمٍ نصّي يطابق تمامًا. والتعابير النمطية تُترك: منها ما
+    يقصد بادئةً عمدًا — كزرّ إضافة الملف الذي يحمل اسم الملف بعد فعله.
+    """
+    import re
+
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    loose = re.findall(r'name: "([^"]+)" \}', code)
+    assert not loose, f"مُحدِّداتٌ تطابق جزئيًّا: {loose}"
+    # وليست الحيلة أن تُكتب `exact` مرّة: كل اسمٍ نصّي يحملها.
+    named = re.findall(r'name: "([^"]+)"', code)
+    exact = re.findall(r'name: "([^"]+)", exact: true', code)
+    assert len(named) == len(exact), f"أسماءٌ بلا مطابقة تامّة: {set(named) - set(exact)}"
