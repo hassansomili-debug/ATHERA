@@ -41,18 +41,47 @@ export const LIBRARY_MAX_FETCH = 100;
  */
 export const listLibraryFilePage = (
   locale: Locale,
-  options: { limit?: number; after?: string; folder?: string; trash?: boolean } = {},
+  options: {
+    limit?: number;
+    after?: string;
+    folder?: string;
+    trash?: boolean;
+    /** بحثٌ نصّيّ في اسم الملف وعنوان مستنده — لا بحث دلاليّ. */
+    q?: string;
+    /** واحدٌ من `LIBRARY_FILTERS` — والخادم يردّ 422 على ما لا يعرفه. */
+    kind?: LibraryFilter;
+  } = {},
 ) => {
   const limit = Math.min(options.limit ?? LIBRARY_PAGE, LIBRARY_MAX_FETCH);
   const cursor = options.after ? `&after=${encodeURIComponent(options.after)}` : "";
   // **غيابُ `folder` يعني كل الملفات**، وهو ما تحتاجه قوائم الاختيار في
   // شاشاتٍ أخرى. و`ROOT_FOLDER` تعني جذر المكتبة وحده: لو دلّ الغياب على
   // الجذر لاختفت من تلك القوائم كلُّ ورقةٍ نظّمها الباحث في مجلَّد.
+  //
+  // **وهو نفسه نطاقُ البحث**: بمعرّف مجلَّدٍ يبحث في هذا الرفّ وحده، وبغيابه
+  // في المكتبة كلها. ولا معامل نطاقٍ ثانٍ يقول ما يقوله الأول ثم يفترق عنه.
   const scope = options.folder ? `&folder=${encodeURIComponent(options.folder)}` : "";
   const bin = options.trash ? "&trash=true" : "";
+  const term = options.q?.trim() ? `&q=${encodeURIComponent(options.q.trim())}` : "";
+  const filter = options.kind ? `&kind=${encodeURIComponent(options.kind)}` : "";
   return apiFetch<LibraryFile[]>(
-    `/api/v1/files?limit=${limit}${cursor}${scope}${bin}`, { locale });
+    `/api/v1/files?limit=${limit}${cursor}${scope}${bin}${term}${filter}`, { locale });
 };
+
+/**
+ * المرشّحات السبعة — **وهي ما يعرفه الخادم لا ما يزيّن الشاشة**.
+ *
+ * أربعةٌ نوعُ ملفٍ يُقرأ من `content_type`، وثلاثٌ حالُ معالجةٍ تُشتقّ من
+ * تشغيلات الاستخراج الحقيقية — وهي بعينها الحال المعروضة في البطاقة. وأيّ
+ * اسمٍ آخر يردّه الخادم بـ422 ولا يتجاهله: زرٌّ يَعِد بتصفيةٍ لا تقع يعرض
+ * المكتبة كلها باسمٍ لا يصفها.
+ */
+export const LIBRARY_FILTERS = [
+  "pdf", "docx", "datasets", "references",
+  "processed", "awaiting_consent", "not_processed",
+] as const;
+
+export type LibraryFilter = (typeof LIBRARY_FILTERS)[number];
 
 /** جذر المكتبة يُطلب باسمه — لا بغياب المعامل. */
 export const ROOT_FOLDER = "root";

@@ -166,6 +166,15 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
               "them. Deleting moves it to the trash and destroys nothing — confirm "
               "to continue.",
     },
+    "library.unknown_filter": {
+        "ar": "لا نعرف هذا المرشّح. المرشّحات المتاحة مذكورة في تفاصيل الرسالة.",
+        "en": "That filter is not one we know. The available filters are listed in "
+              "the message details.",
+    },
+    "library.nothing_selected": {
+        "ar": "لم تختر ملفًّا واحدًا لهذا الفعل.",
+        "en": "No file was selected for this action.",
+    },
     "file.checksum_mismatch": {
         "ar": "بصمة الملف لا تطابق المرفوع؛ لم يُعتمد الرفع.",
         "en": "Checksum mismatch; the upload was not accepted.",

@@ -14,11 +14,13 @@ import {
   restoreFolder,
   trashFile,
   trashFolder,
+  LIBRARY_FILTERS,
   LIBRARY_MAX_FETCH,
   LIBRARY_PAGE,
   ROOT_FOLDER,
   type Crumb,
   type LibraryFile,
+  type LibraryFilter,
   type LibraryFolder,
 } from "@/lib/library";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
@@ -127,6 +129,31 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  /**
+   * ── البحث والتصفية ──
+   *
+   * **ومكتبةٌ فيها مئة ورقة لا يُوجد فيها شيء بالتصفّح.** المجلَّدات نظّمت
+   * الرفوف، لكنّ من يذكر كلمةً من اسم ملفه كان عليه أن يفتحها واحدًا واحدًا
+   * ويقرأ الأسماء؛ والصفحة محدودة بخمسةٍ وعشرين، فـ«حمّل المزيد» عشر مرات
+   * ليست بحثًا.
+   *
+   * وحقلان لشيءٍ واحد عمدًا: `query` ما يكتبه الباحث الآن، و`search` ما
+   * أُرسل فعلًا إلى الخادم. ولولا الفصل لصدر طلبٌ عند كل حرف — عشرة طلبات
+   * لكلمةٍ واحدة، تسع منها لا يُنتظر جوابها.
+   */
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [kind, setKind] = useState<LibraryFilter | null>(null);
+  /**
+   * **نطاقُ البحث يُقال ولا يُخمَّن.**
+   *
+   * فمن بحث وهو في «كتب المنهج» فلم يجد شيئًا لا يعرف: أليس في مكتبته، أم
+   * ليس في هذا الرفّ؟ وهما جوابان مختلفان تمامًا. فيُعرض الخياران صراحةً،
+   * ويُقال أيّهما قائم الآن.
+   */
+  const [wholeLibrary, setWholeLibrary] = useState(false);
+  const sifting = search.trim().length > 0 || kind !== null;
+
   const [files, setFiles] = useState<LibraryFile[]>([]);
   /**
    * **قائمةٌ لم تصل ليست مكتبةً خالية.**
@@ -190,16 +217,27 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    * لا يحلّ محلّ محتوى المجلَّد الذي دخله.
    */
   const latest = useRef(0);
+  /**
+   * نطاقُ القراءة — **والبحث في المكتبة كلها يعني غياب `folder` لا قيمةً
+   * أخرى**، وهو المعنى نفسه الذي يقرؤه الخادم.
+   *
+   * والسلّة قائمةٌ مسطّحة على كل حال: ما حُذف يُعرض كلُّه، لا بموضعه في
+   * شجرةٍ قد يكون مجلَّدها نفسه محذوفًا.
+   */
+  const scope = inTrash || (sifting && wholeLibrary)
+    ? undefined
+    : (folderId ?? ROOT_FOLDER);
+
   const loadFiles = useCallback(() => {
     const ticket = (latest.current += 1);
     const take = Math.min(LIBRARY_MAX_FETCH, Math.max(LIBRARY_PAGE, shown.current.length));
     const tail = shown.current.slice(take);
     listLibraryFilePage(locale, {
       limit: take,
-      // السلّة قائمةٌ مسطّحة: ما حُذف يُعرض كلُّه، لا بموضعه في شجرةٍ قد
-      // يكون مجلَّدها نفسه محذوفًا.
-      folder: inTrash ? undefined : (folderId ?? ROOT_FOLDER),
+      folder: scope,
       trash: inTrash,
+      q: search,
+      kind: kind ?? undefined,
     })
       .then((page) => {
         const next = page.length < take ? page : page.concat(tail);
@@ -213,7 +251,7 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
         if (ticket === latest.current) setFilesLoad("failed");
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
       });
-  }, [locale, folderId, inTrash]);
+  }, [locale, scope, inTrash, search, kind]);
 
   const foldersTicket = useRef(0);
   const loadFolders = useCallback(() => {
@@ -261,6 +299,13 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
     setFiles([]);
     setHasMore(false);
     shown.current = [];
+    // **والبحث لا يُحمل معه إلى الرفّ الجديد.** فمن فتح مجلَّدًا يريد أن
+    // يرى ما فيه؛ ولو بقي مرشِّحُ بحثٍ سابق قائمًا لرآه فارغًا وظنّه فارغًا
+    // فعلًا — والشاشة لا شيء فيها يقول إن ما يراه مصفّى.
+    setQuery("");
+    setSearch("");
+    setKind(null);
+    setWholeLibrary(false);
   }, []);
 
   /**
@@ -278,8 +323,10 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
     listLibraryFilePage(locale, {
       limit: LIBRARY_PAGE,
       after,
-      folder: inTrash ? undefined : (folderId ?? ROOT_FOLDER),
+      folder: scope,
       trash: inTrash,
+      q: search,
+      kind: kind ?? undefined,
     })
       .then((page) => {
         if (ticket === latest.current) setFiles(base.concat(page));
@@ -289,7 +336,7 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
       )
       .finally(() => setLoadingMore(false));
-  }, [locale, folderId, inTrash]);
+  }, [locale, scope, inTrash, search, kind]);
 
   /**
    * **الملف الذي رُفع للتوّ يُعرض فورًا.**
@@ -368,6 +415,39 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
     }, 2500);
     return () => window.clearTimeout(timer);
   }, [files, loadFiles]);
+
+  /**
+   * **طلبٌ عند كل حرفٍ ليس بحثًا.**
+   *
+   * «التفكير الناقد» أربعةَ عشرَ حرفًا: أربعة عشر طلبًا، ثلاثةَ عشرَ منها
+   * لا يُنتظر جوابها وقد تصل بعد الأخير فتحلّ نتيجةٌ ناقصة محلّ الكاملة.
+   * فيُنتظر سكونُ الكتابة ثلاثمئة مللي ثانية ثم يُرسل ما استقرّ — والضبط
+   * يقع في مؤقّتٍ لا في جسم الأثر، فلا تُكتب حالٌ أثناء التصيير.
+   */
+  /**
+   * تبديلُ ما تُصفّى به القائمة — **والمعروضُ يُطرح قبل أن يُقرأ البديل**.
+   *
+   * ولو بقيت نتائجُ البحث السابق معروضةً حتى يصل الردّ، لرأى الباحث ملفاتٍ
+   * لا تطابق ما كتبه ثوانيَ كاملة، ثم تتبدّل تحت يده. وهو أسوأ من انتظارٍ
+   * مُعلَن يقول «جارٍ البحث».
+   */
+  const sift = useCallback(
+    (next: { q?: string; kind?: LibraryFilter | null; wide?: boolean }) => {
+      if (next.q !== undefined) setSearch(next.q);
+      if (next.kind !== undefined) setKind(next.kind);
+      if (next.wide !== undefined) setWholeLibrary(next.wide);
+      setFilesLoad("loading");
+      setFiles([]);
+      setHasMore(false);
+      setPanel(null);
+      shown.current = [];
+    }, []);
+
+  useEffect(() => {
+    if (query === search) return;
+    const timer = window.setTimeout(() => sift({ q: query }), 300);
+    return () => window.clearTimeout(timer);
+  }, [query, search, sift]);
 
   useEffect(() => {
     loadFiles();
@@ -790,6 +870,94 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
       <section>
         <h2>{t("library.myFiles")}</h2>
         <p style={{ color: "var(--muted)" }}>{t("library.filesNote")}</p>
+
+        {/* ── البحث والتصفية ──
+            **ومكتبةٌ فيها مئة ورقة لا يُوجد فيها شيء بالتصفّح.** والبحث
+            نصّيّ يقول ما يفعل: اسم الملف وعنوان مستنده — لا «قريبٌ من».
+            وهما لا يُعرضان في السلّة: قائمةٌ مسطّحة صغيرة لا تحتاجهما،
+            وحقلٌ يُعرض ولا يُفيد ضجيج. */}
+        {inTrash ? null : (
+          <div data-testid="library-sift" style={{ marginBlockEnd: 12 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input
+                type="search"
+                value={query}
+                data-testid="library-search"
+                aria-label={`${t("library.searchLabel")}: ${here}`}
+                placeholder={t("library.searchPlaceholder")}
+                onChange={(event) => setQuery(event.target.value)}
+                style={{ minInlineSize: "26ch" }}
+              />
+              {query ? (
+                <button
+                  type="button"
+                  aria-label={`${t("library.searchClear")}: ${here}`}
+                  onClick={() => {
+                    setQuery("");
+                    sift({ q: "" });
+                  }}
+                >
+                  {t("library.searchClear")}
+                </button>
+              ) : null}
+            </div>
+
+            {/* **النطاق يُقال ولا يُخمَّن.** فمن بحث في رفٍّ فلم يجد لا
+                يعرف: أليس في مكتبته أم ليس في هذا الرفّ؟ وهما جوابان. */}
+            {sifting && folderId !== null ? (
+              <div style={{ display: "flex", gap: 8, marginBlockStart: 8 }}>
+                <button
+                  type="button"
+                  disabled={!wholeLibrary}
+                  aria-label={`${t("library.searchScopeFolder")}: ${here}`}
+                  onClick={() => sift({ wide: false })}
+                >
+                  {t("library.searchScopeFolder")}
+                </button>
+                <button
+                  type="button"
+                  disabled={wholeLibrary}
+                  aria-label={`${t("library.searchScopeAll")}: ${t("library.rootCrumb")}`}
+                  onClick={() => sift({ wide: true })}
+                >
+                  {t("library.searchScopeAll")}
+                </button>
+              </div>
+            ) : null}
+
+            {/* المرشّحات: حالٌ يعرفها الخادم لا زينةٌ في الشاشة — و«الكل»
+                خيارٌ صريح لا غيابُ خيار. */}
+            <div
+              role="group"
+              aria-label={t("library.label")}
+              style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBlockStart: 8 }}
+            >
+              <button
+                type="button"
+                data-testid="library-filter-all"
+                disabled={kind === null}
+                aria-pressed={kind === null}
+                aria-label={`${t("library.label")}: ${t("library.filters.all")}`}
+                onClick={() => sift({ kind: null })}
+              >
+                {t("library.filters.all")}
+              </button>
+              {LIBRARY_FILTERS.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  data-testid="library-filter"
+                  disabled={kind === option}
+                  aria-pressed={kind === option}
+                  aria-label={`${t("library.label")}: ${t(`library.filters.${option}`)}`}
+                  onClick={() => sift({ kind: option })}
+                >
+                  {t(`library.filters.${option}`)}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {/*
           الحالات الثلاث تُقال منفصلة: «تُقرأ الآن» غير «لا ملفات» غير
           «تعذّرت القراءة». وجمعُها في نصٍّ واحد يجعل بطء الخادم يبدو
@@ -797,17 +965,22 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
         */}
         {filesLoad === "loading" ? (
           <p data-testid="library-files-loading" role="status" aria-live="polite">
-            {t("library.loadingFiles")}
+            {sifting ? t("library.searching") : t("library.loadingFiles")}
           </p>
         ) : filesLoad === "failed" ? (
           <p className="error" role="alert" data-testid="library-files-error">
             {t("library.filesFailed")}
           </p>
         ) : files.length === 0 ? (
-          <p>
+          /* **«لا نتائج» غير «المجلد فارغ» غير «لم ترفع شيئًا».** وثلاثتها
+             شاشةٌ فارغة، وخلطُها يجعل بحثًا لم يطابق يبدو مكتبةً خالية —
+             فيظنّ الباحث أنه فقد ملفاته. */
+          <p data-testid="library-empty-note">
             {inTrash
               ? t("library.trashEmpty")
-              : folderId === null ? t("library.noFiles") : t("library.emptyFolder")}
+              : sifting
+                ? t("library.noMatches")
+                : folderId === null ? t("library.noFiles") : t("library.emptyFolder")}
           </p>
         ) : (
           <div className="cards">

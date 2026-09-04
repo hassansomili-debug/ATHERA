@@ -11,7 +11,7 @@ from time import perf_counter
 from fastapi import APIRouter, Depends, File as FormFile, Form, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -108,6 +108,53 @@ def _folder_scope(folder: str | None) -> tuple[bool, uuid.UUID | None]:
         raise NotFound("library.folder_not_found") from exc
 
 
+# ── مرشّحات المكتبة: **حالٌ يعرفها الخادم، لا زينةٌ في الشاشة** ─────────
+#
+# سبعة خياراتٍ لا أكثر، وكلٌّ منها شرطٌ في العبارة نفسها. وثلاثةٌ منها
+# نوعُ ملفٍ يُقرأ من `content_type`، وأربعةٌ حالُ معالجةٍ تُشتقّ من
+# `extraction_runs` — وهي بعينها الحال المعروضة في البطاقة، لا حسابٌ ثانٍ.
+#
+# **ولا مرشّح لما لا يعرفه الخادم.** «مقروء» و«مهمّ» و«حديث» أوصافٌ لا
+# أعمدة؛ وزرٌّ يَعِد بتصفيةٍ لا يقدر عليها الخادم يردّ قائمةً لا تطابق
+# اسمه — وذلك أسوأ من غياب الزرّ.
+FILE_KIND_FILTERS = ("pdf", "docx", "datasets", "references")
+FILTERS = FILE_KIND_FILTERS + workspace.LIBRARY_STATE_FILTERS
+
+
+def _kind_predicate(kind: str):
+    """شرطُ نوع الملف — من جداول `storage` نفسها لا من قائمةٍ ثانية."""
+    if kind == "pdf":
+        return File.content_type == storage.PDF_TYPE
+    if kind == "docx":
+        return File.content_type == storage.DOCX_TYPE
+    if kind == "datasets":
+        return File.content_type.in_(sorted(storage.DATASET_TYPES))
+    # المراجع: نوعُها الخاص، أو امتدادُها حين يصل النوع `text/plain` من
+    # المتصفح — والاثنان ملفُ مراجعٍ عند صاحبه.
+    return or_(
+        File.content_type.in_(sorted(storage.REFERENCE_TYPES)),
+        *[File.original_filename.ilike(f"%{suffix}")
+          for suffix in storage.REFERENCE_SUFFIXES],
+    )
+
+
+def _filter_predicate(kind: str | None, tenant_id: uuid.UUID):
+    """الشرط المقابل للمرشّح المطلوب — **ومرشّحٌ مجهول يُردّ لا يُتجاهل**.
+
+    وتجاهلُه أسوأ: الباحث يضغط «مراجع» فيرى مكتبته كلها، ويظنّ أن هذه هي
+    مراجعه. فيُقال إن الخيار غير معروف بـ422 وتُذكر الخيارات كلها.
+    """
+    if kind is None:
+        return None
+    if kind in FILE_KIND_FILTERS:
+        return _kind_predicate(kind)
+    state = workspace.file_state_predicate(tenant_id, kind)
+    if state is None:
+        raise AtheraError("library.unknown_filter", status_code=422,
+                          filters=", ".join(FILTERS))
+    return state
+
+
 @router.get("", response_model=list[LibraryFile])
 async def list_files(
     limit: int = Query(default=DEFAULT_PAGE, ge=1, le=MAX_PAGE),
@@ -115,6 +162,10 @@ async def list_files(
     folder: str | None = Query(default=None,
                                description="root للجذر، أو معرّف مجلَّد، أو لا شيء لكل الملفات"),
     trash: bool = Query(default=False),
+    q: str | None = Query(default=None, max_length=200,
+                          description="بحثٌ نصّي في اسم الملف وعنوان رسالته"),
+    kind: str | None = Query(default=None,
+                             description=" · ".join(FILTERS)),
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[LibraryFile]:
@@ -152,6 +203,21 @@ async def list_files(
 
     **وما في السلّة ليس في المكتبة.** والقائمتان لا تختلطان: `trash=true`
     تعرض المحذوف وحده، وهو الباب الذي تُستعاد منه الملفات.
+
+    **والبحث والتصفية شرطان في العبارة نفسها — لا مرشِّحان بعدها.**
+
+    و`q` بحثٌ نصّيّ لا دلاليّ: اسمُ الملف، وعنوانُ رسالته حيث وُجدت. ونطاقُه
+    هو `folder` نفسه — فبمعرّف مجلَّدٍ يبحث في هذا الرفّ وحده، وبغيابه في
+    المكتبة كلها. ولا معامل «نطاق» ثالث يقول ما يقوله الأول.
+
+    و`kind` واحدٌ من سبعةٍ **يعرفها الخادم**: أربعةُ أنواعٍ تُقرأ من
+    `content_type`، وثلاثُ حالاتٍ تُشتقّ من `extraction_runs` — وهي بعينها
+    الحال المعروضة في البطاقة، فلا يقول المرشّح غير ما تقوله.
+
+    **والتصفية في القاعدة لا في بايثون.** ولو صُفّيت الصفحة بعد قراءتها
+    لعادت ناقصةً بلا معنى: خمسةٌ وعشرون صفًّا يُقرأون فيبقى منهم ثلاثة، ثم
+    يُقال للباحث إن هذه كلُّ ما يطابق — وهو كذب. والشرط في `WHERE` يُبقي
+    الصفحة صفحةً وعددَ العبارات واحدًا كما كان.
     """
     scoped, folder_id = _folder_scope(folder)
     page = (
@@ -164,6 +230,12 @@ async def list_files(
     if scoped and not trash:
         page = (page.where(File.folder_id == folder_id) if folder_id is not None
                 else page.where(File.folder_id.is_(None)))
+    matching = workspace.file_text_predicate(principal.tenant_id, q) if q else None
+    if matching is not None:
+        page = page.where(matching)
+    chosen = _filter_predicate(kind, principal.tenant_id)
+    if chosen is not None:
+        page = page.where(chosen)
     if after is not None:
         anchor_created = (
             select(File.created_at)
