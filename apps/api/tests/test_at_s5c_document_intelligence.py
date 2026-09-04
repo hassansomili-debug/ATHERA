@@ -1205,7 +1205,9 @@ def test_review_ui_renders_unknown_neutrally_and_keeps_it_revisitable():
     assert "thesisReview.statusUnknownHint" in REVIEW_PAGE
     # المحسوم نهائيًّا يخفي الأزرار؛ «لا أعرف» ليست منه.
     assert 'const settled = field.status === "approved" || field.status === "rejected";' in REVIEW_PAGE
-    assert ") : settled ? null : (" in REVIEW_PAGE
+    # المحسوم لا تُعرض له أدوات قرار — والشرط باقٍ وإن أُضيف بعده فرعٌ
+    # للحقائق الحتمية التي لا يُطلب فيها قرار أصلًا.
+    assert ") : settled ? null :" in REVIEW_PAGE
 
 
 def test_review_ui_shows_four_separate_tallies():
@@ -2703,3 +2705,34 @@ def test_every_grant_builder_agrees_with_the_grant_it_builds():
                   if "=" in line}
         unknown = passed - fields
         assert not unknown, f"{builder.__name__} passes unknown fields: {unknown}"
+
+
+def test_what_the_code_knows_is_not_offered_for_approval():
+    """**زرٌّ لا ينجح أبدًا أسوأ من غياب الزرّ.**
+
+    الاستخراج الحتمي يقرأ اسم الملف وعدد صفحاته من بياناته الوصفية لا من
+    متنه، فاقتباسهما ليس في نصّ المصدر بحكم التعريف. و`approve_candidate`
+    تعيد التحقق من التأصيل في النصّ عند الاعتماد، فترفضهما دائمًا.
+
+    قِيس على الإنتاج بحسابٍ تركيبي: من عشرة مرشّحات قابلة للقرار اعتُمدت
+    تسعة، وواحدٌ — «اسم الملف» — ردّ `memory.quote_not_grounded` في كل
+    محاولة. وهو أوّل ما يُعرض، فهو أوّل ما يضغطه الباحث.
+
+    والتمييز بالطريقة لا بالقسم: `title_ar` في قسم البيانات نفسه لكنه
+    استخراجُ نموذج باقتباسٍ من المتن، ويُعتمد بحقّ.
+    """
+    from athera_api.services.document_intelligence import fields as catalogue
+
+    deterministic = {f.key for f in catalogue.FIELD_CATALOGUE
+                     if f.method is catalogue.Method.DETERMINISTIC}
+    assert deterministic == {"page_count", "source_filename"}, (
+        f"الحقول الحتمية تغيّرت: {deterministic}")
+
+    router = (pathlib.Path(__file__).resolve().parents[1] / "athera_api" / "routers"
+              / "document_intelligence.py").read_text(encoding="utf-8")
+    assert "def _is_decidable(spec" in router, "لا تمييز لما لا يُصدَّق عليه"
+    assert "is not catalogue.Method.DETERMINISTIC" in router, "التمييز ليس بالطريقة"
+    assert "decidable=_is_decidable(spec)" in router, "الحال لا تُرسل إلى الواجهة"
+
+    assert "field.decidable === false" in REVIEW_PAGE, "الشاشة تعرض زرًّا لا ينجح"
+    assert "thesisReview.knownNotClaimed" in REVIEW_PAGE, "لا يُقال للباحث لماذا لا قرار هنا"

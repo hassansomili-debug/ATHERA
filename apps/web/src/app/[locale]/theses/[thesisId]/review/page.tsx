@@ -34,6 +34,8 @@ interface Candidate {
   decided_at: string | null;
   edited_by_human: boolean;
   conflict_with: unknown;
+  /** ما يعرفه الكود يقينًا لا يُصدَّق عليه — والخادم هو من يقرّر ذلك. */
+  decidable: boolean;
 }
 
 interface SectionGroup {
@@ -359,7 +361,16 @@ export default function ReviewPage({
                             </p>
                           ) : null}
                         </div>
-                      ) : settled ? null : (
+                      ) : settled ? null : field.decidable === false ? (
+                        /* **زرٌّ لا ينجح أبدًا أسوأ من غياب الزرّ.** اسمُ
+                           الملف وعددُ صفحاته يُقرآن من بياناته الوصفية لا
+                           من متنه، والاعتماد يشترط تأصيل الاقتباس في النصّ.
+                           فكان الباحث يضغط «اعتمد» فيردّ الخادم
+                           `memory.quote_not_grounded` في كل مرّة. */
+                        <p className="provenance-note" style={{ margin: "10px 0 0" }}>
+                          {t("thesisReview.knownNotClaimed")}
+                        </p>
+                      ) : (
                         <div
                           style={{
                             display: "flex", gap: 8, marginBlockStart: 10, flexWrap: "wrap",

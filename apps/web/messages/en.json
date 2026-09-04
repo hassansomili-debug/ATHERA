@@ -737,7 +737,8 @@
     "valuePlaceholder": "Write the correct value",
     "statusUnknownHint": "You reviewed it without deciding — you can come back to it any time.",
     "revisit": "Revisit",
-    "tallyLine": "{approved} approved · {rejected} rejected · {unknown} unknown · {pending} awaiting you"
+    "tallyLine": "{approved} approved · {rejected} rejected · {unknown} unknown · {pending} awaiting you",
+    "knownNotClaimed": "Read from the file's own metadata — a known value, not a claim awaiting your approval."
   },
   "publicationPlanning": {
     "advisory": "Advisory",

@@ -448,6 +448,16 @@ async def extraction_state(
     )
 
 
+def _is_decidable(spec: object) -> bool:
+    """**ما يعرفه الكود يقينًا لا يُصدَّق عليه.**
+
+    الاستخراج الحتمي يقرأ اسم الملف وعدد صفحاته من بياناته الوصفية لا من
+    متنه، فاقتباسه ليس في نصّ المصدر بحكم التعريف — و`approve_candidate`
+    تشترط التأصيل في النصّ. فكان يُعرض للباحث زرُّ اعتمادٍ لا ينجح أبدًا.
+    """
+    return getattr(spec, "method", None) is not catalogue.Method.DETERMINISTIC
+
+
 def _view(row: FactCandidate, locale: str, *, conflict: object = None) -> CandidateResponse:
     spec = catalogue.BY_KEY.get(row.field_key or "")
     payload = row.value or {}
@@ -464,6 +474,7 @@ def _view(row: FactCandidate, locale: str, *, conflict: object = None) -> Candid
         decided_at=row.decided_at,
         edited_by_human=bool(payload.get("edited_by_human")),
         conflict_with=conflict,
+        decidable=_is_decidable(spec),
     )
 
 
@@ -658,6 +669,7 @@ async def review(
                 field_key=spec.key,
                 label=_t(principal.locale, spec.label_ar, spec.label_en),
                 value=None, status="unverified", extraction_status="not_found",
+                decidable=_is_decidable(spec),
             )
         groups.setdefault(spec.section.value, []).append(item)
 
