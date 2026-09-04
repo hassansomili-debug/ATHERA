@@ -42,6 +42,17 @@ class PostureResponse(BaseModel):
     items: list[PostureItem]
 
 
+def _discovery_providers() -> tuple[str, ...]:
+    """أسماءُ الفهارس من المزوّدين أنفسهم — لا قائمةٌ تُكتب بجانبهم فتفترق.
+
+    وهو الخطأ المتكرّر في هذا المستودع: قيمةٌ تُكتب بجانب سجلّها بدل أن
+    تُشتقّ منه، فيتغيّر السجلّ ويبقى النصّ يقول ما لم يعد صحيحًا.
+    """
+    from ..discovery.service import default_providers  # noqa: PLC0415
+
+    return tuple(provider.name for provider in default_providers())
+
+
 def _pick(locale: str, arabic: str, english: str) -> str:
     return english if locale == "en" else arabic
 
@@ -96,16 +107,41 @@ async def posture(
                 "No storage configured: upload is disabled until provider credentials are set on the server.",
             ),
         ),
+        # **والحال المعروضة تصف ما يقع فعلًا.**
+        #
+        # كان هذا البند يقول «بلا شبكة: لا يُستدعى سجل خارجي» ما دام
+        # `LITERATURE_REGISTRY=offline`. وصار ذلك غيرَ صحيح حين وصل اكتشافُ
+        # المراجع: هو ينادي Crossref وOpenAlex في كل بحث، بلا مفتاح ولا
+        # إعداد. فالشاشة تنفي نداءً يقع — وهي أسوأ من شاشةٍ لا تقول شيئًا.
+        #
+        # فالبندان صارا اثنين: هذا يصف رصد الأدبيات المجدول وحده، وذاك
+        # يصف فهارس الاكتشاف. ولكلٍّ حاله الصادقة.
         PostureItem(
             key="literature_registry",
-            label=_pick(locale, "سجل الأدبيات", "Literature registry"),
+            label=_pick(locale, "رصد الأدبيات المجدول", "Scheduled literature registry"),
             value=registry,
             detail=_pick(
                 locale,
-                "بلا شبكة: لا يُستدعى سجل خارجي." if registry == "offline"
-                else "يُستدعى سجل خارجي عند البحث والرصد.",
-                "Offline: no external registry is called." if registry == "offline"
-                else "An external registry is called for search and monitoring.",
+                "لا رصد مجدول من سجل خارجي. والبحث عن المراجع يعمل — انظر «فهارس المراجع»."
+                if registry == "offline"
+                else "يُستدعى سجل خارجي للرصد المجدول.",
+                "No scheduled monitoring from an external registry. Reference search still "
+                "works — see “Reference indexes”." if registry == "offline"
+                else "An external registry is called for scheduled monitoring.",
+            ),
+        ),
+        PostureItem(
+            key="reference_indexes",
+            label=_pick(locale, "فهارس المراجع", "Reference indexes"),
+            value=", ".join(_discovery_providers()) or "none",
+            detail=_pick(
+                locale,
+                "تُستدعى هذه الفهارس عند البحث عن المراجع، وكلُّ قيمةٍ تبقى منسوبة "
+                "إلى قائلها." if _discovery_providers()
+                else "لا فهرس مُفعَّل: البحث عن المراجع لا يعمل.",
+                "These indexes are called when searching for references, and every value "
+                "stays attributed to the index that stated it." if _discovery_providers()
+                else "No index enabled: reference search does not work.",
             ),
         ),
         PostureItem(
