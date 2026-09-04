@@ -8,12 +8,14 @@ import hashlib
 import uuid
 from time import perf_counter
 
-from fastapi import APIRouter, Depends, File as FormFile, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File as FormFile, Form, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..db import tenant_session
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.audit import ProvenanceEvent
@@ -36,8 +38,19 @@ router = APIRouter(prefix="/api/v1/files", tags=["files"])
 settings = get_settings()
 
 
+# ── حدود صفحة المكتبة ──────────────────────────────────────────────────
+#
+# **قائمةٌ بلا حدّ ليست قائمة.** كان المسار يردّ كل ملفات المستأجر دفعةً
+# واحدة، وكل ملفٍ يزيدها. فمكتبةٌ تكبر تُبطئ نفسها بنفسها حتى تسقط —
+# وذلك ما شكاه صاحبها: «المكتبة ما تتحمل كتب».
+DEFAULT_PAGE = 25
+MAX_PAGE = 100
+
+
 @router.get("", response_model=list[LibraryFile])
 async def list_files(
+    limit: int = Query(default=DEFAULT_PAGE, ge=1, le=MAX_PAGE),
+    after: uuid.UUID | None = Query(default=None),
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[LibraryFile]:
@@ -50,23 +63,63 @@ async def list_files(
     **والحالة تُقال كما هي.** الرفع يُنتج `stored`، والقراءة والاستخراج
     يجريان في مسار الرسائل (S5C). فتُقرأ حال المعالجة من `extraction_runs`
     الحقيقية، ولا يُقال «حُلِّل» لملفٍ لم يُقرأ — والصمت أصدق من وعدٍ كاذب.
+
+    **ثم صارت تعرضها ولا تُنهي.** الصياغة السابقة كانت تقرأ كل الملفات بلا
+    حدّ، ثم تسأل القاعدة عن حال **كل ملف على حدة**: ثلاث عبارات لكل ملف
+    عُولج. والـAPI في سنغافورة والقاعدة في مومباي، فكل عبارة رحلةٌ بنحو
+    ستين مللي ثانية — أربعون ملفًا تعني مئةً وعشرين رحلة، سبع ثوانٍ من
+    الشبكة وحدها، وتزيد طردًا مع كل كتابٍ يُضاف. فالباحث الذي يملأ مكتبته
+    يعاقَب على ملئها.
+
+    **فصارت عبارةً واحدة وصفحةً محدودة.** الصفحة تُقتطع أولًا ثم تُشتقّ
+    حال ما فيها وحده — والاستعلامات الفرعية مرتبطةٌ بصفوف الصفحة لا بكل
+    ملفات المستأجر.
+
+    **والمؤشّر مفتاحي لا إزاحة.** `after` معرّف آخر ملفٍ رآه العميل، ويُحلّ
+    داخل العبارة نفسها فلا يكلّف رحلةً ثانية. والترتيب `(created_at, id)`
+    نازلًا: `created_at` وحده لا يفصل ملفَّين رُفعا في المعاملة نفسها، فيتكرّر
+    ملفٌ في صفحتين أو يسقط بينهما. ومؤشّرٌ إلى ملفٍ حُذف بين صفحتين يعطي
+    صفحةً فارغة — لا خطأً: الحذف واقعةٌ مشروعة، وإعادة الفتح تصلحها.
     """
-    rows = (await session.execute(
+    page = (
         select(File)
         .where(File.tenant_id == principal.tenant_id)
-        .order_by(File.created_at.desc())
-    )).scalars().all()
+        .order_by(File.created_at.desc(), File.id.desc())
+        .limit(limit)
+    )
+    if after is not None:
+        anchor_created = (
+            select(File.created_at)
+            .where(File.id == after, File.tenant_id == principal.tenant_id)
+            .scalar_subquery()
+        )
+        anchor_id = (
+            select(File.id)
+            .where(File.id == after, File.tenant_id == principal.tenant_id)
+            .scalar_subquery()
+        )
+        page = page.where(
+            tuple_(File.created_at, File.id) < tuple_(anchor_created, anchor_id))
+
+    window = page.subquery("page")
+    thesis_id, run_status, candidates, reviewed = workspace.file_processing_state_columns(
+        principal.tenant_id, window.c.id)
+    rows = (await session.execute(
+        select(window.c.id, window.c.original_filename, window.c.content_type,
+               window.c.size_bytes, window.c.classification, window.c.status,
+               window.c.created_at, thesis_id, run_status, candidates, reviewed)
+        .order_by(window.c.created_at.desc(), window.c.id.desc())
+    )).all()
 
     library: list[LibraryFile] = []
     for row in rows:
-        processing, candidates, reviewed, thesis_id = await workspace.file_processing_state(
-            session, tenant_id=principal.tenant_id, file_id=row.id)
+        processing, seen, done, thesis = workspace.file_processing_state_of_row(
+            row[7], row[8], row[9], row[10])
         library.append(LibraryFile(
-            id=row.id, original_filename=row.original_filename,
-            content_type=row.content_type, size_bytes=row.size_bytes,
-            classification=row.classification, status=row.status,
-            created_at=row.created_at, processing_status=processing,
-            thesis_id=thesis_id, candidates=candidates, reviewed=reviewed))
+            id=row[0], original_filename=row[1], content_type=row[2],
+            size_bytes=row[3], classification=row[4], status=row[5],
+            created_at=row[6], processing_status=processing,
+            thesis_id=thesis, candidates=seen, reviewed=done))
     return library
 
 
@@ -238,7 +291,6 @@ async def upload_file(
     upload: UploadFile = FormFile(...),
     classification: str = Form(default="C2"),
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
     """رفع يمرّ بالخادم لا بالمتصفح إلى التخزين.
 
@@ -287,60 +339,90 @@ async def upload_file(
     checksum = digest.hexdigest()
 
     # ── المرور الثاني: بثّ إلى التخزين من بداية الملف المؤقت ──
+    #
+    # **وفي خيطٍ جانبي، لا في حلقة الأحداث.** `upload_fileobj` استدعاءٌ
+    # متزامن يحجز الخيط حتى يفرغ الرفع كله. وكان يُستدعى مباشرةً هنا،
+    # فيتوقّف الـAPI بأسره طوال بثّ الملف إلى التخزين: لا صفحةٌ تُحمَّل،
+    # ولا استطلاعُ مكتبةٍ يُجاب، ولا حتى فحص الصحّة يردّ — وآلة Fly واحدة
+    # بمعالجٍ مشترك. فكتابٌ بمئة ميجابايت لا يُبطئ رفعه وحده، بل **يُجمّد
+    # المنتج كله** لمن يستعمله في تلك اللحظة. وهذا وجهٌ من «المكتبة ما
+    # تتحمل كتب» لا يظهر في سجلّ أخطاء: لا خطأ، بل صمت.
+    #
+    # ولا يُغيَّر الترتيب: التخزين قبل القاعدة كما كان.
     await upload.seek(0)
     started = perf_counter()
-    storage.get_store().put_stream(key, upload.file, declared)
+    await run_in_threadpool(storage.get_store().put_stream, key, upload.file, declared)
     elapsed_ms = int((perf_counter() - started) * 1000)
 
+    # ── القاعدة: معاملةٌ تُختم **قبل** أن يُبلَّغ نجاح ──
+    #
+    # **و«تم الحفظ» كانت تُقال قبل أن تُحفظ.** الجلسة كانت تبعيةً
+    # (`Depends(get_session)`)، وFastAPI يُنهي التبعيات المولِّدة **بعد**
+    # إرسال جسم الاستجابة: `response = await f(request)` ثم
+    # `await response(scope, receive, send)` ثم يخرج المكدّس الذي يحمل
+    # الجلسة. فالإيداع يقع بعد أن يقرأ المتصفح ٢٠١.
+    #
+    # وأثره ليس نظريًّا: الواجهة تقرأ المكتبة فور وصول ٢٠١، والقراءة طلبٌ
+    # آخر على **اتصالٍ آخر** — فقد تسبق الإيداع فلا ترى الصفّ. فيرى الباحث
+    # «تم الحفظ» ومكتبته خالية من ملفه، ثم يجده بعد تنقّلٍ كامل. وذلك عين
+    # ما سقطت عليه رحلة القبول ثلاث مرات.
+    #
+    # فتُفتح المعاملة هنا وتُختم هنا — وهو النمط نفسه في `routers/auth.py`
+    # لمن يحتاج ختمًا قبل الردّ — ولا يُعاد «تم» إلا وقد استقرّ الاثنان:
+    # الكائن في التخزين، والصفّ في القاعدة.
     try:
-        record = File(
-            id=file_id,
-            tenant_id=principal.tenant_id,
-            storage_key=key,
-            original_filename=filename[:512],
-            content_type=declared,
-            size_bytes=size,
-            checksum_sha256=checksum,
-            classification=classification,
-            is_untrusted_content=True,  # §33.3 — محتوى الملفات بيانات لا تعليمات.
-            status="stored",
-            uploaded_by=principal.user_id,
-            completed_at=dt.datetime.now(dt.UTC),
-        )
-        session.add(record)
-        await session.flush()
+        async with tenant_session(principal.tenant_id, principal.user_id) as session:
+            record = File(
+                id=file_id,
+                tenant_id=principal.tenant_id,
+                storage_key=key,
+                original_filename=filename[:512],
+                content_type=declared,
+                size_bytes=size,
+                checksum_sha256=checksum,
+                classification=classification,
+                is_untrusted_content=True,  # §33.3 — محتوى الملفات بيانات لا تعليمات.
+                status="stored",
+                uploaded_by=principal.user_id,
+                completed_at=dt.datetime.now(dt.UTC),
+            )
+            session.add(record)
+            await session.flush()
 
-        session.add(ObjectGrant(
-            tenant_id=principal.tenant_id, object_type="file", object_id=file_id,
-            user_id=principal.user_id, grant_level="owner", granted_by=principal.user_id,
-        ))
-        session.add(ProvenanceEvent(
-            tenant_id=principal.tenant_id, object_type="file", object_id=file_id,
-            source_type="upload", source_id=file_id, source_locator=key,
-            created_by=principal.user_id,
-            verification_status="unverified",  # §7.4 — الرفع لا يعني التحقق.
-        ))
-        await audit.record(
-            session,
-            tenant_id=principal.tenant_id,
-            action="file.uploaded",
-            object_type="file",
-            object_id=file_id,
-            actor_user_id=principal.user_id,
-            # لا محتوى ولا اسم كامل ولا مفتاح سرّي في السجل — وصفٌ لا بيانات.
-            state_after={
-                "content_type": declared, "size_bytes": size,
-                "kind": storage.kind_for(declared), "classification": classification,
-                "storage_ms": elapsed_ms,
-            },
-            request_id=principal.request_id,
-            ip_address=principal.ip_address,
-        )
+            session.add(ObjectGrant(
+                tenant_id=principal.tenant_id, object_type="file", object_id=file_id,
+                user_id=principal.user_id, grant_level="owner", granted_by=principal.user_id,
+            ))
+            session.add(ProvenanceEvent(
+                tenant_id=principal.tenant_id, object_type="file", object_id=file_id,
+                source_type="upload", source_id=file_id, source_locator=key,
+                created_by=principal.user_id,
+                verification_status="unverified",  # §7.4 — الرفع لا يعني التحقق.
+            ))
+            await audit.record(
+                session,
+                tenant_id=principal.tenant_id,
+                action="file.uploaded",
+                object_type="file",
+                object_id=file_id,
+                actor_user_id=principal.user_id,
+                # لا محتوى ولا اسم كامل ولا مفتاح سرّي في السجل — وصفٌ لا بيانات.
+                state_after={
+                    "content_type": declared, "size_bytes": size,
+                    "kind": storage.kind_for(declared), "classification": classification,
+                    "storage_ms": elapsed_ms,
+                },
+                request_id=principal.request_id,
+                ip_address=principal.ip_address,
+            )
     except Exception:
         # القاعدة سقطت بعد نجاح التخزين: يُحذف الكائن فلا يبقى بلا سجل.
-        storage.get_store().delete(key)
+        # والإيداع داخل النطاق أعلاه، فسقوطُه يُمسك هنا أيضًا — لا بعد الردّ.
+        await run_in_threadpool(storage.get_store().delete, key)
         raise
 
+    # `expire_on_commit=False` يبقي الحقول محمَّلة بعد الإيداع، فلا قراءة
+    # على جلسةٍ مغلقة.
     return FileResponse.model_validate(record, from_attributes=True)
 
 
@@ -362,7 +444,15 @@ async def stream_file(
     await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
                                      "file", file_id, "read")
 
-    data = storage.get_store().get(record.storage_key)
+    # **والتسليم بثٌّ لا تحميل.** كانت الصياغة `get(...)` ثم `iter([data])`:
+    # الكائن كله في ذاكرة العملية قبل أن يُرسل منه بايت. فرسالةٌ ممسوحة
+    # بنصف جيجابايت على آلةٍ بنصف جيجابايت ذاكرة ليست تنزيلًا بطيئًا — هي
+    # نفاد ذاكرة يقتل العملية ويُسقط معها كل طلبٍ آخر جارٍ.
+    #
+    # و`get_object` نفسها استدعاءٌ متزامن، فتُنفَّذ في خيطٍ جانبي: فتحُ
+    # المجرى لا يُجمّد حلقة الأحداث. وStarlette يستهلك المُكرِّر المتزامن
+    # في خيطٍ جانبي أيضًا، فلا يعود شيءٌ من مسار التنزيل يحجز الحلقة.
+    stream = await run_in_threadpool(storage.get_store().get_stream, record.storage_key)
 
     session.add(FileAccessLog(
         tenant_id=principal.tenant_id, file_id=file_id, user_id=principal.user_id,
@@ -374,7 +464,7 @@ async def stream_file(
         request_id=principal.request_id, ip_address=principal.ip_address,
     )
     return StreamingResponse(
-        iter([data]),
+        stream,
         media_type=record.content_type,
         headers={
             "Content-Disposition":
