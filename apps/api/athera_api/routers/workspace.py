@@ -22,6 +22,20 @@ from ..models.literature import Source
 from ..models.portfolio import ProjectFile, ProjectSource, ResearchProject
 from ..models.publishing import Manuscript
 from ..models.research import FactCandidate, ResearcherMemory
+from ..models.screening import (
+    EXCLUSION_REASON_CODES,
+    MATRIX_FIELDS,
+    LiteratureMatrixCell,
+)
+from ..schemas.screening import (
+    MatrixCellRequest,
+    MatrixCellVerifyRequest,
+    MatrixCellView,
+    MatrixRowView,
+    MatrixView,
+    ScreeningCardView,
+    ScreeningView,
+)
 from ..schemas.workspace import (
     BrainEntryView,
     ImpactView,
@@ -35,7 +49,7 @@ from ..schemas.workspace import (
     ProjectSummary,
     SourceUseRequest,
 )
-from ..services import audit, workspace
+from ..services import audit, screening, workspace
 
 router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
 
@@ -395,6 +409,29 @@ async def unlink_file(
 
 # ────────────────────────────── مراجع البحث ──────────────────────────────
 
+def _cell_view(cell: LiteratureMatrixCell) -> MatrixCellView:
+    """خليةٌ مخزَّنة كما تُعرض — **بحالها ومَداها معًا، لا بقيمتها وحدها**."""
+    return MatrixCellView(
+        field_key=cell.field_key, value_ar=cell.value_ar, cell_state=cell.cell_state,
+        source_scope=cell.source_scope, extraction_method=cell.extraction_method,
+        verification_status=cell.verification_status,
+        source_file_id=cell.source_file_id, evidence_quote=cell.evidence_quote,
+        evidence_locator=cell.evidence_locator)
+
+
+def _source_view(link: ProjectSource, source: Source) -> ProjectSourceView:
+    """صفُّ مرجعٍ في بحث — **بحاله وسببه معًا**.
+
+    وكانت الحال تُعاد وحدها، فيقرأ الباحث «مستبعَدة» ولا يعرف لماذا. وهو
+    الموضع نفسه في كل شاشة تعرض هذا الصفّ، فيُكتب مرّة هنا.
+    """
+    return ProjectSourceView(
+        source_id=source.id, title=source.title, doi=source.doi,
+        publication_year=source.publication_year, use_state=link.use_state,
+        added_at=link.created_at, decided_at=link.decided_at,
+        exclusion_reason_code=link.exclusion_reason_code,
+        reason_ar=link.reason_ar)
+
 @router.get("/projects/{project_id}/sources", response_model=list[ProjectSourceView])
 async def project_sources(
     project_id: uuid.UUID,
@@ -409,11 +446,7 @@ async def project_sources(
                ProjectSource.project_id == project_id)
         .order_by(ProjectSource.created_at.desc())
     )).all()
-    return [ProjectSourceView(
-        source_id=source.id, title=source.title, doi=source.doi,
-        publication_year=source.publication_year, use_state=link.use_state,
-        added_at=link.created_at, decided_at=link.decided_at)
-        for link, source in rows]
+    return [_source_view(link, source) for link, source in rows]
 
 
 @router.post("/projects/{project_id}/sources", response_model=ProjectSourceView,
@@ -455,10 +488,7 @@ async def link_source(
             actor_user_id=principal.user_id,
             state_after={"project_id": str(project_id), "use_state": "saved_only"},
             reason="importing a source is not a judgement that it is evidence")
-    return ProjectSourceView(
-        source_id=source.id, title=source.title, doi=source.doi,
-        publication_year=source.publication_year, use_state=link.use_state,
-        added_at=link.created_at, decided_at=link.decided_at)
+    return _source_view(link, source)
 
 
 @router.patch("/projects/{project_id}/sources/{source_id}",
@@ -470,7 +500,18 @@ async def set_source_use(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ProjectSourceView:
-    """قرّر حال المرجع في هذا البحث — **والقرار يُنسب إلى صاحبه**."""
+    """قرّر حال المرجع في هذا البحث — **والقرار يُنسب إلى صاحبه**.
+
+    وهذا هو المسار الوحيد لقرار الفرز: شاشةُ الفرز وقائمةُ مراجع البحث
+    تنادِيانه كلتاهما، فلا تنشأ حقيقتان لحالٍ واحدة.
+
+    **والاستبعاد لا يقع بلا سبب.** حكمٌ بلا سببٍ مسجَّل لا يُراجَع بعد شهر
+    ولا يُكتب في قسم المنهجية؛ فيُردّ الطلب بلا رمزٍ من القائمة المغلقة،
+    و«سبب آخر» يلزمه نصّه.
+
+    **ولا يُستنتج استبعادٌ آليًّا.** لا شيء في هذا المسار يقرأ حالًا ويحكم:
+    الحال تأتي من الطلب، والفاعل من الرمز، والوقت من الساعة.
+    """
     await _project(session, principal, project_id)
     row = (await session.execute(
         select(ProjectSource, Source)
@@ -484,7 +525,13 @@ async def set_source_use(
     link, source = row
 
     before = link.use_state
+    before_reason = link.exclusion_reason_code
     if payload.use_state == "excluded":
+        if not screening.reason_is_acceptable(payload.reason_code, payload.reason_ar):
+            # 422 لا 400: الطلب مفهوم وصياغته صحيحة، وما ينقصه شرطٌ في
+            # المعنى — فيُقال ذلك برمزٍ له ترجمتان، لا بـ500 من قيد القاعدة.
+            raise AtheraError("workspace.exclusion_needs_reason",
+                              status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
         impact = await workspace.source_impact(
             session, tenant_id=principal.tenant_id, project_id=project_id,
             source_id=source_id)
@@ -496,6 +543,10 @@ async def set_source_use(
 
     link.use_state = payload.use_state
     link.reason_ar = payload.reason_ar
+    # **السبب يزول مع زوال الاستبعاد.** رمزٌ باقٍ بجانب حالٍ لم تعد قائمة
+    # يُقرأ يومًا حكمًا لم يُقل — والقيد في القاعدة يرفضه أيضًا.
+    link.exclusion_reason_code = (
+        payload.reason_code if payload.use_state == "excluded" else None)
     # قرارٌ صريح يُنسب إلى قائله؛ و`saved_only` عودةٌ إلى الحياد فلا فاعل له.
     if payload.use_state == "saved_only":
         link.decided_by, link.decided_at = None, None
@@ -503,13 +554,270 @@ async def set_source_use(
         link.decided_by = principal.user_id
         link.decided_at = dt.datetime.now(dt.UTC)
     await session.flush()
+    # **الأثر يحمل الرمز ولا يحمل نصًّا من المستند.** رمزُ السبب مفردةٌ
+    # مغلقة تُعدّ وتُقارن؛ أما ملاحظة الباحث فقد تقتبس من الورقة، ومحتوى
+    # المستندات لا يدخل سجلّ التدقيق (§37).
     await audit.record(
         session, tenant_id=principal.tenant_id, action="workspace.source_use_set",
         object_type="project_source", object_id=link.id,
-        actor_user_id=principal.user_id, state_before={"use_state": before},
-        state_after={"use_state": payload.use_state},
+        actor_user_id=principal.user_id,
+        state_before={"use_state": before, "reason_code": before_reason},
+        state_after={"use_state": payload.use_state,
+                     "reason_code": link.exclusion_reason_code,
+                     "has_note": bool(payload.reason_ar)},
         reason="including a source as evidence is a researcher decision, attributed")
-    return ProjectSourceView(
-        source_id=source.id, title=source.title, doi=source.doi,
-        publication_year=source.publication_year, use_state=link.use_state,
-        added_at=link.created_at, decided_at=link.decided_at)
+    return _source_view(link, source)
+
+
+# ─────────────────── الفرز · الدراسات المدرجة والمستبعدة ───────────────────
+
+@router.get("/projects/{project_id}/screening", response_model=ScreeningView)
+async def screening_workspace(
+    project_id: uuid.UUID,
+    use_state: str | None = Query(
+        default=None, pattern="^(included|saved_only|excluded)$",
+        description="اقصر العرض على حالٍ واحدة"),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ScreeningView:
+    """شاشة الفرز — **بطاقةٌ تُعرَف بها الدراسة، لا سطرٌ بمعرّف**.
+
+    كل بطاقة تحمل العنوان والمؤلفين والسنة والوعاء ومن أين جاء المرجع
+    وحالَه الآن. و`doi` يظهر متحقَّقًا أو لا يظهر: معرّفٌ لم يُحلّ في فهرسٍ
+    معروضًا بجانب دراسةٍ يُقرأ إثباتًا فيُنسخ في قائمة المراجع بلا فحص.
+
+    و`reading_scope` يقول **ما يمكن قراءته فعلًا** من هذا المرجع في هذا
+    البحث — وعليه تُبنى المصفوفة لاحقًا، فلا يدّعي الباحث نصًّا ليس في يده.
+    """
+    await _project(session, principal, project_id)
+    wanted = (use_state,) if use_state else None
+    cards = await screening.screening_cards(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        use_states=wanted)
+
+    # الأعداد تُقرأ من القاعدة لا من الصفحة المعروضة: عدٌّ فوق قائمةٍ مقصورة
+    # على حالٍ واحدة يقول «لا مستبعَدات» وهي عشرون في حالٍ أخرى.
+    tallies = dict((await session.execute(
+        select(ProjectSource.use_state, func.count(ProjectSource.id))
+        .where(ProjectSource.tenant_id == principal.tenant_id,
+               ProjectSource.project_id == project_id)
+        .group_by(ProjectSource.use_state)
+    )).all())
+
+    return ScreeningView(
+        project_id=project_id,
+        cards=[ScreeningCardView(**vars(card)) for card in cards],
+        saved_only=tallies.get("saved_only", 0),
+        included=tallies.get("included", 0),
+        excluded=tallies.get("excluded", 0),
+        reason_codes=list(EXCLUSION_REASON_CODES),
+    )
+
+
+# ────────────────────────── مصفوفة الأدبيات ──────────────────────────
+
+@router.get("/projects/{project_id}/matrix", response_model=MatrixView)
+async def literature_matrix(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> MatrixView:
+    """مصفوفة الأدبيات — **للدراسات المدرجة وحدها**.
+
+    ومرجعٌ «محفوظ فقط» لم يُقرَّر بعدُ أنه دليل؛ ووضعُه في المصفوفة يجعل
+    الباحث يبني تحليله على ما لم يحكم عليه. أما المستبعَد فقراره أن يُترك.
+
+    وكل خلية تحمل مَداها: خانةٌ فارغة تُقرأ «لا شيء يستحق الذكر»، و
+    `missing` تُقرأ «لم يُذكر في المصدر» — والثانية وحدها فجوةٌ تُعالَج.
+    """
+    await _project(session, principal, project_id)
+    rows = await screening.matrix_rows(
+        session, tenant_id=principal.tenant_id, project_id=project_id)
+    return MatrixView(
+        project_id=project_id,
+        fields=list(MATRIX_FIELDS),
+        rows=[MatrixRowView(
+            source_id=row.source_id, title=row.title, authors=row.authors,
+            publication_year=row.publication_year, doi=row.doi,
+            reading_scope=row.reading_scope,
+            cells=[MatrixCellView(**vars(cell)) for cell in row.cells])
+            for row in rows],
+    )
+
+
+async def _included_link(session: AsyncSession, principal: Principal,
+                         project_id: uuid.UUID, source_id: uuid.UUID) -> ProjectSource:
+    """المرجع المُدرَج وحده تُكتب له خلية — والباقي يُردّ بسببه مفهومًا."""
+    link = (await session.execute(
+        select(ProjectSource).where(
+            ProjectSource.tenant_id == principal.tenant_id,
+            ProjectSource.project_id == project_id,
+            ProjectSource.source_id == source_id)
+    )).scalar_one_or_none()
+    if link is None:
+        raise NotFound("workspace.source_not_linked")
+    if link.use_state != "included":
+        raise AtheraError("workspace.matrix_needs_included_source",
+                          status_code=status.HTTP_409_CONFLICT)
+    return link
+
+
+@router.put("/projects/{project_id}/matrix/{source_id}/{field_key}",
+            response_model=MatrixCellView)
+async def set_matrix_cell(
+    project_id: uuid.UUID,
+    source_id: uuid.UUID,
+    field_key: str,
+    payload: MatrixCellRequest,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> MatrixCellView:
+    """اكتب خليةً — **ولا تُخمَّن خلية أبدًا**.
+
+    أربعةٌ تُفحص قبل الكتابة، وكلّها ترفض ادّعاءً أكبر مما قُرئ:
+
+    **المدى لا يتجاوز المتاح.** مرجعٌ لا نصّ له في يد الباحث لا تُكتب عنه
+    خليةٌ مَداها `full_text`؛ ومرجعٌ بلا ملخّصٍ مُرسَل لا يُقرأ منه ملخّص.
+    والمتاح يُحسب من حقّ الوصول ومن وجود ملفٍّ مرتبطٍ بهذا البحث — لا من
+    نيّة الكاتب.
+
+    **والغياب غياب.** `missing` لا تحمل قيمةً ولا شاهدًا: مقياسٌ لم يُذكر في
+    الورقة يظهر في عمود «المقاييس» ثم يُكتب في المنهجية أنه استُعمل.
+
+    **ولا مقتطف بلا نصّ** (§14.5): بياناتٌ وصفية لا يُقتبس منها شيء.
+
+    **ولا تُخترع أرقام صفحات.** خليةٌ قُرئت من ملخّصٍ إمّا بلا مُحدِّد وإمّا
+    بالكلمة الصريحة «الملخّص» — ولا صفحة لملخّص.
+    """
+    await _project(session, principal, project_id)
+    if field_key not in MATRIX_FIELDS:
+        raise NotFound("workspace.matrix_field_unknown", field=field_key)
+    await _included_link(session, principal, project_id, source_id)
+
+    source = (await session.execute(
+        select(Source).where(Source.id == source_id,
+                             Source.tenant_id == principal.tenant_id)
+    )).scalar_one_or_none()
+    if source is None:
+        raise NotFound("workspace.source_not_found")
+
+    files = await screening.project_file_ids(
+        session, tenant_id=principal.tenant_id, project_id=project_id)
+    scope = screening.reading_scope(source, project_file_ids=files)
+    if not scope.permits(payload.source_scope):
+        raise AtheraError("workspace.scope_not_available",
+                          status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                          available=scope.scope, requested=payload.source_scope)
+
+    missing = payload.cell_state == "missing"
+    if missing and (payload.value_ar or payload.evidence_quote
+                    or payload.evidence_locator):
+        raise AtheraError("workspace.missing_cell_carries_value",
+                          status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    if not missing and not (payload.value_ar or "").strip():
+        raise AtheraError("workspace.stated_cell_needs_value",
+                          status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    if payload.evidence_quote and payload.source_scope == screening.METADATA_ONLY:
+        raise AtheraError("workspace.quote_without_text",
+                          status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    if not screening.locator_is_honest(payload.source_scope, payload.evidence_locator):
+        raise AtheraError("workspace.invented_locator",
+                          status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    if payload.source_file_id is not None and not await screening.file_is_in_project(
+            session, tenant_id=principal.tenant_id, project_id=project_id,
+            file_id=payload.source_file_id):
+        raise NotFound("workspace.file_not_linked")
+
+    cell = (await session.execute(
+        select(LiteratureMatrixCell).where(
+            LiteratureMatrixCell.tenant_id == principal.tenant_id,
+            LiteratureMatrixCell.project_id == project_id,
+            LiteratureMatrixCell.source_id == source_id,
+            LiteratureMatrixCell.field_key == field_key)
+    )).scalar_one_or_none()
+    before = None if cell is None else {
+        "cell_state": cell.cell_state, "source_scope": cell.source_scope,
+        "verification_status": cell.verification_status}
+    if cell is None:
+        cell = LiteratureMatrixCell(
+            tenant_id=principal.tenant_id, project_id=project_id,
+            source_id=source_id, field_key=field_key,
+            updated_by=principal.user_id)
+        session.add(cell)
+
+    cell.value_ar = None if missing else payload.value_ar
+    cell.cell_state = payload.cell_state
+    cell.source_scope = payload.source_scope
+    # **ما يكتبه الباحث بيده منسوبٌ إليه.** ولا استخراج آليّ في هذا المسار:
+    # `model` تُكتب من مسارٍ مستقلٍّ لم يُفتح بعد، وتبقى `unverified` حتى
+    # يعتمدها إنسان — والقيد في القاعدة يمنع غير ذلك.
+    cell.extraction_method = "researcher"
+    cell.source_file_id = payload.source_file_id
+    cell.evidence_quote = None if missing else payload.evidence_quote
+    cell.evidence_locator = None if missing else payload.evidence_locator
+    # **الكتابة تُبطل المراجعة السابقة.** خليةٌ عُدّلت بعد اعتمادها تبقى
+    # «معتمَدة» وهي غير التي اعتُمدت — وهو ختمٌ على نصٍّ لم يُقرأ.
+    cell.verification_status = "unverified"
+    cell.verified_by, cell.verified_at = None, None
+    cell.updated_by = principal.user_id
+    await session.flush()
+
+    # **ولا محتوى مستندٍ في السجلّ** (§37): الحال والمدى والعمود تُسجَّل،
+    # وقيمةُ الخلية واقتباسها لا يُنسخان إلى سجلّ التدقيق.
+    await audit.record(
+        session, tenant_id=principal.tenant_id,
+        action="literature_matrix.cell_recorded",
+        object_type="literature_matrix_cell", object_id=cell.id,
+        actor_user_id=principal.user_id, state_before=before,
+        state_after={"field_key": field_key, "cell_state": cell.cell_state,
+                     "source_scope": cell.source_scope,
+                     "extraction_method": cell.extraction_method,
+                     "has_quote": bool(cell.evidence_quote)},
+        reason="a matrix cell records what was read and how far it was read")
+    return _cell_view(cell)
+
+
+@router.post("/projects/{project_id}/matrix/{source_id}/{field_key}/verify",
+             response_model=MatrixCellView)
+async def verify_matrix_cell(
+    project_id: uuid.UUID,
+    source_id: uuid.UUID,
+    field_key: str,
+    payload: MatrixCellVerifyRequest,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> MatrixCellView:
+    """احكم على خليةٍ مكتوبة — **والحكم فعلٌ ثانٍ مستقلّ عن الكتابة**.
+
+    فما يُكتب يبقى مرشَّحًا حتى يراجعه إنسان، ولا تُرقَّى قيمةٌ إلى معرفةٍ
+    موثقة بأثرٍ جانبي لحفظها. و«لا أعرف» حالةٌ أولى (الترحيل 0016): من راجع
+    ولم يستطع الحكم **لم يرفض**.
+    """
+    await _project(session, principal, project_id)
+    if field_key not in MATRIX_FIELDS:
+        raise NotFound("workspace.matrix_field_unknown", field=field_key)
+    cell = (await session.execute(
+        select(LiteratureMatrixCell).where(
+            LiteratureMatrixCell.tenant_id == principal.tenant_id,
+            LiteratureMatrixCell.project_id == project_id,
+            LiteratureMatrixCell.source_id == source_id,
+            LiteratureMatrixCell.field_key == field_key)
+    )).scalar_one_or_none()
+    if cell is None:
+        raise NotFound("workspace.matrix_cell_not_found")
+
+    before = cell.verification_status
+    cell.verification_status = payload.verification_status
+    cell.verified_by = principal.user_id
+    cell.verified_at = dt.datetime.now(dt.UTC)
+    await session.flush()
+    await audit.record(
+        session, tenant_id=principal.tenant_id,
+        action="literature_matrix.cell_reviewed",
+        object_type="literature_matrix_cell", object_id=cell.id,
+        actor_user_id=principal.user_id,
+        state_before={"verification_status": before},
+        state_after={"field_key": field_key,
+                     "verification_status": cell.verification_status},
+        reason="an extracted value becomes knowledge only by a named human review")
+    return _cell_view(cell)

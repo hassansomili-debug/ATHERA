@@ -32,7 +32,22 @@ from .planning import (
     PlanningRunEvidence,
     ThreadElementEvidence,
 )
-from .portfolio import ProjectDecision, ProjectMember, ResearchProgram, ResearchProject
+from .portfolio import (
+    ProjectDecision,
+    ProjectFile,
+    ProjectMember,
+    ProjectSource,
+    ResearchProgram,
+    ResearchProject,
+)
+from .screening import (
+    CELL_STATES,
+    EXCLUSION_REASON_CODES,
+    EXTRACTION_METHODS,
+    MATRIX_FIELDS,
+    SOURCE_SCOPES,
+    LiteratureMatrixCell,
+)
 from .files import File, FileAccessLog
 from .library import FOLDER_OBJECT_TYPE, MAX_FOLDER_DEPTH, LibraryFolder
 from .identity import (
@@ -137,4 +152,7 @@ __all__ = [
     "EvidenceExcerpt", "Claim", "ClaimEvidenceLink", "ACCESS_STATES", "SUPPORT_LEVELS",
     "RULE_TYPES",
     "ResearchProgram", "ResearchProject", "ProjectMember", "ProjectDecision",
+    "ProjectFile", "ProjectSource",
+    "LiteratureMatrixCell", "MATRIX_FIELDS", "CELL_STATES", "SOURCE_SCOPES",
+    "EXCLUSION_REASON_CODES", "EXTRACTION_METHODS",
 ]

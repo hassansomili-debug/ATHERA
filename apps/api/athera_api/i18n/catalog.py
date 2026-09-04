@@ -258,6 +258,44 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "إزالة هذا الملف تقطع السند عن عملٍ اعتمدته. راجع ما يترتب ثم أكّد.",
         "en": "Removing this file breaks support for work you approved. Review the consequences, then confirm.",
     },
+    "workspace.exclusion_needs_reason": {
+        "ar": "الاستبعاد يحتاج سببًا من القائمة، و«سبب آخر» يحتاج نصًّا يوضّحه.",
+        "en": "Excluding a study requires a reason from the list; “other” requires a note.",
+    },
+    "workspace.matrix_needs_included_source": {
+        "ar": "مصفوفة الأدبيات للدراسات المدرجة وحدها. أدرِج هذه الدراسة أولًا.",
+        "en": "The literature matrix covers included studies only. Include this study first.",
+    },
+    "workspace.matrix_field_unknown": {
+        "ar": "لا يوجد عمود بهذا الاسم في مصفوفة الأدبيات.",
+        "en": "No such column exists in the literature matrix.",
+    },
+    "workspace.matrix_cell_not_found": {
+        "ar": "لم تُكتب هذه الخانة بعد، فلا شيء يُراجَع فيها.",
+        "en": "This cell has not been filled in yet, so there is nothing to review.",
+    },
+    "workspace.scope_not_available": {
+        "ar": "ما هو متاح من هذه الدراسة أقلّ مما يدّعيه هذا الإدخال. "
+              "الملخّص وحده لا يُقرأ نصًّا كاملًا، والبيانات الوصفية ليست ملخّصًا.",
+        "en": "This entry claims more of the study than is actually available. "
+              "An abstract is not the full text, and metadata is not an abstract.",
+    },
+    "workspace.missing_cell_carries_value": {
+        "ar": "«غير مذكور» لا تحمل قيمة. ما لم يُذكر في المصدر يبقى غير مذكور.",
+        "en": "A “not stated” cell carries no value. What the source omits stays omitted.",
+    },
+    "workspace.stated_cell_needs_value": {
+        "ar": "خانةٌ ليست «غير مذكور» تحتاج نصًّا يقول ما وُجد.",
+        "en": "A cell that is not “not stated” needs text saying what was found.",
+    },
+    "workspace.quote_without_text": {
+        "ar": "لا يُقتبس من بياناتٍ وصفية: الاقتباس يحتاج نصًّا مقروءًا.",
+        "en": "Metadata cannot be quoted; a quotation requires readable text.",
+    },
+    "workspace.invented_locator": {
+        "ar": "لا موضع لخانةٍ قُرئت من الملخّص أو من البيانات الوصفية — ولا صفحة للملخّص.",
+        "en": "A cell read from an abstract or from metadata has no page locator.",
+    },
     "workspace.source_still_cited": {
         "ar": "لا يمكن استبعاد مرجعٍ ما زال يُستشهد به في ادعاءات هذا البحث.",
         "en": "A source still cited by this project's claims cannot be excluded.",
