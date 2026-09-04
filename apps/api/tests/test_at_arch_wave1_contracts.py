@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -191,3 +192,72 @@ def test_the_transaction_guard_reads_the_tree_not_the_text():
     real = ast.parse("async def handler(session):\n"
                      "    await session.commit()\n")
     assert _commit_calls(real) == [("handler", 2)], "الحارس لا يرى ختمًا حقيقيًّا"
+
+
+# ═════════════════════ ٣. لا رقعةَ متصفّحٍ بلا مشغّل ═════════════════════
+#
+# **فحصٌ لا يُشغَّل أسوأ من فحصٍ غائب.** الغائبُ يُطلب؛ والموجودُ الميّت
+# يُحسب حراسةً قائمة فيُطمأنّ إليه وهو لا يحرس شيئًا.
+#
+# وقع هذا مرّتين في موجةٍ واحدة: `research-brain-surface.spec.ts` كُتبت مع
+# اثنتي عشرة دعوى فما نُفِّذت واحدة، و`project-management.spec.ts` وصلت
+# الفرع ولا خطوة تنادِيها. وفي الحالتين كان سطحُ المتصفّح أخضر.
+#
+# والقياسُ بالمرجعية لا بالبنية: يُقرأ `package.json` ليُعرف ما يشغّله كل
+# سكربت، ويُقرأ المشغّل ليُعرف أيُّ سكربتٍ يُنادى فعلًا. ورقعةٌ لا يبلغها
+# هذا الطريق لا يبلغها أحد.
+
+WEB = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web"
+CI = pathlib.Path(__file__).resolve().parents[3] / ".github" / "workflows" / "ci.yml"
+
+#: رقعاتٌ لا يُشغّلها المشغّل عمدًا — بسببٍ مكتوب، لا بالسكوت.
+UNRUN_BY_DESIGN: dict[str, str] = {}
+
+
+def _scripts() -> dict[str, str]:
+    import json as _json
+
+    return _json.loads((WEB / "package.json").read_text(encoding="utf-8"))["scripts"]
+
+
+def test_every_browser_spec_is_reachable_from_the_workflow():
+    """**كلُّ رقعةٍ في الشجرة يبلغها المشغّل** — وإلّا فهي حبرٌ على ورق."""
+    if not (WEB / "tests").exists() or not CI.exists():   # pragma: no cover
+        pytest.skip("شجرةُ الوِب أو المشغّل غير موجودَين هنا")
+
+    scripts = _scripts()
+    invoked = set(re.findall(r"npm run ([A-Za-z0-9:_-]+)", CI.read_text(encoding="utf-8")))
+
+    covered: set[str] = set()
+    for name in invoked:
+        body = scripts.get(name, "")
+        if "playwright test" not in body:
+            continue
+        # `playwright test` بلا وسائط يشمل كلّ الرقعات.
+        args = body.split("playwright test", 1)[1].split()
+        covered |= {pathlib.Path(a).name for a in args if a.endswith(".spec.ts")} or {"*"}
+
+    on_disk = {p.name for p in (WEB / "tests").glob("*.spec.ts")}
+    orphans = sorted(
+        s for s in on_disk
+        if "*" not in covered and s not in covered and s not in UNRUN_BY_DESIGN)
+
+    assert not orphans, (
+        "رقعاتٌ في الشجرة لا يشغّلها المشغّل — خضرةُ المتصفّح لا تشملها: "
+        + ", ".join(orphans))
+
+
+def test_the_orphan_guard_would_notice_an_unrun_spec():
+    """**حارسٌ لا يسقط أبدًا ليس حارسًا.**
+
+    يُحاكى الحسابُ نفسه على رقعةٍ لا يذكرها سكربتٌ منادى، فيجب أن تُرى.
+    """
+    scripts = {"test:surface": "playwright test tests/product-surface.spec.ts"}
+    invoked = {"test:surface"}
+    covered: set[str] = set()
+    for name in invoked:
+        args = scripts[name].split("playwright test", 1)[1].split()
+        covered |= {pathlib.Path(a).name for a in args if a.endswith(".spec.ts")}
+
+    on_disk = {"product-surface.spec.ts", "forgotten.spec.ts"}
+    assert sorted(s for s in on_disk if s not in covered) == ["forgotten.spec.ts"]
