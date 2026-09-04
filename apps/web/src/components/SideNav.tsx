@@ -30,6 +30,7 @@ const PRIMARY: Array<{ key: string; path: string }> = [
 /** ما ينتظر موضعه داخل البحث — مفتوحٌ الآن، غير معروضٍ دائمًا. */
 const SECONDARY: Array<{ key: string; path: string }> = [
   { key: "nav.search", path: "search" },
+  { key: "nav.references", path: "references" },
   { key: "nav.theses", path: "theses" },
   { key: "nav.analysis", path: "analysis" },
   { key: "nav.manuscripts", path: "manuscripts" },
