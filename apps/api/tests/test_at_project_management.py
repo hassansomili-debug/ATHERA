@@ -148,11 +148,25 @@ def test_the_migration_makes_same_tenant_cross_project_assignment_structural():
 
 
 def test_the_database_itself_forbids_a_suggestion_that_nobody_accepted():
-    """الحارسُ في القاعدة لا في الخدمة — فلا يلتفّ عليه مسارٌ ثانٍ يُكتب لاحقًا."""
-    text = _migration_text()
-    assert "a_suggestion_becomes_a_task_only_when_accepted" in text
-    assert ("NOT suggested_by_system"
-            " OR (accepted_by IS NOT NULL AND accepted_at IS NOT NULL)") in text
+    """الحارسُ في القاعدة لا في الخدمة — فلا يلتفّ عليه مسارٌ ثانٍ يُكتب لاحقًا.
+
+    **والشرط يُقرأ من النموذج لا من نصّ الترحيل**: النصّ يُلفّ على أسطر،
+    فيصير الفحص عليه فحصًا لتنسيقٍ لا لشرط. والنموذج يحمل القيد مُجمَّعًا.
+    """
+    from athera_api.models.project_management import ProjectTask
+
+    # والاسمُ في النموذج مسبوقٌ باصطلاح التسمية (`ck_project_tasks_…`)،
+    # فيُطابَق بالنهاية لا بالمساواة.
+    clause = next(
+        str(c.sqltext) for c in ProjectTask.__table__.constraints
+        if str(getattr(c, "name", "")).endswith(
+            "a_suggestion_becomes_a_task_only_when_accepted"))
+    condensed = " ".join(clause.split())
+    assert condensed == (
+        "NOT suggested_by_system"
+        " OR (accepted_by IS NOT NULL AND accepted_at IS NOT NULL)")
+    # وهو نفسه في الترحيل — والاسم يكفي شاهدًا على وجوده هناك.
+    assert "a_suggestion_becomes_a_task_only_when_accepted" in _migration_text()
 
 
 def test_the_database_itself_forbids_a_milestone_completed_by_nobody():
@@ -161,19 +175,27 @@ def test_the_database_itself_forbids_a_milestone_completed_by_nobody():
 
 
 def test_the_stage_history_cannot_hold_a_row_the_platform_wrote_about_itself():
-    """`confirmed_by NOT NULL` هو ما يمنع المنصّة من ادّعاء مرحلة."""
-    text = _migration_text()
-    events = text.split('"project_stage_events",')[1].split("op.create_index")[0]
-    assert 'sa.Column("confirmed_by"' in events
-    assert "nullable=False" in events.split('sa.Column("confirmed_by"')[1][:220]
+    """`confirmed_by NOT NULL` هو ما يمنع المنصّة من ادّعاء مرحلة.
+
+    **ويُقرأ من الجدول لا من نصّ الترحيل**: النصّ يقول ما كُتب، والجدول
+    يقول ما سيقع في القاعدة — وهو المقصود.
+    """
+    from athera_api.models.project_management import ProjectStageEvent
+
+    column = ProjectStageEvent.__table__.columns["confirmed_by"]
+    assert column.nullable is False, "سطرٌ في سجلّ المراحل بلا صاحب"
+    # ولا قيمة افتراضية تملأ الفراغ عن الإنسان.
+    assert column.default is None and column.server_default is None
 
 
 def test_no_ordering_constraint_forces_the_lifecycle_to_be_a_straight_line():
     """**العودة إلى المنهجية بعد التحليل صوابٌ علميّ**، فلا قيد يمنعها."""
-    text = _migration_text()
-    events = text.split('"project_stage_events",')[1].split("op.create_index")[0]
+    from athera_api.models.project_management import ProjectStageEvent
+
+    clauses = " ".join(
+        str(getattr(c, "sqltext", "")) for c in ProjectStageEvent.__table__.constraints)
     for forbidden in ("from_stage <", "to_stage >", "position(", "array_position"):
-        assert forbidden not in events
+        assert forbidden not in clauses, f"قيدٌ يفرض ترتيبًا: {forbidden}"
 
 
 def test_the_downgrade_refuses_to_erase_a_human_confirmation():
@@ -472,12 +494,40 @@ def test_the_stage_view_keeps_the_four_facts_apart():
 
 
 def test_nothing_but_a_researcher_confirmation_ever_writes_the_current_stage():
-    """**مسارٌ واحد يكتب المرحلة**، ولا استنتاج من ملفٍّ ولا من زيارةِ صفحة."""
-    router = (API / "routers" / "project_management.py").read_text(encoding="utf-8")
-    writes = [line for line in router.splitlines()
-              if "current_stage =" in line and "plan.current_stage" in line]
+    """**مسارٌ واحد يكتب المرحلة**، ولا استنتاج من ملفٍّ ولا من زيارةِ صفحة.
+
+    **والشجر النحويّ لا النصّ**: `current_stage = plan.current_stage` قراءةٌ
+    إلى متغيّرٍ محلّي، و`plan.current_stage = ...` كتابةٌ في صفّ. والنصّ
+    يخلط الاثنين، والشجر يفرّق: الأولى `Name` والثانية `Attribute`.
+    """
+    import ast
+
+    tree = ast.parse((API / "routers" / "project_management.py").read_text(
+        encoding="utf-8"))
+    writes: list[tuple[str, int]] = []
+
+    class Walker(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.scope: list[str] = []
+
+        def _enter(self, node) -> None:
+            self.scope.append(node.name)
+            self.generic_visit(node)
+            self.scope.pop()
+
+        visit_FunctionDef = _enter
+        visit_AsyncFunctionDef = _enter
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            for target in node.targets:
+                if isinstance(target, ast.Attribute) and target.attr == "current_stage":
+                    writes.append((".".join(self.scope), node.lineno))
+            self.generic_visit(node)
+
+    Walker().visit(tree)
     assert len(writes) == 1, f"أكثر من مسارٍ يكتب المرحلة: {writes}"
-    assert "payload.stage" in writes[0]
+    # **والمسار الوحيد هو اعتماد الباحث.**
+    assert writes[0][0] == "confirm_stage", writes
 
 
 def test_the_suggestion_is_never_stored_in_a_column_of_its_own():
@@ -573,10 +623,25 @@ def test_the_suggestion_layer_writes_absolutely_nothing():
     فلو أضاف أحدٌ يومًا `session.add` هنا سقط الفحص قبل أن يصل الإنتاج،
     ووجد عشر مهامّ في قائمة كل باحث لم يطلبها.
     """
-    source = (API / "services" / "project_management" / "suggestions.py").read_text(
-        encoding="utf-8")
-    for writer in ("session.add", "session.execute", "insert(", "update(", "delete("):
-        assert writer not in source, f"طبقةُ المعاينة تكتب: {writer}"
+    import ast
+
+    tree = ast.parse((API / "services" / "project_management" / "suggestions.py")
+                     .read_text(encoding="utf-8"))
+    # **الشجر لا النصّ**: هذا الملفّ يشرح في توثيقه لماذا لا يكتب، فذِكرُ
+    # `session.add` في جملةٍ عربية ليس كتابةً — والفحص النصّي يعدّه كذلك،
+    # فيسقط على شرحٍ صحيح ويترك استدعاءً حقيقيًّا لو غُيّر اسمه قليلًا.
+    writers = {"add", "add_all", "execute", "commit", "flush", "delete", "merge"}
+    offenders = [f"{node.func.attr}:{node.lineno}"
+                 for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr in writers]
+    assert not offenders, f"طبقةُ المعاينة تكتب: {offenders}"
+    # ولا تستورد جلسةً أصلًا — فلا شيء تكتب به.
+    imported = {alias.name for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom)
+                for alias in node.names}
+    assert "AsyncSession" not in imported
 
 
 def test_a_suggestion_is_never_assigned_to_anybody():
@@ -694,15 +759,37 @@ def test_no_line_in_this_module_deletes_a_project_row():
 # ═════════════════ ٨. الترجمة والمفردات ═════════════════
 
 def test_every_error_code_this_router_raises_has_both_locales():
+    """**ما يُرفع خطأً وحده هو ما يُترجَم** — وأسماءُ أحداث التدقيق ليست منه.
+
+    والفرق يُقرأ من الشجر: `NotFound("…")` رمزُ خطأٍ يصل الباحث، و
+    `action="project_management.task_created"` اسمُ حدثٍ في سجلّ لا يراه.
+    وفحصٌ نصّيّ يخلط الاثنين فيطالب بترجمةٍ لما لا يُعرض.
+    """
+    import ast
+
     from athera_api.i18n.catalog import CATALOG, SUPPORTED_LOCALES
 
-    router = (API / "routers" / "project_management.py").read_text(encoding="utf-8")
-    codes = set(re.findall(r'"(project_management\.[a-z_]+)"', router))
+    tree = ast.parse((API / "routers" / "project_management.py").read_text(
+        encoding="utf-8"))
+    raisers = {"NotFound", "AtheraError", "Forbidden", "Unauthorized"}
+    codes = {
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name) and node.func.id in raisers
+        and node.args and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
     assert codes, "موجّهٌ بلا رموز خطأ؟"
     for code in codes:
         assert code in CATALOG, f"رمزٌ بلا ترجمة: {code}"
         for locale in SUPPORTED_LOCALES:
             assert CATALOG[code].get(locale, "").strip(), f"{code} ينقصه {locale}"
+
+    # **ولا مفتاحَ ترجمةٍ ميّت**: رمزٌ في الكتالوج لا يرفعه أحد يتراكم
+    # ويُقرأ عقدًا قائمًا، ثمّ يُبنى عليه في شاشة.
+    catalogued = {key for key in CATALOG if key.startswith("project_management.")}
+    assert catalogued == codes, f"مفاتيحُ بلا رافع: {sorted(catalogued - codes)}"
 
 
 def test_every_researcher_facing_vocabulary_carries_both_locales():
