@@ -1,0 +1,81 @@
+{
+  "meta": { "count": 4, "per_page": 25 },
+  "results": [
+    {
+      "id": "https://openalex.org/W3012345678",
+      "doi": "https://doi.org/10.1016/j.jbusres.2020.06.008",
+      "title": "Digital Transformation in Saudi Higher Education",
+      "display_name": "Digital Transformation in Saudi Higher Education",
+      "publication_year": 2020,
+      "type": "article",
+      "authorships": [
+        { "author": { "display_name": "Nora Al Qassim" } },
+        { "author": { "display_name": "Peter Vance" } }
+      ],
+      "primary_location": {
+        "landing_page_url": "https://www.sciencedirect.com/science/article/pii/S0148296320303726",
+        "source": { "display_name": "Journal of Business Research", "issn_l": "0148-2963" }
+      },
+      "biblio": { "volume": "117", "issue": "3", "first_page": "245", "last_page": "259" },
+      "abstract_inverted_index": {
+        "This": [0],
+        "study": [1],
+        "examines": [2],
+        "how": [3],
+        "public": [4],
+        "universities": [5],
+        "adopt": [6],
+        "digital": [7],
+        "platforms.": [8]
+      },
+      "open_access": { "is_oa": true },
+      "cited_by_count": 134,
+      "is_retracted": false,
+      "ids": {
+        "openalex": "https://openalex.org/W3012345678",
+        "doi": "https://doi.org/10.1016/j.jbusres.2020.06.008",
+        "pmid": "https://pubmed.ncbi.nlm.nih.gov/32834111"
+      }
+    },
+    {
+      "id": "https://openalex.org/W2999888777",
+      "doi": "https://doi.org/10.5555/conf.2020.4412",
+      "title": "Digital transformation in Saudi higher education",
+      "display_name": "Digital transformation in Saudi higher education",
+      "publication_year": 2020,
+      "type": "proceedings-article",
+      "authorships": [{ "author": { "display_name": "Nora Al-Qassim" } }],
+      "primary_location": {
+        "landing_page_url": "https://example.org/proceedings/4412",
+        "source": { "display_name": "Proceedings of the Digital Education Conference" }
+      },
+      "biblio": { "first_page": "12" },
+      "open_access": { "is_oa": false },
+      "cited_by_count": 3,
+      "is_retracted": false,
+      "ids": { "openalex": "https://openalex.org/W2999888777" }
+    },
+    {
+      "id": "https://openalex.org/W4300000001",
+      "title": "Teacher readiness for blended instruction in Gulf universities",
+      "display_name": "Teacher readiness for blended instruction in Gulf universities",
+      "publication_year": 2022,
+      "type": "preprint",
+      "authorships": [{ "author": { "display_name": "Salem Al Harbi" } }],
+      "primary_location": { "landing_page_url": "https://example.org/preprints/1" },
+      "cited_by_count": 0,
+      "ids": { "openalex": "https://openalex.org/W4300000001" }
+    },
+    {
+      "id": "https://openalex.org/W4300000002",
+      "title": "Teacher Readiness for Blended Instruction in Gulf Universities",
+      "display_name": "Teacher Readiness for Blended Instruction in Gulf Universities",
+      "publication_year": 2022,
+      "type": "preprint",
+      "authorships": [{ "author": { "display_name": "Salem Al-Harbi" } }],
+      "primary_location": { "landing_page_url": "https://example.org/preprints/2" },
+      "cited_by_count": 0,
+      "ids": { "openalex": "https://openalex.org/W4300000002" }
+    }
+  ]
+}
