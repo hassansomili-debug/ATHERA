@@ -136,7 +136,7 @@ def test_the_new_columns_carry_constraints_that_refuse_an_invented_page():
     assert "page_number_only_from_full_text" in text
     assert "evidence_page IS NULL OR (source_scope = 'full_text' AND evidence_page > 0)" in text
     assert "section_only_from_full_text" in text
-    assert "abstract_citation_needs_abstract_scope" in text
+    assert "abstract_cite_needs_abstract_scope" in text
 
 
 def test_the_older_guarantees_are_untouched_by_this_migration():

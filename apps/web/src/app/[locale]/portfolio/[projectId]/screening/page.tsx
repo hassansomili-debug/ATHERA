@@ -98,6 +98,22 @@ const NO_FILTERS: Filters = {
   tri: { openAccess: "", hasAbstract: "", hasFullText: "", duplicate: "" },
 };
 
+/**
+ * نسخةٌ من المرشّحات الثلاثية بمفتاحٍ واحد مُبدَّل.
+ *
+ * ومفتاحٌ محسوب داخل حرفيّةِ كائن يجعل النوع فضفاضًا، فيمرّ خطأُ إملاءٍ في
+ * اسم المفتاح بلا أن يقوله المدقّق — والمرشّح يبقى معطَّلًا ولا يُعرف لماذا.
+ */
+function withTri(
+  current: Record<TriKey, Tri>,
+  key: TriKey,
+  value: Tri,
+): Record<TriKey, Tri> {
+  const next = { ...current };
+  next[key] = value;
+  return next;
+}
+
 const TRI_FILTERS: readonly (readonly [string, string, TriKey])[] = [
   ["filter-open-access", "screening.filterOpenAccess", "openAccess"],
   ["filter-has-abstract", "screening.filterHasAbstract", "hasAbstract"],
@@ -389,7 +405,7 @@ export default function ScreeningPage({
                 value={filters.tri[key]}
                 onChange={(event) =>
                   changeFilter({
-                    tri: { ...filters.tri, [key]: event.target.value as Tri },
+                    tri: withTri(filters.tri, key, event.target.value as Tri),
                   })
                 }
               >

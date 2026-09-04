@@ -100,7 +100,7 @@ def upgrade() -> None:
 
     # خليةٌ تنسب نفسها إلى ملخّصٍ وهي تدّعي نصًّا كاملًا تنسب إلى غير مصدرها.
     op.create_check_constraint(
-        "abstract_citation_needs_abstract_scope", "literature_matrix_cells",
+        "abstract_cite_needs_abstract_scope", "literature_matrix_cells",
         "source_abstract_id IS NULL OR source_scope = 'abstract_only'")
     # **رقمُ الصفحة من نصٍّ كامل وحده — ولا يُشتقّ من ترتيب مقطع.** والمقطع
     # السابع ليس الصفحة السابعة؛ ومن كتب ذلك أرسل القارئ إلى صفحةٍ لا تحمل
@@ -173,7 +173,7 @@ def downgrade() -> None:
     op.drop_index("ix_project_sources_screening_page", table_name="project_sources")
 
     for constraint in ("section_only_from_full_text", "page_number_only_from_full_text",
-                       "abstract_citation_needs_abstract_scope"):
+                       "abstract_cite_needs_abstract_scope"):
         op.execute("ALTER TABLE literature_matrix_cells DROP CONSTRAINT "
                    f"ck_literature_matrix_cells_{constraint}")
     op.drop_column("literature_matrix_cells", "evidence_section")
