@@ -13,7 +13,13 @@ from pydantic import BaseModel, Field
 
 
 class ReferenceSearchRequest(BaseModel):
-    """عنوانٌ أو كلماتٌ مفتاحية أو DOI — والخادم يميّزها، لا الباحث."""
+    """عنوانٌ أو كلماتٌ مفتاحية أو DOI أو مؤلّف أو سنة — والخادم يميّزها.
+
+    و`accepted_terms` هي **الفرق بين الاقتراح والتنفيذ**: المصطلح المقترح لا
+    يدخل البحث إلا إذا عاد في هذا الحقل من الواجهة، أي إلا إذا قبله الباحث
+    بنفسه. ولو وُسِّع الاستعلام في الخادم بلا هذا الحقل لصار السؤال البحثي
+    مكتوبًا بقلم المنصّة، وقُرِئت نتائج سؤالٍ آخر نتائجَ سؤاله.
+    """
 
     query: str = Field(min_length=2, max_length=1000)
     limit: int = Field(default=20, ge=1, le=50)
@@ -21,6 +27,54 @@ class ReferenceSearchRequest(BaseModel):
     year_to: int | None = Field(default=None, ge=1400, le=2200)
     work_type: str | None = Field(default=None, max_length=64)
     open_access_only: bool = False
+    accepted_terms: list[str] = Field(default_factory=list, max_length=8)
+
+
+class RankReasonView(BaseModel):
+    """سببُ موضعِ النتيجة، بلغة الباحث لا بلغة الخوارزمية.
+
+    **ولا حقل للنسبة هنا عمدًا.** «٩٧٪ صلة» رقمٌ لا وحدة له ولا مرجع،
+    ويقرؤه الباحث حكمًا كميًّا على ورقةٍ لم يقرأها. وما لا يوجد في العقد
+    لا تستطيع شاشةٌ عرضه.
+    """
+
+    code: str
+    # `match` سببُ ترجيح، و`caution` تنبيهٌ يقرؤه قبل أن يبني عليه.
+    kind: str = "match"
+    terms: list[str] = []
+    # الاستشهاد لا يُذكر بلا قائله: «١٣٤ في OpenAlex» يمكن التحقق منها.
+    provider: str | None = None
+    count: int | None = None
+    year: int | None = None
+
+
+class SuggestedTermView(BaseModel):
+    """مصطلحٌ مقترح — معروضٌ لا مُطبَّق. `applied` هنا `False` بنيةً."""
+
+    term: str
+    source_term: str
+    kind: str
+    applied: bool = False
+
+
+class QueryUnderstandingView(BaseModel):
+    """ما فُهم من نصّ الباحث، ومعه نصّه كما كتبه ليقارن بعينه.
+
+    `raw` و`sent` يُعرضان معًا: الأول سؤاله، والثاني ما غادر إلى الفهارس.
+    وتساويهما هو الحال الطبيعية؛ واختلافهما لا يقع إلا بقبولٍ منه، ويُرى.
+    """
+
+    raw: str
+    sent: str
+    doi: str | None = None
+    phrase: str | None = None
+    authors: list[str] = []
+    year: int | None = None
+    year_from: int | None = None
+    year_to: int | None = None
+    keywords: list[str] = []
+    accepted_terms: list[str] = []
+    suggestions: list[SuggestedTermView] = []
 
 
 class ProviderClaimView(BaseModel):
@@ -74,6 +128,12 @@ class ReferenceCandidateView(BaseModel):
     # الحفظ في المكتبة يمرّ بمعرّفٍ شرعيّ. وبلا DOI لا يُخزَّن مرجعٌ متحقَّق
     # ولا يُختلق له معرّف — فيُقال ذلك في العقد بدل أن يفشل الزرّ صامتًا.
     can_be_saved: bool = False
+    # لماذا وقع هنا في الترتيب. الأسباب تخرج، **والدرجة الرقمية لا تخرج**:
+    # عددٌ داخليّ يعبر السلك يُعرض يومًا نسبةً، وتلك كذبةٌ لا تُسترد.
+    reasons: list[RankReasonView] = []
+    # ما وُجد من مصطلحات الباحث وما غاب — نصّان يستطيع أن يتحقق منهما بعينه.
+    matched_terms: list[str] = []
+    missing_terms: list[str] = []
 
 
 class ProviderStatusView(BaseModel):
@@ -115,6 +175,10 @@ class ReferenceSearchResponse(BaseModel):
     any_provider_failed: bool = False
     all_providers_failed: bool = False
     external_link: ExternalAccessLinkView | None = None
+    # النتائج مرتَّبة بالصلة المُعلَّلة. تُقال الحقيقة صراحةً لأن الباحث
+    # يفترض الترتيب الزمني في شاشات البحث، فيقرأ الأولى «الأحدث».
+    ordered_by: str = "explained_relevance"
+    query_understanding: QueryUnderstandingView | None = None
     note_ar: str = "نتيجة البحث ليست مرجعًا مخزَّنًا، والمرجع المخزَّن ليس دليلًا."
     note_en: str = (
         "A search result is not a stored reference, and a stored reference is not evidence."

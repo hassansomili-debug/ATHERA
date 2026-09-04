@@ -14,16 +14,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..deps import Principal, get_principal, get_session
-from ..discovery import DiscoveryProvider, ReferenceCandidate, default_providers, discover
+from ..discovery import (
+    DiscoveryProvider,
+    ParsedQuery,
+    RankedReference,
+    ReferenceCandidate,
+    default_providers,
+    discover,
+)
 from ..errors import AtheraError, NotFound
 from ..models.literature import ACCESS_STATES, Author, Claim, ClaimEvidenceLink, Source, SourceAuthor
 from ..schemas.discovery import (
     ExternalAccessLinkView,
     ProviderClaimView,
     ProviderStatusView,
+    QueryUnderstandingView,
+    RankReasonView,
     ReferenceCandidateView,
     ReferenceSearchRequest,
     ReferenceSearchResponse,
+    SuggestedTermView,
 )
 from ..schemas.literature import (
     ClaimCreateRequest,
@@ -87,6 +97,35 @@ def _claim_views(candidate: ReferenceCandidate) -> list[ProviderClaimView]:
             work_type=claim.work_type, retraction_status=claim.retraction_status,
         )
         for claim in candidate.ordered_claims
+    ]
+
+
+def _understanding(parsed: ParsedQuery | None) -> QueryUnderstandingView | None:
+    """ما فُهم من السؤال يعود إلى صاحبه ليقارنه بما كتبه.
+
+    وهذا هو الحدّ العملي بين «فهمُ الاستعلام» و«إعادةُ كتابته»: ما دام
+    النصّان معروضين معًا، لا يقع تبديلٌ لا يراه الباحث.
+    """
+    if parsed is None:
+        return None
+    return QueryUnderstandingView(
+        raw=parsed.raw, sent=parsed.sent, doi=parsed.doi, phrase=parsed.phrase,
+        authors=list(parsed.authors), year=parsed.year, year_from=parsed.year_from,
+        year_to=parsed.year_to, keywords=list(parsed.keywords),
+        accepted_terms=list(parsed.accepted_terms),
+        suggestions=[
+            SuggestedTermView(term=one.term, source_term=one.source_term, kind=one.kind)
+            for one in parsed.suggestions
+        ],
+    )
+
+
+def _reason_views(ranked: RankedReference) -> list[RankReasonView]:
+    """الأسباب وحدها تعبر السلك. الدرجة تبقى داخل الخادم عمدًا (لا نسبة)."""
+    return [
+        RankReasonView(code=reason.code, kind=reason.kind, terms=list(reason.terms),
+                       provider=reason.provider, count=reason.count, year=reason.year)
+        for reason in ranked.ranking.reasons
     ]
 
 
@@ -199,6 +238,14 @@ async def discover_references(
     **والنتيجة ليست مرجعًا مخزَّنًا.** لا تُكتب هنا صفوف: الحفظ فعلٌ مستقل
     يقع في المكتبة بمعرّفٍ شرعي، والإضافة إلى بحثٍ فعلٌ ثالث يبقى `saved_only`.
 
+    **والترتيب بالصلة المُعلَّلة، لا بالسنة ولا بترتيب وصول الفهارس.** ومع كل
+    نتيجة أسبابُ موضعها بلغة الباحث — ولا درجة رقمية في العقد أصلًا، لأن
+    رقمًا يعبر السلك يُعرض يومًا نسبةً، وتلك كذبةٌ لا تُسترد.
+
+    **والتوسيع لا يقع إلا بقبولٍ صريح.** الاقتراحات تُعاد في
+    `query_understanding.suggestions`، ولا تدخل البحث حتى تعود في
+    `accepted_terms` من الواجهة.
+
     ويبقى تسجيل الإفصاح كما هو في المسار القديم: نصّ الاستعلام يغادر
     المستأجر إلى طرفٍ ثالث، وقد يحمل عنوان بحثٍ غير منشور (§36.2).
     """
@@ -207,6 +254,7 @@ async def discover_references(
         providers, payload.query, limit=payload.limit,
         year_from=payload.year_from, year_to=payload.year_to,
         work_type=payload.work_type, open_access_only=payload.open_access_only,
+        accepted_terms=payload.accepted_terms,
     )
 
     await audit.record(
@@ -217,6 +265,11 @@ async def discover_references(
         actor_user_id=principal.user_id,
         state_after={
             "query": payload.query[:200],
+            # **ما غادر المستأجر هو `sent` لا `query`.** لو سُجّل نصّ الباحث
+            # وحده لبقي المصطلح الذي قبِله خارج السجلّ، والإفصاح يُسجَّل بما
+            # أُفصح به فعلًا لا بما قصده صاحبه (§36.2).
+            "sent": (result.query.sent[:200] if result.query else payload.query[:200]),
+            "accepted_terms": list(payload.accepted_terms),
             "providers": [status_.provider for status_ in result.provider_statuses],
             "failed_providers": [
                 status_.provider for status_ in result.provider_statuses if not status_.ok
@@ -232,19 +285,24 @@ async def discover_references(
     return ReferenceSearchResponse(
         candidates=[
             ReferenceCandidateView(
-                doi=candidate.doi, title=candidate.title, authors=list(candidate.authors),
-                year=candidate.year, venue=candidate.venue, volume=candidate.volume,
-                issue=candidate.issue, pages=candidate.pages, abstract=candidate.abstract,
-                url=candidate.url, open_access=candidate.open_access, type=candidate.type,
-                work_type=candidate.work_type,
-                retraction_status=candidate.retraction_status,
-                providers=list(candidate.providers),
-                citation_counts=candidate.citation_counts,
-                match_basis=candidate.match_basis,
-                claims=_claim_views(candidate),
-                can_be_saved=bool(candidate.doi),
+                doi=ranked.candidate.doi, title=ranked.candidate.title,
+                authors=list(ranked.candidate.authors),
+                year=ranked.candidate.year, venue=ranked.candidate.venue,
+                volume=ranked.candidate.volume, issue=ranked.candidate.issue,
+                pages=ranked.candidate.pages, abstract=ranked.candidate.abstract,
+                url=ranked.candidate.url, open_access=ranked.candidate.open_access,
+                type=ranked.candidate.type, work_type=ranked.candidate.work_type,
+                retraction_status=ranked.candidate.retraction_status,
+                providers=list(ranked.candidate.providers),
+                citation_counts=ranked.candidate.citation_counts,
+                match_basis=ranked.candidate.match_basis,
+                claims=_claim_views(ranked.candidate),
+                can_be_saved=bool(ranked.candidate.doi),
+                reasons=_reason_views(ranked),
+                matched_terms=list(ranked.ranking.matched_terms),
+                missing_terms=list(ranked.ranking.missing_terms),
             )
-            for candidate in result.candidates
+            for ranked in result.ranked
         ],
         providers=[
             ProviderStatusView(provider=status_.provider, ok=status_.ok,
@@ -258,6 +316,7 @@ async def discover_references(
             ExternalAccessLinkView(url=result.external_link.url, host=result.external_link.host)
             if result.external_link else None
         ),
+        query_understanding=_understanding(result.query),
     )
 
 
