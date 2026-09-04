@@ -9,11 +9,13 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AtheraError, NotFound
+from ..models.files import File
 from ..models.library import MAX_FOLDER_DEPTH, LibraryFolder
 
 # ── المشي صعودًا: من مجلَّدٍ إلى جذره، بعمقٍ مقيَّد في العبارة نفسها ──
@@ -187,5 +189,77 @@ async def assert_placement(
                           max_depth=MAX_FOLDER_DEPTH)
 
 
-__all__ = ["MAX_FOLDER_DEPTH", "ancestors", "assert_placement", "depth_of", "get_folder",
-           "lock_tree", "subtree_height"]
+# ══════════════════════════════════════════════════════════════════════
+# الملف في المكتبة: قراءةٌ محروسة، وعددُ ما يسنده
+#
+# **موضعٌ واحد يقرأه المفرد والجماعيّ.** أفعالُ المكتبة صارت بابين: واحدٌ
+# على ملفٍ بعينه، وآخر على ما اختاره الباحث دفعةً. ولو كتب البابان حراسةً
+# لكلٍّ منهما لافترقا بأول تعديل — فيُشدَّد المفرد ويبقى الجماعيّ يقبل ما
+# لا يقبله، وهو أخطرهما: يمرّ على عشرين ملفًا لا على واحد.
+# ══════════════════════════════════════════════════════════════════════
+async def owned_file(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
+    file_id: uuid.UUID, action: str,
+) -> File:
+    """ملفٌّ في هذا المستأجر، وللباحث منحةُ الفعل عليه — **وإلا فلا**.
+
+    والعزل يمنع رؤية ملف مستأجرٍ آخر أصلًا، فلا يفرَّق في الرسالة بين «غير
+    موجود» و«لغيرك»: تخمين المعرّفات لا يعطي خبرًا.
+    """
+    from .rbac import require_object_action
+
+    record = (await session.execute(select(File).where(
+        File.id == file_id, File.tenant_id == tenant_id))).scalar_one_or_none()
+    if record is None:
+        raise NotFound("file.not_found")
+    await require_object_action(session, tenant_id, user_id, "file", file_id, action)
+    return record
+
+
+async def assert_writable(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
+    folder_id: uuid.UUID,
+) -> None:
+    """المجلَّد قائمٌ في هذا المستأجر، وللباحث منحةُ كتابةٍ عليه — **وإلا فلا**.
+
+    **وموضعٌ واحد يقول ذلك لكل مسارٍ يضع ملفًا في مجلَّد.** الرفعُ المباشر
+    والنيّةُ الموقّعة والختمُ والنقلُ المفرد والنقلُ الجماعيّ خمسةُ أبوابٍ
+    إلى الحقل نفسه؛ ولو كتب كلٌّ منها فحصه لافترقت الخمسة بأول تعديل،
+    فيُحرَس بابٌ وتُنسى أربعة.
+
+    والرموز تُقال كما هي: مجلَّدٌ لا وجود له — أو لمستأجرٍ آخر فالعزل يمنع
+    رؤيته أصلًا — يردّ 404، ومجلَّدٌ يراه الباحث ولا يملكه يردّ 403. ولا
+    يصعد من هنا خطأٌ مجهول يصير 500 عند الحافّة.
+    """
+    from ..models.library import FOLDER_OBJECT_TYPE
+    from .rbac import require_object_action
+
+    await get_folder(session, tenant_id=tenant_id, folder_id=folder_id)
+    await require_object_action(session, tenant_id, user_id,
+                                FOLDER_OBJECT_TYPE, folder_id, "write")
+
+
+async def active_project_links(
+    session: AsyncSession, *, tenant_id: uuid.UUID, file_ids: Sequence[uuid.UUID]
+) -> int:
+    """كم بحثًا قائمًا يستعمل هذه الملفات؟ — **بعبارةٍ واحدة مهما كثرت**.
+
+    والعدد هو التحذير: «هذا الملف مرتبط ببحوث» بلا رقمٍ ليس تحذيرًا. وعدُّ
+    كلِّ ملفٍ على حدة يُعيد `1 + N` في فعلٍ يمسّ عشرين ملفًا — وهو العطب
+    الذي عولج في صفحة المكتبة، يُعاد من باب الأفعال الجماعية.
+    """
+    from ..models.portfolio import ProjectFile
+
+    if not file_ids:
+        return 0
+    return (await session.execute(
+        select(func.count(ProjectFile.id)).where(
+            ProjectFile.tenant_id == tenant_id,
+            ProjectFile.file_id.in_(file_ids),
+            ProjectFile.state == ProjectFile.ACTIVE)
+    )).scalar_one()
+
+
+__all__ = ["MAX_FOLDER_DEPTH", "active_project_links", "ancestors", "assert_placement",
+           "assert_writable",
+           "depth_of", "get_folder", "lock_tree", "owned_file", "subtree_height"]

@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement
 
@@ -195,6 +195,90 @@ def file_processing_state_of_row(
     if thesis_id is None:
         return "not_processed", 0, 0, None
     return (run_status or "not_processed", candidates or 0, reviewed or 0, thesis_id)
+
+
+# ── الحال شرطًا لا عرضًا: تصفية المكتبة بحال المعالجة ──────────────────
+#
+# **الحالات التي يجوز التصفية بها معلَنة هنا، وليست كل حالٍ في القاعدة.**
+# التصفية وعدٌ في الشاشة: من ضغط «مُعالَج» ينتظر كلَّ ما عولج ولا شيء
+# غيره. فيُكتب لكل خيارٍ **شرطٌ مشتقٌّ من الأعمدة نفسها** التي تُعرض منها
+# الحال في البطاقة — لا حسابٌ ثانٍ يفترق عنه بأول تعديل، فيرى الباحث ملفًّا
+# بطاقتُه تقول «مُعالَج» ولا يظهر في مرشّح «مُعالَج».
+LIBRARY_STATE_FILTERS = ("processed", "awaiting_consent", "not_processed")
+
+
+def file_state_predicate(
+    tenant_id: uuid.UUID, state: str
+) -> ColumnElement[bool] | None:
+    """شرطُ «حال المعالجة» في عبارة الصفحة نفسها — لا مرشِّحٌ بعدها.
+
+    **ولا عبارة ثانية.** الشرط استعلامان فرعيّان مرتبطان بصفّ الملف، فيمرّ
+    داخل `WHERE` الصفحة: الصفحة تُقتطع في القاعدة كما تُقتطع بلا تصفية،
+    وعددُ العبارات لا يتغيّر. أمّا التصفية في بايثون بعد القراءة فتُنتج
+    صفحاتٍ ناقصةً بلا معنى — عشرون صفًّا يُقرأون فيبقى منهم ثلاثة، ثم
+    يُقال للباحث إن هذه كلُّ ملفاته.
+
+    والتعريف يُشتقّ من `file_processing_state_of_row` حرفًا بحرف: ملفٌّ بلا
+    رسالة `not_processed`، وإلا فحالُ آخر تشغيلة، وغيابُ التشغيلة
+    `not_processed` أيضًا.
+    """
+    if state not in LIBRARY_STATE_FILTERS:
+        return None
+    thesis_id, run_status, _candidates, _reviewed = file_processing_state_columns(
+        tenant_id, File.id)
+    if state == "not_processed":
+        # ملفٌّ لم يُقرأ أصلًا، أو قُرئ ولا تشغيلة له — والحالان يُعرضان
+        # بالنصّ نفسه، فيُصفّيان به.
+        return or_(thesis_id.is_(None), run_status.is_(None))
+    return and_(thesis_id.is_not(None),
+                run_status == ("completed" if state == "processed" else state))
+
+
+# ── البحث: الاسم، وعنوانُ الرسالة حيث وُجد ────────────────────────────
+#
+# **بحثٌ نصّيّ لا دلاليّ.** لا تضمين ولا متجهات ولا «قريبٌ من»: الباحث
+# يكتب ما يذكره من اسم ملفه، فيُطابَق حرفيًّا. وادعاءُ فهمٍ لا يقع أسوأ من
+# مطابقةٍ صريحة يعرف صاحبها حدودها.
+_LIKE_ESCAPE = "\\"
+
+
+def _escaped(term: str) -> str:
+    """`%` و`_` في يد المستخدم حرفان لا محرفا بدل.
+
+    فمن بحث عن «نسبة_العائد» يقصد الاسم نفسه، لا «نسبة» متبوعةً بأي محرف.
+    وترك المحرفين بلا هروب يجعل بحثًا عن `%` يطابق المكتبة كلها.
+    """
+    out = term.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+    return out.replace("%", f"{_LIKE_ESCAPE}%").replace("_", f"{_LIKE_ESCAPE}_")
+
+
+def file_text_predicate(tenant_id: uuid.UUID, term: str) -> ColumnElement[bool] | None:
+    """شرطُ البحث: اسمُ الملف، **وعنوانُ الرسالة حيث وُجد**.
+
+    والعنوان يُطابَق لأن الباحث يذكر ما في المستند لا ما سمّى به ملفه:
+    «thesis-final-v3.pdf» لا يُبحث عنه باسمه بل بعنوانه. و«حيث وُجد» قيدٌ
+    صادق — ملفٌّ لم يُقرأ لا عنوان له، فلا يُختلق له واحد.
+
+    وشرطٌ واحد في العبارة نفسها: `EXISTS` مرتبطٌ بصفّ الملف، لا عبارةٌ
+    ثانية ولا قائمةُ معرّفاتٍ تُقرأ أولًا.
+    """
+    from ..models.thesis import Thesis
+
+    needle = term.strip()
+    if not needle:
+        return None
+    pattern = f"%{_escaped(needle)}%"
+
+    def like(column: ColumnElement) -> ColumnElement[bool]:
+        return column.ilike(pattern, escape=_LIKE_ESCAPE)
+
+    titled = (
+        select(Thesis.id)
+        .where(Thesis.tenant_id == tenant_id, Thesis.file_id == File.id,
+               or_(like(Thesis.title_ar), like(Thesis.title_en)))
+        .exists()
+    )
+    return or_(like(File.original_filename), titled)
 
 
 async def files_processing_state(

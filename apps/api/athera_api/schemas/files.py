@@ -8,21 +8,61 @@ from pydantic import BaseModel, Field
 
 
 class FileInitRequest(BaseModel):
+    """نيّةُ رفعٍ عبر رابطٍ موقّع — **وفيها موضعُ الملف من أوّلها**.
+
+    والمسار الموقّع كان ينزل بالملف في الجذر دائمًا: `POST /files/upload`
+    يقبل `folder_id` ولا يقبله هذا. فمن رفع وهو واقفٌ في مجلَّدٍ بعميلٍ
+    يستعمل الرابط الموقّع وجد ملفه في غير موضعه، ولا شيء يقول له لماذا —
+    والفرق بين مسارَي رفعٍ ليس فرقًا يفهمه صاحب المكتبة.
+    """
+
     filename: str = Field(max_length=512)
     content_type: str
     size_bytes: int = Field(gt=0)
     classification: str = Field(default="C2", pattern="^C[0-4]$")
+    # `None` هو الجذر — قيمةٌ مقصودة لا حقلٌ منسيّ (كما في `FileMoveRequest`).
+    folder_id: uuid.UUID | None = None
 
 
 class FileInitResponse(BaseModel):
+    """ما يحتاجه العميل ليرفع — **ومعه أين سينزل الملف**.
+
+    وردُّ الموضع ليس زينة: العميل يقول «الرفع إلى: كتب المنهج» قبل أن يبدأ
+    البثّ، ولو أضمره الخادمُ لصار على العميل أن يخمّن ما قرّره غيره.
+
+    **ولا يذكر `storage_key` مجلَّدًا ولا يتغيّر بتغيّره.** المفتاح يُبنى
+    من المستأجر والمستخدم ومعرّف الملف وحدها؛ فلو حُشر فيه مسارُ المجلَّد
+    لصار نقلُ ملفٍ بين رفَّين نسخًا لكائنٍ في المخزن، ولانكسر معه كلُّ
+    رابطٍ موقّع وكلُّ سجلّ إسنادٍ يشير إلى الموضع القديم.
+    """
+
     file_id: uuid.UUID
     upload_url: str
     storage_key: str
     expires_in: int
+    folder_id: uuid.UUID | None = None
 
 
 class FileCompleteRequest(BaseModel):
+    """ختمُ الرفع ببصمته — و`folder_id` هنا **قولٌ أخير لا تكرار**.
+
+    الموضع يُثبَّت عند النيّة، فحذفُ الحقل من الجسم يُبقيه كما هو. وذكرُه —
+    ولو بـ`null` — يعني أن الباحث غيّر وجهته بين النيّة والختم، فيُفحص
+    المجلَّد الجديد كما فُحص الأول ثم يُكتب.
+
+    والفرق بين «لم يُذكر» و«ذُكر فارغًا» يُقرأ من `model_fields_set`: لو
+    عومل الغياب معاملة `null` لسحب كلُّ عميلٍ قديم — وهو لا يعرف الحقل
+    أصلًا — ملفَّه إلى الجذر عند الختم، وهو بعينه العطب الذي يعالجه هذا
+    التغيير.
+    """
+
     checksum_sha256: str = Field(min_length=64, max_length=64)
+    folder_id: uuid.UUID | None = None
+
+    @property
+    def folder_named(self) -> bool:
+        """أذُكر الحقل صراحةً في الجسم؟ — لا «أقيمتُه ليست فارغة»."""
+        return "folder_id" in self.model_fields_set
 
 
 class FileResponse(BaseModel):

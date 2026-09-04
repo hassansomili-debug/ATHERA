@@ -166,6 +166,28 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
               "them. Deleting moves it to the trash and destroys nothing — confirm "
               "to continue.",
     },
+    "library.unknown_filter": {
+        "ar": "لا نعرف هذا المرشّح. المرشّحات المتاحة مذكورة في تفاصيل الرسالة.",
+        "en": "That filter is not one we know. The available filters are listed in "
+              "the message details.",
+    },
+    "library.nothing_selected": {
+        "ar": "لم تختر ملفًّا واحدًا لهذا الفعل.",
+        "en": "No file was selected for this action.",
+    },
+    "library.selection_too_large": {
+        "ar": "اخترت أكثر مما يُنفَّذ دفعةً واحدة. نفّذ على دفعاتٍ أصغر — "
+              "والحدُّ مذكور في تفاصيل الرسالة.",
+        "en": "You selected more than one batch can carry. Do it in smaller "
+              "batches — the limit is in the message details.",
+    },
+    "library.selection_linked_to_projects": {
+        "ar": "بعض ما اخترته يسند بحوثًا قائمة، وحذفه يُخفيه عنها. "
+              "الحذف نقلٌ إلى السلّة ولا يُتلف شيئًا — أكّد إن أردت المتابعة.",
+        "en": "Some of what you selected supports live projects, and deleting it "
+              "hides it from them. Deleting moves it to the trash and destroys "
+              "nothing — confirm to continue.",
+    },
     "file.checksum_mismatch": {
         "ar": "بصمة الملف لا تطابق المرفوع؛ لم يُعتمد الرفع.",
         "en": "Checksum mismatch; the upload was not accepted.",

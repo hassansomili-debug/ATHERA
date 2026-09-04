@@ -11,7 +11,7 @@ from time import perf_counter
 from fastapi import APIRouter, Depends, File as FormFile, Form, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -21,8 +21,7 @@ from ..errors import AtheraError, NotFound
 from ..models.audit import ProvenanceEvent
 from ..models.files import File, FileAccessLog
 from ..models.identity import ObjectGrant
-from ..models.library import FOLDER_OBJECT_TYPE, LibraryFolder
-from ..models.portfolio import ProjectFile
+from ..models.library import LibraryFolder
 from ..schemas.files import (
     FileCompleteRequest,
     FileDownloadResponse,
@@ -34,6 +33,7 @@ from ..schemas.files import (
 from ..schemas.library import FileMoveRequest, FileTrashView, TrashRequest
 from ..services import audit, library, rbac, storage, workspace
 from .folders import router as folders_router
+from .library_bulk import router as bulk_router
 
 # مقطع الميجابايت: يوازن بين عدد الدورات وبصمة الذاكرة.
 CHUNK_BYTES = 1024 * 1024
@@ -45,7 +45,12 @@ router = APIRouter(prefix="/api/v1/files", tags=["files"])
 # المجلَّدات في الأسفل لالتقط `‎/api/v1/files/folders` مسارُ المعرّف أولًا،
 # وفشل تحويل «folders» إلى UUID، فيردّ 422 على قائمةٍ صحيحة. والترتيب هو
 # كل الفرق، ولا يظهر في أي اختبار وحدة يستدعي الدالّة مباشرةً.
+#
+# والأفعالُ الجماعية كذلك: `‎/api/v1/files/bulk/move` يلتقطه
+# `POST /{file_id}/move` لو سُجّل بعده، فيحاول قراءة «bulk» معرّفًا ويردّ
+# 422 على فعلٍ صحيح.
 router.include_router(folders_router)
+router.include_router(bulk_router)
 
 settings = get_settings()
 
@@ -79,6 +84,19 @@ def _parsed_folder(folder_id: str | None) -> uuid.UUID | None:
         raise NotFound("library.folder_not_found") from exc
 
 
+async def _writable_folder(session: AsyncSession, principal: Principal,
+                           folder_id: uuid.UUID) -> None:
+    """الوجهة قائمةٌ ومملوكة — والفحص نفسه يقرأه المفرد والجماعيّ.
+
+    والتعريف في `services/library.py` لا هنا: الفعلُ الجماعيّ في موجّهٍ
+    ثانٍ، ونسخةٌ ثانية من الحارس تفترق عن الأولى بأول تعديل — فيُشدَّد
+    المفرد ويبقى الجماعيّ يقبل ما لا يقبله، وهو أخطرهما لأنه يمرّ على
+    عشرين ملفًا لا على واحد.
+    """
+    await library.assert_writable(session, tenant_id=principal.tenant_id,
+                                  user_id=principal.user_id, folder_id=folder_id)
+
+
 def _folder_scope(folder: str | None) -> tuple[bool, uuid.UUID | None]:
     """(أيُقيَّد بمجلَّد؟، أيّ مجلَّد) — و`None` مع `True` تعني الجذر."""
     if folder is None:
@@ -91,6 +109,53 @@ def _folder_scope(folder: str | None) -> tuple[bool, uuid.UUID | None]:
         raise NotFound("library.folder_not_found") from exc
 
 
+# ── مرشّحات المكتبة: **حالٌ يعرفها الخادم، لا زينةٌ في الشاشة** ─────────
+#
+# سبعة خياراتٍ لا أكثر، وكلٌّ منها شرطٌ في العبارة نفسها. وأربعةٌ منها
+# نوعُ ملفٍ يُقرأ من `content_type`، وثلاثةٌ حالُ معالجةٍ تُشتقّ من
+# `extraction_runs` — وهي بعينها الحال المعروضة في البطاقة، لا حسابٌ ثانٍ.
+#
+# **ولا مرشّح لما لا يعرفه الخادم.** «مقروء» و«مهمّ» و«حديث» أوصافٌ لا
+# أعمدة؛ وزرٌّ يَعِد بتصفيةٍ لا يقدر عليها الخادم يردّ قائمةً لا تطابق
+# اسمه — وذلك أسوأ من غياب الزرّ.
+FILE_KIND_FILTERS = ("pdf", "docx", "datasets", "references")
+FILTERS = FILE_KIND_FILTERS + workspace.LIBRARY_STATE_FILTERS
+
+
+def _kind_predicate(kind: str):
+    """شرطُ نوع الملف — من جداول `storage` نفسها لا من قائمةٍ ثانية."""
+    if kind == "pdf":
+        return File.content_type == storage.PDF_TYPE
+    if kind == "docx":
+        return File.content_type == storage.DOCX_TYPE
+    if kind == "datasets":
+        return File.content_type.in_(sorted(storage.DATASET_TYPES))
+    # المراجع: نوعُها الخاص، أو امتدادُها حين يصل النوع `text/plain` من
+    # المتصفح — والاثنان ملفُ مراجعٍ عند صاحبه.
+    return or_(
+        File.content_type.in_(sorted(storage.REFERENCE_TYPES)),
+        *[File.original_filename.ilike(f"%{suffix}")
+          for suffix in storage.REFERENCE_SUFFIXES],
+    )
+
+
+def _filter_predicate(kind: str | None, tenant_id: uuid.UUID):
+    """الشرط المقابل للمرشّح المطلوب — **ومرشّحٌ مجهول يُردّ لا يُتجاهل**.
+
+    وتجاهلُه أسوأ: الباحث يضغط «مراجع» فيرى مكتبته كلها، ويظنّ أن هذه هي
+    مراجعه. فيُقال إن الخيار غير معروف بـ422 وتُذكر الخيارات كلها.
+    """
+    if kind is None:
+        return None
+    if kind in FILE_KIND_FILTERS:
+        return _kind_predicate(kind)
+    state = workspace.file_state_predicate(tenant_id, kind)
+    if state is None:
+        raise AtheraError("library.unknown_filter", status_code=422,
+                          filters=", ".join(FILTERS))
+    return state
+
+
 @router.get("", response_model=list[LibraryFile])
 async def list_files(
     limit: int = Query(default=DEFAULT_PAGE, ge=1, le=MAX_PAGE),
@@ -98,6 +163,10 @@ async def list_files(
     folder: str | None = Query(default=None,
                                description="root للجذر، أو معرّف مجلَّد، أو لا شيء لكل الملفات"),
     trash: bool = Query(default=False),
+    q: str | None = Query(default=None, max_length=200,
+                          description="بحثٌ نصّي في اسم الملف وعنوان رسالته"),
+    kind: str | None = Query(default=None,
+                             description=" · ".join(FILTERS)),
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[LibraryFile]:
@@ -135,6 +204,21 @@ async def list_files(
 
     **وما في السلّة ليس في المكتبة.** والقائمتان لا تختلطان: `trash=true`
     تعرض المحذوف وحده، وهو الباب الذي تُستعاد منه الملفات.
+
+    **والبحث والتصفية شرطان في العبارة نفسها — لا مرشِّحان بعدها.**
+
+    و`q` بحثٌ نصّيّ لا دلاليّ: اسمُ الملف، وعنوانُ رسالته حيث وُجدت. ونطاقُه
+    هو `folder` نفسه — فبمعرّف مجلَّدٍ يبحث في هذا الرفّ وحده، وبغيابه في
+    المكتبة كلها. ولا معامل «نطاق» ثالث يقول ما يقوله الأول.
+
+    و`kind` واحدٌ من سبعةٍ **يعرفها الخادم**: أربعةُ أنواعٍ تُقرأ من
+    `content_type`، وثلاثُ حالاتٍ تُشتقّ من `extraction_runs` — وهي بعينها
+    الحال المعروضة في البطاقة، فلا يقول المرشّح غير ما تقوله.
+
+    **والتصفية في القاعدة لا في بايثون.** ولو صُفّيت الصفحة بعد قراءتها
+    لعادت ناقصةً بلا معنى: خمسةٌ وعشرون صفًّا يُقرأون فيبقى منهم ثلاثة، ثم
+    يُقال للباحث إن هذه كلُّ ما يطابق — وهو كذب. والشرط في `WHERE` يُبقي
+    الصفحة صفحةً وعددَ العبارات واحدًا كما كان.
     """
     scoped, folder_id = _folder_scope(folder)
     page = (
@@ -147,6 +231,12 @@ async def list_files(
     if scoped and not trash:
         page = (page.where(File.folder_id == folder_id) if folder_id is not None
                 else page.where(File.folder_id.is_(None)))
+    matching = workspace.file_text_predicate(principal.tenant_id, q) if q else None
+    if matching is not None:
+        page = page.where(matching)
+    chosen = _filter_predicate(kind, principal.tenant_id)
+    if chosen is not None:
+        page = page.where(chosen)
     if after is not None:
         anchor_created = (
             select(File.created_at)
@@ -191,7 +281,31 @@ async def init_upload(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> FileInitResponse:
+    """نيّةُ رفعٍ عبر رابطٍ موقّع — **والملف ينزل حيث يقف الباحث**.
+
+    **وكان ينزل في الجذر دائمًا.** هذا المسار لم يكن يعرف `folder_id`
+    أصلًا، بينما يعرفه الرفعُ المباشر؛ فمن رفع من داخل «كتب المنهج» بعميلٍ
+    يستعمل الرابط الموقّع وجد ملفه في جذر المكتبة، ولا رسالةَ ولا سبب.
+    وكان البديل الوحيد نقلًا ثانيًا بعد الختم: طلبٌ زائد على كل رفع، ونافذةٌ
+    يظهر فيها الملف في غير موضعه، وسقوطٌ صامت لو فشل النقل بعد نجاح الرفع.
+
+    **والفحص هنا لا عند الختم وحده.** الوجهة تُفحص **قبل** أن يُصدر الخادم
+    رابطًا موقّعًا: فرفضٌ بعد أن يبثّ الباحث كتابه إلى المخزن هو الوعد
+    يُقطع بعد أن دُفع ثمنه. والصفّ يُكتب بموضعه في المعاملة نفسها التي
+    فُحص فيها المجلَّد.
+
+    **ومن ذلك يلزم أثرٌ حسن:** المجلَّد الذي فيه رفعٌ معلَّق لا يُحذف —
+    `trash_folder` يعدّ الملفات القائمة فيه ومنها المعلَّق، فيردّ
+    `library.folder_not_empty`. فلا يُختم رفعٌ في مجلَّدٍ صار في السلّة
+    بينما كان الباحث يبثّ.
+
+    **ولا يمسّ المجلَّدُ مفتاحَ التخزين.** المفتاح يُبنى من المستأجر
+    ومعرّف الملف، ولا يُحشر فيه مسارٌ: الموضع صفٌّ في القاعدة، والمفتاح
+    عنوانُ كائنٍ يشير إليه كلُّ رابطٍ موقّع وكلُّ سجلّ إسناد.
+    """
     storage.validate_upload(payload.content_type, payload.size_bytes)
+    if payload.folder_id is not None:
+        await _writable_folder(session, principal, payload.folder_id)
 
     file_id = uuid.uuid4()
     key = storage.build_storage_key(principal.tenant_id, file_id, payload.filename)
@@ -206,6 +320,7 @@ async def init_upload(
         is_untrusted_content=True,  # §33.3 — محتوى الملفات بيانات لا تعليمات.
         status="pending",
         uploaded_by=principal.user_id,
+        folder_id=payload.folder_id,
     )
     session.add(record)
     await session.flush()
@@ -227,7 +342,8 @@ async def init_upload(
         object_type="file",
         object_id=file_id,
         actor_user_id=principal.user_id,
-        state_after={"filename": payload.filename, "classification": payload.classification},
+        state_after={"filename": payload.filename, "classification": payload.classification,
+                     "folder_id": str(payload.folder_id) if payload.folder_id else None},
         request_id=principal.request_id,
         ip_address=principal.ip_address,
     )
@@ -237,6 +353,7 @@ async def init_upload(
         upload_url=storage.presign_put(key, payload.content_type),
         storage_key=key,
         expires_in=settings.s3_presign_ttl_seconds,
+        folder_id=payload.folder_id,
     )
 
 
@@ -247,13 +364,31 @@ async def complete_upload(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
+    """ختمُ الرفع الموقّع — **والموضع الذي أُعلن عند النيّة هو الذي يستقرّ**.
+
+    **والسكوتُ يُبقي، لا يُلغي.** جسمٌ بلا `folder_id` — وهو كل عميلٍ كُتب
+    قبل هذا التغيير — يترك الملف حيث أعلنت النيّة أنه سينزل. ولو عومل
+    الغياب معاملة «الجذر» لسحب كلُّ عميلٍ قديم ملفَّه إلى الجذر عند الختم،
+    فيصير المسار يعِد بموضعٍ ثم ينقضه في آخر خطوة.
+
+    وذكرُ الحقل صراحةً قولٌ أخير: الباحث غيّر وجهته بين النيّة والختم،
+    فيُفحص المجلَّد الجديد كما فُحص الأول — وجودًا ومستأجرًا ومنحة.
+
+    **ولا يتغيّر `storage_key` هنا ولا هناك.** سجلّ الإسناد أدناه يذكره
+    موضعًا للأصل، والمجلَّد لا يعدّل فيه حرفًا.
+    """
     record = (await session.execute(select(File).where(File.id == file_id,
                                             File.tenant_id == principal.tenant_id))).scalar_one_or_none()
     if record is None:
         raise NotFound("file.not_found")
     await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
                                      "file", file_id, "write")
+    if payload.folder_named and payload.folder_id is not None:
+        await _writable_folder(session, principal, payload.folder_id)
 
+    before_folder = record.folder_id
+    if payload.folder_named:
+        record.folder_id = payload.folder_id
     record.checksum_sha256 = payload.checksum_sha256
     record.status = "stored"
     record.completed_at = dt.datetime.now(dt.UTC)
@@ -278,8 +413,10 @@ async def complete_upload(
         object_type="file",
         object_id=file_id,
         actor_user_id=principal.user_id,
-        state_before={"status": "pending"},
-        state_after={"status": "stored", "checksum_sha256": payload.checksum_sha256},
+        state_before={"status": "pending",
+                      "folder_id": str(before_folder) if before_folder else None},
+        state_after={"status": "stored", "checksum_sha256": payload.checksum_sha256,
+                     "folder_id": str(record.folder_id) if record.folder_id else None},
         request_id=principal.request_id,
     )
     return FileResponse.model_validate(record, from_attributes=True)
@@ -441,11 +578,7 @@ async def upload_file(
     try:
         async with tenant_session(principal.tenant_id, principal.user_id) as session:
             if target_folder is not None:
-                await library.get_folder(session, tenant_id=principal.tenant_id,
-                                         folder_id=target_folder)
-                await rbac.require_object_action(
-                    session, principal.tenant_id, principal.user_id,
-                    FOLDER_OBJECT_TYPE, target_folder, "write")
+                await _writable_folder(session, principal, target_folder)
             record = File(
                 id=file_id,
                 tenant_id=principal.tenant_id,
@@ -554,23 +687,21 @@ async def stream_file(
 # ══════════════════════════════════════════════════════════════════════
 async def _owned_file(session: AsyncSession, principal: Principal,
                       file_id: uuid.UUID, action: str) -> File:
-    record = (await session.execute(select(File).where(
-        File.id == file_id, File.tenant_id == principal.tenant_id))).scalar_one_or_none()
-    if record is None:
-        raise NotFound("file.not_found")
-    await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
-                                     "file", file_id, action)
-    return record
+    """قراءةٌ محروسة — **والحارس نفسه يقرأه الفعل الجماعيّ**.
+
+    ونسختان منه تفترقان بأول تعديل: يُشدَّد المفرد ويبقى الجماعيّ يقبل ما
+    لا يقبله — وهو أخطرهما، فهو يمرّ على عشرين ملفًا لا على واحد.
+    """
+    return await library.owned_file(session, tenant_id=principal.tenant_id,
+                                    user_id=principal.user_id, file_id=file_id,
+                                    action=action)
 
 
 async def _active_project_links(session: AsyncSession, principal: Principal,
                                 file_id: uuid.UUID) -> int:
-    return (await session.execute(
-        select(func.count(ProjectFile.id)).where(
-            ProjectFile.tenant_id == principal.tenant_id,
-            ProjectFile.file_id == file_id,
-            ProjectFile.state == ProjectFile.ACTIVE)
-    )).scalar_one()
+    """كم بحثًا قائمًا يستعمل هذا الملف؟ — والعدد هو التحذير لا نصُّه."""
+    return await library.active_project_links(
+        session, tenant_id=principal.tenant_id, file_ids=[file_id])
 
 
 @router.post("/{file_id}/move", response_model=FileResponse)
@@ -595,10 +726,7 @@ async def move_file(
     """
     record = await _owned_file(session, principal, file_id, "write")
     if payload.folder_id is not None:
-        await library.get_folder(session, tenant_id=principal.tenant_id,
-                                 folder_id=payload.folder_id)
-        await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
-                                         FOLDER_OBJECT_TYPE, payload.folder_id, "write")
+        await _writable_folder(session, principal, payload.folder_id)
 
     before = record.folder_id
     record.folder_id = payload.folder_id

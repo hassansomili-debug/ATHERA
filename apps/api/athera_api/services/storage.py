@@ -70,6 +70,22 @@ DATASET_TYPES: Final[dict[str, tuple[str, ...]]] = {
 }
 ALLOWED_CONTENT_TYPES: Final = frozenset(DOCUMENT_TYPES) | frozenset(DATASET_TYPES)
 
+# ── تصنيفٌ يُعرض للباحث: PDF · DOCX · بيانات · مراجع ──────────────────
+#
+# **يُشتقّ من الجداول أعلاه لا يُكتب بجانبها.** مفردةٌ ثانية تفترق عن سجلّها
+# بأول نوعٍ يُضاف، فيصير مرشّح «بيانات» يُخفي ملفًّا يقبله الرفع — وذلك
+# نقصٌ صامت لا رسالةَ له.
+PDF_TYPE: Final = "application/pdf"
+DOCX_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+# **المراجع تُخزَّن ولا تُفكَّك** (RIS وBibTeX)، والباحث يعرفها بذلك. وهي
+# تصل بنوعها الخاص أو بـ`text/plain` من المتصفح، فيُقرأ الامتداد أيضًا —
+# وإلا اختفى نصفُ ملفات المراجع من مرشّحها بلا سبب يُقال.
+REFERENCE_TYPES: Final = frozenset(
+    {"application/x-research-info-systems", "application/x-bibtex"})
+REFERENCE_SUFFIXES: Final = (".ris", ".bib")
+
 # بصمات أول البايتات — النوع المعلَن من المتصفح ادعاء، لا دليل.
 _MAGIC: Final[dict[str, bytes]] = {
     "application/pdf": b"%PDF-",
