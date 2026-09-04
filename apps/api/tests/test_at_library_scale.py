@@ -98,8 +98,16 @@ async def _add_run(session, *, tenant_id, file_id, status: str, created_at=None)
     return run
 
 
-async def _add_candidates(session, *, tenant_id, file_id, run_id, total: int, reviewed: int):
-    """مرشّحون بحالاتٍ حقيقية — والمراجَع ما خرج عن `unverified`."""
+async def _add_candidates(session, *, tenant_id, file_id, run_id, total: int, reviewed: int,
+                          decided_by):
+    """مرشّحون بحالاتٍ حقيقية — والمراجَع ما خرج عن `unverified`.
+
+    **والقرار يحمل فاعله وتاريخه.** `ck_candidate_decided_requires_actor` في
+    ترحيل 0005 تشترط أن كل حالٍ غير `unverified` لها `decided_by` و
+    `decided_at` — «قرار بلا فاعل وتاريخ غير مقبول، والرفض قرار أيضًا».
+    وكان التركيب هنا يعتمد مرشّحًا بلا فاعل، فيمرّ محليًّا حيث لا قاعدة
+    ويسقط في CI حيث توجد. والقيمة تُقرأ من قيدها لا من الذاكرة.
+    """
     from athera_api.models.research import DocumentChunk, FactCandidate
 
     text = "نصٌّ مقتبس من المستند"
@@ -113,7 +121,8 @@ async def _add_candidates(session, *, tenant_id, file_id, run_id, total: int, re
             tenant_id=tenant_id, extraction_run_id=run_id, file_id=file_id,
             chunk_id=chunk.id, memory_category="researcher_fact", field_key="sample",
             statement_ar="عبارة", quote=text, locator=chunk.locator, confidence=0.5,
-            status="approved" if index < reviewed else "unverified",
+            **({"status": "approved", "decided_by": decided_by, "decided_at": _now()}
+               if index < reviewed else {"status": "unverified"}),
         ))
     await session.flush()
 
@@ -176,7 +185,8 @@ async def test_the_batched_state_equals_the_per_file_state_for_every_case(two_te
             run = await _add_run(session, tenant_id=tid, file_id=row.id, status=state)
             if state in ("awaiting_review", "completed"):
                 await _add_candidates(session, tenant_id=tid, file_id=row.id,
-                                      run_id=run.id, total=3, reviewed=2)
+                                      run_id=run.id, total=3, reviewed=2,
+                                      decided_by=uid)
             file_ids.append(row.id)
 
         # (٤) تشغيلتان: الأحدث هي المعروضة، والأقدم لا تُقرأ.
