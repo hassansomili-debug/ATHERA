@@ -8,9 +8,9 @@ import hashlib
 import uuid
 from time import perf_counter
 
-from fastapi import APIRouter, Depends, File as FormFile, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File as FormFile, Form, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -36,8 +36,19 @@ router = APIRouter(prefix="/api/v1/files", tags=["files"])
 settings = get_settings()
 
 
+# ── حدود صفحة المكتبة ──────────────────────────────────────────────────
+#
+# **قائمةٌ بلا حدّ ليست قائمة.** كان المسار يردّ كل ملفات المستأجر دفعةً
+# واحدة، وكل ملفٍ يزيدها. فمكتبةٌ تكبر تُبطئ نفسها بنفسها حتى تسقط —
+# وذلك ما شكاه صاحبها: «المكتبة ما تتحمل كتب».
+DEFAULT_PAGE = 25
+MAX_PAGE = 100
+
+
 @router.get("", response_model=list[LibraryFile])
 async def list_files(
+    limit: int = Query(default=DEFAULT_PAGE, ge=1, le=MAX_PAGE),
+    after: uuid.UUID | None = Query(default=None),
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[LibraryFile]:
@@ -50,23 +61,63 @@ async def list_files(
     **والحالة تُقال كما هي.** الرفع يُنتج `stored`، والقراءة والاستخراج
     يجريان في مسار الرسائل (S5C). فتُقرأ حال المعالجة من `extraction_runs`
     الحقيقية، ولا يُقال «حُلِّل» لملفٍ لم يُقرأ — والصمت أصدق من وعدٍ كاذب.
+
+    **ثم صارت تعرضها ولا تُنهي.** الصياغة السابقة كانت تقرأ كل الملفات بلا
+    حدّ، ثم تسأل القاعدة عن حال **كل ملف على حدة**: ثلاث عبارات لكل ملف
+    عُولج. والـAPI في سنغافورة والقاعدة في مومباي، فكل عبارة رحلةٌ بنحو
+    ستين مللي ثانية — أربعون ملفًا تعني مئةً وعشرين رحلة، سبع ثوانٍ من
+    الشبكة وحدها، وتزيد طردًا مع كل كتابٍ يُضاف. فالباحث الذي يملأ مكتبته
+    يعاقَب على ملئها.
+
+    **فصارت عبارةً واحدة وصفحةً محدودة.** الصفحة تُقتطع أولًا ثم تُشتقّ
+    حال ما فيها وحده — والاستعلامات الفرعية مرتبطةٌ بصفوف الصفحة لا بكل
+    ملفات المستأجر.
+
+    **والمؤشّر مفتاحي لا إزاحة.** `after` معرّف آخر ملفٍ رآه العميل، ويُحلّ
+    داخل العبارة نفسها فلا يكلّف رحلةً ثانية. والترتيب `(created_at, id)`
+    نازلًا: `created_at` وحده لا يفصل ملفَّين رُفعا في المعاملة نفسها، فيتكرّر
+    ملفٌ في صفحتين أو يسقط بينهما. ومؤشّرٌ إلى ملفٍ حُذف بين صفحتين يعطي
+    صفحةً فارغة — لا خطأً: الحذف واقعةٌ مشروعة، وإعادة الفتح تصلحها.
     """
-    rows = (await session.execute(
+    page = (
         select(File)
         .where(File.tenant_id == principal.tenant_id)
-        .order_by(File.created_at.desc())
-    )).scalars().all()
+        .order_by(File.created_at.desc(), File.id.desc())
+        .limit(limit)
+    )
+    if after is not None:
+        anchor_created = (
+            select(File.created_at)
+            .where(File.id == after, File.tenant_id == principal.tenant_id)
+            .scalar_subquery()
+        )
+        anchor_id = (
+            select(File.id)
+            .where(File.id == after, File.tenant_id == principal.tenant_id)
+            .scalar_subquery()
+        )
+        page = page.where(
+            tuple_(File.created_at, File.id) < tuple_(anchor_created, anchor_id))
+
+    window = page.subquery("page")
+    thesis_id, run_status, candidates, reviewed = workspace.file_processing_state_columns(
+        principal.tenant_id, window.c.id)
+    rows = (await session.execute(
+        select(window.c.id, window.c.original_filename, window.c.content_type,
+               window.c.size_bytes, window.c.classification, window.c.status,
+               window.c.created_at, thesis_id, run_status, candidates, reviewed)
+        .order_by(window.c.created_at.desc(), window.c.id.desc())
+    )).all()
 
     library: list[LibraryFile] = []
     for row in rows:
-        processing, candidates, reviewed, thesis_id = await workspace.file_processing_state(
-            session, tenant_id=principal.tenant_id, file_id=row.id)
+        processing, seen, done, thesis = workspace.file_processing_state_of_row(
+            row[7], row[8], row[9], row[10])
         library.append(LibraryFile(
-            id=row.id, original_filename=row.original_filename,
-            content_type=row.content_type, size_bytes=row.size_bytes,
-            classification=row.classification, status=row.status,
-            created_at=row.created_at, processing_status=processing,
-            thesis_id=thesis_id, candidates=candidates, reviewed=reviewed))
+            id=row[0], original_filename=row[1], content_type=row[2],
+            size_bytes=row[3], classification=row[4], status=row[5],
+            created_at=row[6], processing_status=processing,
+            thesis_id=thesis, candidates=seen, reviewed=done))
     return library
 
 
