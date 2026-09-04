@@ -41,9 +41,11 @@ from ..models.research import DocumentChunk
 from ..models.screening import (
     ABSTRACT_LOCATOR,
     ABSTRACT_PROVIDERS,
+    DEFAULT_PAGE_SIZE,
     EXCLUSION_REASON_CODES,
     FREE_TEXT_REASON_CODE,
     MATRIX_FIELDS,
+    MAX_PAGE_SIZE,
     LiteratureMatrixCell,
     SourceAbstract,
     scope_rank,
@@ -575,12 +577,6 @@ async def screening_tallies(session: AsyncSession, *, tenant_id: uuid.UUID,
     )
 
 
-# حدُّ الصفحة. والأعلى ليس تحسينًا: ألفُ بطاقةٍ في جوابٍ واحد تُسقط الشاشة
-# التي تعرضها قبل أن تُسقط الخادم الذي بناها.
-DEFAULT_PAGE_SIZE = 25
-MAX_PAGE_SIZE = 100
-
-
 @dataclass(slots=True)
 class ScreeningPage:
     cards: list[ScreeningCard]
@@ -650,6 +646,68 @@ async def screening_page(session: AsyncSession, *, tenant_id: uuid.UUID,
     return ScreeningPage(cards=cards, page=page, page_size=page_size,
                          total=tallies.of(filters.use_state), tallies=tallies,
                          duplicates=len(duplicate_ids))
+
+
+@dataclass(slots=True)
+class ScreeningFacets:
+    """ما يصلح مرشّحًا **في هذا البحث بعينه** — لا قائمةٌ عامّة تُعرض للكلّ.
+
+    وقائمةُ خياراتٍ لا يقابل أكثرَها شيءٌ تُعلّم الباحث ألّا يجرّب: يختار
+    «كتاب» فتفرغ الشاشة، فيظنّ التصفية معطوبة. فتُقرأ الخيارات من مراجعه
+    هو، وما لا يوجد لا يُعرض.
+    """
+
+    registries: list[str] = field(default_factory=list)
+    document_types: list[str] = field(default_factory=list)
+    year_min: int | None = None
+    year_max: int | None = None
+
+
+async def screening_facets(session: AsyncSession, *, tenant_id: uuid.UUID,
+                           project_id: uuid.UUID) -> ScreeningFacets:
+    """خيارات التصفية المتاحة في هذا البحث — **عبارتان لا أكثر**."""
+    rows = (await session.execute(
+        select(Source.registry, Source.raw_metadata["type"].astext)
+        .select_from(ProjectSource)
+        .join(Source, Source.id == ProjectSource.source_id)
+        .where(ProjectSource.tenant_id == tenant_id,
+               ProjectSource.project_id == project_id)
+        .distinct()
+    )).all()
+    span = (await session.execute(
+        select(func.min(Source.publication_year), func.max(Source.publication_year))
+        .select_from(ProjectSource)
+        .join(Source, Source.id == ProjectSource.source_id)
+        .where(ProjectSource.tenant_id == tenant_id,
+               ProjectSource.project_id == project_id)
+    )).one()
+    return ScreeningFacets(
+        registries=sorted({r for r, _t in rows if r}),
+        document_types=sorted({t.strip() for _r, t in rows if t and t.strip()}),
+        year_min=span[0], year_max=span[1],
+    )
+
+
+def apply_decision(*, link: ProjectSource, use_state: str,
+                   reason_code: str | None, reason_ar: str | None,
+                   actor_user_id: uuid.UUID, now: dt.datetime) -> dict:
+    """قرارُ فرزٍ واحد يُكتب — **موضعٌ واحد يخدم الفرد والدفعة معًا**.
+
+    ودالّتان تكتبان الحال نفسها تفترقان بأول شرطٍ يُضاف، فتصير الدفعة
+    تسمح بما يمنعه الفرد — والدفعة هي التي تُطبَّق على عشرين مرجعًا مرّة.
+    """
+    before = {"use_state": link.use_state,
+              "reason_code": link.exclusion_reason_code}
+    link.use_state = use_state
+    link.reason_ar = reason_ar
+    # **السبب يزول مع زوال الاستبعاد** — والقيد في القاعدة يرفض غير ذلك.
+    link.exclusion_reason_code = reason_code if use_state == "excluded" else None
+    # قرارٌ صريح يُنسب إلى قائله؛ و`saved_only` عودةٌ إلى الحياد فلا فاعل له.
+    if use_state == "saved_only":
+        link.decided_by, link.decided_at = None, None
+    else:
+        link.decided_by, link.decided_at = actor_user_id, now
+    return before
 
 
 def document_type_of(source: Source) -> str | None:
@@ -894,8 +952,10 @@ __all__ = [
     "ReadingScope",
     "ScreeningCard",
     "ScreeningFilters",
+    "ScreeningFacets",
     "ScreeningPage",
     "ScreeningTallies",
+    "apply_decision",
     "abstract_digest",
     "abstract_of",
     "abstracts_of",
@@ -919,6 +979,7 @@ __all__ = [
     "reading_scope",
     "reason_is_acceptable",
     "screening_cards",
+    "screening_facets",
     "screening_page",
     "screening_tallies",
     "stored_abstracts_by_source",

@@ -398,17 +398,28 @@ def test_the_matrix_reads_included_sources_only():
 
 def test_the_decision_is_written_in_one_place_only():
     """**لا حقيقة موازية.** مسارٌ ثانٍ يكتب حال الاستعمال يصنع شاشتين
-    تفترقان: واحدةٌ تشترط سبب الاستبعاد وأخرى لا تشترطه."""
+    تفترقان: واحدةٌ تشترط سبب الاستبعاد وأخرى لا تشترطه.
+
+    وقد صار للفرز مساران في الـAPI — قرارٌ مفرد ودفعة على عشرين مرجعًا.
+    فالكاتب واحدٌ لهما: `screening.apply_decision`. ولو كتب أحدهما الحال
+    بنفسه لسمحت الدفعة يومًا بما يمنعه الفرد — وهي التي تقع على عشرين.
+    """
     import inspect
 
     from athera_api.routers import workspace as router
+    from athera_api.services import screening
 
     source = inspect.getsource(router)
     # الإسناد وحده يُعدّ: `==` مقارنةٌ تقرأ ولا تكتب.
-    writes = re.findall(r"\.use_state\s*=(?![=<>])", source)
+    assert not re.findall(r"\.use_state\s*=(?![=<>])", source), (
+        "المسار يكتب حال الاستعمال بنفسه — والكاتب واحدٌ في الخدمة")
+    writes = re.findall(r"\.use_state\s*=(?![=<>])",
+                        inspect.getsource(screening))
     assert len(writes) == 1, (
         f"حال الاستعمال تُكتب في {len(writes)} موضعًا — والموضع الواحد شرط")
     assert "exclusion_needs_reason" in source
+    # والدفعة تشترط السبب كالفرد سواء — لا استثناء لأنها كثيرة.
+    assert source.count("workspace.exclusion_needs_reason") == 2
 
 
 def test_a_model_extracted_value_never_writes_itself_approved():

@@ -314,6 +314,11 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "لا يُقتبس من بياناتٍ وصفية: الاقتباس يحتاج نصًّا مقروءًا.",
         "en": "Metadata cannot be quoted; a quotation requires readable text.",
     },
+    "workspace.page_without_full_text": {
+        "ar": "رقم الصفحة والقسم لا يُكتبان إلا من النص الكامل — والملخّص لا صفحات له.",
+        "en": "A page number or section can only come from full text; an abstract has "
+              "no pages.",
+    },
     "workspace.invented_locator": {
         "ar": "لا موضع لخانةٍ قُرئت من الملخّص أو من البيانات الوصفية — ولا صفحة للملخّص.",
         "en": "A cell read from an abstract or from metadata has no page locator.",

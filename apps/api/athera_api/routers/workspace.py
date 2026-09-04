@@ -24,18 +24,28 @@ from ..models.portfolio import ProjectFile, ProjectSource, ResearchProject
 from ..models.publishing import Manuscript
 from ..models.research import FactCandidate, ResearcherMemory
 from ..models.screening import (
+    DEFAULT_PAGE_SIZE,
     EXCLUSION_REASON_CODES,
     MATRIX_FIELDS,
+    MAX_PAGE_SIZE,
     LiteratureMatrixCell,
 )
 from ..schemas.screening import (
+    AbstractView,
+    BatchDecisionRequest,
+    BatchDecisionView,
     MatrixCellRequest,
     MatrixCellVerifyRequest,
     MatrixCellView,
+    MatrixExtractionRequest,
+    MatrixExtractionView,
     MatrixRowView,
     MatrixView,
     ScreeningCardView,
+    ScreeningFacetsView,
     ScreeningView,
+    SourceAbstractsView,
+    SourceExtractionView,
 )
 from ..schemas.workspace import (
     AssessmentItemView,
@@ -52,7 +62,13 @@ from ..schemas.workspace import (
     ProjectSummary,
     SourceUseRequest,
 )
-from ..services import audit, research_assessment, screening, workspace
+from ..services import (
+    audit,
+    matrix_extraction,
+    research_assessment,
+    screening,
+    workspace,
+)
 
 router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
 
@@ -457,13 +473,13 @@ async def unlink_file(
 # ────────────────────────────── مراجع البحث ──────────────────────────────
 
 def _cell_view(cell: LiteratureMatrixCell) -> MatrixCellView:
-    """خليةٌ مخزَّنة كما تُعرض — **بحالها ومَداها معًا، لا بقيمتها وحدها**."""
-    return MatrixCellView(
-        field_key=cell.field_key, value_ar=cell.value_ar, cell_state=cell.cell_state,
-        source_scope=cell.source_scope, extraction_method=cell.extraction_method,
-        verification_status=cell.verification_status,
-        source_file_id=cell.source_file_id, evidence_quote=cell.evidence_quote,
-        evidence_locator=cell.evidence_locator)
+    """خليةٌ مخزَّنة كما تُعرض — **بحالها ومَداها معًا، لا بقيمتها وحدها**.
+
+    والبناء في الخدمة لا هنا: صفُّ المصفوفة والجوابُ المفرد يعرضان الخلية
+    نفسها، ونسختان تفترقان بأول عمودٍ يُضاف — فيظهر في الشاشة عمودٌ ولا
+    يظهر بعد الحفظ.
+    """
+    return MatrixCellView(**asdict(screening.cell_view(cell)))
 
 
 def _source_view(link: ProjectSource, source: Source) -> ProjectSourceView:
@@ -588,18 +604,13 @@ async def set_source_use(
                 status_code=status.HTTP_409_CONFLICT,
                 summary=impact.summary_ar())
 
-    link.use_state = payload.use_state
-    link.reason_ar = payload.reason_ar
-    # **السبب يزول مع زوال الاستبعاد.** رمزٌ باقٍ بجانب حالٍ لم تعد قائمة
-    # يُقرأ يومًا حكمًا لم يُقل — والقيد في القاعدة يرفضه أيضًا.
-    link.exclusion_reason_code = (
-        payload.reason_code if payload.use_state == "excluded" else None)
-    # قرارٌ صريح يُنسب إلى قائله؛ و`saved_only` عودةٌ إلى الحياد فلا فاعل له.
-    if payload.use_state == "saved_only":
-        link.decided_by, link.decided_at = None, None
-    else:
-        link.decided_by = principal.user_id
-        link.decided_at = dt.datetime.now(dt.UTC)
+    # **كاتبٌ واحد للحال يخدم الفرد والدفعة.** ودالّتان تكتبانها تفترقان
+    # بأول شرطٍ يُضاف، فتسمح الدفعة بما يمنعه الفرد — وهي التي تقع على
+    # عشرين مرجعًا مرّة.
+    screening.apply_decision(
+        link=link, use_state=payload.use_state,
+        reason_code=payload.reason_code, reason_ar=payload.reason_ar,
+        actor_user_id=principal.user_id, now=dt.datetime.now(dt.UTC))
     await session.flush()
     # **الأثر يحمل الرمز ولا يحمل نصًّا من المستند.** رمزُ السبب مفردةٌ
     # مغلقة تُعدّ وتُقارن؛ أما ملاحظة الباحث فقد تقتبس من الورقة، ومحتوى
@@ -624,6 +635,24 @@ async def screening_workspace(
     use_state: str | None = Query(
         default=None, pattern="^(included|saved_only|excluded)$",
         description="اقصر العرض على حالٍ واحدة"),
+    page: int = Query(default=1, ge=1, description="رقم الصفحة"),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE,
+                           description="عدد البطاقات في الصفحة"),
+    year_from: int | None = Query(default=None, ge=1000, le=2200,
+                                  description="من سنة النشر"),
+    year_to: int | None = Query(default=None, ge=1000, le=2200,
+                                description="إلى سنة النشر"),
+    registry: str | None = Query(default=None, max_length=32,
+                                 description="الفهرس الذي جاء منه المرجع"),
+    document_type: str | None = Query(default=None, max_length=64,
+                                      description="نوع الوثيقة كما أعلنه الفهرس"),
+    open_access: bool | None = Query(
+        default=None, description="ما أعلن الفهرس أنه مفتوح الوصول — دعوى حقوق"),
+    has_abstract: bool | None = Query(default=None, description="ما له ملخّص"),
+    has_full_text: bool | None = Query(
+        default=None, description="ما في يدك نصّه الكامل في هذا البحث"),
+    possible_duplicate: bool | None = Query(
+        default=None, description="ما يشترك مع مرجعٍ آخر في هذا البحث"),
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ScreeningView:
@@ -635,31 +664,160 @@ async def screening_workspace(
 
     و`reading_scope` يقول **ما يمكن قراءته فعلًا** من هذا المرجع في هذا
     البحث — وعليه تُبنى المصفوفة لاحقًا، فلا يدّعي الباحث نصًّا ليس في يده.
+
+    **والبحث الجادّ فيه ألفُ مرجعٍ لا عشرون.** فلا تُحمَّل كلُّها: المرشّحات
+    تُلحق بالعبارة في القاعدة **قبل أي حدّ**، ثم تُقتطع الصفحة. وتصفيةٌ تقع
+    بعد الاقتطاع كذبة — تعرض ثلاثة من عشرين جُلبت وتقول «ثلاث دراسات».
+
+    **والعدّادات من القاعدة كذلك**، وبكل المرشّحات إلا حال الفرز نفسها:
+    التبويب يسأل «كم مُدرَجة ضمن ما أراه الآن»، لا «كم في هذه الصفحة».
     """
     await _project(session, principal, project_id)
-    wanted = (use_state,) if use_state else None
-    cards = await screening.screening_cards(
+    filters = screening.ScreeningFilters(
+        use_state=use_state, year_from=year_from, year_to=year_to,
+        registry=registry, document_type=document_type, open_access=open_access,
+        has_abstract=has_abstract, has_full_text=has_full_text,
+        possible_duplicate=possible_duplicate)
+    result = await screening.screening_page(
         session, tenant_id=principal.tenant_id, project_id=project_id,
-        use_states=wanted)
-
-    # الأعداد تُقرأ من القاعدة لا من الصفحة المعروضة: عدٌّ فوق قائمةٍ مقصورة
-    # على حالٍ واحدة يقول «لا مستبعَدات» وهي عشرون في حالٍ أخرى.
-    tallies = dict((await session.execute(
-        select(ProjectSource.use_state, func.count(ProjectSource.id))
-        .where(ProjectSource.tenant_id == principal.tenant_id,
-               ProjectSource.project_id == project_id)
-        .group_by(ProjectSource.use_state)
-    )).all())
+        filters=filters, page=page, page_size=page_size)
+    facets = await screening.screening_facets(
+        session, tenant_id=principal.tenant_id, project_id=project_id)
 
     return ScreeningView(
         project_id=project_id,
         # `asdict` لا `vars`: البطاقة `slots` فلا `__dict__` لها — و`vars`
         # عليها ترمي في وقت التشغيل، وهو عطبٌ لا يظهر إلا على الشاشة.
-        cards=[ScreeningCardView(**asdict(card)) for card in cards],
-        saved_only=tallies.get("saved_only", 0),
-        included=tallies.get("included", 0),
-        excluded=tallies.get("excluded", 0),
+        cards=[ScreeningCardView(**asdict(card)) for card in result.cards],
+        saved_only=result.tallies.saved_only,
+        included=result.tallies.included,
+        excluded=result.tallies.excluded,
+        all=result.tallies.all,
+        page=result.page, page_size=result.page_size,
+        total=result.total, pages=result.pages,
+        duplicates=result.duplicates,
+        facets=ScreeningFacetsView(**asdict(facets)),
         reason_codes=list(EXCLUSION_REASON_CODES),
+    )
+
+
+@router.post("/projects/{project_id}/screening/batch",
+             response_model=BatchDecisionView)
+async def batch_decide(
+    project_id: uuid.UUID,
+    payload: BatchDecisionRequest,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> BatchDecisionView:
+    """قرارُ فرزٍ على مجموعة — **يقع كلُّه أو لا يقع منه شيء**.
+
+    وتسعةَ عشرَ قرارًا وقعت وواحدٌ فشل أسوأ من عشرين فشلت: الباحث يرى رسالة
+    خطأ فيعيد الأمر، فيقع بعضه مرّتين ولا يعرف أيُّها وقع أصلًا. فالفحص
+    يجري على المجموعة كاملةً أولًا — كلُّ مرجعٍ مربوطٌ بهذا البحث، والسبب
+    مقبول، ولا واحدٌ منها مستشهَدٌ به في عملٍ معتمَد — ثم تُكتب.
+
+    **وأيّ رفضٍ يرفع استثناءً، والمعاملة تُلغى كلُّها معه**: لا شيء يُكتب
+    على دفعات، ولا `flush` قبل اكتمال الفحص.
+
+    **والاستبعاد في الدفعة يلزمه سببه** كالفرد سواء — والقيد في القاعدة
+    يرفض غير ذلك، فيُقال هنا برمزٍ له ترجمتان لا بخطأ قاعدة.
+    """
+    await _project(session, principal, project_id)
+    # التكرار في الطلب يُطوى: مرجعٌ ذُكر مرّتين قرارٌ واحد، والعدّ المُعاد
+    # يجعل «طُبّق على ٢١» وهي عشرون.
+    wanted = list(dict.fromkeys(payload.source_ids))
+
+    if payload.use_state == "excluded" and not screening.reason_is_acceptable(
+            payload.reason_code, payload.reason_ar):
+        raise AtheraError("workspace.exclusion_needs_reason",
+                          status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    rows = (await session.execute(
+        select(ProjectSource).where(
+            ProjectSource.tenant_id == principal.tenant_id,
+            ProjectSource.project_id == project_id,
+            ProjectSource.source_id.in_(wanted))
+    )).scalars().all()
+    links = {link.source_id: link for link in rows}
+    # **مرجعٌ من بحثٍ آخر يُردّ، ولا يُتخطّى بصمت.** والتخطّي يجعل الباحث
+    # يقرأ «طُبّق على ٢٠» وقد طُبّق على ثمانية عشر.
+    missing = [source_id for source_id in wanted if source_id not in links]
+    if missing:
+        raise NotFound("workspace.source_not_linked",
+                       source_id=str(missing[0]), missing=len(missing))
+
+    # فحصُ الاستشهاد قبل أي كتابة: مرجعٌ مستشهَدٌ به في عملٍ معتمَد لا يُستبعد
+    # بأثرٍ جانبي لدفعة.
+    if payload.use_state == "excluded":
+        for source_id in wanted:
+            impact = await workspace.source_impact(
+                session, tenant_id=principal.tenant_id, project_id=project_id,
+                source_id=source_id)
+            if impact.breaks_approved_work:
+                raise AtheraError(
+                    "workspace.source_still_cited",
+                    status_code=status.HTTP_409_CONFLICT,
+                    source_id=str(source_id), summary=impact.summary_ar())
+
+    now = dt.datetime.now(dt.UTC)
+    for source_id in wanted:
+        link = links[source_id]
+        before = screening.apply_decision(
+            link=link, use_state=payload.use_state,
+            reason_code=payload.reason_code, reason_ar=payload.reason_ar,
+            actor_user_id=principal.user_id, now=now)
+        await audit.record(
+            session, tenant_id=principal.tenant_id,
+            action="workspace.source_use_set",
+            object_type="project_source", object_id=link.id,
+            actor_user_id=principal.user_id, state_before=before,
+            state_after={"use_state": payload.use_state,
+                         "reason_code": link.exclusion_reason_code,
+                         "has_note": bool(payload.reason_ar),
+                         "batch_of": len(wanted)},
+            reason="a batch decision is one judgement applied to named sources")
+    await session.flush()
+    return BatchDecisionView(project_id=project_id, use_state=payload.use_state,
+                             applied=len(wanted), source_ids=wanted)
+
+
+@router.get("/projects/{project_id}/sources/{source_id}/abstracts",
+            response_model=SourceAbstractsView)
+async def source_abstracts(
+    project_id: uuid.UUID,
+    source_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> SourceAbstractsView:
+    """ملخّصات هذا المرجع — **كلُّها منسوبةً، ولا يُطوى اثنان في واحد**.
+
+    وفهرسان يرسلان نصّين مختلفين للورقة نفسها حالٌ واقعة؛ وأن يغلب أحدهما
+    الآخر بصمت يجعل الباحث يقرأ نصف الحقيقة ويظنّه كلّها. فيُعرضان معًا
+    باسم مرسِل كلٍّ ووقته، ويحكم هو.
+    """
+    await _project(session, principal, project_id)
+    row = (await session.execute(
+        select(Source)
+        .join(ProjectSource, ProjectSource.source_id == Source.id)
+        .where(Source.tenant_id == principal.tenant_id,
+               ProjectSource.tenant_id == principal.tenant_id,
+               ProjectSource.project_id == project_id,
+               ProjectSource.source_id == source_id)
+    )).scalar_one_or_none()
+    if row is None:
+        raise NotFound("workspace.source_not_linked")
+    stored = (await screening.stored_abstracts_by_source(
+        session, tenant_id=principal.tenant_id, source_ids=[source_id])
+    ).get(source_id, [])
+    records = screening.abstracts_of(row, stored)
+    return SourceAbstractsView(
+        source_id=source_id,
+        abstracts=[AbstractView(id=record.stored_id, provider=record.provider,
+                                provider_identifier=record.provider_identifier,
+                                text=record.text,
+                                retrieved_at=record.retrieved_at)
+                   for record in records],
+        disagree=len({record.content_hash for record in records}) > 1,
     )
 
 
@@ -668,6 +826,9 @@ async def screening_workspace(
 @router.get("/projects/{project_id}/matrix", response_model=MatrixView)
 async def literature_matrix(
     project_id: uuid.UUID,
+    page: int = Query(default=1, ge=1, description="رقم الصفحة"),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE,
+                           description="عدد الدراسات في الصفحة"),
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> MatrixView:
@@ -681,7 +842,13 @@ async def literature_matrix(
     """
     await _project(session, principal, project_id)
     rows = await screening.matrix_rows(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        page=page, page_size=page_size)
+    # العدد من القاعدة لا من طول الصفحة: ستةَ عشرَ عمودًا في ألف صفٍّ ستةَ
+    # عشرَ ألف خلية، والمتصفّح يتوقّف قبل أن يُنهي رسمها.
+    total = await screening.included_source_count(
         session, tenant_id=principal.tenant_id, project_id=project_id)
+    size = max(1, min(page_size, MAX_PAGE_SIZE))
     return MatrixView(
         project_id=project_id,
         fields=list(MATRIX_FIELDS),
@@ -691,6 +858,8 @@ async def literature_matrix(
             reading_scope=row.reading_scope,
             cells=[MatrixCellView(**asdict(cell)) for cell in row.cells])
             for row in rows],
+        page=max(1, page), page_size=size, total=total,
+        pages=max(1, -(-total // size)),
     )
 
 
@@ -709,6 +878,77 @@ async def _included_link(session: AsyncSession, principal: Principal,
         raise AtheraError("workspace.matrix_needs_included_source",
                           status_code=status.HTTP_409_CONFLICT)
     return link
+
+
+@router.post("/projects/{project_id}/matrix/extract",
+             response_model=MatrixExtractionView)
+async def extract_matrix(
+    project_id: uuid.UUID,
+    payload: MatrixExtractionRequest,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> MatrixExtractionView:
+    """اقرأ ما هو متاحٌ لهذه المراجع واكتب مرشّحاتها — **مرشّحاتٍ لا معرفة**.
+
+    **والمدرَجة وحدها تُقرأ.** مرجعٌ «محفوظ فقط» لم يقرّر الباحث بعدُ أنه
+    دليل؛ وتحليلُه يبني المصفوفة على ما لم يُحكم عليه، ثم يُكتب منها.
+
+    **والمدى قيدٌ لا ترجيح.** بياناتٌ وصفية لا يُقرأ منها منهجٌ ولا عيّنة —
+    فتشغيلةٌ على مرجعٍ لا ملخّص له ولا نصّ لا تكتب خليةً واحدة، ويُقال ذلك
+    في الجواب: `filled = 0` و`scope = metadata_only`، لا نجاحٌ صامت.
+
+    **ولا تُدهس يدُ إنسان.** خليةٌ كتبها الباحث أو حكم فيها لا تُمسّ،
+    ويُقال عددها في `left_to_the_researcher`.
+
+    وكلُّ ما يُكتب `needs_review` و`unverified` وطريقته `model` — وقيدُ
+    القاعدة `model_value_is_not_self_approved` يمنع أن يُكتب معتمَدًا بلا
+    مُعتمِدٍ بشريّ يُسمّى. والاعتماد يمرّ بمسار المراجعة القائم نفسه، ولا
+    نظامَ اعتمادٍ ثانٍ يُبنى بجانبه.
+    """
+    await _project(session, principal, project_id)
+    wanted = list(dict.fromkeys(payload.source_ids))
+    # الفحص على المجموعة كاملةً قبل أي كتابة — كالدفعة سواء.
+    for source_id in wanted:
+        await _included_link(session, principal, project_id, source_id)
+
+    sources = {
+        row.id: row
+        for row in (await session.execute(
+            select(Source).where(Source.tenant_id == principal.tenant_id,
+                                 Source.id.in_(wanted))
+        )).scalars().all()
+    }
+    absent = [source_id for source_id in wanted if source_id not in sources]
+    if absent:
+        raise NotFound("workspace.source_not_found", source_id=str(absent[0]))
+
+    files = await screening.readable_project_file_ids(
+        session, tenant_id=principal.tenant_id, project_id=project_id)
+    stored = await screening.stored_abstracts_by_source(
+        session, tenant_id=principal.tenant_id, source_ids=wanted)
+
+    results: list[SourceExtractionView] = []
+    for source_id in wanted:
+        source = sources[source_id]
+        rows = stored.get(source_id, [])
+        scope = screening.reading_scope(
+            source, project_file_ids=files, stored_abstracts=rows)
+        outcome = await matrix_extraction.extract_for_source(
+            session, tenant_id=principal.tenant_id, project_id=project_id,
+            source=source, scope=scope, actor_user_id=principal.user_id,
+            stored_abstracts=rows)
+        results.append(SourceExtractionView(**asdict(outcome)))
+        # **الأثر يحمل العدد والمدى ولا يحمل نصًّا من المستند** (§37).
+        await audit.record(
+            session, tenant_id=principal.tenant_id,
+            action="literature_matrix.extraction_run",
+            object_type="project_source", object_id=source_id,
+            actor_user_id=principal.user_id,
+            state_after={"scope": outcome.scope, "filled": outcome.filled,
+                         "marked_missing": outcome.marked_missing,
+                         "left_to_the_researcher": outcome.left_to_the_researcher},
+            reason="an automatic reading proposes candidates; only a human approves")
+    return MatrixExtractionView(project_id=project_id, results=results)
 
 
 @router.put("/projects/{project_id}/matrix/{source_id}/{field_key}",
@@ -772,6 +1012,14 @@ async def set_matrix_cell(
     if not screening.locator_is_honest(payload.source_scope, payload.evidence_locator):
         raise AtheraError("workspace.invented_locator",
                           status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    # **ولا صفحة ولا قسم من غير نصٍّ كامل.** ملخّصٌ لا صفحات له، وبياناتٌ
+    # وصفية لا أقسام لها؛ ومن كتب رقمًا هنا أرسل القارئ إلى صفحةٍ لا تحمل
+    # ما نُسب إليها. والقيد في القاعدة يرفضه أيضًا — ويُقال هنا أولًا.
+    if ((payload.evidence_page is not None or payload.evidence_section)
+            and payload.source_scope != screening.FULL_TEXT):
+        raise AtheraError("workspace.page_without_full_text",
+                          status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                          scope=payload.source_scope)
     if payload.source_file_id is not None and not await screening.file_is_in_project(
             session, tenant_id=principal.tenant_id, project_id=project_id,
             file_id=payload.source_file_id):
@@ -804,6 +1052,11 @@ async def set_matrix_cell(
     cell.source_file_id = payload.source_file_id
     cell.evidence_quote = None if missing else payload.evidence_quote
     cell.evidence_locator = None if missing else payload.evidence_locator
+    cell.evidence_page = None if missing else payload.evidence_page
+    cell.evidence_section = None if missing else payload.evidence_section
+    # **ما يكتبه الباحث بيده لا يُنسب إلى ملخّصٍ استخرجه غيره.** فالنسبة
+    # تزول مع الكتابة: خليةٌ صحّحها إنسان لم تعد قراءةَ ذلك الملخّص.
+    cell.source_abstract_id = None
     # **الكتابة تُبطل المراجعة السابقة.** خليةٌ عُدّلت بعد اعتمادها تبقى
     # «معتمَدة» وهي غير التي اعتُمدت — وهو ختمٌ على نصٍّ لم يُقرأ.
     cell.verification_status = "unverified"

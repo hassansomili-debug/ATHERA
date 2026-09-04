@@ -65,6 +65,12 @@ ABSTRACT_LOCATOR: Final = "abstract"
 # يديه مصدرٌ يُسمّى كسائر المصادر، لا مجهولٌ يُخزَّن بلا نسبة.
 ABSTRACT_PROVIDERS: Final = ("crossref", "openalex", "offline", "upload", "researcher")
 
+# **حدُّ الصفحة مفردةٌ كسائر المفردات.** والأعلى ليس تحسينًا: ألفُ بطاقةٍ
+# في جوابٍ واحد تُسقط الشاشة التي تعرضها قبل أن تُسقط الخادم الذي بناها.
+# ويُكتب هنا مرّة فيقرؤه العقد والخدمة والمسار من موضعٍ واحد.
+DEFAULT_PAGE_SIZE: Final = 25
+MAX_PAGE_SIZE: Final = 100
+
 # أعمدة المصفوفة بترتيب عرضها. المفتاح تقنيّ والاسم المعروض في كتالوج
 # الواجهة — فلا يقرأ الباحث مفتاحًا إنجليزيًّا في رأس عمود.
 MATRIX_FIELDS: Final = (
@@ -160,12 +166,14 @@ __all__ = [
     "ABSTRACT_LOCATOR",
     "ABSTRACT_PROVIDERS",
     "CELL_STATES",
+    "DEFAULT_PAGE_SIZE",
     "EXCLUSION_REASON_CODES",
     "EXTRACTION_METHODS",
     "FREE_TEXT_REASON_CODE",
     "LEGACY_REASON_CODE",
     "LiteratureMatrixCell",
     "MATRIX_FIELDS",
+    "MAX_PAGE_SIZE",
     "SOURCE_SCOPES",
     "STORED_REASON_CODES",
     "SourceAbstract",
