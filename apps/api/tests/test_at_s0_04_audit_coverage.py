@@ -28,9 +28,27 @@ DELEGATES = {
 ROUTER_MODULES = (auth_router, files_router, tenants_router, profile_router)
 
 
+def _routes_of(router):
+    """كلُّ مسارات الموجّه — **ومسارات ما ضُمّ إليه**.
+
+    **وهذه ثغرةٌ فتحها ترقّيةُ إطارٍ لا تغييرُ كود.** الإصدارات الحديثة من
+    FastAPI تؤجّل ضمَّ الموجّهات: `router.routes` تحمل عنصرًا واحدًا
+    (`_IncludedRouter`) مكان مسارات الموجّه المضموم، ولا `methods` له. فكان
+    الشرط أدناه يتخطّاه صامتًا — ومعه كلُّ مسارات المجلَّدات والأفعال
+    الجماعية. أي أن حارس «تغطية التدقيق ١٠٠٪» صار يقيس بعض السطح ويقول
+    إنه كله، وهو أسوأ من غياب الحارس: يمرّ ويطمئن.
+    """
+    for route in getattr(router, "routes", ()):
+        nested = getattr(route, "original_router", None)
+        if nested is not None:
+            yield from _routes_of(nested)
+        else:
+            yield route
+
+
 def _mutating_routes():
     for module in ROUTER_MODULES:
-        for route in module.router.routes:
+        for route in _routes_of(module.router):
             if getattr(route, "methods", set()) & MUTATING_METHODS:
                 yield module, route
 
