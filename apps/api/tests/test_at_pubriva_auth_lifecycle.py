@@ -838,9 +838,12 @@ def test_the_approval_is_read_from_its_contract_not_from_translated_prose():
 
     spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
     code = "\n".join(line for _, line in code_lines(spec))
-    assert 'toHaveAttribute("data-candidate-status", "approved"' in code, (
-        "الاعتماد يُثبت بنصٍّ مترجَم")
     assert 'getByText(/معتمَدة|اعتُمدت|approved/i)' not in code, "النصّ المترجَم ما زال دليلًا"
+    # **والاعتماد يُقاس بالحصيلة.** إعادةُ العثور على البطاقة باسم حقلها
+    # تلتبس: الأسماء تتكرّر، فتُقرأ بطاقةٌ غير التي نُقر عليها.
+    assert "data-review-approved" in code, "الاعتماد لا يُقاس برقمٍ لا يلتبس"
+    assert 'filter({ hasText: field }).first()' not in code, "البطاقة تُلتمس باسمها ثانيةً"
+    assert "decide=[" in code, "حالُ نداء القرار لا تُذكر مع الإخفاق"
 
 
 def test_the_library_keeps_reading_state_while_work_is_running():
