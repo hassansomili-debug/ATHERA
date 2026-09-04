@@ -49,6 +49,20 @@ from .screening import (
     LiteratureMatrixCell,
     SourceAbstract,
 )
+from .synthesis import (
+    CONFLICT_KINDS,
+    GAP_STRENGTHS,
+    GAP_TYPES,
+    SYNTHESIS_STATUSES,
+    THEME_BASES,
+    ContradictionCandidate,
+    ContradictionSide,
+    GapCandidate,
+    GapCandidateSource,
+    ResearchOpportunity,
+    ThemeCandidate,
+    ThemeCandidateSupport,
+)
 from .files import File, FileAccessLog
 from .library import FOLDER_OBJECT_TYPE, MAX_FOLDER_DEPTH, LibraryFolder
 from .identity import (
@@ -157,4 +171,7 @@ __all__ = [
     "LiteratureMatrixCell", "SourceAbstract",
     "MATRIX_FIELDS", "CELL_STATES", "SOURCE_SCOPES",
     "EXCLUSION_REASON_CODES", "EXTRACTION_METHODS",
+    "ThemeCandidate", "ThemeCandidateSupport", "ContradictionCandidate",
+    "ContradictionSide", "GapCandidate", "GapCandidateSource", "ResearchOpportunity",
+    "SYNTHESIS_STATUSES", "THEME_BASES", "CONFLICT_KINDS", "GAP_TYPES", "GAP_STRENGTHS",
 ]
