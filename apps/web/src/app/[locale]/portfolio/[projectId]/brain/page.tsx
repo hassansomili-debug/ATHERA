@@ -16,6 +16,13 @@ import {
   scientificRules,
   totalItems,
 } from "@/lib/researchBrain";
+import {
+  type SuggestedAction,
+  type TaskPreview,
+  actionsFor,
+  suggestedActionPreview,
+  suggestedActions,
+} from "@/lib/suggestedActions";
 
 /**
  * العقل البحثي — **خمس خانات، ولا نسبة**.
@@ -32,6 +39,17 @@ import {
  * **وبحثٌ فارغ ليس بحثًا سليمًا.** التحميل والفشل والفراغ ثلاث حالات
  * مفترقة: خانةٌ فارغة على شاشةٍ لم تسأل بعد تُقرأ براءةً، وتقييمٌ سقط
  * يُعرض «لا شيء يُذكر» هو الكذبة نفسها في أسوأ لحظاتها.
+ *
+ * **والكشفُ لا يُنشئ التزامًا.** والسلسلة أربع حلقات لا حلقتان:
+ *
+ *     كشف → فعلٌ مقترح → معاينة → يقبل الباحث → تُنشأ مهمة
+ *
+ * وقائمةُ مهامّ الباحث لا يكتب فيها محرّكٌ قرأ نصًّا: كلُّ قواعد السجل
+ * مسوّدة لم يراجعها مختصّ، ومن يجد في قائمته عشر مهامّ لم يطلبها يتوقّف
+ * عن قراءة القائمة كلها — فيسقط التنبيه الصحيح مع الزائد. فالمعاينة تُري
+ * **ما سيصير** لو قَبِل، والقبولُ فعلُه هو. والحلقة الرابعة لم تصل بعد
+ * (نموذجُ المهمّة للمسار «ب»)، فزرّ القبول معطَّل ويُقال لماذا بنصّه بدل
+ * أن يُعرض زرٌّ يَعِد بما لا يقع.
  */
 
 type Load = "loading" | "ready" | "failed";
@@ -94,6 +112,14 @@ export default function ResearchBrainPage({
   // معتمَدة.
   const [rulesLoad, setRulesLoad] = useState<Load>("loading");
   const [error, setError] = useState<string | null>(null);
+  // **الاقتراحات رايةٌ ثالثة مستقلّة.** التقييم قد يصل وهي تسقط، فتُعرض
+  // الكشوف بلا أفعالها — ويُقال ذلك بنصّه بدل أن يُقرأ «لا فعل مطلوب».
+  const [actions, setActions] = useState<SuggestedAction[]>([]);
+  const [actionsLoad, setActionsLoad] = useState<Load>("loading");
+  // المعاينة المفتوحة — واحدةٌ في كل مرّة، بمفتاح اقتراحها.
+  const [openPreview, setOpenPreview] = useState<string | null>(null);
+  const [preview, setPreview] = useState<TaskPreview | null>(null);
+  const [previewLoad, setPreviewLoad] = useState<Load>("ready");
 
   const say = useCallback(
     (err: unknown) =>
@@ -104,7 +130,10 @@ export default function ResearchBrainPage({
   const refresh = useCallback(() => {
     setLoad("loading");
     setRulesLoad("loading");
+    setActionsLoad("loading");
     setError(null);
+    setOpenPreview(null);
+    setPreview(null);
     const one = projectAssessment(locale, projectId)
       .then((view) => {
         setAssessment(view);
@@ -120,8 +149,41 @@ export default function ResearchBrainPage({
         setRulesLoad("ready");
       })
       .catch(() => setRulesLoad("failed"));
-    return Promise.all([one, two]);
+    const three = suggestedActions(locale, projectId)
+      .then((response) => {
+        setActions(response.actions);
+        setActionsLoad("ready");
+      })
+      .catch(() => setActionsLoad("failed"));
+    return Promise.all([one, two, three]);
   }, [locale, projectId, say]);
+
+  /**
+   * يفتح معاينةَ اقتراح — **ويقرأها من الخادم ولا يبنيها هنا**.
+   *
+   * وبناءُ المعاينة في المتصفّح من حقول الاقتراح يجعل الشاشة تَعِد بمهمّةٍ
+   * لم يوافق عليها الخادم، ثمّ تختلف المعاينةُ عمّا يُنشأ فعلًا يوم تصل
+   * حلقةُ الإنشاء.
+   */
+  const togglePreview = useCallback(
+    (actionKey: string) => {
+      if (openPreview === actionKey) {
+        setOpenPreview(null);
+        setPreview(null);
+        return;
+      }
+      setOpenPreview(actionKey);
+      setPreview(null);
+      setPreviewLoad("loading");
+      void suggestedActionPreview(locale, projectId, actionKey)
+        .then((view) => {
+          setPreview(view);
+          setPreviewLoad("ready");
+        })
+        .catch(() => setPreviewLoad("failed"));
+    },
+    [locale, openPreview, projectId],
+  );
 
   // **لا حالة تُضبط داخل التأثير مباشرةً** — والوعد المؤجّل يجعل الترتيب صريحًا.
   useEffect(() => {
@@ -159,10 +221,9 @@ export default function ResearchBrainPage({
    * والعنوان شرطُ القاعدة، والسبب رسالتُها العلمية — وهما حقلان مختلفان
    * في المحرّك، وخلطهما يجعل الشرط يُقرأ حكمًا.
    */
-  const renderAlert = (item: AssessmentItem, category: AssessmentCategory,
+  const renderAlert = (item: AssessmentItem,
                        rule: ScientificRule | undefined) => (
-    <li key={`${category}-${item.key}-${item.detail.slice(0, 24)}`} className="card"
-        style={{ marginBlockEnd: 10 }}>
+    <>
       <p style={{ margin: 0, fontWeight: 560 }}>
         {rule ? rule.condition : (item.rule_id ?? item.key)}
       </p>
@@ -232,22 +293,147 @@ export default function ResearchBrainPage({
           {t("brain.alertProvenance")}: {rule.provenance}
         </p>
       ) : null}
-    </li>
+    </>
   );
 
   /** سطرٌ لا قاعدة خلفه — واقعةٌ مقروءة من صفوف البحث، تُعرض بنصّها. */
-  const renderFact = (item: AssessmentItem, category: AssessmentCategory) => (
-    <li key={`${category}-${item.key}-${item.detail.slice(0, 24)}`}
-        style={{ marginBlockEnd: 6 }}>
+  const renderFact = (item: AssessmentItem) => (
+    <>
       {item.detail}
       {renderEvidence(item)}
-    </li>
+    </>
   );
 
-  const renderItem = (item: AssessmentItem, category: AssessmentCategory) =>
-    item.rule_id
-      ? renderAlert(item, category, rulesById.get(item.rule_id))
-      : renderFact(item, category);
+  /**
+   * الأفعال المقترحة على سطرٍ بعينه — **معاينةٌ تُفتح، ولا مهمّة تُنشأ**.
+   *
+   * وزرّ القبول معطَّل ويُقال لماذا: زرٌّ يَعِد بما لا يقع أسوأ من غيابه،
+   * والباحث الذي ضغطه مرّةً بلا أثرٍ لا يضغطه حين يعمل.
+   */
+  const renderActions = (item: AssessmentItem) => {
+    if (actionsLoad === "failed") {
+      return (
+        <p className="gate" data-testid="brain-actions-failed" style={{ margin: "8px 0 0" }}>
+          {t("brain.actionsFailed")}
+        </p>
+      );
+    }
+    if (actionsLoad === "loading") return null;
+    const mine = actionsFor(actions, item.key, item.entity_ids);
+    if (mine.length === 0) return null;
+    return (
+      <div style={{ marginBlockStart: 8 }}>
+        {mine.map((action) => (
+          <div key={action.key} data-testid={`brain-action-${action.key}`}>
+            <p style={{ margin: "0 0 4px" }}>{action.title}</p>
+            <p style={{ margin: "0 0 4px", display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <span className="chip chip-muted">
+                {t("brain.actionState")}: {t(`brain.state_${action.state}`)}
+              </span>
+            </p>
+            <button
+              type="button"
+              className="chip chip-stage"
+              aria-expanded={openPreview === action.key}
+              onClick={() => togglePreview(action.key)}
+            >
+              {openPreview === action.key
+                ? t("brain.previewClose")
+                : t("brain.previewButton")}
+            </button>
+
+            {openPreview === action.key ? (
+              <section
+                className="note"
+                style={{ marginBlockStart: 8 }}
+                data-testid="brain-preview"
+                aria-label={t("brain.previewTitle")}
+              >
+                <p style={{ margin: 0, fontWeight: 560 }}>{t("brain.previewTitle")}</p>
+                {previewLoad === "loading" ? (
+                  <p style={{ margin: "4px 0 0", color: "var(--muted)" }}>
+                    {t("app.loading")}
+                  </p>
+                ) : previewLoad === "failed" || preview === null ? (
+                  // **الفشل ليس معاينةً فارغة.** ومعاينةٌ خالية تُقرأ
+                  // «المهمّة بلا محتوى»، وهي دعوى عن مهمّةٍ لم تصل.
+                  <p className="gate" style={{ margin: "4px 0 0" }}
+                     data-testid="brain-preview-failed">
+                    {t("brain.previewFailed")}
+                  </p>
+                ) : (
+                  <>
+                    <p style={{ margin: "6px 0 0" }}>
+                      <strong>{preview.title}</strong>
+                    </p>
+                    <p style={{ margin: "4px 0 0" }}>{preview.detail}</p>
+
+                    <p className="metric-label" style={{ margin: "8px 0 2px" }}>
+                      {t("brain.previewSource")}
+                    </p>
+                    <p style={{ margin: 0 }}>{preview.source}</p>
+                    {preview.excerpt ? (
+                      <blockquote style={{ margin: "4px 0" }}>«{preview.excerpt}»</blockquote>
+                    ) : null}
+
+                    {/* ما لا يعرفه هذا المسار عن المهمّة يُسمَّى ولا يُملأ. */}
+                    {preview.undetermined_fields.length > 0 ? (
+                      <>
+                        <p className="metric-label" style={{ margin: "8px 0 2px" }}>
+                          {t("brain.previewUndetermined")}
+                        </p>
+                        <p style={{ margin: 0, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {preview.undetermined_fields.map((field) => (
+                            <span key={field.key} className="chip chip-muted">
+                              {field.label}
+                            </span>
+                          ))}
+                        </p>
+                      </>
+                    ) : null}
+
+                    {/* **«لم تُنشأ مهمّة» يُقال بنصّه.** والمعاينة التي تصمت
+                        عن ذلك تُقرأ إقرارًا بأنّ شيئًا سُجّل. */}
+                    <p style={{ margin: "8px 0 0" }} data-testid="brain-preview-not-created">
+                      <span className="chip chip-ok">{t("brain.previewNotCreated")}</span>{" "}
+                      {preview.not_created_note}
+                    </p>
+                    <p className="metric-label" style={{ margin: "6px 0 0" }}>
+                      {preview.pending_contract_note}
+                    </p>
+                    <button
+                      type="button"
+                      className="chip chip-muted"
+                      disabled
+                      data-testid="brain-accept-disabled"
+                    >
+                      {t("brain.acceptDisabled")}
+                    </button>
+                  </>
+                )}
+              </section>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // **الـ`li` يملكه هذا المُنتِج وحده.** والقائمة تبقى قائمةً لقارئ الشاشة:
+  // عنصرٌ غير `li` داخل `ul` يسقط من عدّ العناصر الذي يُعلنه، فيسمع الباحث
+  // «قائمة من صفر» فوق خمسة أسطر.
+  const renderItem = (item: AssessmentItem, category: AssessmentCategory) => (
+    <li
+      key={`${category}-${item.key}-${item.detail.slice(0, 24)}`}
+      className={item.rule_id ? "card" : undefined}
+      style={{ marginBlockEnd: item.rule_id ? 10 : 6 }}
+    >
+      {item.rule_id
+        ? renderAlert(item, rulesById.get(item.rule_id))
+        : renderFact(item)}
+      {renderActions(item)}
+    </li>
+  );
 
   return (
     <>
@@ -287,6 +473,14 @@ export default function ResearchBrainPage({
                 ? t("brain.blockingNone")
                 : assessment.blocking_count}
             </p>
+            {/* **الاقتراح يُقال اقتراحًا قبل أن يُقرأ.** والسطرُ الذي يقول
+                «راجع كذا» بلا هذه الجملة يُقرأ مهمّةً أُسندت. */}
+            {actionsLoad === "ready" ? (
+              <p className="metric-label" style={{ margin: "6px 0 0" }}
+                 data-testid="brain-actions-hint">
+                {t("brain.actionsHint")}
+              </p>
+            ) : null}
           </section>
 
           <section aria-labelledby="brain-read-notes" style={{ marginBlockEnd: 14 }}>

@@ -462,17 +462,31 @@ class _FakeModel:
 
     name = "fake"
 
-    def __init__(self, text="اقتراح منهجي."):
-        self._text = text
+    def __init__(self, text="اقتراح منهجي.", texts=None):
+        #: **نموذجٌ يردّ النصّ نفسه دائمًا لا يُثبت جِدّة جواب.**
+        #:
+        #: فحصُ مسار الإذن يشترط أن يختلف الجواب بعد الإذن عن الرفض قبله —
+        #: وهو شرطٌ لا يمكن أن يتحقّق أمام ثابتٍ مهما فعل المنتج. فسقط
+        #: الفحص على نفسه لا على عطبٍ في الشيفرة.
+        #:
+        #: و`texts` تجعل لكلّ نداءٍ نصَّه، فتصير المساواةُ سؤالًا حقيقيًّا:
+        #: أهذا جوابُ النداء الثاني أم الأوّل معادًا؟ والافتراضُ نصٌّ واحد،
+        #: فلا يتغيّر شيءٌ عند بقيّة الفحوص.
+        self._texts = list(texts) if texts else [text]
         self.seen: list = []
+
+    def _next(self) -> str:
+        index = min(len(self.seen), len(self._texts) - 1)
+        return self._texts[index]
 
     async def generate_structured(self, request):
         from athera_api.providers.base import ModelResponse, ModelUsage
 
+        text = self._next()
         self.seen.append(request)
         return ModelResponse(
-            content=self._text, provider="fake", model="fake-1",
-            structured={"answer_ar": self._text, "citations": [],
+            content=text, provider="fake", model="fake-1",
+            structured={"answer_ar": text, "citations": [],
                         "unsupported_claims": [], "evidence_gaps": []},
             usage=ModelUsage(input_tokens=10, output_tokens=10, latency_ms=1),
         )
@@ -892,7 +906,12 @@ async def test_the_consent_path_produces_a_new_grounded_answer_not_a_stale_one(
                         raising=False)
     storage.reset_store_cache()
     secret = "تصميمُ الدراسة مقطعيٌّ على ٤١٢ مشاركًا في ثلاث جامعات."
-    model = _use_model(monkeypatch, _FakeModel(text="جوابٌ مسنودٌ إلى ما اعتمدتَه."))
+    # نصّان مختلفان: الأوّل قبل الإذن والثاني بعده — وبهما يصير «اختلف
+    # الجواب» قابلًا للفحص بدل أن يكون مستحيلًا.
+    model = _use_model(monkeypatch, _FakeModel(texts=[
+        "لا أستطيع قراءة هذا المستند بعد.",
+        "جوابٌ مسنودٌ إلى ما اعتمدتَه.",
+    ]))
     a = two_tenants["a"]
     file_id = await _seed_approved_document(a["tenant_id"], a["user_id"],
                                             statement=secret)

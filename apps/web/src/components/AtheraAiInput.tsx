@@ -6,6 +6,7 @@ import { AtheraApiError, apiFetch } from "@/lib/api";
 import { AiAnswerCard, type AiAnswer } from "./AiAnswer";
 import { type Locale, type Messages, translator } from "@/lib/i18n";
 import { usePosture } from "@/lib/posture";
+import { failureStateOf, type FailureState } from "@/lib/surfaceState";
 
 /**
  * مدخل أثيرا AI.
@@ -18,7 +19,9 @@ import { usePosture } from "@/lib/posture";
  * قابلةً للنقر، وليس لواحدٍ منها معالج. والمستخدم يضغط فلا يحدث شيء — ولا
  * رسالة تقول لماذا. وزرٌّ ميت أسوأ من زرٍّ غائب: الأول يَعِد ثم يخذل.
  *
- * فالمرفق صار يعمل فعلًا، والآخران يقولان «قريبًا» صراحةً.
+ * فالمرفق يرفع فعلًا، والرابط صار رابطًا إلى اكتشاف المراجع — وهو يحلّ
+ * الـDOI منذ أشهر بينما الزرّ يقول «قريبًا» — والإملاء الصوتي وحده هو ما
+ * لم يُبنَ، فيبقى معطَّلًا بإعلانٍ صادق.
  */
 /** حال المعالجة نصًّا — من حالات الخادم الحقيقية لا من تخمين الواجهة. */
 const STATE_LABEL: Record<string, string> = {
@@ -56,13 +59,28 @@ export function AtheraAiInput({
   }
   const [busy, setBusy] = useState(false);
   const [answer, setAnswer] = useState<AiAnswer | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // **الخطأ ليس نصًّا وحده — له نوع.** «ليس لك هذا» و«تعذّر الوصول»
+  // يُعرضان اليوم بالشكل نفسه، فيُعرض على الأول ما يصلح للثاني وحده.
+  const [error, setError] = useState<{ text: string; state: FailureState } | null>(null);
   const [attached, setAttached] = useState<{ id: string; name: string } | null>(null);
   // آخر سؤال — يُعاد إرساله بعد الإذن، فلا يُطلب من الباحث كتابته ثانية.
   const [pending, setPending] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const disabled = loading || !modelEnabled || busy;
+
+  /**
+   * نصُّ الخادم كما هو، **ونوعُ العطب مشتقًّا من رمز الحالة**.
+   *
+   * ولا يُستبدل النصّ: الخادم يرسله باللغتين ويعرف حالته أكثر من الواجهة.
+   * والمشتقّ هنا يقرّر ما يُعرض **بعده** — ولا يُعرض «أعد المحاولة» على
+   * بابٍ ليس للباحث، ولا «راجع الإدارة» على انقطاع شبكة.
+   */
+  function failure(err: unknown, fallback: string) {
+    return err instanceof AtheraApiError
+      ? { text: err.localized(locale), state: failureStateOf(err.status) }
+      : { text: fallback, state: "failed" as const };
+  }
 
   // **المرفق قد يأتي من مكتبته لا من قرصه.** والاسم يُقرأ من الخادم: لا
   // يُحمَل في الرابط اسمُ ملفٍ قد لا يكون له.
@@ -77,7 +95,7 @@ export function AtheraAiInput({
       })
       .catch((err) => {
         if (live) {
-          setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.askFailed"));
+          setError(failure(err, t("ai.askFailed")));
         }
       });
     return () => { live = false; };
@@ -96,7 +114,7 @@ export function AtheraAiInput({
       );
       setAttached({ id: stored.id, name: stored.original_filename });
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.uploadFailed"));
+      setError(failure(err, t("ai.uploadFailed")));
     } finally {
       setBusy(false);
     }
@@ -121,7 +139,7 @@ export function AtheraAiInput({
       }));
     } catch (err) {
       // خطأ المزوّد يصل مترجَمًا — ولا يُستبدل بنصّ مُولَّد.
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.askFailed"));
+      setError(failure(err, t("ai.askFailed")));
     } finally {
       setBusy(false);
     }
@@ -136,7 +154,7 @@ export function AtheraAiInput({
         method: "POST", locale,
       });
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.askFailed"));
+      setError(failure(err, t("ai.askFailed")));
       setBusy(false);
       return;
     }
@@ -175,7 +193,7 @@ export function AtheraAiInput({
       setAnswer(null);
       setNotice(t("ai.processStarted"));
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.askFailed"));
+      setError(failure(err, t("ai.askFailed")));
     } finally {
       setBusy(false);
     }
@@ -217,10 +235,22 @@ export function AtheraAiInput({
             >
               📎 {t("ai.upload")}
             </button>
-            {/* معطَّلان بإعلان — لا يُرسمان قابلين للنقر بلا معالج. */}
-            <button type="button" className="ai-tool" disabled title={t("ai.soon")}>
-              🔗 {t("ai.link")} — {t("ai.soon")}
-            </button>
+            {/*
+              **«قريبًا» على قدرةٍ تعمل ليست تحفّظًا، بل خبرٌ كاذب عن المنتج.**
+
+              كان هنا زرٌّ معطَّل: «🔗 DOI أو رابط — قريبًا». وفي الوقت نفسه
+              كان `POST /api/v1/references/search` يقرأ الـDOI ويحلّه في
+              Crossref وOpenAlex، بلا مفتاحٍ ولا إعداد، منذ أن وصل اكتشاف
+              المراجع. فالباحث يُخبَر أن قدرةً يملكها لم تُبنَ بعد، فيذهب
+              يلصق معرّفه في مكانٍ آخر — وهو أسوأ من الزرّ الميت: الميت
+              يخذل مرّة، وهذا يُغلق بابًا مفتوحًا.
+
+              فصار رابطًا يعمل إلى الشاشة التي تفعل ذلك فعلًا.
+            */}
+            <a className="ai-tool" href={`/${locale}/references`}>
+              🔗 {t("ai.link")}
+            </a>
+            {/* الإملاء الصوتي لم يُبنَ — ويبقى معطَّلًا بإعلانٍ صادق. */}
             <button type="button" className="ai-tool" disabled title={t("ai.soon")}>
               🎙 {t("ai.voice")} — {t("ai.soon")}
             </button>
@@ -301,11 +331,22 @@ export function AtheraAiInput({
       ) : null}
 
       {notice ? <p style={{ marginBlockStart: 10 }}>{notice}</p> : null}
-      {/* الخطأ يُعلَن: «لم يحدث شيء» ليست حالة يجوز أن يراها الباحث. */}
+      {/* الخطأ يُعلَن: «لم يحدث شيء» ليست حالة يجوز أن يراها الباحث.
+          وبعده الفعلُ التالي الصالح لنوعه — لا فعلٌ واحد لكل عطب. */}
       {error ? (
-        <p className="error" role="alert" data-testid="ai-error" style={{ marginBlockStart: 10 }}>
-          {error}
-        </p>
+        <div role="alert" data-testid="ai-error" data-state={error.state} style={{ marginBlockStart: 10 }}>
+          <p className="error" style={{ margin: 0 }}>{error.text}</p>
+          {error.state === "permission_denied" ? (
+            <p className="metric-label" style={{ margin: "4px 0 0" }}>
+              {t("common.permissionDenied")}
+            </p>
+          ) : null}
+          {error.state === "needs_action" ? (
+            <p className="metric-label" style={{ margin: "4px 0 0" }}>
+              <a href={`/${locale}/login`}>{t("common.needsSignIn")}</a>
+            </p>
+          ) : null}
+        </div>
       ) : null}
       {answer ? (
         <AiAnswerCard
@@ -328,6 +369,14 @@ export function AtheraAiInput({
             {modelGateReason === "unreachable"
               ? t("ai.gateUnreachableBody")
               : t("ai.gateBody")}
+            {/*
+              **حدٌّ يُعلَن بلا فعلٍ تالٍ هو طريقٌ مسدود.** والباحث الذي
+              جاء ليعمل لا يملك طرفيّةً ولا وصولًا إلى الخادم؛ فلا يُترك
+              أمام سببٍ لا يستطيع تغييره. والبحث في فهارس المراجع يعمل
+              بلا نموذج أصلًا — فهو الفعل الصالح الآن، لا انتظارًا.
+            */}
+            <br />
+            <a href={`/${locale}/references`}>{t("ai.gateNextAction")}</a>
           </span>
         </div>
       ) : null}
