@@ -41,6 +41,12 @@
 الملفّين معًا ويضيف ما لدى المسار الآخر — الحلُّ بحذف أحدهما يُطفئ فحوصًا
 تعمل، وهو العطبُ الذي وُضعت له هذه القاعدة أصلًا.
 
+**وقد وقع هذا التعارض فعلًا**: أضاف `85d61ab` سطر `test:brain` على السطر
+نفسه. وحُلّ بإبقاء الاثنين — لا باختيار أحدهما:
+
+    "test:surface": "playwright test tests/product-surface.spec.ts tests/product-experience.spec.ts",
+    "test:brain": "playwright test tests/research-brain-surface.spec.ts"
+
 ## ٤ — مسارٌ أُحيل ولم يُحذف
 
 `/{locale}/search` صار تحويلًا إلى `/{locale}/references`. والصفحة القديمة
