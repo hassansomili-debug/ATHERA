@@ -12,9 +12,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .normalize import canonical_work_type
+
+if TYPE_CHECKING:  # pragma: no cover — يُكسر الاستيراد الدائري لا العقد
+    # `ranking` يستورد هذه الوحدة، فاستيرادُها إيّاه وقتَ التشغيل حلقةٌ
+    # مغلقة. والإشارة هنا وصفيّة: النتيجة تحمل مرشَّحين مرتَّبين، والترتيب
+    # يعرف العقد ولا يعرفه العقد.
+    from .query import ParsedQuery
+    from .ranking import RankedReference
 
 # ترتيب الأسبقية عند اختيار قيمةٍ واحدة للعرض. ليس حكمًا بأن مزوّدًا أصدق،
 # بل قاعدةٌ ثابتة ومُعلَنة تمنع أن يتغيّر المعروض بتغيّر ترتيب وصول الردود.
@@ -218,11 +225,23 @@ class ExternalAccessLink:
 
 @dataclass(frozen=True, slots=True)
 class DiscoveryResult:
-    """نتيجة اكتشافٍ كاملة: ما وُجد، ومن أجاب، ومن تعذّر."""
+    """نتيجة اكتشافٍ كاملة: ما وُجد **مرتَّبًا ومُعلَّلًا**، ومن أجاب، ومن تعذّر.
 
-    candidates: tuple[ReferenceCandidate, ...]
+    الوحدة المحفوظة هنا `RankedReference` لا `ReferenceCandidate`: فصلُ
+    المرشَّح عن سبب موضعه يفتح بابًا لعرض ترتيبٍ بلا تفسير، وهو أسوأ من
+    ألّا يُرتَّب — يقرؤه الباحث حكمًا للمنصّة لا يستطيع مراجعته.
+    """
+
+    ranked: tuple[RankedReference, ...]
     provider_statuses: tuple[ProviderStatus, ...]
     external_link: ExternalAccessLink | None = None
+    # ما فُهم من نصّ الباحث. يُعاد إليه ليرى أن سؤاله لم يُبدَّل.
+    query: ParsedQuery | None = None
+
+    @property
+    def candidates(self) -> tuple[ReferenceCandidate, ...]:
+        """المرشَّحون بترتيبهم — بلا تفسير، لمن لا يحتاجه (تدقيقٌ وإحصاء)."""
+        return tuple(item.candidate for item in self.ranked)
 
     @property
     def any_provider_failed(self) -> bool:
