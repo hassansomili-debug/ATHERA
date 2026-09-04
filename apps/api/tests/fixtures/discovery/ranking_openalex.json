@@ -1,0 +1,30 @@
+{
+  "results": [
+    {
+      "id": "https://openalex.org/W2100000001",
+      "doi": "https://doi.org/10.1000/tam.2006",
+      "display_name": "Technology acceptance and the adoption of digital transformation in higher education",
+      "authorships": [{"author": {"display_name": "Miriam Okafor"}}],
+      "publication_year": 2006,
+      "primary_location": {"source": {"display_name": "Computers & Education"}},
+      "cited_by_count": 2400,
+      "type": "article",
+      "is_retracted": false,
+      "open_access": {"is_oa": true},
+      "ids": {"doi": "https://doi.org/10.1000/tam.2006"}
+    },
+    {
+      "id": "https://openalex.org/W2100000002",
+      "doi": "https://doi.org/10.1000/retracted.2018",
+      "display_name": "Digital transformation in higher education: evidence from a national survey",
+      "authorships": [{"author": {"display_name": "Karim Sadiq"}}],
+      "publication_year": 2018,
+      "primary_location": {"source": {"display_name": "Journal of Educational Change"}},
+      "cited_by_count": 500,
+      "type": "article",
+      "is_retracted": true,
+      "open_access": {"is_oa": false},
+      "ids": {"doi": "https://doi.org/10.1000/retracted.2018"}
+    }
+  ]
+}
