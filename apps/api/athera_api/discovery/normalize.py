@@ -92,6 +92,33 @@ def normalized_title(title: str) -> str:
     return " ".join(part for part in _NON_WORD.split(_fold(title)) if part)
 
 
+def tokens(text: str) -> tuple[str, ...]:
+    """ألفاظ النصّ مسوّاةً، بترتيب ورودها ومع تكرارها.
+
+    الترتيب محفوظ لأن مطابقة العبارة تحتاجه («التعلّم الآلي» ليست «الآلي
+    التعلّم»)، والتكرار محفوظ لأن حذفه هنا يخفي معلومةً قد تحتاجها طبقةٌ
+    أعلى — والإسقاط قرارها لا قرار التسوية.
+    """
+    return tuple(part for part in _NON_WORD.split(_fold(text)) if part)
+
+
+def token_forms(text: str) -> dict[str, str]:
+    """يربط كل لفظةٍ مسوّاة بصورتها كما كتبها صاحبها.
+
+    **التسوية للمقارنة لا للعرض** — وهذه الدالة هي ما يجعل ذلك صحيحًا في
+    العربية. «إدارة» تُسوَّى «اداره»؛ فلو عُرضت مسوّاةً في جملة «لا يذكر:
+    اداره» لقرأها الباحث خطأً إملائيًّا من المنصّة، وشكّ في بقية ما تقول.
+    فتُقارَن المسوّاة وتُعرض الأصلية.
+    """
+    forms: dict[str, str] = {}
+    for chunk in (text or "").split():
+        surface = chunk.strip("\"'«»()[]{}.,;:!؟?،")
+        for token in _NON_WORD.split(_fold(surface)):
+            if token and token not in forms:
+                forms[token] = surface or chunk
+    return forms
+
+
 def first_author_key(authors: tuple[str, ...] | list[str]) -> str | None:
     """مفتاح المؤلّف الأول: آخر لفظةٍ من اسمه مسوّاةً — أي اسم العائلة غالبًا.
 

@@ -23,8 +23,10 @@ from .contracts import (
 )
 from .crossref import CrossrefProvider
 from .dedup import deduplicate
-from .normalize import extract_doi_anywhere, external_access_link
+from .normalize import external_access_link
 from .openalex import OpenAlexProvider
+from .query import parse_query
+from .ranking import rank_candidates
 
 MAX_LIMIT = 50
 
@@ -81,10 +83,18 @@ async def discover(
     year_to: int | None = None,
     work_type: str | None = None,
     open_access_only: bool = False,
+    accepted_terms: object = (),
+    now_year: int | None = None,
 ) -> DiscoveryResult:
-    """يبحث في كل الفهارس، ويوحّد، ويُبقي نسبة كل ادعاء إلى قائله."""
+    """يبحث في كل الفهارس، ويوحّد، ويرتّب مُعلِّلًا — والنسبة محفوظة.
+
+    **والترتيب يسبق القصّ.** لو قُصّ العشرون الأوائل بترتيب وصول الفهارس ثم
+    رُتِّبوا، لصارت «الأفضل» أفضلَ ما وصل أولًا لا أفضل ما وُجد؛ وورقةٌ
+    تأسيسية جاءت في الترتيب الحادي والعشرين من فهرسٍ بطيء تختفي بلا أثر.
+    """
     limit = max(1, min(limit, MAX_LIMIT))
     text = (query or "").strip()
+    parsed = parse_query(text, accepted_terms=accepted_terms)
 
     # الرابط الممنوع جمعه يُكتشف **قبل أي نداء**: لا يُطلب من المنصّة شيء،
     # ولا تُقرأ منها بيانات. ويُستخرج منه DOI إن كان مكتوبًا فيه صراحةً —
@@ -92,25 +102,33 @@ async def discover(
     blocked = external_access_link(text)
     link = ExternalAccessLink(url=blocked[0], host=blocked[1]) if blocked else None
 
-    doi = extract_doi_anywhere(text)
-    if link is not None and doi is None:
+    if link is not None and parsed.doi is None:
         # لا معرّف شرعيّ في الرابط: يُعاد الرابط وحده بلا بياناتٍ موصوفة،
         # ولا يُقال إنّ شيئًا تُحقِّق منه.
-        return DiscoveryResult(candidates=(), provider_statuses=(), external_link=link)
+        return DiscoveryResult(
+            ranked=(), provider_statuses=(), external_link=link, query=parsed,
+        )
 
     outcomes = await asyncio.gather(
-        *(_collect(provider, text, doi, limit) for provider in providers)
+        *(_collect(provider, parsed.sent, parsed.doi, limit) for provider in providers)
     )
     statuses = tuple(status for status, _claims in outcomes)
     claims: list[ProviderClaim] = []
     for _status, found in outcomes:
         claims.extend(found)
 
-    candidates = tuple(
+    # مُرشِّح الشاشة يعلو على ما قرأه المحلّل من النصّ: الباحث الذي ضبط
+    # «من سنة» صراحةً قال قولًا أخيرًا، و`year:2019` داخل النصّ يملأ الفراغ
+    # ولا ينسخ اختيارًا. وإلا لتغيّر المُرشِّح المرئي بكلمةٍ كتبها في السطر.
+    low = year_from if year_from is not None else (parsed.year or parsed.year_from)
+    high = year_to if year_to is not None else (parsed.year or parsed.year_to)
+
+    candidates = [
         candidate for candidate in deduplicate(claims)
-        if _passes(candidate, year_from=year_from, year_to=year_to,
+        if _passes(candidate, year_from=low, year_to=high,
                    work_type=work_type, open_access_only=open_access_only)
-    )
+    ]
+    ranked = rank_candidates(candidates, parsed, now_year=now_year)[:limit]
     return DiscoveryResult(
-        candidates=candidates[:limit], provider_statuses=statuses, external_link=link,
+        ranked=ranked, provider_statuses=statuses, external_link=link, query=parsed,
     )

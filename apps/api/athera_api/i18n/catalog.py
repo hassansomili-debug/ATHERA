@@ -350,6 +350,10 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "يلزم إنشاء الملف الأكاديمي قبل إنشاء مشروع بحثي.",
         "en": "An academic profile is required before creating a research project.",
     },
+    "evidence.reference_search_rate_limited": {
+        "ar": "بحثٌ متكرّر أكثر من اللازم. البحث يسأل فهارس علمية تمنحنا الاستعمال بأدبٍ لا بعقد، فننتظر قليلًا حمايةً لبقية الباحثين — وليست هذه «لا نتائج».",
+        "en": "Too many searches in a row. Each search asks scholarly indexes that grant us access by courtesy, so we pause briefly to protect other researchers — this is not “no results”.",
+    },
     "evidence.doi_not_resolved": {
         "ar": "لم يُعثر على هذا المعرّف في أي سجل علمي؛ لن يُنشأ مرجع بديل.",
         "en": "This identifier was not found in any scholarly registry; no substitute reference will be created.",

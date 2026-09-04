@@ -37,6 +37,53 @@ export interface ProviderClaim {
 /** لماذا اجتمعت ادعاءات الفهارس في بطاقةٍ واحدة — يُعرض ليُراجَع. */
 export type MatchBasis = "doi" | "provider_id" | "title_year_author" | "single";
 
+/**
+ * سببُ موضع النتيجة في الترتيب، بلغة الباحث.
+ *
+ * **ولا نسبة في هذا النوع.** «٩٧٪ صلة» رقمٌ لا وحدة له ولا مرجع، ويقرؤه
+ * الباحث حكمًا كميًّا على ورقةٍ لم يقرأها. والخادم لا يرسل درجة أصلًا،
+ * فلا تستطيع هذه الشاشة اختراع واحدة ولو أرادت.
+ */
+export interface RankReason {
+  code: string;
+  /** `match` سببُ ترجيح، و`caution` تنبيهٌ يُقرأ قبل البناء عليه. */
+  kind: "match" | "caution" | string;
+  terms: string[];
+  /** الاستشهاد لا يُذكر بلا قائله: «١٣٤ في OpenAlex». */
+  provider: string | null;
+  count: number | null;
+  year: number | null;
+}
+
+/** مصطلحٌ مقترح — معروضٌ لا مُطبَّق. `applied` تعود `false` دائمًا. */
+export interface SuggestedTerm {
+  term: string;
+  source_term: string;
+  kind: string;
+  applied: boolean;
+}
+
+/**
+ * ما فهمه الخادم من نصّ الباحث.
+ *
+ * `raw` سؤاله و`sent` ما غادر إلى الفهارس. يُعرضان معًا حين يختلفان —
+ * وهذا هو الحدّ بين «فهمِ الاستعلام» و«إعادةِ كتابته»: ما دام النصّان
+ * مرئيَّين، لا يقع تبديلٌ لا يراه صاحبه.
+ */
+export interface QueryUnderstanding {
+  raw: string;
+  sent: string;
+  doi: string | null;
+  phrase: string | null;
+  authors: string[];
+  year: number | null;
+  year_from: number | null;
+  year_to: number | null;
+  keywords: string[];
+  accepted_terms: string[];
+  suggestions: SuggestedTerm[];
+}
+
 export interface ReferenceCandidate {
   doi: string | null;
   title: string;
@@ -58,6 +105,10 @@ export interface ReferenceCandidate {
   match_basis: MatchBasis;
   claims: ProviderClaim[];
   can_be_saved: boolean;
+  /** أسبابُ موضعه في الترتيب — **ولا درجة**: الخادم لا يرسل واحدة. */
+  reasons: RankReason[];
+  matched_terms: string[];
+  missing_terms: string[];
 }
 
 export interface ProviderStatus {
@@ -82,6 +133,9 @@ export interface ReferenceSearchResponse {
   any_provider_failed: boolean;
   all_providers_failed: boolean;
   external_link: ExternalAccessLink | null;
+  /** بأيّ شيء رُتِّبت النتائج. يُقال صراحةً لأن الباحث يفترض الترتيب الزمني. */
+  ordered_by: string;
+  query_understanding: QueryUnderstanding | null;
   note_ar: string;
   note_en: string;
 }
@@ -91,6 +145,11 @@ export interface ReferenceSearchFilters {
   yearTo?: number | null;
   workType?: string | null;
   openAccessOnly?: boolean;
+  /**
+   * ما قبِله الباحث من المصطلحات المقترحة — **ولا شيء غيره يوسّع البحث**.
+   * وإرسال قائمة فارغة هو الحال الطبيعية: الاقتراح معروضٌ لا مُطبَّق.
+   */
+  acceptedTerms?: string[];
 }
 
 export const searchReferences = (
@@ -108,6 +167,7 @@ export const searchReferences = (
       year_to: filters.yearTo ?? null,
       work_type: filters.workType || null,
       open_access_only: Boolean(filters.openAccessOnly),
+      accepted_terms: filters.acceptedTerms ?? [],
     }),
   });
 

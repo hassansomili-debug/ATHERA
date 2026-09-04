@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import DEFAULT_TIMEOUT_SECONDS, USER_AGENT, DiscoveryProvider, ProviderUnavailable
+from .base import DEFAULT_TIMEOUT_SECONDS, USER_AGENT, DiscoveryProvider
 from .contracts import ProviderClaim
 from .normalize import normalize_doi
+from .resilience import fetch_json
 
 # سقفٌ على الملخّص المُعاد بناؤه: فهرسٌ مقلوب ضخم لا يُعاد تركيبه بلا حدّ.
 _MAX_ABSTRACT_WORDS = 4000
@@ -93,21 +94,21 @@ class OpenAlexProvider(DiscoveryProvider):
         self._timeout = timeout
 
     async def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        """نداءٌ واحد بمحاولاتٍ محدودة — بقاعدة الإعادة نفسها التي لجاره."""
         import httpx  # noqa: PLC0415
 
-        if self._mailto:
-            params = {**params, "mailto": self._mailto}
-        try:
+        query = {**params, "mailto": self._mailto} if self._mailto else params
+
+        async def send() -> tuple[int, dict[str, Any] | None]:
             async with httpx.AsyncClient(
                 timeout=self._timeout, headers={"User-Agent": USER_AGENT}
             ) as client:
-                response = await client.get(f"{self.BASE_URL}{path}", params=params)
-                if response.status_code == 404:
-                    return {}
-                response.raise_for_status()
-                return response.json()
-        except Exception as exc:  # noqa: BLE001 — كل تعذّرٍ يُترجم إلى نوعٍ مُعلَن
-            raise ProviderUnavailable(self.name, type(exc).__name__) from exc
+                response = await client.get(f"{self.BASE_URL}{path}", params=query)
+                if response.status_code >= 400:
+                    return response.status_code, None
+                return response.status_code, response.json()
+
+        return await fetch_json(send, provider=self.name)
 
     async def search(self, query: str, *, limit: int) -> list[ProviderClaim]:
         payload = await self._get("/works", {"search": query, "per-page": min(limit, 50)})

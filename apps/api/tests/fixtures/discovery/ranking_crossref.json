@@ -1,0 +1,118 @@
+{
+  "message": {
+    "items": [
+      {
+        "DOI": "10.1000/exact.2019",
+        "title": ["Digital transformation in higher education"],
+        "author": [{"given": "Nora", "family": "Al-Qassim"}],
+        "issued": {"date-parts": [[2019, 4, 1]]},
+        "container-title": ["Journal of Educational Change"],
+        "abstract": "<jats:p>A study of institutional adoption across public universities.</jats:p>",
+        "is-referenced-by-count": 40,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1109/tlt.2021.3055555",
+        "title": ["Adaptive assessment platforms for large cohorts"],
+        "author": [{"given": "Hana", "family": "Doubek"}],
+        "issued": {"date-parts": [[2021, 1, 1]]},
+        "container-title": ["IEEE Transactions on Learning Technologies"],
+        "is-referenced-by-count": 5,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/energy.2021",
+        "title": ["Digital transformation of higher education campus buildings: energy metering and load forecasting"],
+        "author": [{"given": "Omar", "family": "Haddad"}],
+        "issued": {"date-parts": [[2021, 6, 1]]},
+        "container-title": ["Energy and Buildings"],
+        "is-referenced-by-count": 15,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/fraud.2022",
+        "title": ["Machine learning for fraud diagnosis in retail banking"],
+        "author": [{"given": "Ingrid", "family": "Halvorsen"}],
+        "issued": {"date-parts": [[2022, 3, 1]]},
+        "container-title": ["Journal of Financial Data Science"],
+        "is-referenced-by-count": 300,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/medical.2018",
+        "title": ["Machine learning for medical diagnosis in primary care"],
+        "author": [{"given": "Rashid", "family": "Bennani"}],
+        "issued": {"date-parts": [[2018, 9, 1]]},
+        "container-title": ["BMC Medical Informatics"],
+        "is-referenced-by-count": 90,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/proctoring.2024",
+        "title": ["Remote proctoring tools during campus closures"],
+        "author": [{"given": "Tomas", "family": "Kaleta"}],
+        "issued": {"date-parts": [[2024, 2, 1]]},
+        "container-title": ["Assessment Practice Notes"],
+        "abstract": "<jats:p>Field notes on invigilation during higher education closures.</jats:p>",
+        "is-referenced-by-count": 3,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/tam.2006",
+        "title": ["Technology acceptance and the adoption of digital transformation in higher education"],
+        "author": [{"given": "Miriam", "family": "Okafor"}],
+        "issued": {"date-parts": [[2006, 11, 1]]},
+        "container-title": ["Computers & Education"],
+        "is-referenced-by-count": 2100,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/saudi.2020",
+        "title": ["Institutional readiness in Saudi public universities"],
+        "author": [{"given": "Laila", "family": "Nasser"}],
+        "issued": {"date-parts": [[2020, 5, 1]]},
+        "container-title": ["Gulf Policy Review"],
+        "abstract": "<jats:p>This study examines digital transformation across higher education institutions in Saudi Arabia.</jats:p>",
+        "is-referenced-by-count": 25,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/stock.2021",
+        "title": ["The impact of social media on stock market engagement"],
+        "author": [{"given": "Yusuf", "family": "Demir"}],
+        "issued": {"date-parts": [[2021, 8, 1]]},
+        "container-title": ["Journal of Behavioural Finance"],
+        "is-referenced-by-count": 30,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/student.2020",
+        "title": ["The impact of social media on student engagement in blended learning"],
+        "author": [{"given": "Amal", "family": "Zubeidi"}],
+        "issued": {"date-parts": [[2020, 10, 1]]},
+        "container-title": ["Computers & Education"],
+        "is-referenced-by-count": 20,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/vocational.2025",
+        "title": ["Digital transformation strategies in vocational training centres"],
+        "author": [{"given": "Petra", "family": "Lindqvist"}],
+        "issued": {"date-parts": [[2025, 1, 1]]},
+        "container-title": ["Vocational Learning Quarterly"],
+        "is-referenced-by-count": 3,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1000/retracted.2018",
+        "title": ["Digital transformation in higher education: evidence from a national survey"],
+        "author": [{"given": "Karim", "family": "Sadiq"}],
+        "issued": {"date-parts": [[2018, 7, 1]]},
+        "container-title": ["Journal of Educational Change"],
+        "is-referenced-by-count": 480,
+        "type": "journal-article",
+        "update-to": [{"type": "retraction", "DOI": "10.1000/retraction-notice.2021"}]
+      }
+    ]
+  }
+}
