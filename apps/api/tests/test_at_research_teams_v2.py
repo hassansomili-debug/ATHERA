@@ -288,15 +288,21 @@ async def _second_user(tenant_id: uuid.UUID) -> dict:
 
     و`two_tenants` تعطي حسابًا واحدًا لكل مستأجر، وهو لا يكفي: القبولُ فعلُ
     طرفٍ ثانٍ، وفحصٌ يقبل بحساب الداعي لا يفحص شيئًا.
+
+    و**الجلسةُ هنا `tenant_session` لا `system_session`** — وهو فرقٌ يبدو
+    تفصيلًا وليس كذلك: `roles` جدولٌ عليه RLS، فقراءته بلا سياق مستأجرٍ
+    تعيد صفرَ صفوف لا خطأً. و`two_tenants` تقرؤه بنجاح لأنّ زارع الأدوار
+    (`seed_tenant_roles`، الترحيل 0014) يضبط `app.tenant_id` **لبقيّة تلك
+    المعاملة** عند إدراج المستأجر. ومعاملةٌ جديدةٌ لا ترث ذلك الضبط.
     """
     from sqlalchemy import select
 
-    from athera_api.db import system_session
+    from athera_api.db import tenant_session
     from athera_api.models.identity import Membership, Role, User
     from athera_api.security import hash_password
 
     slug = uuid.uuid4().hex[:10]
-    async with system_session() as session:
+    async with tenant_session(tenant_id) as session:
         user = User(
             email=f"second-{slug}@example.test",
             password_hash=hash_password("correct-horse-battery-staple"),
@@ -310,6 +316,7 @@ async def _second_user(tenant_id: uuid.UUID) -> dict:
         ).scalar_one()
         session.add(Membership(tenant_id=tenant_id, user_id=user.id,
                                role_id=role.id))
+        await session.flush()
         return {"user_id": user.id, "email": user.email}
 
 
@@ -668,7 +675,7 @@ async def test_an_authorship_agreement_consent_is_refused_for_someone_else(
 
     async with tenant_session(tid, owner) as session:
         thesis = Thesis(tenant_id=tid, title_ar="رسالةُ الموافقة",
-                        degree="phd", rights_basis="author_owned")
+                        degree="phd", rights_basis="thesis_owner")
         session.add(thesis)
         await session.flush()
         opportunity = PublicationOpportunity(

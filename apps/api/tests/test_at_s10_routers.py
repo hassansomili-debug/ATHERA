@@ -134,8 +134,13 @@ async def test_a_project_leader_cannot_consent_on_behalf_of_a_coauthor(client):
     assert gone.status_code == 404, gone.text
 
     # ٢) والمسارُ الإداري يرفض بلا سند.
-    await http.put(f"/api/v1/projects/{project_id}/members/{member_id}/authorship",
-                   json={"is_author": True, "author_position": 2})
+    declared = await http.put(
+        f"/api/v1/projects/{project_id}/members/{member_id}/authorship",
+        json={"is_author": True, "author_position": 2})
+    assert declared.status_code == 200, declared.text
+    # والإعلانُ وحده لا يُنتج موافقة — وهو الفرق الذي أُصلح.
+    assert declared.json()["is_author"] is True
+    assert declared.json()["consent_state"] == "not_requested"
     bare = await http.post(
         f"/api/v1/projects/{project_id}/members/{member_id}/administrative-consent",
         json={"evidence_ar": "لا"})

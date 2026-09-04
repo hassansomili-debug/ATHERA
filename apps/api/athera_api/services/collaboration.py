@@ -114,16 +114,18 @@ async def owner_user_id(
     ومسارُ `workspace` يُنشئ بحثًا بلا `profile_id`، فالثاني ليس احتياطًا
     نظريًّا: هو المصدر الوحيد لأكثر البحوث التي يبدؤها الباحث اليوم.
     """
-    project = (
+    # `None` هنا حالان لا واحدة: بحثٌ لا وجود له، وبحثٌ بلا ملفِّ باحث.
+    # وكلتاهما تعني «لا مالك من هذا الطريق»، فيُجرَّب الطريق الثاني.
+    profile_id = (
         await session.execute(
             select(ResearchProject.profile_id).where(ResearchProject.id == project_id)
         )
     ).scalar_one_or_none()
-    if project is not None:
+    if profile_id is not None:
         user_id = (
             await session.execute(
                 select(ResearcherProfile.user_id)
-                .where(ResearcherProfile.id == project)
+                .where(ResearcherProfile.id == profile_id)
             )
         ).scalar_one_or_none()
         if user_id is not None:
