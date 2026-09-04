@@ -10,23 +10,15 @@
 from __future__ import annotations
 
 import abc
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
-DOI_PATTERN = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Za-z0-9]+$")
-
-
-def normalize_doi(value: str) -> str | None:
-    """يقبل DOI خامًا أو داخل رابط، ويرفض ما ليس DOI."""
-    if not value:
-        return None
-    candidate = value.strip().lower()
-    for prefix in ("https://doi.org/", "http://doi.org/", "doi:", "https://dx.doi.org/"):
-        if candidate.startswith(prefix):
-            candidate = candidate[len(prefix):]
-    candidate = candidate.rstrip(".,;)")
-    return candidate if DOI_PATTERN.match(candidate) else None
+# تعريفٌ واحد للـDOI في المنتج كلّه — مكانه حزمة الاكتشاف النقيّة، ويُعاد
+# تصديره هنا لمن اعتاده. ونسختان منه تعنيان قاعدتَي قبولٍ تفترقان يومًا:
+# مُعرّفٌ يقبله الاستيراد ويرفضه البحث، فيُتّهم المنتج بأنه «لا يجد» ما
+# استورده هو نفسه.
+from ...discovery.normalize import DOI_PATTERN as DOI_PATTERN  # noqa: PLC0414
+from ...discovery.normalize import normalize_doi as normalize_doi  # noqa: PLC0414
 
 
 @dataclass(slots=True)
