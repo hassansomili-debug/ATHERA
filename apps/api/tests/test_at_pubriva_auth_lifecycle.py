@@ -939,5 +939,52 @@ def test_a_missing_document_is_reported_with_what_was_rendered():
     يحمل اسمًا ولا سرًّا."""
     spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
     code = "\n".join(line for _, line in code_lines(spec))
-    assert "rendered: await page.locator(\"article.card\").count()" in code, (
-        "الغياب يُبلَّغ بلا سياق")
+    assert "listCalls=[" in code, "الغياب يُبلَّغ بلا سياق"
+    # والسياق يُطبع فعلًا: `toMatchObject` تطبع المفاتيح المقارَنة وحدها.
+    assert "toMatchObject({ mine:" not in code, "السياق يُجمع ثم لا يُطبع"
+    # ولا أجسام ولا روابط في الدليل — الطريقة والحال فقط.
+    assert "r.request().method()}:${r.status()}" in code, "الدليل يحمل أكثر مما يلزم"
+
+
+def test_the_ai_answer_is_read_after_consent_and_proved_grounded():
+    """**المقروء بعد الإذن لا قبله.**
+
+    بطاقةُ الجواب معروضة قبل الإذن أيضًا، وفيها القيد معلنًا. فلو قُرئت
+    فورَ النقر لقُرئ نصُّ ما قبل الإذن — يطول عشرين حرفًا ولا يحمل ترميزًا،
+    فيمرّ الفحص **وهو لم يفحص جوابًا**.
+
+    و«مسنود بدليل موثّق» تفرّق بينهما: الخادم لا يقولها إلا حين يُبنى الجواب
+    على معرفةٍ اعتمدها الباحث، وقبل الإذن تُفرَّغ تلك المعرفة فيقول «اقتراح
+    نموذج — لا دليل».
+    """
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    ai = code[code.index("PUBRIVA AI reaches approved knowledge"):]
+    assert "toBeHidden" in ai, "الجواب يُقرأ قبل أن تسقط البوابة"
+    assert "مسنود بدليل موثّق" in ai, "لا إثبات أن الجواب مسنود لا مقترَح"
+    # وقبل الإذن: الحدّ أمسك فعلًا — لا مجرّد أن زرًّا ظهر.
+    assert "اقتراح نموذج" in ai, "لا إثبات أن المعرفة لم تُرسل قبل الإذن"
+    assert "not.toBe(refusal)" in ai, "لا إثبات أن عمليةً جديدة جرت بعد الإذن"
+    # والنصّ يُقرأ مرّتين قصدًا: مرّةً قبل الإذن ليُحفظ نصُّ الرفض، ومرّةً
+    # بعد سقوط البوابة ليُقرأ الجواب. فالمقارنة على **آخر** قراءة.
+    assert ai.rindex("ai-answer-text") > ai.index("toBeHidden"), (
+        "الجواب النهائي يُقرأ قبل سقوط البوابة")
+    assert ai.index("refusal") < ai.index("consent.click()"), (
+        "نصّ الرفض يُلتقط بعد منح الإذن، فلا يفرّق شيئًا")
+
+
+def test_the_upload_step_proves_the_library_not_the_uploader():
+    """**«رُفع إلى مكتبتي» تُثبَت في المكتبة.**
+
+    شارةُ النجاح تحمل اسم الملف («✓ تم الحفظ — اسم الملف»)، وكان الفحص
+    يطلب الاسم في الصفحة كلها — فيجده في الشارة ويمضي. فمكتبةٌ لا تُحدَّث
+    بعد الرفع كانت تمرّ سنينًا: الادّعاء أن الملف صار في المكتبة، والدليل
+    أن الرافع يقول إنه رفع.
+    """
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    upload = code[code.index("upload a file into My Library"):
+                  code.index("link that exact file to the project")]
+    assert "getByText(FILENAME)" not in upload, "الاسم يُطلب في الصفحة كلها"
+    assert 'locator("article.card").filter({ hasText: FILENAME })' in upload, (
+        "الرفع لا يُثبَت في قائمة المكتبة")

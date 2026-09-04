@@ -102,6 +102,18 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));
+
+  // **ما جرى على الشبكة، لا ما ظهر على الشاشة.** «العنصر غير موجود» لا
+  // تقول أطُلبت القائمة أصلًا، ولا أجابت، ولا بأيّ حال. والطريقة والحال
+  // وحدهما — لا أجسام ولا روابط موقّعة.
+  const fileCalls: string[] = [];
+  page.on("response", (r) => {
+    try {
+      if (new URL(r.url()).pathname === "/api/v1/files") {
+        fileCalls.push(`${r.request().method()}:${r.status()}`);
+      }
+    } catch { /* رابطٌ لا يُحلَّل ليس دليلًا */ }
+  });
   let projectUrl = "";
   let sourceTitle = "";
   let processingState = "";
@@ -169,7 +181,19 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
     // ج — الرفع أثبت نفسه: الحال «تم الحفظ» والاسم الفريد ظاهر.
     await expect(page.getByText("تم الحفظ")).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByText(FILENAME).first()).toBeVisible({ timeout: 30_000 });
+
+    // **وفي المكتبة، لا في شارة الرفع.**
+    //
+    // كان الفحص يطلب الاسم في الصفحة كلها — وشارةُ النجاح نفسها تحمله
+    // («✓ تم الحفظ — اسم الملف»). فكان يمرّ على مكتبةٍ لم تُحدَّث إطلاقًا:
+    // «رُفع إلى مكتبتي» تُثبَت بأن الرافع يقول إنه رفع. والخطوةُ تدّعي أن
+    // الملف صار في المكتبة، فتُثبَت في المكتبة.
+    const stored = page.locator("article.card").filter({ hasText: FILENAME });
+    await expect
+      .poll(async () =>
+              `mine=${await stored.count()} cards=${await page.locator("article.card").count()}`,
+            { timeout: 30_000, message: "the upload never reached the library list" })
+      .toMatch(/^mine=1 /);
   });
 
   await test.step("link that exact file to the project", async () => {
@@ -327,13 +351,16 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // مختلفان تمامًا. فيُذكر عدد البطاقات المعروضة مع الغياب. والعدد لا
     // يحمل اسمًا ولا سرًّا.
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
+    // **والغياب يُقاس.** و`toMatchObject` كانت تطبع المفاتيح المقارَنة وحدها،
+    // فضاع السياق الذي وُضع لأجله. فالمقروء نصٌّ واحد يُطبع كما هو.
+    const before = fileCalls.length;
     await expect
-      .poll(async () => ({
-              mine: await page.locator("article.card").filter({ hasText: DOC_NAME }).count(),
-              rendered: await page.locator("article.card").count(),
-            }),
+      .poll(async () =>
+              `mine=${await page.locator("article.card").filter({ hasText: DOC_NAME }).count()}`
+              + ` cards=${await page.locator("article.card").count()}`
+              + ` listCalls=[${fileCalls.slice(before).join(" ")}]`,
             { timeout: 30_000, message: "the uploaded document never appeared in My Library" })
-      .toMatchObject({ mine: 1 });
+      .toMatch(/^mine=1 /);
     // الحال تُقرأ من عقدها: «مخزَّن» لا «مُحلَّل».
     await expect(card.locator("[data-processing-state]"))
       .toHaveAttribute("data-processing-state", "not_processed", { timeout: 30_000 });
@@ -463,13 +490,38 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     const consent = page.getByRole("button", { name: "السماح والإجابة" });
     await expect(consent, "the chat answered from an approved document without DCC2")
       .toBeVisible({ timeout: 180_000 });
+
+    // **وقبل الإذن لم تُرسَل المعرفة.** الخادم يفرّغ ما اعتمده الباحث ما لم
+    // يكن الإذن قائمًا، فيصف جوابه بأنه اقتراح نموذج لا دليل. فهذه العبارة
+    // هنا إثباتُ أن الحدّ أمسك فعلًا — لا مجرّد أن زرًّا ظهر.
+    const before = page.getByTestId("ai-answer");
+    await expect(before, "the pre-consent answer already claimed grounded evidence")
+      .toContainText("اقتراح نموذج");
+    const refusal = (await page.getByTestId("ai-answer-text").innerText()).trim();
+
     await consent.click();
+
+    // **والمقروء بعد الإذن لا قبله.** بطاقةُ الجواب معروضة قبل الإذن أيضًا:
+    // فيها القيدُ نفسه معلنًا («الإجابة من هذا المستند تحتاج إذنك الصريح»).
+    // فلو قُرئت فورَ النقر لقُرئ نصُّ ما قبل الإذن — يطول عشرين حرفًا ولا
+    // يحمل ترميزًا، فيمرّ الفحص **وهو لم يفحص جوابًا**. وسقوطُ البوابة هو
+    // علامةُ أن السؤال أُعيد وقد صار الإذن قائمًا.
+    await expect(consent, "the chat consent gate never cleared after granting")
+      .toBeHidden({ timeout: 180_000 });
 
     // والسؤال الأصلي يُعاد بعد الإذن — لا يُطلب من الباحث كتابته ثانية.
     const answer = page.getByTestId("ai-answer");
     await expect(answer).toBeVisible({ timeout: 180_000 });
+    // **والجواب مسنود لا مقترَح.** الخادم يقول «مسنود بدليل موثّق» حين
+    // يُبنى على معرفةٍ اعتمدها الباحث، و«اقتراح نموذج — لا دليل» حين لا
+    // يُبنى عليها. وقبل الإذن كان الثاني بالضرورة: المعرفة تُفرَّغ ولا
+    // تُرسل. فهذه العبارة وحدها تفرّق بين جوابٍ بعد الإذن وجوابٍ قبله.
+    await expect(answer, "the answer was not grounded in the approved knowledge")
+      .toContainText("مسنود بدليل موثّق");
     const text = (await page.getByTestId("ai-answer-text").innerText()).trim();
     expect(text.length, "the answer was empty").toBeGreaterThan(20);
+    // وعمليةٌ جديدة جرت فعلًا: النصّ ليس نصَّ الرفض نفسه معادًا.
+    expect(text, "the post-consent answer is the pre-consent refusal").not.toBe(refusal);
     for (const markup of ["</answer_ar>", "<answer_ar>", "<citations>", "</citations>",
                           "</invoke>", "<invoke"]) {
       expect(text, `contract markup leaked: ${markup}`).not.toContain(markup);
