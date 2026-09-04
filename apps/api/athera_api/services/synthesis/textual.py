@@ -90,10 +90,20 @@ def _lex(*words: str) -> tuple[str, ...]:
 STOPWORDS: Final = frozenset(_fold_all(_RAW_STOPWORDS))
 
 
+# سوابقُ التعريف وما يتّصل بها. و**«والأداء» و«الأداء» و«أداء» كلمةٌ واحدة**:
+# بدون هذه القائمة لا يتقابل بناءان مكتوبان بترتيبٍ مختلف أبدًا — «التدريب
+# والأداء» و«الأداء والتدريب» يخرجان مجموعتين مختلفتين، فلا يُكتشف تعارضٌ
+# حقيقيّ ولا يُجمع موضوعٌ واحد.
+#
+# ولا تُنزع الواو وحدها: «وظيفي» ليست «ظيفي». فالنزع مشروطٌ بلحاق «ال».
+_ARTICLE_PREFIXES: Final = ("وال", "بال", "كال", "فال", "ال")
+
+
 def _strip_article(token: str) -> str:
-    """«الأداء» و«أداء» كلمةٌ واحدة — والفارق حرفان يقسمان موضوعًا."""
-    if token.startswith("ال") and len(token) > MIN_TERM_LENGTH + 1:
-        return token[2:]
+    for prefix in _ARTICLE_PREFIXES:
+        if (token.startswith(prefix)
+                and len(token) - len(prefix) >= MIN_TERM_LENGTH):
+            return token[len(prefix):]
     return token
 
 
