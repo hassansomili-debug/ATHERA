@@ -34,6 +34,23 @@ class File(Base, TenantScoped, Timestamped):
     )
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # ── موضعُ الملف في مكتبة صاحبه (الترحيل 0022) ──
+    #
+    # **تنظيمٌ لا حالُ دليل.** `NULL` يعني جذر المكتبة، وتغييرُ هذا العمود
+    # هو **كامل** عملية النقل: لا يُمسّ `storage_key` — فالروابط الموقّعة
+    # وسجلّ `provenance` يشيران إليه — ولا يُمسّ ربطُ الملف ببحث، ولا حالُ
+    # مرشّحٍ استُخرج منه، ولا استشهادٌ بُني عليه.
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("library_folders.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    # «حذف» نقلٌ إلى سلّة، والإتلاف قرارٌ ثانٍ لا يقع بأثرٍ جانبي.
+    trashed_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    trashed_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+
 
 class FileAccessLog(Base, TenantScoped):
     """§36.2 — سجل من اطّلع على الملف. كل تنزيل يُسجَّل، بلا استثناء."""
