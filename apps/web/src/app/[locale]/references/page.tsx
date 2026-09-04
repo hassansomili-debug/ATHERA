@@ -580,6 +580,22 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
               const busy = busyKey === key;
               return (
                 <article className="card" key={key} data-testid="reference-candidate">
+                  {/* **السحب يُقرأ قبل العنوان، لا بعده.**
+                      الباحث يمسح العناوين ولا يقرأ كل بطاقة إلى آخرها؛
+                      فتحذيرٌ أسفل البطاقة يُرى بعد أن يكون قد قرّر. وهذه
+                      الحال تُقرأ من بيانات الفهرس البنيوية (`update-to`
+                      و`is_retracted`) لا من لفظةٍ في العنوان. */}
+                  {candidate.retraction_status === "retracted" ? (
+                    <p
+                      className="error"
+                      role="alert"
+                      data-testid="reference-retracted"
+                      style={{ marginBlock: "0 8px", fontWeight: 600 }}
+                    >
+                      ⛔ {t("references.retracted")}
+                    </p>
+                  ) : null}
+
                   <strong>{candidate.title}</strong>
 
                   <div className="metric-label" style={{ marginBlockStart: 4 }}>
@@ -609,12 +625,6 @@ export default function ReferencesPage({ params }: { params: Promise<{ locale: s
                       {t(`references.matchBasis.${candidate.match_basis}`)}
                     </span>
                   </div>
-
-                  {candidate.retraction_status === "retracted" ? (
-                    <p className="error" style={{ marginBlock: "6px 0" }} role="alert">
-                      {t("references.retracted")}
-                    </p>
-                  ) : null}
 
                   {/* لماذا وقع هنا. أسبابٌ يتحقق منها بعينه — **ولا نسبة**:
                       الخادم لا يرسل درجة، فلا تستطيع الشاشة اختراع واحدة. */}

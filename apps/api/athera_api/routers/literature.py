@@ -22,6 +22,7 @@ from ..discovery import (
     default_providers,
     discover,
 )
+from ..discovery import throttle
 from ..errors import AtheraError, NotFound
 from ..models.literature import ACCESS_STATES, Author, Claim, ClaimEvidenceLink, Source, SourceAuthor
 from ..schemas.discovery import (
@@ -249,6 +250,16 @@ async def discover_references(
     ويبقى تسجيل الإفصاح كما هو في المسار القديم: نصّ الاستعلام يغادر
     المستأجر إلى طرفٍ ثالث، وقد يحمل عنوان بحثٍ غير منشور (§36.2).
     """
+    # **الحدّ قبل النداء الخارجي لا بعده.** كل بحثٍ هنا نداءان إلى فهرسين
+    # يمنحاننا الاستعمال بأدبٍ لا بعقد؛ وحلقةُ عميلٍ مندفعة تحرق ائتماننا
+    # عندهما فيُحجب مرورنا عن كل المستأجرين لا عن صاحب الحلقة وحده.
+    wait = throttle.check((principal.tenant_id, principal.user_id))
+    if wait:
+        raise AtheraError(
+            "evidence.reference_search_rate_limited", status_code=429,
+            retry_after_seconds=wait,
+        )
+
     providers = _discovery_providers()
     result = await discover(
         providers, payload.query, limit=payload.limit,

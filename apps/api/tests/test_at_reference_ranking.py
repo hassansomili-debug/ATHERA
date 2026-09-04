@@ -353,6 +353,39 @@ def test_a_failed_provider_still_leaves_the_survivor_ranked_and_explained():
 
 # ─────────────────── العقد على السلك ───────────────────
 
+def test_an_unauthenticated_search_is_401_never_a_generic_500():
+    """التعذّر يُصنَّف: ٤٠١ يقول «سجّل الدخول»، و٥٠٠ لا يقول شيئًا."""
+    pytest.importorskip("fastapi")
+    httpx = pytest.importorskip("httpx")
+
+    from athera_api.main import app
+
+    async def _call() -> int:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+            response = await http.post(
+                "/api/v1/references/search", json={"query": "digital transformation"},
+            )
+            return response.status_code
+
+    assert asyncio.run(_call()) == 401
+
+
+def test_the_request_contract_bounds_what_a_client_may_accept():
+    """المدخل من الشبكة محدود في العقد نفسه، فيُردّ ٤٢٢ لا يُبتلع."""
+    pytest.importorskip("pydantic")
+    from pydantic import ValidationError
+
+    from athera_api.schemas.discovery import ReferenceSearchRequest
+
+    with pytest.raises(ValidationError):
+        ReferenceSearchRequest(query="digital", accepted_terms=[str(n) for n in range(20)])
+    with pytest.raises(ValidationError):
+        ReferenceSearchRequest(query="x")
+    # والحال الطبيعية: قائمةٌ فارغة — الاقتراح معروضٌ لا مُطبَّق.
+    assert ReferenceSearchRequest(query="digital transformation").accepted_terms == []
+
+
 def test_the_wire_contract_carries_reasons_and_never_a_score():
     """الدرجة لا تعبر السلك: رقمٌ داخلي يصل الواجهة يُعرض يومًا نسبةً."""
     pytest.importorskip("pydantic")

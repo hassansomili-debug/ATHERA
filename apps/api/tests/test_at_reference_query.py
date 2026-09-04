@@ -14,6 +14,7 @@ import asyncio
 import pytest
 
 from athera_api.discovery import ProviderUnavailable, fetch_json, parse_query
+from athera_api.discovery import throttle
 from athera_api.discovery.resilience import RETRYABLE_STATUS, backoff_delay
 
 
@@ -232,3 +233,36 @@ def test_the_total_time_budget_ends_the_attempts_even_with_retries_left():
 
 def test_an_empty_body_on_success_is_an_empty_answer_not_a_crash():
     assert _run(send=_Recorder((200, None)), provider="crossref") == {}
+
+
+# ─────────────────── حدُّ المعدّل ───────────────────
+
+def test_a_normal_researchers_pace_is_never_throttled():
+    """الحدّ حمايةٌ من حلقةٍ معطوبة، لا تقنينٌ لباحثٍ يفكّر ويعيد صياغة سؤاله."""
+    throttle.reset()
+    assert all(throttle.check(("tenant", "user"), clock=lambda: 0.0) == 0 for _ in range(29))
+
+
+def test_a_runaway_client_is_told_how_long_to_wait_not_just_refused():
+    """«حاول لاحقًا» بلا رقمٍ تجعل العميل يعيد فورًا فيطيل حبسه بنفسه."""
+    throttle.reset()
+    for _ in range(throttle.MAX_SEARCHES_PER_WINDOW):
+        throttle.check(("tenant", "user"), clock=lambda: 0.0)
+    wait = throttle.check(("tenant", "user"), clock=lambda: 0.0)
+    assert 0 < wait <= int(throttle.WINDOW_SECONDS) + 1
+
+
+def test_one_runaway_tenant_does_not_throttle_another():
+    """الحدّ بمفتاح (مستأجر، مستخدم): حلقةُ واحدٍ لا تحبس جاره."""
+    throttle.reset()
+    for _ in range(throttle.MAX_SEARCHES_PER_WINDOW + 5):
+        throttle.check(("noisy", "user"), clock=lambda: 0.0)
+    assert throttle.check(("quiet", "user"), clock=lambda: 0.0) == 0
+
+
+def test_the_window_slides_so_the_limit_is_never_permanent():
+    throttle.reset()
+    for _ in range(throttle.MAX_SEARCHES_PER_WINDOW):
+        throttle.check(("tenant", "user"), clock=lambda: 0.0)
+    later = throttle.WINDOW_SECONDS + 1
+    assert throttle.check(("tenant", "user"), clock=lambda: later) == 0
