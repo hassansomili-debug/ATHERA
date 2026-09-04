@@ -96,12 +96,32 @@ async def tenant_session(tenant_id: UUID | None, actor_id: UUID | None = None) -
     """
     async with SessionFactory() as session:
         async with session.begin():
-            if tenant_id is not None:
+            # **ضبطان في عبارةٍ واحدة — لأن العبارة ثمنُها ذهابٌ وإياب.**
+            #
+            # قِيس من داخل آلة الإنتاج: عبارةٌ واحدة على اتصالٍ قائم تكلّف
+            # ٣٣٠ ميلي ثانية (٣٢٩–٣٣١، بلا تشتّت يُذكر) — لأن الخادم في
+            # سنغافورة والقاعدة في `ap-south-1`. ودورةُ الجلسة كاملةً ١٩٧٨
+            # ميلي ثانية، وهي ستُّ عبارات: فحصُ الاتصال، وبدءُ المعاملة،
+            # وضبطان، والاستعلام، والختم. فالحساب ينطبق تمامًا.
+            #
+            # فكلُّ عبارةٍ تُحذف تُوفّر ٣٣٠ ميلي ثانية على **كل** طلب مصادق.
+            # والضبطان مستقلّان لا يعتمد أحدهما على الآخر، فيُرسلان معًا.
+            #
+            # و`true` باقية في الاثنين: الضبط محلّي بالمعاملة، فلا يتسرّب
+            # سياق مستأجرٍ إلى الطلب التالي عبر اتصالٍ معاد استخدامه. وهذا
+            # هو ما يحمي العزل، ولا يُمَسّ من أجل سرعة.
+            if tenant_id is not None and actor_id is not None:
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true),"
+                         "       set_config('app.actor_id', :aid, true)"),
+                    {"tid": str(tenant_id), "aid": str(actor_id)},
+                )
+            elif tenant_id is not None:
                 await session.execute(
                     text("SELECT set_config('app.tenant_id', :tid, true)"),
                     {"tid": str(tenant_id)},
                 )
-            if actor_id is not None:
+            elif actor_id is not None:
                 await session.execute(
                     text("SELECT set_config('app.actor_id', :aid, true)"),
                     {"aid": str(actor_id)},

@@ -53,3 +53,38 @@ def test_slow_requests_are_announced_not_buried():
     assert "SLOW_REQUEST_MS" in MAIN, "لا حدّ للبطء"
     assert "logging.WARNING if duration_ms >= SLOW_REQUEST_MS else logging.INFO" in MAIN, (
         "البطء يُسجَّل كغيره")
+
+
+# ══════════ أرضيةُ الزمن: العبارةُ ثمنُها ذهابٌ وإياب ══════════
+
+DB = (pathlib.Path(__file__).resolve().parents[1]
+      / "athera_api" / "db.py").read_text(encoding="utf-8")
+
+
+def test_the_tenant_context_is_set_in_one_round_trip():
+    """**كلُّ عبارةٍ تُحذف تُوفّر ٣٣٠ ميلي ثانية على كل طلب مصادق.**
+
+    قِيس من داخل آلة الإنتاج: عبارةٌ واحدة على اتصالٍ قائم تكلّف ٣٣٠ ميلي
+    ثانية (٣٢٩–٣٣١) — الخادم في سنغافورة والقاعدة في `ap-south-1`. ودورةُ
+    الجلسة كاملةً ١٩٧٨ ميلي ثانية، وهي ستُّ عبارات. فالأرضية ليست عملًا
+    تطبيقيًّا ولا حجم بيانات: هي عددُ العبارات مضروبًا في زمن الذهاب
+    والإياب.
+
+    والضبطان مستقلّان لا يعتمد أحدهما على الآخر، فلا سبب لإرسالهما في
+    عبارتين.
+    """
+    assert "set_config('app.tenant_id', :tid, true)," in DB, "الضبطان ما زالا عبارتين"
+    assert "set_config('app.actor_id', :aid, true)" in DB
+
+
+def test_the_tenant_context_never_outlives_its_transaction():
+    """**والسرعة لا تُشترى بالعزل.**
+
+    `true` تعني `SET LOCAL`: الضبط يموت مع المعاملة. ولو صار `false` لتسرّب
+    سياقُ مستأجرٍ إلى الطلب التالي عبر اتصالٍ معاد استخدامه من المجمّع —
+    وذلك اختراقُ عزلٍ لا بطء.
+    """
+    import re
+
+    for call in re.findall(r"set_config\('app\.[a-z_]+',\s*:\w+,\s*(\w+)\)", DB):
+        assert call == "true", f"ضبطٌ يتجاوز معاملته: {call}"
