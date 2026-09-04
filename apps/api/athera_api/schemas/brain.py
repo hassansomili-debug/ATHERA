@@ -113,3 +113,32 @@ class TraceSummary(BaseModel):
     started_at: dt.datetime
     finished_at: dt.datetime | None
     blocked_reason: str | None
+
+
+class ScientificRuleResponse(BaseModel):
+    """قاعدةٌ علمية كما تُعرض للباحث — **برتبتها معها، لا بمخالفتها وحدها**.
+
+    الشاشة تعرض للباحث «تنبيهًا منهجيًّا» ولا تقول له من أين جاء ولا مَن
+    راجعه، فيقرأه حكمًا نهائيًّا. و`status` و`provenance` هما ما يفرّق بين
+    «قاعدةٌ اعتمدها مختصّ» و«قاعدةٌ كتبها مبرمج ولم يراجعها أحد» — وكلها
+    اليوم من الثانية.
+
+    و`is_enforceable` تُرسَل محسوبةً من الخادم لا مستنتَجةً في المتصفّح:
+    شرطُ الحجب مكتوبٌ في `ScientificRule.is_enforceable`، وإعادةُ كتابته في
+    الواجهة تجعل شاشةً تعِد بالحجب بعد اعتمادٍ لم يقع.
+    """
+
+    id: str
+    category: str
+    severity: str
+    status: str
+    is_enforceable: bool
+    condition: str
+    condition_ar: str
+    condition_en: str
+    message: str
+    message_ar: str
+    message_en: str
+    provenance: str
+    related_issue_keys: list[str]
+    version: int

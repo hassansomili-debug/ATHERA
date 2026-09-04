@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
@@ -14,30 +15,46 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
+from ..models.analysis import (
+    AnalysisOutputRow,
+    AnalysisPlanRow,
+    AnalysisRun,
+    DataDictionary,
+    InterpretationRow,
+    PlannedTestRow,
+)
 from ..models.golden_thread import (
+    Construct,
     Instrument,
     InstrumentItem,
     Method,
     Protocol,
+    Theory,
     ThreadElement,
     ThreadLink,
     Variable,
 )
+from ..models.portfolio import ResearchProject
 from ..schemas.golden_thread import (
     ConsistencyResponse,
     ElementCreateRequest,
     ElementResponse,
     FindingResponse,
     GateSubmitRequest,
+    GoldenThreadView,
     LinkCreateRequest,
     MethodologyResponse,
     ProtocolCreateRequest,
     ProtocolResponse,
     RequirementResponse,
+    ThreadConnectionView,
+    ThreadNodeView,
+    ThreadReadNoteView,
+    ThreadStageView,
 )
 from ..services import audit
 from ..services.golden_thread import graph as thread_graph
-from ..services.golden_thread import methodology, score
+from ..services.golden_thread import methodology, score, weave
 
 router = APIRouter(prefix="/api/v1", tags=["golden-thread"])
 
@@ -199,6 +216,212 @@ async def consistency(
 ) -> ConsistencyResponse:
     result = score.compute(await _build_graph(session, project_id))
     return _consistency_response(result, principal.locale)
+
+
+# ────────────────────────── الخيط كما يُعرض للباحث ──────────────────────────
+
+NO_SCORE_NOTE_AR = (
+    "لا تُعرض درجة اتساق هنا: الدرجة تُحسب لبوابة البروتوكول، ورقمٌ واحد يخفي "
+    "الفرق بين خيطٍ تنقصه وصلةٌ وخيطٍ ينقصه منهج. وكل خطٍّ أدناه خلفه صفٌّ "
+    "مخزَّن، وما لا صفَّ له يُترك فراغًا."
+)
+NO_SCORE_NOTE_EN = (
+    "No consistency score is shown here: the score is computed for the protocol gate, and "
+    "one number hides the difference between a thread missing a link and one missing a "
+    "method. Every line below rests on a stored row; what has none is left blank."
+)
+
+
+async def _thread_snapshot(session: AsyncSession, tenant_id: uuid.UUID,
+                           project_id: uuid.UUID) -> weave.ThreadSnapshot:
+    """يقرأ صفوف هذا البحث كما هي — **ولا يشتقّ منها شيئًا**.
+
+    والاشتقاق كله في `services/golden_thread/weave.py` لأنه منطقٌ علمي يجب
+    أن يُختبر بلا قاعدة بيانات؛ وهذه الدالة نقلٌ من الجداول إلى بنيةٍ خالصة
+    لا أكثر.
+
+    وكل استعلامٍ هنا يذكر المستأجر والمشروع، أو يمرّ بصفٍّ يذكرهما. ولا
+    قارئ يقرأ بالمستأجر وحده: الحادثة أثبتت أن RLS قد تسقط بسطرٍ في سرّ
+    نشر، فتبقى الطبقة الثانية.
+    """
+    elements = (await session.execute(
+        select(ThreadElement).where(ThreadElement.tenant_id == tenant_id,
+                                    ThreadElement.project_id == project_id)
+        .order_by(ThreadElement.ordinal)
+    )).scalars().all()
+    links = (await session.execute(
+        select(ThreadLink).where(ThreadLink.tenant_id == tenant_id,
+                                 ThreadLink.project_id == project_id)
+    )).scalars().all()
+    theories = (await session.execute(
+        select(Theory).where(Theory.tenant_id == tenant_id,
+                             Theory.project_id == project_id)
+    )).scalars().all()
+    constructs = (await session.execute(
+        select(Construct).where(Construct.tenant_id == tenant_id,
+                                Construct.project_id == project_id)
+    )).scalars().all()
+    variables = (await session.execute(
+        select(Variable).where(Variable.tenant_id == tenant_id,
+                               Variable.project_id == project_id)
+    )).scalars().all()
+    instruments = (await session.execute(
+        select(Instrument).where(Instrument.tenant_id == tenant_id,
+                                 Instrument.project_id == project_id)
+    )).scalars().all()
+    method = (await session.execute(
+        select(Method).where(Method.tenant_id == tenant_id, Method.project_id == project_id)
+        .order_by(Method.created_at.desc()).limit(1)
+    )).scalars().first()
+
+    measured: dict[uuid.UUID, list[str]] = {}
+    if instruments:
+        items = (await session.execute(
+            select(InstrumentItem).where(
+                InstrumentItem.tenant_id == tenant_id,
+                InstrumentItem.instrument_id.in_([i.id for i in instruments]))
+        )).scalars().all()
+        for item in items:
+            if item.variable_id:
+                measured.setdefault(item.instrument_id, []).append(str(item.variable_id))
+
+    plans = (await session.execute(
+        select(AnalysisPlanRow).where(AnalysisPlanRow.tenant_id == tenant_id,
+                                      AnalysisPlanRow.project_id == project_id)
+    )).scalars().all()
+    plan_ids = [p.id for p in plans]
+    tests: Sequence[PlannedTestRow] = ()
+    runs: Sequence[AnalysisRun] = ()
+    outputs: Sequence[AnalysisOutputRow] = ()
+    implications: Sequence[InterpretationRow] = ()
+    columns: dict[uuid.UUID, list[str]] = {}
+    if plan_ids:
+        tests = (await session.execute(
+            select(PlannedTestRow).where(PlannedTestRow.tenant_id == tenant_id,
+                                         PlannedTestRow.plan_id.in_(plan_ids))
+        )).scalars().all()
+        runs = (await session.execute(
+            select(AnalysisRun).where(AnalysisRun.tenant_id == tenant_id,
+                                      AnalysisRun.plan_id.in_(plan_ids))
+            .order_by(AnalysisRun.started_at)
+        )).scalars().all()
+    if runs:
+        outputs = (await session.execute(
+            select(AnalysisOutputRow).where(AnalysisOutputRow.tenant_id == tenant_id,
+                                            AnalysisOutputRow.run_id.in_([r.id for r in runs]))
+        )).scalars().all()
+        # **المتغيّر يُقرأ من مفتاح قاموس البيانات لا من اسمٍ في نصّ.**
+        # `planned_tests.variables` قائمةُ نصوصٍ حرّة، ومطابقتُها بأسماء
+        # المتغيّرات تُنتج وصلةً بلا صفّ — وهي بالضبط ما تمنعه هذه الشاشة.
+        dictionary = (await session.execute(
+            select(DataDictionary).where(
+                DataDictionary.tenant_id == tenant_id,
+                DataDictionary.dataset_version_id.in_([r.dataset_version_id for r in runs]),
+                DataDictionary.variable_id.is_not(None))
+        )).scalars().all()
+        for column in dictionary:
+            columns.setdefault(column.dataset_version_id, []).append(str(column.variable_id))
+        # **الدلالة الإدارية وحدها هي التوصية.** والطبقات الأربع في صفٍّ
+        # واحد (§18.3)، فصفٌّ بلا طبقةٍ إدارية تفسيرٌ لا توصية — وعرضُه
+        # توصيةً يجعل «فُسِّرت النتيجة» تُقرأ «أُوصي بشيء».
+        implications = [
+            row for row in (await session.execute(
+                select(InterpretationRow).where(
+                    InterpretationRow.tenant_id == tenant_id,
+                    InterpretationRow.output_id.in_([o.id for o in outputs]))
+            )).scalars().all()
+            if (row.managerial_ar or "").strip()
+        ] if outputs else []
+
+    def _run_label(row: AnalysisRun) -> str:
+        # التشغيلة بلا عمود تسمية، فتُسمّى بما نفّذته — وهو ما يعرفه الباحث
+        # عنها. و«تشغيلة» وحدها تجعل خمس تشغيلاتٍ خمسةَ أسطرٍ متطابقة.
+        return " · ".join(row.executed_test_keys or ()) or row.tool
+
+    return weave.ThreadSnapshot(
+        elements=[weave.ElementRow(
+            id=str(e.id), element_type=e.element_type, label=e.label_ar,
+            detail=e.detail_ar, theory_id=str(e.theory_id) if e.theory_id else None)
+            for e in elements],
+        links=[weave.LinkRow(str(link.source_element_id), str(link.target_element_id),
+                             link.link_type) for link in links],
+        theories=[weave.TheoryRow(str(t.id), t.name_ar) for t in theories],
+        constructs=[weave.ConstructRow(
+            str(c.id), c.name_ar, str(c.theory_id) if c.theory_id else None)
+            for c in constructs],
+        variables=[weave.VariableRow(
+            id=str(v.id), label=v.name_ar,
+            construct_id=str(v.construct_id) if v.construct_id else None,
+            has_operational_definition=bool((v.operational_definition_ar or "").strip()),
+            appears_in_title=v.appears_in_title) for v in variables],
+        instruments=[weave.InstrumentRow(
+            str(i.id), i.name_ar, tuple(measured.get(i.id, ()))) for i in instruments],
+        method=(weave.MethodRow(
+            id=str(method.id),
+            label=method.design_label_ar or method.study_type,
+            study_type=method.study_type, design_family=method.design_family)
+            if method is not None else None),
+        planned_tests=[weave.PlannedTestRow(
+            id=str(t.id), test_key=t.test_key, plan_id=str(t.plan_id),
+            hypothesis_id=str(t.hypothesis_id) if t.hypothesis_id else None)
+            for t in tests],
+        runs=[weave.RunRow(
+            id=str(r.id), label=_run_label(r), plan_id=str(r.plan_id),
+            dictionary_variable_ids=tuple(columns.get(r.dataset_version_id, ())))
+            for r in runs],
+        outputs=[weave.OutputRow(str(o.id), o.label_ar, str(o.run_id), o.test_key)
+                 for o in outputs],
+        implications=[weave.ImplicationRow(
+            id=str(row.id), label=(row.managerial_ar or "")[:255],
+            output_id=str(row.output_id)) for row in implications],
+    )
+
+
+@router.get("/projects/{project_id}/thread/golden-view", response_model=GoldenThreadView)
+async def golden_view(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> GoldenThreadView:
+    """الخيط الذهبي مرسومًا — **ولا خطّ إلا خلفه صفّ**.
+
+    وهذه قراءةٌ لا تكتب شيئًا ولا تفتح بوابة. والبوابة قرارٌ آخر في
+    `submit-gate`، والدرجة تُحسب هناك ولا تُنقل إلى هنا: الباحث الذي يقرأ
+    «٧٤٪» يطمئنّ، والذي يقرأ «ثلاث وصلات لا صفَّ لها» يذهب فيسجّلها.
+    """
+    project = (await session.execute(
+        select(ResearchProject).where(ResearchProject.id == project_id,
+                                      ResearchProject.tenant_id == principal.tenant_id,
+                                      ResearchProject.deleted_at.is_(None))
+    )).scalar_one_or_none()
+    if project is None:
+        raise NotFound("workspace.project_not_found")
+
+    woven = weave.weave(await _thread_snapshot(session, principal.tenant_id, project_id))
+    arabic = principal.locale != "en"
+
+    return GoldenThreadView(
+        project_id=project_id, title=project.working_title_ar,
+        stages=[ThreadStageView(
+            key=key, label=label_ar if arabic else label_en,
+            label_ar=label_ar, label_en=label_en,
+            nodes=[ThreadNodeView(id=n.id, stage=n.stage, label=n.label,
+                                  origin=n.origin, detail=n.detail)
+                   for n in woven.stage_nodes(key)])
+            for key, label_ar, label_en in weave.STAGES],
+        connections=[ThreadConnectionView(
+            stage_from=c.stage_from, stage_to=c.stage_to, state=c.state,
+            detail=c.detail_ar if arabic else c.detail_en,
+            detail_ar=c.detail_ar, detail_en=c.detail_en,
+            source_id=c.source_id, source_label=c.source_label,
+            target_id=c.target_id, target_label=c.target_label, basis=c.basis)
+            for c in woven.connections],
+        read_notes=[ThreadReadNoteView(
+            key=n.key, detail=n.detail_ar if arabic else n.detail_en,
+            detail_ar=n.detail_ar, detail_en=n.detail_en) for n in woven.read_notes],
+        counts=woven.counts(),
+        note=NO_SCORE_NOTE_AR if arabic else NO_SCORE_NOTE_EN,
+        note_ar=NO_SCORE_NOTE_AR, note_en=NO_SCORE_NOTE_EN)
 
 
 @router.get("/methodology/requirements/{study_type}", response_model=MethodologyResponse)

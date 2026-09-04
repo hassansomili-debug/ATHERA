@@ -17,6 +17,7 @@ from ..deps import Principal, get_principal, get_session
 from ..errors import NotFound
 from ..models.brain import GuardrailCheck
 from ..models.runs import AgentRun, ModelRun, ToolRun
+from ..research_brain.catalogue import RULES
 from ..schemas.brain import (
     AgentRunResponse,
     AgentSpecResponse,
@@ -25,6 +26,7 @@ from ..schemas.brain import (
     CitationResponse,
     GuardrailCheckResponse,
     ModelRunResponse,
+    ScientificRuleResponse,
     ToolRunResponse,
     ToolSpecResponse,
     TraceResponse,
@@ -67,6 +69,39 @@ async def list_tools(principal: Principal = Depends(get_principal)) -> list[Tool
             returns_classification=spec.returns_classification,
         )
         for spec in tool_registry.all_tools().values()
+    ]
+
+
+@router.get("/brain/rules", response_model=list[ScientificRuleResponse])
+async def list_scientific_rules(
+    principal: Principal = Depends(get_principal),
+) -> list[ScientificRuleResponse]:
+    """سجل القواعد العلمية — **رتبتها ومصدرها، لا حكمها على بحثٍ بعينه**.
+
+    وهذه القراءة لا تلمس بحثًا ولا تُشغّل قاعدة: تقييمُ بحثٍ بعينه يخرج من
+    `…/projects/{id}/assessment` وحده. وموضعُها هنا هو موضع `/brain/agents`
+    و`/brain/tools` نفسه وللسبب نفسه: الحوكمة تُفتَّش من خارج الشيفرة.
+
+    ولولاها لعرضت الشاشة «تنبيهًا منهجيًّا» بمعرّف قاعدةٍ مجرّد، فيقرؤه
+    الباحث حكمًا معتمَدًا وهو مسوّدة. فالرتبة والمصدر يصلان مع التنبيه أو
+    لا يصل التنبيه.
+    """
+    return [
+        ScientificRuleResponse(
+            id=rule.id,
+            category=rule.category.value,
+            severity=rule.severity,
+            status=rule.status.value,
+            is_enforceable=rule.is_enforceable,
+            condition=_pick(principal.locale, rule.condition_ar, rule.condition_en),
+            condition_ar=rule.condition_ar, condition_en=rule.condition_en,
+            message=_pick(principal.locale, rule.message_ar, rule.message_en),
+            message_ar=rule.message_ar, message_en=rule.message_en,
+            provenance=rule.provenance,
+            related_issue_keys=sorted(rule.related_issue_keys),
+            version=rule.version,
+        )
+        for rule in RULES
     ]
 
 
