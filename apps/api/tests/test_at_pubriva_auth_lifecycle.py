@@ -1043,3 +1043,32 @@ def test_a_stuck_processing_state_says_which_question_failed():
     assert "process=[" in code and "listCalls=" in code, "الحال العالقة تُبلَّغ بلا سياق"
     assert 'path.startsWith("/api/v1/theses/process-file/")' in code, "طلب المعالجة لا يُرصد"
     assert "r.request().method()}:${r.status()}" in code, "الدليل يحمل أكثر مما يلزم"
+
+
+def test_a_consent_granted_elsewhere_is_seen_in_the_library():
+    """**إذنٌ يُمنح في شاشةٍ أخرى يجب أن يُرى في هذه.**
+
+    الباحث يمنح الإذن في صفحة مراجعة الرسالة ثم يعود إلى مكتبته، والخادم
+    يكون قد استأنف فعلًا — قِيس في الإنتاج فمضى `parsing` ← `extracting` ←
+    `awaiting_review` في خمسٍ وثلاثين ثانية. والبطاقة كانت تبقى «بانتظار
+    موافقتك للمتابعة»: تطلب منه إذنًا **قد منحه**، إلى أن يعيد التحميل
+    بنفسه.
+
+    و`awaiting_consent` حالٌ مستقرّة بحقّ وقد تدوم أيامًا، فاستطلاعُها
+    دائمًا قصفٌ بلا سبب. فالترقّب محدودٌ بميزانية تُمنح عند العودة إلى
+    الشاشة وتُستهلك بالقراءة.
+    """
+    library = (WEB / "src" / "app" / "[locale]" / "library"
+               / "page.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(library))
+    assert 'file.processing_status === "awaiting_consent" && consentWatch.current > 0' in code, (
+        "الشاشة لا ترى إذنًا مُنح في غيرها")
+    assert "consentWatch.current -= 1" in code, "الترقّب لا يُستهلك، فهو بلا نهاية"
+    assert 'document.addEventListener("visibilitychange"' in code, (
+        "العودة إلى الشاشة ليست سببَ قراءة")
+    assert 'document.removeEventListener("visibilitychange"' in code, "مستمعٌ بلا تنظيف"
+
+    import re
+    budget = int(re.search(r"const CONSENT_WATCH_POLLS = (\d+);", code).group(1))
+    # يكفي الخمسَ والثلاثين ثانية المقيسة، ولا يمتدّ بلا حدّ.
+    assert 14 <= budget <= 48, f"ميزانية الترقّب {budget} لا تناسب ما قيس"
