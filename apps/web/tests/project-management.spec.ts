@@ -430,13 +430,31 @@ test.describe("project management surface", () => {
     await page.goto(`/${AR}/portfolio/trash`);
     await expect(page.getByText(LOADING_AR)).toHaveCount(0, { timeout: 20_000 });
 
-    await page.getByRole("button", { name: /^ماذا يُتلَف\?: مشروع بدون عنوان/ }).click();
+    // **الزرُّ يُطلب داخل بطاقته، لا في الصفحة كلّها.**
+    //
+    // وضوابطُ التلف تتكرّر بتكرار البحوث؛ فمُحدِّدٌ على مستوى الصفحة قد
+    // يُصيب بطاقةً أخرى يوم تصير البطاقات اثنتين — ولا شيء يشتكي، لأنّ
+    // زرًّا وُجد وضُغط. فالنطاقُ البطاقة، والاسمُ يحمل هدفه.
+    const card = page
+      .getByTestId("trashed-project")
+      .filter({ hasText: "مشروع بدون عنوان" });
+    await expect(card).toHaveCount(1);
+
+    const preview = card.getByRole("button", {
+      name: /^ماذا يُتلَف؟: مشروع بدون عنوان$/,
+    });
+    await expect(preview).toHaveCount(1);
+    await preview.click();
     await expect(page.getByTestId("deletion-preview")).toBeVisible();
     // **بعشرة أعدادٍ باسمها، لا بـ«هل أنت متأكد؟».**
     await expect(page.getByTestId("deletion-preview").getByRole("listitem")).toHaveCount(10);
     await expect(page.getByText("حدثًا في سجلّ التدقيق يشير إلى هذا البحث: 44")).toBeVisible();
 
-    await page.getByRole("button", { name: /^إتلاف دائم: مشروع بدون عنوان/ }).click();
+    const destroy = card.getByRole("button", {
+      name: /^إتلاف دائم: مشروع بدون عنوان$/,
+    });
+    await expect(destroy).toHaveCount(1);
+    await destroy.click();
     await expect(page.getByTestId("deletion-blocked")).toBeVisible();
     // والبحث ما زال معروضًا في السلّة — الوقف ليس إتلافًا مؤجَّلًا.
     await expect(page.getByTestId("trashed-project")).toHaveCount(1);
