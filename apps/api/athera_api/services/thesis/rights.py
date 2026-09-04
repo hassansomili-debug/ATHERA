@@ -176,7 +176,23 @@ async def record_consent(
     agreement_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     consent_file_id: uuid.UUID | None = None,
+    evidence_ar: str | None = None,
 ) -> AuthorshipAgreement:
+    """§24 — **الموافقةُ فعلُ صاحبها، ولا تُسجَّل عنه صامتةً** (الترحيل 0028).
+
+    وكان هذا الموضع يكتب `granted` لأيِّ اتفاقٍ بمعرِّفه، **ولا يسأل مَن
+    الطالب**. فأيُّ مصادَقٍ في المستأجر كان يمنح موافقةَ أيِّ مؤلفٍ مشارك،
+    ولا يبقى في السجلّ ما يميّز موافقةَ صاحبها من موافقةٍ كُتبت عنه. وهذا
+    ما يجعل بوابة GT1 تفتح على ورقةٍ تحمل اسمَ من لم يوافق.
+
+    فصار للموافقة طريقان معلنان لا طريقٌ واحد صامت:
+
+      `self`            الطرفُ مربوطٌ بحساب، والطالبُ هو صاحبه.
+      `administrative`  سندٌ مكتوب — ورقةٌ موقَّعة لدى الجهة — ويُوسم كذلك.
+
+    وطرفٌ بلا حساب مربوط لا يملك «ذاتيّةً» أصلًا: لا سبيل إلى إثبات أنه
+    هو. فيلزمه السند، ويُقرأ في التدقيق بما هو عليه.
+    """
     agreement = (
         await session.execute(
             select(AuthorshipAgreement).where(AuthorshipAgreement.id == agreement_id)
@@ -185,16 +201,43 @@ async def record_consent(
     if agreement is None:
         raise NotFound("thesis.agreement_not_found")
 
+    party = (
+        await session.execute(
+            select(AuthorshipParty).where(AuthorshipParty.id == agreement.party_id)
+        )
+    ).scalar_one_or_none()
+    if party is None:
+        raise NotFound("thesis.agreement_not_found")
+
+    evidence = (evidence_ar or "").strip()
+    if party.user_id is not None and party.user_id == actor_user_id:
+        method = "self"
+        evidence = ""
+    else:
+        # ليست 404: الاتفاق موجود، والطالبُ ممنوعٌ من ادّعاء موافقةٍ ليست له.
+        # والمسارُ الإداري مفتوحٌ بسندٍ مكتوب — معلَنًا لا متخفّيًا.
+        if len(evidence) < 12:
+            raise RightsGateError("thesis.consent_is_personal",
+                                  agreement_id=str(agreement_id))
+        method = "administrative"
+
     agreement.consent_status = "granted"
     agreement.consent_file_id = consent_file_id
     agreement.consent_recorded_at = dt.datetime.now(dt.UTC)
+    agreement.consent_recorded_by = actor_user_id
+    agreement.consent_method = method
+    agreement.consent_evidence_ar = evidence or None
 
     await audit.record(
         session, tenant_id=tenant_id, action="authorship.consent_recorded",
         object_type="authorship_agreement", object_id=agreement.id,
         actor_user_id=actor_user_id,
         state_before={"consent_status": "pending"},
-        state_after={"consent_status": "granted", "has_file": consent_file_id is not None},
+        state_after={"consent_status": "granted", "method": method,
+                     "has_file": consent_file_id is not None},
+        reason="§24 — consent is bound to the identity that gave it: either the "
+               "party's own authenticated account, or a separate evidenced "
+               "administrative path that is never presented as the author's own act",
     )
     return agreement
 

@@ -13,22 +13,19 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture
 async def client(two_tenants):
+    """**البحثُ يُنشأ من الطريق الذي يسلكه الباحث** — لا بزرعٍ في القاعدة.
+
+    وكان يُزرع صفًّا مباشرةً، فينشأ بحثٌ لا مالك له: لا ملفَّ باحثٍ يشير
+    إليه، ولا حدثَ إنشاءٍ في السجلّ. وذلك بالضبط ما لا يقع في المنتج، وهو
+    ما كان يخفي أن الفريق كان بلا مالكٍ أصلًا — فيقرأ أيُّ مصادَقٍ فريقَ
+    أيِّ بحثٍ في المستأجر.
+    """
     import httpx
 
-    from athera_api.db import tenant_session
     from athera_api.main import app
-    from athera_api.models.portfolio import ResearchProject
     from athera_api.security import issue_access_token
 
     tenant = two_tenants["a"]
-    async with tenant_session(tenant["tenant_id"], tenant["user_id"]) as session:
-        project = ResearchProject(
-            tenant_id=tenant["tenant_id"], working_title_ar="مشروع اختبار", status="planned",
-        )
-        session.add(project)
-        await session.flush()
-        project_id = project.id
-
     token = issue_access_token(
         user_id=tenant["user_id"], tenant_id=tenant["tenant_id"],
         roles=["researcher"], mfa_satisfied=True,
@@ -38,7 +35,10 @@ async def client(two_tenants):
         transport=transport, base_url="http://test",
         headers={"Authorization": f"Bearer {token}", "Accept-Language": "ar"},
     ) as http:
-        yield http, str(project_id), tenant
+        created = await http.post("/api/v1/workspace/projects",
+                                  json={"title_ar": "مشروع اختبار"})
+        assert created.status_code == 201, created.text
+        yield http, created.json()["id"], tenant
 
     from athera_api.db import engine
 
@@ -98,25 +98,63 @@ async def test_non_human_author_is_refused_over_http(client):
     assert response.json()["error"]["code"] == "team.invalid_member"
 
 
-async def test_consent_is_recorded_per_author_and_only_once(client):
-    """§24 — لا زرّ «وافق الجميع»، ولا موافقة تُسجَّل مرتين."""
+async def test_a_project_leader_cannot_consent_on_behalf_of_a_coauthor(client):
+    """§24 — **وكان هذا المسار يسمح بذلك، وهو تزوير تأليف.**
+
+    الصيغةُ القديمة لهذا الفحص كانت تثبت العطب وتسمّيه صوابًا: رئيسُ الفريق
+    يطلب `/members/{id}/consent` لعضوٍ ليس هو، فيُسجَّل. فتصير الورقةُ تحمل
+    اسمَ من لم يوافق، ويقول السجلّ إنه وافق.
+
+    فما يُثبَت هنا الآن أقوى من «تُسجَّل مرّةً واحدة»:
+
+      ١) لا مسار في المنصّة يقبل معرِّف عضوٍ آخر للموافقة الشخصية أصلًا.
+      ٢) والمسارُ الإداري موجودٌ ومعلَن، **ويلزمه سندٌ مكتوب**، ويُوسم
+         `administrative` فلا يُقرأ أبدًا كموافقةٍ منحها صاحبها.
+      ٣) وما لا حساب له لا يملك موافقةً ذاتية — لا سبيل إلى إثبات أنه هو.
+    """
     http, project_id, _tenant = client
     created = await http.post(f"/api/v1/projects/{project_id}/members", json={
         "display_name": "نورة العتيبي", "role": "co_author",
         "credit_roles": ["methodology"],
     })
     assert created.status_code == 201, created.text
-    member_id = created.json()["id"]
-    assert created.json()["consent_recorded_at"] is None
-    assert created.json()["credit_labels"] == ["المنهجية"]
+    member = created.json()
+    member_id = member["id"]
+    assert member["consent_recorded_at"] is None
+    assert member["credit_labels"] == ["المنهجية"]
+    # **العضويةُ ليست تأليفًا**: تُضاف ولا تحمل تأليفًا ولا موافقة.
+    assert member["is_author"] is False
+    assert member["consent_state"] == "not_requested"
+    # ولا ربطَ بحساب من جسم الطلب — الربط بدعوةٍ يقبلها صاحبها.
+    assert member["is_account_linked"] is False
 
-    first = await http.post(
+    # ١) المسارُ الذي كان يقبل معرِّف غيرك لم يعد له وجود.
+    gone = await http.post(
         f"/api/v1/projects/{project_id}/members/{member_id}/consent")
-    assert first.status_code == 200, first.text
-    assert first.json()["consent_recorded_at"] is not None
+    assert gone.status_code == 404, gone.text
 
+    # ٢) والمسارُ الإداري يرفض بلا سند.
+    await http.put(f"/api/v1/projects/{project_id}/members/{member_id}/authorship",
+                   json={"is_author": True, "author_position": 2})
+    bare = await http.post(
+        f"/api/v1/projects/{project_id}/members/{member_id}/administrative-consent",
+        json={"evidence_ar": "لا"})
+    assert bare.status_code == 422, bare.text
+
+    # ويقبل بسندٍ مكتوب — **موسومًا بأنه ليس موافقةَ صاحبها**.
+    documented = await http.post(
+        f"/api/v1/projects/{project_id}/members/{member_id}/administrative-consent",
+        json={"evidence_ar": "إقرار تأليف موقَّع بخطّ اليد، محفوظ لدى عمادة البحث"})
+    assert documented.status_code == 200, documented.text
+    body = documented.json()
+    assert body["consent_method"] == "administrative"
+    assert body["consent_recorded_at"] is not None
+    assert body["consent_state"] == "granted"
+
+    # ولا تُسجَّل مرتين — الحكمُ المسجَّل لا يُكتب فوقه.
     again = await http.post(
-        f"/api/v1/projects/{project_id}/members/{member_id}/consent")
+        f"/api/v1/projects/{project_id}/members/{member_id}/administrative-consent",
+        json={"evidence_ar": "إقرار تأليف موقَّع بخطّ اليد، محفوظ لدى عمادة البحث"})
     assert again.status_code == 422
     assert again.json()["error"]["code"] == "team.consent_already_recorded"
 

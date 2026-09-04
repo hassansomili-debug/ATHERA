@@ -637,6 +637,92 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "لا يُنسخ قرار من مشروع آخر.",
         "en": "A decision from another project cannot be superseded here.",
     },
+    # ── فرق البحث ٢ (الترحيل 0028) ──
+    "team.not_a_project_member": {
+        "ar": "لست عضوًا في هذا البحث.", "en": "You are not a member of this project.",
+    },
+    "team.access_suspended": {
+        "ar": "وصولك إلى هذا البحث موقوف.",
+        "en": "Your access to this project is suspended.",
+    },
+    "team.access_removed": {
+        "ar": "أُزيلت عضويتك من هذا البحث.",
+        "en": "Your membership in this project was removed.",
+    },
+    "team.invitation_not_accepted": {
+        "ar": "دعوتك إلى هذا البحث لم تُقبل بعد.",
+        "en": "Your invitation to this project has not been accepted yet.",
+    },
+    "team.permission_required": {
+        "ar": "لا تملك الصلاحية المطلوبة في هذا البحث.",
+        "en": "You do not hold the required permission in this project.",
+    },
+    "team.unknown_permission": {
+        "ar": "صلاحية غير معروفة.", "en": "Unknown project permission.",
+    },
+    "team.unknown_access_state": {
+        "ar": "حال وصول غير معروفة.", "en": "Unknown access state.",
+    },
+    "team.unknown_event_kind": {
+        "ar": "نوع حدث غير معروف في سجل الفريق.",
+        "en": "Unknown team lifecycle event kind.",
+    },
+    "team.invalid_invitation": {
+        "ar": "بيانات الدعوة غير صالحة.", "en": "Invalid invitation details.",
+    },
+    "team.invitation_not_found": {
+        "ar": "الدعوة غير موجودة.", "en": "Invitation not found.",
+    },
+    "team.invitation_not_open": {
+        "ar": "هذه الدعوة لم تعد قائمة.", "en": "This invitation is no longer open.",
+    },
+    "team.invitation_expired": {
+        "ar": "انتهت مهلة الدعوة.", "en": "The invitation has expired.",
+    },
+    "team.invitation_already_live": {
+        "ar": "توجد دعوة قائمة لهذا البريد في هذا البحث.",
+        "en": "A live invitation already exists for this email in this project.",
+    },
+    "team.invitation_not_yours": {
+        "ar": "هذه الدعوة ليست لحسابك.",
+        "en": "This invitation was not issued to your account.",
+    },
+    "team.already_a_member": {
+        "ar": "هذا الحساب عضو في البحث بالفعل.",
+        "en": "This account is already a member of the project.",
+    },
+    "team.consent_is_personal": {
+        "ar": "الموافقة على التأليف فعل صاحبها؛ لا تُسجَّل عنه (§24).",
+        "en": "Author consent is the author's own act; it is not recorded on their "
+              "behalf (§24).",
+    },
+    "team.use_the_personal_consent_route": {
+        "ar": "موافقتك أنت تُسجَّل من مسارها الشخصي، لا من المسار الإداري.",
+        "en": "Record your own consent through the personal route, not the "
+              "administrative one.",
+    },
+    "team.consent_needs_authorship": {
+        "ar": "الموافقة تلزم من أُعلن مؤلفًا؛ وعضوية الفريق ليست تأليفًا (§24).",
+        "en": "Consent applies to a declared author; team membership is not "
+              "authorship (§24).",
+    },
+    "team.consent_needs_an_account": {
+        "ar": "الموافقة تحتاج عضوًا مربوطًا بحساب حقيقي.",
+        "en": "Consent requires a member linked to a real account.",
+    },
+    "team.proxy_consent_needs_evidence": {
+        "ar": "الموافقة الإدارية تلزمها إشارة إلى سند مكتوب.",
+        "en": "Administrative consent requires a reference to written evidence.",
+    },
+    "team.last_manager": {
+        "ar": "لا يبقى البحث بلا من يديره.",
+        "en": "A project cannot be left with nobody able to manage its team.",
+    },
+    "thesis.consent_is_personal": {
+        "ar": "الموافقة على التأليف فعل صاحبها؛ وتسجيلها عنه يلزمه سند مكتوب (§24).",
+        "en": "Author consent is the author's own act; recording it for them "
+              "requires written evidence (§24).",
+    },
     "analysis.dictionary_frozen": {
         "ar": "لا يُعدَّل قاموس نسخة مجمَّدة (§17.4).",
         "en": "The dictionary of a frozen version cannot be edited (§17.4).",

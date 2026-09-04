@@ -13,6 +13,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     Text,
@@ -86,20 +87,62 @@ class ResearchProject(Base, TenantScoped, Timestamped):
 
 
 class ProjectMember(Base, TenantScoped, Timestamped):
+    """عضوٌ في بحث — **وأربعةُ أشياء لا تُخلط فيه** (الترحيل 0028).
+
+      الدور        `role` — موقعُه في الفريق.
+      الصلاحية     صفوفٌ في `project_member_permissions`، لا تُشتقّ من الدور.
+      مساهمةُ CRediT `credit_roles` — **إقرارٌ يُعلَن**، ولا يُستنتج من نشاط.
+      التأليف      `is_author` — إعلانٌ صريح، ولا ينشأ من وجود هذا الصفّ.
+
+    فمحلّلٌ إحصائيّ له مساهمةُ تحليل ولا إدارةَ له على المشروع؛ ومشرفٌ
+    يراجع المنهجية ولا يحرّر البيانات؛ وعضوُ فريقٍ **ليس مؤلفًا** حتى
+    يُعلَن ذلك ويوافق هو عليه بحسابه.
+    """
+
     __tablename__ = "project_members"
+    __table_args__ = (
+        UniqueConstraint("id", "project_id", name="uq_project_members_project_scoped"),
+    )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     project_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("research_projects.id", ondelete="CASCADE"), nullable=False
     )
+    # **الربطُ بحساب حقيقي شرطُ التعاون.** واسمٌ معروض بلا حساب صفٌّ في
+    # قائمة، لا شريكٌ يدخل ويوافق ويُنسب إليه فعل.
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    invited_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="co_author")
+    access_state: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    suspended_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    removed_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     # §24 — أدوار CRediT تُسجَّل ولا تُستنتج.
     credit_roles: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+    # ── موافقةُ التأليف: مَن وافق، ومتى، وبأيّ طريق ──
+    #
+    # **العطبُ الذي أُصلح في 0028**: كان `consent_recorded_at` وحده، فكان
+    # السجلّ يقول «وُوفق عليه» ولا يقول مَن وافق. وأيُّ مصادَقٍ في المستأجر
+    # كان يكتبها عن أيِّ عضو. والقيد
+    # `ck_project_members_self_consent_is_the_member` يفرض الآن في القاعدة
+    # أن تكون الموافقةُ الذاتية بيد صاحبها.
+    consent_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="not_requested")
     consent_recorded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consent_recorded_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    consent_method: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    consent_evidence_ar: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ── التأليف: إعلانٌ منفصلٌ عن العضوية ──
+    is_author: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    author_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ProjectDecision(Base, TenantScoped, Timestamped):
