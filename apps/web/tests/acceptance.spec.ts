@@ -49,7 +49,7 @@ const DOC_TEXT = [
  * يوجد رابطان.
  */
 const sidebar = (page: Page) =>
-  page.getByRole("navigation", { name: "الرئيسية" });
+  page.getByRole("navigation", { name: "الرئيسية", exact: true });
 
 /**
  * **لا أثر يحمل سرًّا.**
@@ -162,7 +162,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
   // ── ٤: أبحاثي ──
   await test.step("My Research loads", async () => {
-    await sidebar(page).getByRole("link", { name: "أبحاثي" }).click();
+    await sidebar(page).getByRole("link", { name: "أبحاثي", exact: true }).click();
     await page.waitForURL(/\/portfolio/);
     await expect(page.getByText("ابدأ بحثًا جديدًا")).toBeVisible();
   });
@@ -193,7 +193,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   // الحساب يمرّ اليوم ويسقط غدًا بلا أن يتغيّر سطر — ونجاحُه لا يقول شيئًا.
   // فالملف يُرفع من الواجهة نفسها، باسمٍ فريد لكل تشغيلة.
   await test.step("upload a file into My Library through the UI", async () => {
-    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
     await page.waitForURL(/\/library/);
 
     // مدخل الملف مخفيّ خلف زرّ — و`setInputFiles` يكتب فيه مباشرةً كما
@@ -225,7 +225,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // د — العودة إلى البحث بعينه، بمساره المحفوظ لا بتخمين.
     await page.goto(projectUrl);
     await expect(page.getByRole("heading", { name: RUN })).toBeVisible();
-    await page.getByRole("button", { name: "الملفات" }).click();
+    await page.getByRole("button", { name: "الملفات", exact: true }).click();
 
     // و — انتظار الملف بعينه بين المرشّحين. والتحميل حالٌ مستقلة عن الفراغ،
     // فلا يُقرأ «ما زال يُقرأ» على أنه «لا شيء هنا».
@@ -247,13 +247,13 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // ح — صار مرتبطًا: بطاقته تحمل زرّ الإزالة.
     const linked = page.locator("article.card", { hasText: FILENAME });
     await expect(
-      linked.getByRole("button", { name: "أزِل من البحث" }),
+      linked.getByRole("button", { name: "أزِل من البحث", exact: true }),
     ).toBeVisible({ timeout: 30_000 });
   });
 
   await test.step("unlink that exact file from the project", async () => {
     const linked = page.locator("article.card", { hasText: FILENAME });
-    await linked.getByRole("button", { name: "أزِل من البحث" }).click();
+    await linked.getByRole("button", { name: "أزِل من البحث", exact: true }).click();
 
     // ي — إن عُرض ما يترتب، أُقرّ به. وعرضُه صحيحٌ لا عيب.
     const acknowledge = page.getByRole("button", { name: /أفهم ما يترتب/ });
@@ -262,13 +262,13 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // ك — لم يعد مرتبطًا: لا بطاقةَ إزالةٍ تحمل هذا الاسم.
     await expect(
       page.locator("article.card", { hasText: FILENAME })
-        .getByRole("button", { name: "أزِل من البحث" }),
+        .getByRole("button", { name: "أزِل من البحث", exact: true }),
     ).toHaveCount(0, { timeout: 30_000 });
   });
 
   await test.step("the asset survives in My Library", async () => {
     // ل + م — الإزالة من بحثٍ ليست حذفًا من المكتبة.
-    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
     await page.waitForURL(/\/library/);
     await expect(page.getByText(FILENAME).first()).toBeVisible({ timeout: 30_000 });
   });
@@ -279,7 +279,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   // **ولا يُقبل «النصّ ظاهر» بديلًا عن «الفعل وقع».** الخطوة السابقة كانت
   // تثبت أن القسم يقول قاعدته — وتلك جملةٌ في الشاشة لا رحلةُ باحث.
   await test.step("import a reference into My Library through the UI", async () => {
-    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
     await page.waitForURL(/\/library/);
 
     // DOI ثابت ومعروف — والاستيراد يقع من الشاشة لا من الـAPI.
@@ -303,7 +303,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
   await test.step("link that reference to the project, defaulting to saved_only", async () => {
     await page.goto(projectUrl);
-    await page.getByRole("button", { name: "الأدبيات والمراجع" }).click();
+    await page.getByRole("button", { name: "الأدبيات والمراجع", exact: true }).click();
     await expect(page.getByText(/الاستيراد ليس حكمًا بأن المرجع دليل/)).toBeVisible();
 
     // المرشّح يُعرَّف بعنوانه — **ولا معرّف يُكتب بيد**.
@@ -346,11 +346,11 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     const linked = page.locator("article.card").filter({ hasText: sourceTitle }).first();
     await expect(linked).toBeVisible({ timeout: 30_000 });
 
-    const saved = linked.getByRole("button", { name: "محفوظ فقط" });
+    const saved = linked.getByRole("button", { name: "محفوظ فقط", exact: true });
     await expect(saved).toBeVisible({ timeout: 30_000 });
     await expect(saved).toHaveAttribute("aria-pressed", "true");
     await expect(
-      linked.getByRole("button", { name: "مُدرَج دليلًا" }),
+      linked.getByRole("button", { name: "مُدرَج دليلًا", exact: true }),
     ).toHaveAttribute("aria-pressed", "false");
   });
 
@@ -358,18 +358,18 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   await test.step("archive, trash and restore the project", async () => {
     await page.goto(`/${LOCALE}/portfolio`);
     const card = page.locator("article.card", { hasText: RUN });
-    await card.getByRole("button", { name: "انقل إلى السلّة" }).click();
+    await card.getByRole("button", { name: "انقل إلى السلّة", exact: true }).click();
     await expect(page.locator("article.card", { hasText: RUN }).first()).toBeHidden({ timeout: 20_000 });
 
     const trashed = page.locator("article.card", { hasText: RUN });
-    await trashed.getByRole("button", { name: "استعِد" }).click();
+    await trashed.getByRole("button", { name: "استعِد", exact: true }).click();
     await expect(page.locator("article.card", { hasText: RUN }).first()).toBeVisible({ timeout: 20_000 });
   });
 
   // ── ١٧–٢٠: بُبريفا AI تجيب بلا ترميز عقد ──
   // ── ١٤–١٦: مستندٌ يُرفع ثم يُعالَج ثم تُراجَع معرفته ──
   await test.step("upload a parseable synthetic document", async () => {
-    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
     await page.waitForURL(/\/library/);
     await page.locator('input[type="file"]').setInputFiles({
       name: DOC_NAME,
@@ -403,7 +403,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   await test.step("start document processing, reaching a decision state", async () => {
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
     // **زرٌّ حقيقي، لا استدعاء.** وغيابه فشلٌ لا تخطٍّ.
-    const process = card.getByRole("button", { name: "معالجة المستند" });
+    const process = card.getByRole("button", { name: "معالجة المستند", exact: true });
     await expect(process, "no processing control for a parseable document").toBeVisible();
     await process.click();
 
@@ -456,7 +456,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await expect(card.getByText("بانتظار موافقتك للمتابعة")).toBeVisible();
 
     // **الرابط يقصد رسالته هو** — لا قائمةً يبحث فيها عن بطاقةٍ تشبه غيرها.
-    await card.getByRole("link", { name: "افتح المراجعة" }).click();
+    await card.getByRole("link", { name: "افتح المراجعة", exact: true }).click();
     await page.waitForURL(/\/theses\/[^/]+\/review/, { timeout: 30_000 });
 
     // والباب موجودٌ حيث أُرسل: غيابه هنا عطبُ منتج لا تخطٍّ في الفحص.
@@ -469,7 +469,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await expect(page.getByTestId("dic2-grant")).toBeHidden();
 
     // وبعد الإذن تمضي المعالجة إلى حالٍ يراجعها الباحث.
-    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
     await page.waitForURL(/\/library/);
     const back = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
     await expect
@@ -484,7 +484,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // أول رابطٍ نصُّه «راجع» — فحسابٌ راكم رسائل من تشغيلاتٍ سابقة يفتح
     // رسالةً أخرى، ويُعتمد فيها مرشّحٌ ليس من هذا المستند.
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
-    await card.getByRole("link", { name: "افتح المراجعة" }).click();
+    await card.getByRole("link", { name: "افتح المراجعة", exact: true }).click();
     await page.waitForURL(/\/theses\/[^/]+\/review/, { timeout: 30_000 });
 
     // **والصفحة تُنتظر حيّةً لا مرسومة.**
@@ -507,15 +507,27 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     const before = Number(await tally.getAttribute("data-review-approved"));
 
     const approvable = page.locator("article.card")
-      .filter({ has: page.getByRole("button", { name: "اعتمد" }) }).first();
+      .filter({ has: page.getByRole("button", { name: "اعتمد", exact: true }) }).first();
     await expect(approvable, "no candidate was available to approve")
       .toBeVisible({ timeout: 60_000 });
 
     // **والزرّ يُثبَت صالحًا للضغط قبل الضغط.** زرٌّ معطَّل يُنقر عليه بلا
     // أثر، فيبدو كأن الطلب أُرسل ولم يُجَب.
-    const approve = approvable.getByRole("button", { name: "اعتمد" });
+    const approve = approvable.getByRole("button", { name: "اعتمد", exact: true });
     await expect(approve, "the approve control is not clickable").toBeEnabled();
+
+    // **«لم يصل ردّ» و«لم يُرسَل طلب» يتشابهان في الدليل ويختلفان في العلاج.**
+    //
+    // كان الرصد على `response` وحده، فطلبٌ ما زال معلّقًا يبدو كأنه لم
+    // يُرسَل قطّ — ولا فرق بينهما في المخرَج. وهذا ما أضلّني مرّتين. فيُرصد
+    // الإرسال نفسه: إن خرج الطلب فالعلّة في الخادم أو في بطئه، وإن لم يخرج
+    // فالعلّة في الواجهة.
+    const sent = page
+      .waitForRequest((r) => r.url().includes("/decide"), { timeout: 20_000 })
+      .then(() => "yes")
+      .catch(() => "no");
     await approve.click();
+    const dispatched = await sent;
 
     // **والاعتماد يُقاس بالحصيلة لا بإعادة العثور على البطاقة.**
     //
@@ -532,7 +544,8 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
               + ` failed=[${failedCalls.join(" ")}]`
               + ` err=${await page.locator(".error").count()}`
               + ` pageErrors=${errors.length}`
-              + ` console=${consoleErrors.length ? consoleErrors[0] : "-"}`,
+              + ` console=${consoleErrors.length ? consoleErrors[0] : "-"}`
+              + ` sent=${dispatched}`,
             { timeout: 60_000, message: "the approval never took effect" })
       .toMatch(new RegExp(`^approved=${before + 1} `));
   });
@@ -542,10 +555,10 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // **طريق الباحث نفسه.** وكان السؤال يُطرح بلا مرفق، فلا يبلغ المعرفةَ
     // التي اعتمدها للتوّ ولا يمسّ حدَّ المحادثة أصلًا — فيمرّ الفحص وهو
     // لم يفحص شيئًا من الاثنين.
-    await sidebar(page).getByRole("link", { name: "مكتبتي" }).click();
+    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
     await page.waitForURL(/\/library/);
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
-    await card.getByRole("link", { name: "اسأل بُبريفا AI عن هذا المستند" }).click();
+    await card.getByRole("link", { name: "اسأل بُبريفا AI عن هذا المستند", exact: true }).click();
     await page.waitForURL(/\/ai\?/, { timeout: 30_000 });
 
     // والمرفق يُعلَن باسمه قبل السؤال — لا يُسأل عن مستندٍ لا يراه.
@@ -556,7 +569,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
     // **الإرسال بالزرّ لا بمفتاح الإدخال.** الحقل `textarea` بلا نموذج ولا
     // معالج مفاتيح، فالضغط على Enter يُدخل سطرًا ولا يرسل شيئًا.
-    const send = page.getByRole("button", { name: "ابدأ" });
+    const send = page.getByRole("button", { name: "ابدأ", exact: true });
     await expect(send).toBeEnabled({ timeout: 15_000 });
     await send.click();
 
@@ -564,7 +577,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // معرفةٍ من مستند لا يأذن بإرسالها إلى مزوّد لأجل سؤال — إذنان لا
     // يُدمجان ولا يُمنح أحدهما سلفًا. وظهورُ الإجابة هنا بلا إذنٍ ثانٍ
     // يعني أن الحدّين انطبقا على بعضهما، وذلك إخفاقٌ لا نجاح.
-    const consent = page.getByRole("button", { name: "السماح والإجابة" });
+    const consent = page.getByRole("button", { name: "السماح والإجابة", exact: true });
     await expect(consent, "the chat answered from an approved document without DCC2")
       .toBeVisible({ timeout: 180_000 });
 
