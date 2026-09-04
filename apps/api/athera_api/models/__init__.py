@@ -47,6 +47,7 @@ from .screening import (
     MATRIX_FIELDS,
     SOURCE_SCOPES,
     LiteratureMatrixCell,
+    SourceAbstract,
 )
 from .files import File, FileAccessLog
 from .library import FOLDER_OBJECT_TYPE, MAX_FOLDER_DEPTH, LibraryFolder
@@ -153,6 +154,7 @@ __all__ = [
     "RULE_TYPES",
     "ResearchProgram", "ResearchProject", "ProjectMember", "ProjectDecision",
     "ProjectFile", "ProjectSource",
-    "LiteratureMatrixCell", "MATRIX_FIELDS", "CELL_STATES", "SOURCE_SCOPES",
+    "LiteratureMatrixCell", "SourceAbstract",
+    "MATRIX_FIELDS", "CELL_STATES", "SOURCE_SCOPES",
     "EXCLUSION_REASON_CODES", "EXTRACTION_METHODS",
 ]

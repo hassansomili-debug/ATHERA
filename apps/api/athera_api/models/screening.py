@@ -14,7 +14,7 @@ import datetime as dt
 import uuid
 from typing import Final
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -60,6 +60,11 @@ VERIFICATION_STATES: Final = ("unverified", "approved", "rejected", "unknown")
 # المُحدِّد الوحيد المسموح لخليةٍ قُرئت من ملخّص. **ولا رقم صفحة يُخترع.**
 ABSTRACT_LOCATOR: Final = "abstract"
 
+# **من أرسل هذا الملخّص** (الترحيل 0024). قائمةٌ مغلقة كقائمة `registry`
+# نفسها، ومعها `researcher`: الباحث الذي ينسخ ملخّصًا من الورقة التي بين
+# يديه مصدرٌ يُسمّى كسائر المصادر، لا مجهولٌ يُخزَّن بلا نسبة.
+ABSTRACT_PROVIDERS: Final = ("crossref", "openalex", "offline", "upload", "researcher")
+
 # أعمدة المصفوفة بترتيب عرضها. المفتاح تقنيّ والاسم المعروض في كتالوج
 # الواجهة — فلا يقرأ الباحث مفتاحًا إنجليزيًّا في رأس عمود.
 MATRIX_FIELDS: Final = (
@@ -101,6 +106,17 @@ class LiteratureMatrixCell(Base, TenantScoped, Timestamped):
     )
     evidence_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_locator: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # **من أي ملخّصٍ قُرئت** — لا «من ملخّص» مجهولٍ صاحبه. وبها تُراجَع
+    # القيمة: يفتح الباحث النصّ المنسوب، ويقرأ الجملة، ثم يحكم.
+    source_abstract_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("source_abstracts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # **الصفحة والقسم من نصٍّ كامل وحده، وحين يُعرفان.** ورقمُ الصفحة يأتي
+    # من تقطيعٍ قرأ صفحةً فعلًا، ولا يُشتقّ من ترتيب المقطع: المقطع السابع
+    # ليس الصفحة السابعة. والمجهول يبقى `NULL` — الصدق أولى من الاكتمال.
+    evidence_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_section: Mapped[str | None] = mapped_column(Text, nullable=True)
     verification_status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="unverified")
     verified_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -113,8 +129,36 @@ class LiteratureMatrixCell(Base, TenantScoped, Timestamped):
     )
 
 
+class SourceAbstract(Base, TenantScoped, Timestamped):
+    """ملخّصٌ واحد منسوبٌ إلى الفهرس الذي أرسله — **ولا يُطوى ملخّصان في واحد**.
+
+    فهرسان يرسلان ملخّصين مختلفين للورقة نفسها حالٌ واقعة لا نادرة؛ وأن
+    يغلب أحدهما الآخر بصمت يجعل الباحث يقرأ نصف الحقيقة ويظنّه كلّها.
+    فالصفّان يبقيان، والاختلاف يُعرض اختلافًا.
+    """
+
+    __tablename__ = "source_abstracts"
+    __table_args__ = (
+        UniqueConstraint("source_id", "provider", "content_hash",
+                         name="uq_source_abstract"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_identifier: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    retrieved_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False)
+
+
 __all__ = [
     "ABSTRACT_LOCATOR",
+    "ABSTRACT_PROVIDERS",
     "CELL_STATES",
     "EXCLUSION_REASON_CODES",
     "EXTRACTION_METHODS",
@@ -124,6 +168,7 @@ __all__ = [
     "MATRIX_FIELDS",
     "SOURCE_SCOPES",
     "STORED_REASON_CODES",
+    "SourceAbstract",
     "VERIFICATION_STATES",
     "scope_rank",
 ]
