@@ -204,6 +204,20 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
+      # ── العقل البحثي والخيط الذهبي ──
+      #
+      # **الرقعة كانت في الشجرة ولا خطوة تُشغّلها.** كُتبت في موجةٍ سابقة
+      # ومعها اثنتا عشرة دعوى، فما نُفِّذت واحدة: لا سكربت في `package.json`
+      # ولا خطوة هنا. وفحصٌ لا يُشغَّل أسوأ من فحصٍ غائب — الغائبُ يُطلب،
+      # والموجودُ الميّت يُحسب حراسةً قائمة.
+      #
+      # وطبقتها طبقةُ `product-surface`: بناءٌ محلّي وشبكةٌ معترَضة وبلا
+      # اعتماد، فتعمل في كل PR.
+      - name: Research Brain + Golden Thread surface (real browser)
+        run: cd apps/web && npm run test:brain
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
       # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
       #
       # تشغيلُها من PR يفحص إنتاجًا لا يحمل شيفرة الـPR — نتيجةٌ مضلِّلة.
