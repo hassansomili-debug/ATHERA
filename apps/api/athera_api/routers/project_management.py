@@ -700,6 +700,22 @@ async def update_task(
             session, tenant_id=tid, project_id=project_id,
             member_id=task.assignee_member_id)
         name = member.display_name if member else None
+
+    # **التحديثُ يُبطل `updated_at`، وقراءتُها بعده تطلب القاعدة من شيفرةٍ
+    # متزامنة — فيسقط الطلب بـ٥٠٠.**
+    #
+    # `updated_at` قيمتُها `onupdate=now()` في الخادم، فبعد `flush` تصير
+    # منتهيةً لا محمَّلة. و`_task_view` دالّةٌ متزامنة، فأولُ لمسٍ لها يبدأ
+    # قراءةً من داخل سياقٍ لا يملك greenlet:
+    #
+    #     MissingGreenlet: greenlet_spawn has not been called
+    #
+    # وهو من عائلة العطب الذي أسقط أربع نقاطٍ من قبل: عملُ قاعدةٍ يقع حيث
+    # لا يُتوقَّع. والعلاج أن تُطلب القراءة **صراحةً وبانتظار** قبل العرض،
+    # لا أن تُترك لمصادفة لمسِ حقل. وهذا مسارُ تعديلٍ لا قائمة، فعبارةٌ
+    # واحدة زائدة فيه ثمنٌ مقبول.
+    await session.refresh(task)
+
     return _task_view(store.TaskRow(task=task, assignee_name=name), now,
                       principal.locale)
 
