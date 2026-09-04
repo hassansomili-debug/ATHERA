@@ -600,9 +600,22 @@ def test_consent_is_a_state_of_its_own_and_is_never_pre_granted():
 # ═════════════════════ ١٠. القاعدةُ الحقيقية ═════════════════════
 
 async def _seed_thesis(tenant_id, user_id, *, filename="رسالة.pdf", **columns):
-    """رسالةٌ بملفّها — **بالمسار الذي يسلكه المنتج**: ملفٌّ ثمّ سجلُّ رسالة."""
+    """رسالةٌ بملفّها — **بكامل ما يكتبه المنتج عند الرفع، لا بصفّ الملفّ وحده**.
+
+    **وأوّلُ صياغةٍ هنا كتبت صفّ `files` ونسيت `object_grants`** — فسقط
+    فحصان بـ403 عند `/reprocess`. والسقوط كان **صحيحًا**: `_guard` يسأل
+    `rbac.require_object_action(… "file" … "read")`، والصلاحية على الملفّ
+    تُقرأ من مِنحةٍ صريحة يكتبها `files.upload_file` مع الصفّ نفسه — لا من
+    عمود `uploaded_by`. فتجهيزةٌ تكتب أحدهما دون الآخر تُنتج ملفًّا لا
+    يملكه أحد، وهي حالٌ لا يُنتجها المنتج أصلًا.
+
+    **ولا يُضعَّف الحارس ليمرّ الفحص**: تُكمَّل التجهيزة لتشبه الرفع الحقيقي.
+    وبقاءُ الحارس حيًّا هو ما يجعل هذين الفحصين يثبتان شيئًا: طلبٌ يمرّ
+    بالمصادقة **وبالصلاحية** ثمّ يُردّ لسببٍ منتجيّ، لا لأنّ الباب مفتوح.
+    """
     from athera_api.db import tenant_session
     from athera_api.models.files import File
+    from athera_api.models.identity import ObjectGrant
     from athera_api.models.thesis import Thesis
 
     async with tenant_session(tenant_id, user_id) as session:
@@ -614,6 +627,11 @@ async def _seed_thesis(tenant_id, user_id, *, filename="رسالة.pdf", **colum
         )
         session.add(record)
         await session.flush()
+        # المِنحة كما يكتبها `files.upload_file` حرفًا بحرف — `owner` تحمل
+        # `read` من `rbac._GRANT_ACTIONS`.
+        session.add(ObjectGrant(
+            tenant_id=tenant_id, object_type="file", object_id=record.id,
+            user_id=user_id, grant_level="owner", granted_by=user_id))
         thesis = Thesis(tenant_id=tenant_id, file_id=record.id,
                         title_ar=None, degree=None, **columns)
         session.add(thesis)
@@ -837,15 +855,18 @@ async def test_an_opportunity_of_another_project_is_never_counted_on_a_thesis(tw
                                   status="planned")
         session.add(project)
         await session.flush()
-        # فرصةٌ من بحثٍ آخر — لا تخصّ أيّ رسالة.
+        # **والمفردة من `services/thesis/vocab.py` لا من الذاكرة.** أوّلُ
+        # صياغةٍ هنا اخترعت `core_study` و`empirical`، فردّها
+        # `ck_opportunity_kind` في القاعدة — وهو حارسٌ أصاب: مفردةٌ مخترَعة
+        # في تجهيزةٍ تُنتج فحصًا يجرّب ما لا يوجد في المنتج.
         session.add(PublicationOpportunity(
             tenant_id=tid, project_id=project.id, thesis_id=None,
-            opportunity_kind="core_study", paper_kind="empirical",
+            opportunity_kind="independent_question", paper_kind="extraction",
             working_title_ar="فرصةٌ من بحثٍ لا رسالة له"))
         # وفرصةٌ من الرسالة الأخرى — لا تخصّ رسالتنا.
         session.add(PublicationOpportunity(
             tenant_id=tid, thesis_id=other_thesis_id,
-            opportunity_kind="core_study", paper_kind="empirical",
+            opportunity_kind="independent_question", paper_kind="extraction",
             working_title_ar="فرصةٌ من رسالةٍ أخرى"))
         await session.flush()
 
@@ -1065,21 +1086,91 @@ async def test_over_http_the_page_costs_one_statement_however_many_theses(two_te
 
 @requires_db
 @pytest.mark.asyncio
-async def test_over_http_a_second_retry_while_one_is_running_is_refused(two_tenants):
-    """**ولا معالجتان متزامنتان على ملفٍّ واحد** — من طرف الشبكة لا تحته."""
+async def test_over_http_a_retry_is_claimed_and_announced_truthfully(
+        two_tenants, monkeypatch):
+    """**والاستجابة تقول `queued` لا `extracting`** — المهمّة لم تبدأ بعد.
+
+    وادّعاءُ طورٍ لم يُبلَغ هو الكذب الصغير الذي يجعل الشاشة كلَّها غير
+    موثوقة: الباحث يقرأ «جارٍ استخراج بيانات البحث» قبل أن يُفتح الملفّ.
+
+    **والمخزن يُبدَّل بمخزنٍ ينهار فورًا** — لا لتخفيف الفحص بل لتثبيته:
+    `BackgroundTasks` تعمل داخل نداء ASGI، والمزوّد الافتراضي في الفحوص
+    `s3` بلا اعتماد. فترك المهمّة تذهب إلى الشبكة يجعل الفحص يقيس مهلةَ
+    boto3 لا سلوكَ المنتج — ثوانٍ ضائعة وسقوطٌ متقطّع لا علاقة له بما
+    يُفحص. وهو تبديلُ `test_a_crash_mid_processing_leaves_a_visible_failed_run`
+    نفسه، **والمقيسُ هنا جسمُ الاستجابة** لا ما تفعله المهمّة بعده.
+    """
+    from athera_api.services import storage as storage_module
+
+    class _BrokenStore:
+        def get(self, key):
+            raise RuntimeError("storage unreachable")
+
+    monkeypatch.setattr(storage_module, "get_store", lambda: _BrokenStore())
+
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    thesis_id, _ = await _seed_thesis(tid, uid, filename="مزدوجة.pdf")
+    thesis_id, _ = await _seed_thesis(tid, uid, filename="مُعادة.pdf")
 
     async with _client(tid, uid) as client:
-        first = await client.post(f"/api/v1/theses/{thesis_id}/reprocess")
-        assert first.status_code == 202, first.text
-        # **والاستجابة تقول `queued` لا `extracting`**: المهمّة لم تبدأ بعد.
-        assert first.json()["status"] == "queued"
+        accepted = await client.post(f"/api/v1/theses/{thesis_id}/reprocess")
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()["status"] == "queued", "استجابةٌ تدّعي طورًا لم يُبلَغ"
 
-        second = await client.post(f"/api/v1/theses/{thesis_id}/reprocess")
-        assert second.status_code == 409, second.text
-        assert second.json()["error"]["code"] == "thesis.processing_in_flight"
+    # **وانهيارُ المخزن يُروى ولا يُبتلع**: الحال تصير فشلًا **باسمه**، لا
+    # «٠ أقسام» صامتة. وهذا هو العقد الذي يحرسه `ck_theses_failure_is_named`.
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+    from athera_api.services.thesis import processing
+    from sqlalchemy import select
+
+    async with tenant_session(tid, uid) as session:
+        row = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+    assert row.processing_state == processing.FAILED, row.processing_state
+    assert row.failure_code == "extraction_failed"
+    assert row.processing_attempts == 1, "المحاولة لم تُعدّ"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_a_retry_while_processing_is_in_flight_is_refused(two_tenants):
+    """**ولا معالجتان متزامنتان على ملفٍّ واحد** — من طرف الشبكة لا تحته.
+
+    **والحالُ تُوضع صراحةً ولا تُسابَق المهمّةُ الخلفية عليها.** أوّلُ
+    صياغةٍ هنا أرسلت طلبين متتاليين وتوقّعت أن يجد الثاني الأول «جاريًا» —
+    وهي مسابقةٌ لا فحص: `BackgroundTasks` تعمل **داخل** نداء ASGI، فتكون
+    التشغيلة الأولى قد سقطت (لا كائن في المخزن) وعادت الحال `failed` قبل
+    أن يُرسَل الطلب الثاني. فيمرّ الثاني بحقّ، ويسقط الفحص لسببٍ لا علاقة
+    له بما يدّعي حراسته.
+
+    والخاصيّة المقصودة أدقّ من ذلك وأقوى: **رسالةٌ حالُها `parsing` — وهي
+    حالٌ لا يبلغها إلا خطُّ الأنابيب وهو يعمل — يُردّ طلبُ إعادتها.** وهذا
+    يُفحص بلا توقيتٍ ولا حظّ.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+    from athera_api.services.thesis import processing
+    from sqlalchemy import select
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _ = await _seed_thesis(tid, uid, filename="جارية.pdf")
+    async with tenant_session(tid, uid) as session:
+        await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
+                              state=processing.PARSING)
+
+    async with _client(tid, uid) as client:
+        refused = await client.post(f"/api/v1/theses/{thesis_id}/reprocess")
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["code"] == "thesis.processing_in_flight"
+
+    # **والرفضُ لم يمسّ الحال** — طلبٌ مردودٌ لا يُحرّك شيئًا، ولا يُعدّ محاولة.
+    async with tenant_session(tid, uid) as session:
+        row = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        assert row.processing_state == processing.PARSING
+        assert row.processing_attempts == 0, "طلبٌ مردودٌ عُدَّ محاولة"
 
 
 @requires_db
