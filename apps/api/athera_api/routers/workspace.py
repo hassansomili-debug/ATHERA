@@ -38,10 +38,12 @@ from ..schemas.screening import (
     ScreeningView,
 )
 from ..schemas.workspace import (
+    AssessmentItemView,
     BrainEntryView,
     ImpactView,
     LinkRequest,
     NextAction,
+    ProjectAssessmentView,
     ProjectCreateRequest,
     ProjectFileView,
     ProjectOverview,
@@ -50,7 +52,7 @@ from ..schemas.workspace import (
     ProjectSummary,
     SourceUseRequest,
 )
-from ..services import audit, screening, workspace
+from ..services import audit, research_assessment, screening, workspace
 
 router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
 
@@ -267,6 +269,50 @@ async def project_overview(
         blockers=blockers,
         note=("لا تُعرض نسبةُ جاهزية: الحالات أعلاه هي الحقيقة، وما كان "
               "«ناقصًا» في بحثٍ في أوله ليس خطأً."))
+
+
+@router.get("/projects/{project_id}/assessment", response_model=ProjectAssessmentView)
+async def project_assessment(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ProjectAssessmentView:
+    """تقييمُ العقل البحثي لهذا البحث — **مشورةٌ تُقرأ لا بوابةٌ تُغلق**.
+
+    والقواعد العشر تُشغَّل على لقطةٍ تُبنى من صفوف **هذا البحث** وحدها. وكلها
+    مسوّدة حتى يراجعها مختصّ، فـ`blocking` فارغة ولا سطر منها يوقف باحثًا:
+    محرّكٌ يحجب بقواعد كتبها مبرمج بلا مراجعة يوقف بحثًا صحيحًا باسم النزاهة.
+
+    و«لم نجد شيئًا» لا تُعرض سلامةً: ما عجزت القاعدة عن فحصه يظهر في «ما
+    يحتاج مراجعة» بنصّه، وما تعذّرت قراءته من البحث يظهر في «ما ينقص».
+    """
+    await _project(session, principal, project_id)
+    snapshot = await research_assessment.build_project_assessment(
+        session, tenant_id=principal.tenant_id, project_id=project_id)
+    if snapshot is None:  # pragma: no cover - `_project` سبق أن أثبت وجوده
+        raise NotFound("workspace.project_not_found")
+
+    _report, view = research_assessment.assess(snapshot)
+
+    def _items(rows) -> list[AssessmentItemView]:
+        return [AssessmentItemView(
+            key=row.key,
+            detail=row.detail_ar if principal.locale == "ar" else row.detail_en,
+            rule_id=row.rule_id, entity_ids=list(row.entity_ids), excerpt=row.excerpt)
+            for row in rows]
+
+    arabic = principal.locale == "ar"
+    return ProjectAssessmentView(
+        project_id=project_id, title=snapshot.title_ar,
+        known=_items(view.known), missing=_items(view.missing),
+        needs_review=_items(view.needs_review), conflicts=_items(view.conflicts),
+        methodological_alerts=_items(view.methodological_alerts),
+        read_notes=_items(view.read_notes),
+        is_advisory_only=view.is_advisory_only, blocking_count=view.blocking_count,
+        advisory_note=(research_assessment.ADVISORY_NOTE_AR if arabic
+                       else research_assessment.ADVISORY_NOTE_EN),
+        note=(research_assessment.NO_SCORE_NOTE_AR if arabic
+              else research_assessment.NO_SCORE_NOTE_EN))
 
 
 # ─────────────────────────────── ملفات البحث ───────────────────────────────

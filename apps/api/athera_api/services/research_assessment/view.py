@@ -123,6 +123,81 @@ def _rule_item(result: RuleResult) -> list[Item]:
             for finding in result.findings]
 
 
+def _recorded_facts(snapshot: ProjectSnapshot) -> list[Item]:
+    """ما هو **مسجَّلٌ فعلًا** في صفوف البحث — وقائع تُقرأ لا أحكام تُصدَر.
+
+    وهذه هي التي تجعل «ما نعرفه» يصف بحثًا لا محرّكًا: التصميمُ المسجَّل،
+    وحجمُ العيّنة، وعددُ التشغيلات والمصادر المُدرَجة. وكلها أعداد وأسماء
+    مقروءة من الجداول، **ولا واحد منها نسبةٌ ولا درجة**.
+
+    و«أسلوب المعاينة لا يسمح بالتعميم» ليست قاعدةً جديدة تُسنّ هنا: قيمةُ
+    الأسلوب في `SAMPLING_STRATEGIES` معناها المكتوب هو هذا بعينه، فتُقرأ
+    كما تُقرأ بقيّة الأعمدة.
+    """
+    from ...research_brain import ontology as o
+    from ..golden_thread.vocab import SAMPLING_STRATEGIES
+
+    graph = snapshot.assessment.graph
+    items: list[Item] = []
+
+    design = graph.one_of_kind(o.EntityKind.DESIGN)
+    if design is not None:
+        recorded = " · ".join(filter(None, (design.study_type, design.design_family)))
+        items.append(Item(
+            key="design_recorded",
+            detail_ar=f"التصميم المسجَّل: {recorded or 'بلا نوعٍ مسجَّل'}.",
+            detail_en=f"Recorded design: {recorded or 'no type recorded'}.",
+            entity_ids=(design.id,)))
+
+    sample = graph.one_of_kind(o.EntityKind.SAMPLE)
+    if sample is not None:
+        label_ar, label_en = sample.size.label()
+        items.append(Item(
+            key="sample_size_recorded",
+            detail_ar=f"حجم العيّنة كما هو مسجَّل في المنهج: {label_ar}.",
+            detail_en=f"Sample size as recorded in the method: {label_en}.",
+            entity_ids=(sample.id,)))
+        if sample.sampling_strategy:
+            allows = SAMPLING_STRATEGIES[sample.sampling_strategy]
+            items.append(Item(
+                key="sampling_strategy_recorded",
+                detail_ar=f"أسلوب المعاينة: {sample.sampling_strategy} — "
+                          + ("ويسمح بالتعميم على المجتمع."
+                             if allows else "ولا يسمح بالتعميم على المجتمع."),
+                detail_en=f"Sampling strategy: {sample.sampling_strategy} — "
+                          + ("generalisation to the population is supported."
+                             if allows else "it does not support generalisation."),
+                entity_ids=(sample.id,)))
+
+    # **والعدد يأتي بعد اسمه لا قبله.** «1 تشغيلة» و«11 تشغيلة» و«3 تشغيلات»
+    # ثلاثُ صيغ في العربية، وقالبٌ واحد يُخرج اثنتين منها خطأً. والصيغة
+    # «الاسم: العدد» صحيحة مع كل عدد، ولا تحتاج جدول تصريف.
+    counts = (
+        ("analyses_recorded", o.EntityKind.ANALYSIS, "تشغيلات التحليل المسجَّلة",
+         "Recorded analysis runs"),
+        ("findings_recorded", o.EntityKind.FINDING, "النتائج المسجَّلة",
+         "Recorded findings"),
+        ("claims_recorded", o.EntityKind.CLAIM, "الادّعاءات في المخطوطة",
+         "Claims in the manuscript"),
+    )
+    for key, kind, noun_ar, noun_en in counts:
+        rows = graph.of_kind(kind)
+        if rows:
+            items.append(Item(key=key, detail_ar=f"{noun_ar}: {len(rows)}.",
+                              detail_en=f"{noun_en}: {len(rows)}."))
+
+    sources = graph.of_kind(o.EntityKind.SOURCE)
+    if sources:
+        included = [s for s in sources if s.use_state == "included"]
+        items.append(Item(
+            key="sources_recorded",
+            detail_ar=f"مراجع هذا البحث: {len(sources)}، والمُدرَج منها دليلًا "
+                      f"بقرارك: {len(included)}.",
+            detail_en=f"Sources in this project: {len(sources)}; included as evidence "
+                      f"by your decision: {len(included)}."))
+    return items
+
+
 @dataclass(slots=True)
 class _Bins:
     known: list[Item] = field(default_factory=list)
@@ -137,6 +212,7 @@ def researcher_report(snapshot: ProjectSnapshot,
     """يوزّع اللقطة والحكم على الخانات الخمس — بلا رقمٍ واحد يلخّصهما."""
     labels = _field_labels()
     bins = _Bins()
+    bins.known.extend(_recorded_facts(snapshot))
 
     for row in snapshot.assessment.fields:
         label_ar, label_en = labels.get(row.key, (row.key, row.key))
@@ -158,10 +234,16 @@ def researcher_report(snapshot: ProjectSnapshot,
                 detail_ar=f"{label_ar}: مصدران موثقان يقولان قولين.",
                 detail_en=f"{label_en}: two verified sources disagree."))
         else:
+            # **«لا ذاكرة موثقة» لا «لا نعرف شيئًا».** فحجم العيّنة قد يكون
+            # مسجَّلًا في المنهج والحقلُ هنا «ناقص»، ومعناهما مختلف: هذا
+            # يقول إنه لم يُوثَّق بذاكرةٍ اعتمدها الباحث، لا إنه مجهول.
+            # والوقائع المسجَّلة تُعرض بجانبه في «ما نعرفه».
             bins.missing.append(Item(
                 key=row.key,
-                detail_ar=f"{label_ar}: لا سند له بعد — وهذه حالٌ مشروعة في بحثٍ في أوله.",
-                detail_en=f"{label_en}: nothing backs it yet — a legitimate state early on."))
+                detail_ar=f"{label_ar}: لا ذاكرة موثقة خلفه بعد — وهذه حالٌ مشروعة "
+                          "في بحثٍ في أوله.",
+                detail_en=f"{label_en}: no verified memory behind it yet — a legitimate "
+                          "state early on."))
 
     waiting = [row for row in snapshot.assessment.candidates
                if row.status in ("unverified", "unknown")]
@@ -185,10 +267,13 @@ def researcher_report(snapshot: ProjectSnapshot,
             # مراجعة» بنصّه، فلا يُقرأ التقرير خاليًا من المخالفات براءةً.
             bins.needs_review.extend(_rule_item(result))
         elif verdict is Verdict.PASS:
+            # **«فُحص ولم يقع» لا «فُحص وسلم: <شرط المخالفة>».** والصياغة
+            # الأولى كانت تلصق نصّ الشرط بالحكم، فيقرأ الباحث «ادّعاءٌ بلا
+            # دليل» في خانة «ما نعرفه» ويظنّها إثباتًا للعطب لا نفيًا له.
             bins.known.append(Item(
                 key=result.rule.id, rule_id=result.rule.id,
-                detail_ar=f"فُحص وسلم: {result.rule.condition_ar}",
-                detail_en=f"Checked and clean: {result.rule.condition_en}"))
+                detail_ar=f"فُحص ولم يقع: {result.rule.condition_ar}",
+                detail_en=f"Checked, did not occur: {result.rule.condition_en}"))
 
     for note in snapshot.notes:
         bins.missing.append(Item(key=note.key, detail_ar=note.detail_ar,
