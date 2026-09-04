@@ -19,7 +19,6 @@ import {
   projectFiles,
   projectOverview,
   projectSources,
-  setSourceUse,
   unlinkFile,
 } from "@/lib/workspace";
 import { listLibraryFiles, type LibraryFile } from "@/lib/library";
@@ -254,18 +253,6 @@ export default function ProjectWorkspacePage({
     }
   };
 
-  const decide = async (sourceId: string, decision: ProjectSource["use_state"]) => {
-    setBusy(true);
-    try {
-      await setSourceUse(locale, projectId, sourceId, decision);
-      reload();
-    } catch (err) {
-      say(err);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const tool = toolPath(section, locale, projectId);
   const linkedIds = new Set(files.filter((f) => f.state === "active").map((f) => f.file_id));
   // المرشّحون: مراجع المكتبة التي لم تُربط بهذا البحث بعد.
@@ -476,23 +463,29 @@ export default function ProjectWorkspacePage({
                 <div className="metric-label" style={{ marginBlockStart: 4 }} dir="ltr">
                   {[source.doi, source.publication_year].filter(Boolean).join(" · ") || "—"}
                 </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBlockStart: 8 }}>
-                  {(["included", "saved_only", "excluded"] as const).map((state) => (
-                    <button
-                      key={state}
-                      type="button"
-                      disabled={busy || source.use_state === state}
-                      aria-pressed={source.use_state === state}
-                      className={source.use_state === state ? "chip chip-stage" : "chip chip-muted"}
-                      onClick={() => decide(source.source_id, state)}
-                    >
-                      {t(USE_LABEL[state])}
-                    </button>
-                  ))}
+                {/* **القرار موضعه شاشة الفرز، لا هنا.**
+                    كانت في هذا الموضع ثلاثة أزرار بأسماءٍ مجرَّدة — «إدراج»
+                    بجانب «إدراج» بجانب «إدراج» في كل بطاقة — لا يميّز بينها
+                    من يسمع الشاشة. والأسوأ أن «استبعاد» كانت تقع بلا سبب،
+                    فتبقى الدراسة مستبعَدة ولا يعرف أحدٌ لماذا بعد شهر.
+
+                    ولم تُبنَ نسخةٌ ثانية من الفرز هنا: القائمة تعرض الحال
+                    وتفتح الشاشة التي تملك القرار وسببه. */}
+                <div className="metric-label" style={{ marginBlockStart: 8 }}>
+                  {t("screening.currentState")}: {t(USE_LABEL[source.use_state])}
+                  {source.use_state === "excluded" && source.exclusion_reason_code ? (
+                    <> — {t(`screening.reason_${source.exclusion_reason_code}`)}</>
+                  ) : null}
                 </div>
               </article>
             ))}
           </div>
+          <p style={{ marginBlockStart: 12 }}>
+            <Link className="action" href={`/${locale}/portfolio/${projectId}/screening`}>
+              <strong>{t("project.screeningCta")}</strong>
+              <span>{t("project.screeningHint")}</span>
+            </Link>
+          </p>
         </>
       ) : null}
 
