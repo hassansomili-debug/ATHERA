@@ -4,6 +4,8 @@
     UI → API Gateway → Brain/Policy → Model Provider/Tools → Audit → Response
 لا يوجد مسار جانبي: الواجهة لا تعرف مزود النموذج، ولا تحمل مفتاحه.
 """
+import logging
+import time
 import uuid
 
 from fastapi import FastAPI, Request
@@ -59,14 +61,41 @@ app.add_middleware(
 )
 
 
+# **البطء كان يُشتكى منه ولا يُقاس.**
+#
+# «المنصّة بطيئة» جملةٌ لا تُصلَّح: لا تقول أيّ مسار، ولا كم، ولا هل هو
+# الشبكة أم الاستعلام. وكنّا نخمّن ثم نُحسّن ما لم يكن بطيئًا.
+#
+# **والقالب لا المسار.** يُسجَّل `/api/v1/files/{file_id}` لا المسار
+# المملوء: المملوء يحمل معرّفات الباحث وملفّاته، والقالب يجيب عن السؤال
+# نفسه («أيّ نقطة بطيئة») بلا أن يحمل شيئًا من ذلك. ولا أجسام، ولا
+# استعلامات، ولا ترويسات، ولا نصّ مستند، ولا موجّه نموذج.
+_timing = logging.getLogger("athera.timing")
+
+# ما تجاوز هذا يُعلَن تحذيرًا — فلا يُبتلع بطءٌ في سطرٍ عادي بين آلاف.
+SLOW_REQUEST_MS = 1000.0
+
+
 @app.middleware("http")
 async def request_context(request: Request, call_next):
-    """معرّف طلب + تفاوض لغة على كل استجابة (§38.5، §26.4)."""
+    """معرّف طلب + تفاوض لغة + زمنُ الاستجابة على كل استجابة (§38.5، §26.4)."""
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
     locale = negotiate_locale(request.headers.get("accept-language"))
+    started = time.perf_counter()
     response = await call_next(request)
+    duration_ms = (time.perf_counter() - started) * 1000
     response.headers["X-Request-ID"] = request_id
     response.headers.setdefault("Content-Language", locale)
+    # مقياسٌ يقرؤه المتصفّح أيضًا، فيُرى البطء من جهة الباحث لا من السجلّ وحده.
+    response.headers["Server-Timing"] = f"app;dur={duration_ms:.1f}"
+
+    route = request.scope.get("route")
+    template = getattr(route, "path", None) or "unmatched"
+    _timing.log(
+        logging.WARNING if duration_ms >= SLOW_REQUEST_MS else logging.INFO,
+        "%s %s -> %s in %.1fms [%s]",
+        request.method, template, response.status_code, duration_ms, request_id,
+    )
     return response
 
 
