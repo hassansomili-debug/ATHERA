@@ -213,9 +213,9 @@ test.describe("guarded surface", () => {
     // **العيب الأصلي مثبَّتٌ هنا**: الردّ يتأخّر، والشاشة تقول «لا مشاريع
     // بعد» قبل أن يصل. فيُحبَس الردّ قصدًا، ويُثبَت أن المعروض حينها «جارٍ
     // التحميل…» وحدها — لا حكمٌ على محفظةٍ لم تُقرأ بعد.
-    let release = () => {};
+    let release: () => void = () => {};
     const held = new Promise<void>((resolve) => {
-      release = resolve;
+      release = () => resolve();
     });
     await page.route("**/api/v1/**", async (route: Route) => {
       const path = new URL(route.request().url()).pathname;

@@ -184,9 +184,12 @@ export default function StudioPage({
           {asideOpen || (overview?.blocking ?? 0) > 0 ? (
             <div>
               <h2>{t("studio.blockers")}</h2>
+              {/* **والإخفاق ليس خلوًّا.** إن سقطت القراءة بقي `overview`
+                  فارغًا، فكانت الشاشة تقول «لا عوائق» وهي لم تقرأ الورقة
+                  أصلًا — ادّعاءُ براءةٍ مبنيٌّ على لا شيء. */}
               {!loaded ? (
                 <p>{t("app.loading")}</p>
-              ) : (overview?.issues ?? []).length === 0 ? (
+              ) : error ? null : (overview?.issues ?? []).length === 0 ? (
                 <p>{t("studio.noBlockers")}</p>
               ) : (
                 <ul>

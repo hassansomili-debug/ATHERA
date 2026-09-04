@@ -237,9 +237,12 @@ export function SectionWorkspace({
         <section>
           <p>{t("results.strictNote")}</p>
           <h2>{t("results.outputs")}</h2>
+          {/* **والإخفاق ليس خلوًّا.** سقوطُ القراءة يترك `context` فارغًا،
+              فتقول الشاشة «لا مخرجات مؤهَّلة» وهي لم تسأل عنها — والباحث
+              الذي جمّد بياناته وأجرى تحليله يذهب يبحث عن عطبٍ ليس هناك. */}
           {!loaded ? (
             <p>{t("app.loading")}</p>
-          ) : (context?.analysis_outputs ?? []).length === 0 ? (
+          ) : error ? null : (context?.analysis_outputs ?? []).length === 0 ? (
             <p>{t("results.noOutputs")}</p>
           ) : (
             <ul>
@@ -414,7 +417,8 @@ export function SectionWorkspace({
           </>
         ) : !loaded ? (
           <p>{t("app.loading")}</p>
-        ) : (
+        ) : error ? null : (
+          // «لا مسودة بعد» دعوى عن القسم، فلا تُقال والقراءة قد أخفقت.
           <p>{c("noDraft")}</p>
         )}
       </section>

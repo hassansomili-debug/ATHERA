@@ -368,11 +368,17 @@ export default function ProjectWorkspacePage({
       {section === "files" ? (
         <>
           <p className="metric-label">{t("project.removeKeepsFile")}</p>
+          {/* **والإخفاق كان يُقرأ خلوًّا.** الحالُ ثلاثية منذ أُصلح انتظارُ
+              التحميل، ثم لم يُستعمل منها إلا طرفان: «جارٍ» وما عداه. فسقوطُ
+              القراءة يترك القائمة فارغة، فتقول الشاشة «لا ملف مرتبط» وهي لم
+              تعرف — والخطأ معلَنٌ فوقها في الوقت نفسه. */}
           {filesLoad === "loading" ? (
             <p data-testid="files-loading" style={{ color: "var(--muted)" }}>
               {t("app.loading")}
             </p>
-          ) : files.filter((file) => file.state === "active").length === 0 ? (
+          ) : filesLoad === "failed" ? null : files.filter(
+              (file) => file.state === "active",
+            ).length === 0 ? (
             <p data-testid="files-empty" style={{ color: "var(--muted)" }}>
               {t("project.noFiles")}
             </p>
@@ -411,7 +417,7 @@ export default function ProjectWorkspacePage({
             <p data-testid="library-loading" style={{ color: "var(--muted)" }}>
               {t("app.loading")}
             </p>
-          ) : unlinked.length === 0 ? (
+          ) : libraryLoad === "failed" ? null : unlinked.length === 0 ? (
             <p data-testid="library-empty" style={{ color: "var(--muted)" }}>
               {t("project.noCandidates")}{" "}
               <Link href={`/${locale}/library`}>{t("nav.library")}</Link>
@@ -457,7 +463,7 @@ export default function ProjectWorkspacePage({
             <p data-testid="sources-loading" style={{ color: "var(--muted)" }}>
               {t("app.loading")}
             </p>
-          ) : sources.length === 0 ? (
+          ) : linkedSourcesLoad === "failed" ? null : sources.length === 0 ? (
             <p data-testid="sources-empty" style={{ color: "var(--muted)" }}>
               {t("project.noSources")}
             </p>
@@ -498,7 +504,7 @@ export default function ProjectWorkspacePage({
             <p data-testid="sources-candidates-loading" style={{ color: "var(--muted)" }}>
               {t("app.loading")}
             </p>
-          ) : availableSources.length === 0 ? (
+          ) : sourcesLoad === "failed" ? null : availableSources.length === 0 ? (
             // **ولا يُمرَّر الفراغ صامتًا.** إن لم يكن في المكتبة مرجعٌ بعد
             // فللباحث طريقٌ معلَن إلى استيراد واحد — لا شاشةٌ فارغة تسكت.
             <p data-testid="no-candidate-sources" style={{ color: "var(--muted)" }}>
