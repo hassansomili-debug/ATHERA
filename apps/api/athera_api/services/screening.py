@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -79,8 +80,8 @@ class ScreeningCard:
     use_state: str = "saved_only"
     exclusion_reason_code: str | None = None
     reason_ar: str | None = None
-    decided_at: object | None = None
-    added_at: object | None = None
+    decided_at: dt.datetime | None = None
+    added_at: dt.datetime | None = None
     reading_scope: str = METADATA_ONLY
     has_abstract: bool = False
 

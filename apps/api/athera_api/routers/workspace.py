@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func, select
@@ -606,7 +607,9 @@ async def screening_workspace(
 
     return ScreeningView(
         project_id=project_id,
-        cards=[ScreeningCardView(**vars(card)) for card in cards],
+        # `asdict` لا `vars`: البطاقة `slots` فلا `__dict__` لها — و`vars`
+        # عليها ترمي في وقت التشغيل، وهو عطبٌ لا يظهر إلا على الشاشة.
+        cards=[ScreeningCardView(**asdict(card)) for card in cards],
         saved_only=tallies.get("saved_only", 0),
         included=tallies.get("included", 0),
         excluded=tallies.get("excluded", 0),
@@ -640,7 +643,7 @@ async def literature_matrix(
             source_id=row.source_id, title=row.title, authors=row.authors,
             publication_year=row.publication_year, doi=row.doi,
             reading_scope=row.reading_scope,
-            cells=[MatrixCellView(**vars(cell)) for cell in row.cells])
+            cells=[MatrixCellView(**asdict(cell)) for cell in row.cells])
             for row in rows],
     )
 

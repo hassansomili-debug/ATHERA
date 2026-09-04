@@ -338,6 +338,39 @@ def test_the_doi_is_shown_only_when_it_was_actually_verified():
     assert card.doi == "10.1000/x"
 
 
+def test_the_view_is_actually_buildable_from_the_service_record():
+    """**عيبٌ لا يظهر إلا على الشاشة.**
+
+    البطاقة والخلية `slots` فلا `__dict__` لهما، و`vars()` عليهما ترمي في
+    وقت التشغيل. وكان الموجّه يبنيها بـ`vars` — فكانت كل فتحةٍ لشاشة الفرز
+    تُنتج 500، ولا اختبارٌ يمسّها لأن أحدًا لم يبنِ العرض من السجلّ. فيُبنى
+    هنا فعلًا.
+    """
+    from dataclasses import asdict
+
+    from athera_api.schemas.screening import MatrixCellView as CellSchema
+    from athera_api.schemas.screening import ScreeningCardView as CardSchema
+    from athera_api.services.screening import METADATA_ONLY, ScreeningCard, empty_cell
+
+    card = ScreeningCard(source_id=uuid.uuid4(), title="دراسة", added_at=_now(),
+                         verification_status="verified", retraction_status="none")
+    assert CardSchema(**asdict(card)).title == "دراسة"
+
+    cell = empty_cell("measures", METADATA_ONLY)
+    assert CellSchema(**asdict(cell)).cell_state == "missing"
+
+
+def test_the_downgrade_drops_exactly_the_constraints_the_upgrade_created():
+    """اسمٌ يُغيَّر في موضعٍ ويبقى في الآخر يجعل التنازل ينفجر بعد أن بدأ."""
+    text = _migration_text()
+    created = set(re.findall(r'op\.create_check_constraint\(\s*\n?\s*"([a-z_]+)"', text))
+    dropped = set(re.findall(r'^\s+for constraint in \((.*?)\):', text, re.S | re.M))
+    assert created, "لم يُعثر على قيدٍ أُنشئ في الترحيل"
+    names = set(re.findall(r'"([a-z_]+)"', next(iter(dropped))))
+    assert created == names, (
+        f"الترحيل ينشئ {sorted(created)} ويُسقط {sorted(names)}")
+
+
 def test_the_matrix_reads_included_sources_only():
     """مرجعٌ «محفوظ فقط» لم يُقرَّر بعدُ أنه دليل — ووضعه في المصفوفة يجعل
     الباحث يبني تحليله على ما لم يحكم عليه."""
