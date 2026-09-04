@@ -81,7 +81,7 @@ export function NavLinks({
           ) : null}
           <ul
             className="nav-list"
-            {...(group.label ? { "aria-labelledby": `nav-${group.id}` } : {})}
+            aria-labelledby={group.label ? `nav-${group.id}` : undefined}
           >
             {group.items.map((item) => {
               const current = item.key === active;
