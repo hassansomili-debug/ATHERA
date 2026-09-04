@@ -143,6 +143,19 @@ def test_the_literature_search_surface_actually_calls_the_registry():
     assert '@router.post("/sources/search"' in router, (
         "‎/sources/search اختفى من الخادم — والإحالة كانت قرار واجهة")
 
+    # ٤ — **ولا يُعطَّل البحث برايةِ الرصد المجدول.**
+    #
+    # `literatureOnline` مشتقّةٌ من `LITERATURE_REGISTRY`، وهو يصف الرصد
+    # المجدول وحده — بينما اكتشاف المراجع ينادي Crossref وOpenAlex في كل
+    # بحث بلا مفتاحٍ ولا إعداد. وكانت الشاشة المتقاعدة تربط زرّها بها،
+    # فيبقى معطَّلًا في الإنتاج أمام قدرةٍ تعمل. وذاك «قريبًا» بصيغةٍ
+    # أخرى: منعٌ يُقرأ عجزًا، والمنصّة قادرة.
+    #
+    # ورفعه المسار د في `docs/integration/track-d-requests.md`، والحارس
+    # يمنع عودته إلى السطح الباقي مهما أُعيدت صياغة الراية.
+    assert "literatureOnline" not in surface, (
+        "بحثُ المراجع مُعطَّل برايةِ الرصد المجدول — وهي لا تصفه")
+
 
 def test_no_tab_switches_state_without_switching_content():
     """**لسانُ «خريطة الأدلة» كان يُضاء ولا يُغيّر شيئًا.**
