@@ -500,6 +500,22 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "يوجد تنبيه تداخل لم يُحسم؛ يلزم الدمج أو تبرير معتمد.",
         "en": "An unresolved overlap alert exists; a merge or an approved justification is required.",
     },
+    # ── Wave 1-C: حدودُ إعادة المعالجة تُقال بلغة الباحث ──
+    "thesis.processing_in_flight": {
+        "ar": "المعالجة جارية على هذه الرسالة الآن؛ انتظر انتهاءها قبل طلب إعادتها.",
+        "en": "This thesis is being processed right now; wait for it to finish before asking again.",
+    },
+    # **حدٌّ يُعلَن ولا يُخفى خلف زرٍّ يخذل.** إعادة قراءة مستندٍ ممسوح
+    # ضوئيًّا تُنتج النتيجة نفسها حرفًا بحرف ما دام لا OCR.
+    "thesis.retry_needs_ocr": {
+        "ar": "المستند ممسوح ضوئيًّا بلا طبقة نصّ؛ إعادة القراءة لن تغيّر شيئًا "
+              "ما دامت القراءة الضوئية (OCR) غير متاحة.",
+        "en": "The document is scanned with no text layer; rereading changes nothing "
+              "while OCR is unavailable.",
+    },
+    "thesis.unknown_view": {
+        "ar": "خيار العرض غير معروف.", "en": "Unknown listing view.",
+    },
     "publishing.manuscript_not_found": {
         "ar": "المخطوطة غير موجودة.", "en": "Manuscript not found.",
     },

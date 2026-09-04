@@ -23,7 +23,8 @@ from ...models.files import File
 from ...models.research import DocumentChunk, ExtractionRun, FactCandidate
 from ...models.thesis import Thesis
 from ..extraction.base import quote_is_grounded
-from ..parsing import UnsupportedDocument, parse
+from ..parsing import NoTextLayer, UnsupportedDocument, parse
+from ..thesis import processing
 from .contracts import STATUS_EXTRACTED, STATUS_NOT_FOUND, ExtractionBatch
 from .deterministic import extract as deterministic_extract
 from .fields import MODEL_FIELDS, Section, memory_category_for
@@ -177,18 +178,45 @@ async def prepare(
         session.add(run)
     await session.flush()
 
+    # **حالُ الرسالة تُثبَّت مع كل انتقالٍ حقيقي** (ترحيل 0027). وهي عمودٌ
+    # على `theses` لا اشتقاقٌ من `extraction_runs`: حالُ التشغيلة تصف
+    # تشغيلة، وإعادةُ القراءة تُنشئ صفًّا جديدًا فتقفز الحال إلى الوراء.
+    await processing.mark(session, tenant_id=tenant_id, file_id=file_record.id,
+                          state=processing.PARSING)
+
     # ── التفكيك ──
     try:
         rows = await parse_into_chunks(session, tenant_id=tenant_id, record=file_record, data=data)
+    except NoTextLayer as exc:
+        # **مستندٌ ممسوح ضوئيًّا ليس ملفًّا فاسدًا.** الحال تُسمّى باسمها،
+        # وطبقةُ النصّ تُعلَن غائبةً — فلا يُدّعى أنّ OCR جرى ولا يُعرض زرُّ
+        # إعادةٍ يَعِد بنتيجةٍ لن تختلف.
+        run.status = Status.PARSE_FAILED.value
+        run.error = str(exc)[:500]
+        run.finished_at = dt.datetime.now(dt.UTC)
+        await processing.mark(
+            session, tenant_id=tenant_id, file_id=file_record.id,
+            state=processing.TEXT_LAYER_MISSING, failure_code="text_layer_missing",
+            failure_detail=str(exc)[:500], text_layer=processing.TEXT_LAYER_ABSENT)
+        return Prepared(run.id, file_record.id, Status.PARSE_FAILED, 0, 0, {}, (),
+                        str(exc)[:200])
     except UnsupportedDocument as exc:
         run.status = Status.PARSE_FAILED.value
         run.error = str(exc)[:500]
         run.finished_at = dt.datetime.now(dt.UTC)
+        await processing.mark(
+            session, tenant_id=tenant_id, file_id=file_record.id,
+            state=processing.FAILED, failure_code="unsupported_document",
+            failure_detail=f"{type(exc).__name__}: {exc}"[:500])
         return Prepared(run.id, file_record.id, Status.PARSE_FAILED, 0, 0, {}, (),
                         str(exc)[:200])
 
     run.chunks_parsed = len(rows)
     run.status = Status.EXTRACTING.value if external_allowed else Status.PARSED.value
+    # قُرئ نصٌّ فعلًا — فتُعلَن الطبقة موجودة. و«لم تُفحص» ليست «موجودة».
+    await processing.mark(session, tenant_id=tenant_id, file_id=file_record.id,
+                          state=processing.EXTRACTING,
+                          text_layer=processing.TEXT_LAYER_PRESENT)
     views = _views(rows)
     excluded = excluded_report(views)
 
@@ -218,6 +246,13 @@ async def prepare(
         run.status = (Status.LOCAL_ONLY.value if consent_state == "declined"
                       else Status.AWAITING_CONSENT.value)
         run.finished_at = dt.datetime.now(dt.UTC)
+        # **ورفضُ الإرسال ليس فشلًا، ولا هو انتظار.** من قرّر ألّا يُرسل
+        # رسالته انتهى الخطُّ عنده بمرشّحاتٍ محلّية يراجعها؛ ومن لم يقرّر
+        # بعدُ ينتظر قراره. وحالان لا واحدة.
+        await processing.mark(
+            session, tenant_id=tenant_id, file_id=file_record.id,
+            state=(processing.READY_FOR_REVIEW if consent_state == "declined"
+                   else processing.AWAITING_CONSENT))
 
     return Prepared(run.id, file_record.id, Status(run.status), len(rows), candidates,
                     excluded, tuple(views))
@@ -325,6 +360,8 @@ async def finalize(
     ).scalar_one()
     run.status = Status.AWAITING_REVIEW.value
     run.finished_at = dt.datetime.now(dt.UTC)
+    await processing.mark(session, tenant_id=tenant_id, file_id=run.file_id,
+                          state=processing.READY_FOR_REVIEW)
     if failed:
         # فشل قسم لا يُسقط ما نجح: الأقسام الأخرى تبقى، ويُبلَّغ عن الفاشل
         # باسمه (§29). فرسالةٌ استُخرج منها ستة أقسام من سبعة أنفع من لا شيء.

@@ -61,6 +61,40 @@ class Thesis(Base, TenantScoped, Timestamped):
     # §23.8 — منشورات سبق استخراجها من هذه الرسالة.
     existing_publications: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
+    # ── حالُ المعالجة: عمودٌ أوّليّ لا اشتقاقٌ وقت العرض (ترحيل 0027) ──
+    #
+    # **وكانت تُشتقّ من `extraction_runs.status` فتكذب في ثلاثة مواضع.**
+    # تلك الحال تصف **تشغيلة** لا رسالة: رسالةٌ بلا تشغيلة تُعرض بلا حال،
+    # وإعادةُ القراءة تُنشئ صفًّا جديدًا فتقفز الحال إلى الوراء، وحالُ آخر
+    # تشغيلةٍ على ملفٍّ قد لا تكون حالَ الرسالة أصلًا. والمفردة في
+    # `services/thesis/processing.py`، والقاعدة تحرسها بقيد.
+    processing_state: Mapped[str] = mapped_column(String(24), nullable=False,
+                                                  default="uploaded")
+    processing_state_changed_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    # عددُ مرّات طلب المعالجة — لا «نسبة تقدّم»: خطُّ الأنابيب لا يقيس تقدّمًا،
+    # ورقمٌ يُعرض بلا قياسٍ خلفه اختلاق.
+    processing_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # **الفشل يُسمّى أو لا يُكتب** — رمزٌ من مفردةٍ مغلقة، وتفصيلٌ تقنيّ آمن
+    # (صنفُ الاستثناء ورسالته مقصوصة) لا مقتطفٌ من مستند الباحث.
+    failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # **طبقةُ النصّ تُفحَص ويُعلَن جوابها** — و`not_checked` ليست `present`.
+    text_layer_state: Mapped[str] = mapped_column(String(16), nullable=False,
+                                                  default="not_checked")
+    # عقدُ OCR المؤجَّل: قائمٌ ليقول «لم يقع»، ولا مسار في هذا المستودع
+    # يكتب فيه غير `unavailable`. فلا يُدّعى مسحٌ ضوئيّ لم يجرِ.
+    ocr_state: Mapped[str] = mapped_column(String(16), nullable=False,
+                                           default="unavailable")
+
+    # **«لم يُنقَّب بعد» ليست نتيجةً صفرية.** بدون هذا العمود لا سبيل إلى
+    # التمييز بين تنقيبٍ لم يقع وتنقيبٍ وقع فلم يجد فرصة — وهما خبران
+    # مختلفان تمامًا، وكلاهما كان يُعرض «٠ فرص».
+    opportunities_mined_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+
 
 class ThesisOwner(Base, TenantScoped, Timestamped):
     __tablename__ = "thesis_owners"
