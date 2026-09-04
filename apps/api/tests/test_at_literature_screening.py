@@ -42,6 +42,15 @@ def _migration_text() -> str:
     return MIGRATION.read_text(encoding="utf-8")
 
 
+def _later_migrations_text() -> str:
+    """ما كُتب بعد 0023 — لأن الجدول يُمدّ ولا يُعاد إنشاؤه."""
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(MIGRATION.parent.glob("0*.py"))
+        if path.name > MIGRATION.name
+    )
+
+
 # ═════════════════ اختبارات خالصة: ما يُقرأ بلا قاعدة ═════════════════
 
 def test_the_migration_forces_row_level_security_not_merely_enables_it():
@@ -88,13 +97,18 @@ def test_the_migration_has_a_real_downgrade_that_refuses_to_erase_a_judgement():
 
 
 def test_the_model_and_the_migration_agree_column_by_column():
-    """عمودٌ في النموذج لا يقابله عمودٌ في الترحيل يسقط في الإنتاج وحده."""
+    """عمودٌ في النموذج لا يقابله عمودٌ في الترحيل يسقط في الإنتاج وحده.
+
+    والجدول يُمدّ بترحيلاتٍ لاحقة، فتُقرأ **كلّها**: قصرُ الفحص على الترحيل
+    الذي أنشأ الجدول يجعل كل عمودٍ يُضاف بعده يمرّ بلا مقابلة — وهو بالضبط
+    العطب الذي أُنشئ هذا الفحص ليمنعه.
+    """
     from athera_api.models.screening import LiteratureMatrixCell
 
-    text = _migration_text()
+    text = _migration_text() + _later_migrations_text()
     for column in LiteratureMatrixCell.__table__.columns:
         assert f'"{column.name}"' in text, (
-            f"العمود {column.name!r} في النموذج ولا وجود له في الترحيل 0023")
+            f"العمود {column.name!r} في النموذج ولا وجود له في أي ترحيل")
 
 
 def _migration_module():
