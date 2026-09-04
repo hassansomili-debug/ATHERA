@@ -218,6 +218,16 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
+      # ── إدارةُ المشاريع البحثية ──
+      #
+      # وصلت رقعتُها الفرعَ ولا خطوة تنادِيها — وهي ثاني مرّة في موجةٍ
+      # واحدة. وحارسُ `test_every_browser_spec_is_reachable_from_the_workflow`
+      # يمنع الثالثة: رقعةٌ في الشجرة لا يبلغها المشغّل تُسقط البناء.
+      - name: Project management surface (real browser)
+        run: cd apps/web && npm run test:project-management
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
       # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
       #
       # تشغيلُها من PR يفحص إنتاجًا لا يحمل شيفرة الـPR — نتيجةٌ مضلِّلة.
