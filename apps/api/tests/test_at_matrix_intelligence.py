@@ -146,10 +146,24 @@ def test_the_older_guarantees_are_untouched_by_this_migration():
     يبقى في القاعدة. فيُفحص هنا نصًّا: لا إسقاط لأيٍّ منها.
     """
     text = _migration_text()
+    # ثلاثةٌ لا تُمَسّ البتّة.
     for guarded in ("abstract_has_no_page_number", "metadata_only_has_no_quote",
-                    "model_value_is_not_self_approved", "verification_actor"):
+                    "verification_actor"):
         assert f"DROP CONSTRAINT ck_literature_matrix_cells_{guarded}" not in text
         assert f'drop_constraint("{guarded}"' not in text
+
+    # **والرابع يُوسَّع لا يُلغى.**
+    #
+    # `model_value_is_not_self_approved` كان يحرس نوعًا واحدًا من الآلات،
+    # فاضطُرّ الاستخراج الحتمي أن يسمّي نفسه نموذجًا ليدخل تحته. فأُسقط
+    # وأُنشئ مكانه ما هو أوسع منه — والحمايةُ تزيد ولا تنقص. ولو أُسقط بلا
+    # بديلٍ يشمل `model` لسقط الفحص، وهو المقصود.
+    if 'drop_constraint("model_value_is_not_self_approved"' in text:
+        assert "machine_needs_human_approval" in text, (
+            "أُسقط قيدُ الاعتماد الذاتي بلا بديل")
+        successor = text.split("machine_needs_human_approval", 1)[1][:400]
+        assert "'model'" in successor, "البديل لا يشمل ما يشمله الأصل"
+        assert "'deterministic'" in successor, "البديل لا يشمل الاستخراج الحتمي"
     # وقيودُ 0023 نفسها ما زالت في ترحيلها.
     older = (MIGRATION.parent / "0023_literature_screening.py").read_text(encoding="utf-8")
     for guarded in ("abstract_has_no_page_number", "metadata_only_has_no_quote",
@@ -1397,3 +1411,28 @@ def test_the_guard_names_the_machine_not_one_of_its_kinds():
         "المفردات لا تفرّق بين الحتمي والنموذج")
     # واسمُ القيد دون حدّ الاسم في PostgreSQL — وقد بُتر اسمٌ من قبل فسقط التنازل.
     assert len("ck_literature_matrix_cells_machine_needs_human_approval") <= 63
+
+
+def test_dropped_constraints_are_named_the_way_they_were_created():
+    """**الاسمُ يُمرَّر مجرَّدًا لا كاملًا.**
+
+    اصطلاح التسمية `ck_%(table_name)s_%(constraint_name)s` يُطبَّق على ما
+    يُمرَّر إلى `drop_constraint` كما يُطبَّق على `create_check_constraint`.
+    فمن مرّر الاسم الكامل بُني له اسمٌ ثانٍ فوقه وبُتر إلى تجزئة لا توجد في
+    القاعدة — وسقط الترحيل في CI بـ`UndefinedObject`.
+
+    والفحص لا يقرأ نصًّا فحسب: كلُّ اسمٍ يُسقَط يجب أن يكون اسمًا أُنشئ.
+    """
+    import pathlib
+    import re
+
+    text = (pathlib.Path(__file__).resolve().parents[3] / "infra" / "db" / "migrations"
+            / "versions" / "0024_matrix_intelligence.py").read_text(encoding="utf-8")
+
+    dropped = set(re.findall(r'op\.drop_constraint\(\s*"([^"]+)"', text))
+    assert dropped, "لا قيد يُسقَط — فراجع الفحص نفسه"
+    for name in dropped:
+        assert not name.startswith("ck_"), (
+            f"اسمٌ كامل يُمرَّر إلى drop_constraint: {name}")
+        # وطولُ الاسم المبنيّ دون حدّ PostgreSQL.
+        assert len(f"ck_literature_matrix_cells_{name}") <= 63, f"اسمٌ يُبتَر: {name}"

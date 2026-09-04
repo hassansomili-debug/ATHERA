@@ -120,13 +120,17 @@ def upgrade() -> None:
     # يعتمد نفسه»**. فيتّسع القيد لِما يصفه، وتُسمّى الطريقة بما هي:
     # `researcher` إنسان، و`metadata` بياناتٌ وصفية يقينية، و`deterministic`
     # استخراجٌ بقواعد، و`model` نموذجٌ لغوي — أربعةٌ يفرّق بينها من يدقّق.
-    op.drop_constraint("ck_literature_matrix_cells_extraction_method",
+    # **الاسمُ يُمرَّر مجرَّدًا لا كاملًا.** اصطلاح التسمية
+    # (`ck_%(table_name)s_%(constraint_name)s`) يُطبَّق على ما نمرّره؛ فمن
+    # مرّر الاسم الكامل بُني له اسمٌ ثانٍ فوقه، وبُتر إلى تجزئةٍ لا توجد
+    # في القاعدة. وقد سقط الترحيل عليها في CI.
+    op.drop_constraint("extraction_method",
                        "literature_matrix_cells", type_="check")
     op.create_check_constraint(
         "extraction_method", "literature_matrix_cells",
         "extraction_method IN ('researcher', 'metadata', 'deterministic', 'model')")
 
-    op.drop_constraint("ck_literature_matrix_cells_model_value_is_not_self_approved",
+    op.drop_constraint("model_value_is_not_self_approved",
                        "literature_matrix_cells", type_="check")
     op.create_check_constraint(
         "machine_needs_human_approval", "literature_matrix_cells",
@@ -177,13 +181,13 @@ def downgrade() -> None:
     فيُطلب القرار أولًا — كما في 0016 و0020 و0022 و0023.
     """
     # يُعاد القيدان إلى صيغتهما في 0023 قبل إسقاط الأعمدة.
-    op.drop_constraint("ck_literature_matrix_cells_machine_needs_human_approval",
+    op.drop_constraint("machine_needs_human_approval",
                        "literature_matrix_cells", type_="check")
     op.create_check_constraint(
         "model_value_is_not_self_approved", "literature_matrix_cells",
         "extraction_method <> 'model' OR verification_status = 'unverified' "
         "OR verified_by IS NOT NULL")
-    op.drop_constraint("ck_literature_matrix_cells_extraction_method",
+    op.drop_constraint("extraction_method",
                        "literature_matrix_cells", type_="check")
     op.create_check_constraint(
         "extraction_method", "literature_matrix_cells",
