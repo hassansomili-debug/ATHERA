@@ -1851,6 +1851,42 @@ async def test_a_signed_in_researcher_drives_the_whole_chain_over_http(two_tenan
         assert decided.json()["status"] == "approved"
 
         assert (await client.get(f"{base}/gaps")).status_code == 200
+        # **وسلسلةُ الفجوة إلى الفرصة تُقطع كاملةً**: الفجوة تُعتمد، ثمّ
+        # تُعايَن، ثمّ تُنشأ البطاقة بتأكيدٍ صريح. وكلُّ نقطةٍ منها كانت
+        # تختم المعاملة في وسطها.
+        gaps = (await client.get(f"{base}/gaps")).json()["gaps"]
+        assert gaps, "مجموعةٌ فيها تعارضٌ ولم تُقترح فيها فجوةٌ واحدة"
+        gap_id = gaps[0]["id"]
+
+        approved_gap = await client.post(f"{base}/gaps/{gap_id}/decision",
+                                         json={"status": "approved"})
+        assert approved_gap.status_code == 200, approved_gap.text
+        assert approved_gap.json()["status"] == "approved"
+
+        preview = await client.get(f"{base}/gaps/{gap_id}/opportunity-preview")
+        assert preview.status_code == 200, preview.text
+        draft = preview.json()
+
+        # **ولا تُنشأ بطاقةٌ بلا تأكيد** — والعقد يردّ ٤٢٢ لا ينشئ بصمت.
+        refused = await client.post(f"{base}/opportunities", json={
+            "gap_candidate_id": gap_id, "confirmed": False,
+            "phenomenon_ar": draft["what_we_noticed_ar"],
+            "possible_contribution_ar": draft["why_it_might_matter_ar"],
+            "evidence_basis_ar": draft["evidence_basis_ar"],
+            "uncertainties_ar": draft["still_uncertain_ar"]})
+        assert refused.status_code == 422, refused.text
+
+        made = await client.post(f"{base}/opportunities", json={
+            "gap_candidate_id": gap_id, "confirmed": True,
+            "phenomenon_ar": draft["what_we_noticed_ar"],
+            "possible_contribution_ar": draft["why_it_might_matter_ar"],
+            "evidence_basis_ar": draft["evidence_basis_ar"],
+            "uncertainties_ar": draft["still_uncertain_ar"]})
+        assert made.status_code == 201, made.text
+        assert made.json()["gap_candidate_id"] == gap_id
+
+        listed = (await client.get(f"{base}/opportunities")).json()
+        assert listed["opportunities"], "بطاقةٌ أُنشئت ولا تظهر في قائمتها"
 
     # **والحكمُ يحمل اسم صاحبه في القاعدة**، لا في الاستجابة وحدها.
     from sqlalchemy import select

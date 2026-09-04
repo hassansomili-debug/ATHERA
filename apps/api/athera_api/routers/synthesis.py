@@ -305,7 +305,8 @@ async def analyze(
                      "not_assessed": len(assessment.not_assessed)},
         reason="deterministic synthesis over the included corpus; candidates only",
         request_id=principal.request_id, ip_address=principal.ip_address)
-    await session.commit()
+    # **ولا يُختم هنا.** `tenant_session` تفتح المعاملة وتختمها عند الخروج،
+    # وختمٌ في الوسط يُغلقها ثمّ يُقرأ بها فيسقط الطلب كلُّه.
     return await list_themes(project_id, principal, session)
 
 
@@ -323,7 +324,6 @@ async def _decide(session: AsyncSession, principal: Principal, row, *,
         state_after={"status": row.status},
         reason=payload.note_ar or "a synthesis candidate is decided by a person",
         request_id=principal.request_id, ip_address=principal.ip_address)
-    await session.commit()
 
 
 @router.post("/projects/{project_id}/themes/{theme_id}/decision",
@@ -677,7 +677,6 @@ async def create_opportunity(
         state_after={"gap_candidate_id": str(gap.id), "gap_type": gap.gap_type},
         reason="a person confirmed an approved gap candidate into an opportunity card",
         request_id=principal.request_id, ip_address=principal.ip_address)
-    await session.commit()
     return _opportunity_view(row, gap.gap_type)
 
 
@@ -760,5 +759,4 @@ async def create_project_from_opportunity(
                      "sources_copied": 0},
         reason="a person previewed and confirmed; no source was linked or included",
         request_id=principal.request_id, ip_address=principal.ip_address)
-    await session.commit()
     return _opportunity_view(row, gap.gap_type if gap else "context_gap")
