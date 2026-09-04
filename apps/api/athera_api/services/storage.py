@@ -153,9 +153,28 @@ class S3ObjectStore(ObjectStore):
         الذاكرة تتناسب مع حجم الجزء لا حجم الملف — وهذا الفرق بين ملف بحجم
         نصف جيجابايت يمرّ، وآلة بنصف جيجابايت ذاكرة تسقط.
         """
-        self._client.upload_fileobj(
-            fileobj, self._bucket, key, ExtraArgs={"ContentType": content_type}
-        )
+        try:
+            self._client.upload_fileobj(
+                fileobj, self._bucket, key, ExtraArgs={"ContentType": content_type}
+            )
+        except Exception as exc:  # noqa: BLE001 — يُعاد رفعه إن لم يكن رفضَ حجم
+            # **رفضُ المخزن للحجم ليس عطبًا في المنتج.**
+            #
+            # قِيس من داخل الآلة، بلا مرور بمسار الطلب: خمسون ميجابايت تُقبل،
+            # وواحدٌ وخمسون يردّ `413` بجسمٍ فارغ. و`botocore` يلفّه
+            # `ClientError` بلا رمزٍ ولا رسالة — فيصعد استثناءً مجهولًا،
+            # ويتحوّل عند الحافّة إلى `500` «حدث خطأ غير متوقع». فيرفع الباحث
+            # كتابه ثلاثين ثانية ثم يُقال له إن شيئًا غير متوقع وقع.
+            #
+            # والسقف المُعلَن في التطبيق يمنع أكثر هذه الحالات قبل رفع بايت،
+            # لكنه إعدادٌ قد يُرفع فوق سقف المخزن. فيُترجَم الرفض إلى ما هو:
+            # حدُّ حجمٍ يُقال بلغته، لا خطأ مجهول.
+            status = (getattr(exc, "response", None) or {}).get(
+                "ResponseMetadata", {}).get("HTTPStatusCode")
+            if status == 413:
+                raise AtheraError("file.too_large", status_code=413,
+                                  max_bytes=MAX_UPLOAD_BYTES) from exc
+            raise
 
     def get(self, key: str) -> bytes:
         return self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read()

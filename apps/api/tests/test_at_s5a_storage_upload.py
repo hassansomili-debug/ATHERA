@@ -428,3 +428,27 @@ def test_the_declared_ceiling_does_not_promise_more_than_storage_accepts():
     assert '"MAX_DOCUMENT_UPLOAD_MB", "50"' in source, "الافتراضي يَعِد بأكثر مما قِيس"
     assert storage.MAX_DOCUMENT_BYTES <= 50 * 1024 * 1024 or os.environ.get(
         "MAX_DOCUMENT_UPLOAD_MB"), "السقف يتجاوز المقيس بلا إعدادٍ صريح"
+
+
+def test_a_storage_size_refusal_is_not_an_unexpected_error():
+    """**رفضُ المخزن للحجم ليس عطبًا مجهولًا.**
+
+    قِيس من داخل آلة الإنتاج، بلا مرور بمسار الطلب: خمسون ميجابايت تُقبل،
+    وواحدٌ وخمسون يردّ `413` بجسمٍ فارغ — لا رمز ولا رسالة. فيلفّه
+    `botocore` في `ClientError` مجهول، ويصعد إلى الحافّة فيصير `500` «حدث
+    خطأ غير متوقع»، بعد أن رفع الباحث كتابه ثلاثين ثانية.
+
+    والسقف المُعلَن يمنع أكثر الحالات قبل رفع بايت، لكنه إعدادٌ قد يُرفع
+    فوق سقف المخزن — فيبقى هذا الحدّ الأخير: يُترجَم الرفض إلى ما هو.
+    """
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[1] / "athera_api" / "services"
+              / "storage.py").read_text(encoding="utf-8")
+    upload = source[source.index("def put_stream", source.index("class S3")):]
+    upload = upload[:upload.index("def get(")]
+    assert "HTTPStatusCode" in upload, "حال الرفض لا تُقرأ"
+    assert "status == 413" in upload, "الرفض بالحجم لا يُميَّز"
+    assert 'AtheraError("file.too_large"' in upload, "الرفض لا يُترجَم إلى حدّ حجم"
+    # وما ليس رفضَ حجمٍ يُعاد رفعه كما هو — لا يُبتلع كل استثناء.
+    assert "raise\n" in upload, "الاستثناءات الأخرى تُبتلع"
