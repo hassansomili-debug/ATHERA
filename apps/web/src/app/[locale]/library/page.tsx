@@ -3,7 +3,12 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import type { LibraryFile } from "@/lib/library";
+import {
+  LIBRARY_MAX_FETCH,
+  LIBRARY_PAGE,
+  listLibraryFilePage,
+  type LibraryFile,
+} from "@/lib/library";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { FileUpload } from "@/components/FileUpload";
 
@@ -34,7 +39,7 @@ const PROCESSING_LABEL: Record<string, string> = {
   extracting: "library.processing",
   // **انتظارُ الباحث ليس معالجةً جارية.** والقراءة المحلية والاستخراج
   // الحتمي تمّا؛ وما يتوقف الآن هو أن يأذن صاحب المستند. فقولُ «قيد
-  // المعالجة» هنا يجعله ينتظر النظام — والنظام ينتظره هو، فلا يتحرّك أحد.
+  // المعالجة» هنا يجعله ينتظر النظام — والنظام ينتظره هو، فلا يتحرك أحد.
   awaiting_consent: "library.awaitingConsent",
   awaiting_review: "library.needsReview",
   completed: "library.processed",
@@ -69,11 +74,36 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
   const t = translator(getMessages(locale));
 
   const [files, setFiles] = useState<LibraryFile[]>([]);
+  /**
+   * **قائمةٌ لم تصل ليست مكتبةً خالية.**
+   *
+   * كانت الشاشة تعرض «لم ترفع ملفًا بعد» ما دامت `files` فارغة — وهي فارغة
+   * قبل وصول أول ردّ. فباحثٌ يملك عشرين ملفًا يُقال له إنه لا يملك شيئًا،
+   * لا لأن مكتبته خالية بل لأنها لم تُقرأ بعد. وهما حالان مختلفتان تمامًا،
+   * وخلطهما كذبٌ يراه المستخدم كذبًا.
+   */
+  const [filesLoad, setFilesLoad] = useState<"loading" | "ready" | "failed">("loading");
   const [processing, setProcessing] = useState<string | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [doi, setDoi] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  /**
+   * **ما بعد الصفحة الأولى لا يضيع بتحديث.**
+   *
+   * القائمة صارت مرقَّمة، وكل قراءةٍ تُعيد ما طُلب لا أكثر. فلو استُبدلت
+   * القائمة كلها بردّ الصفحة الأولى، لأُلغي ما حمّله الباحث بـ«حمّل المزيد»
+   * كلّما دار الاستطلاع. فتُقرأ بقدر ما هو معروض (إلى سقف الخادم)، ويبقى
+   * ذيلُ ما بعده كما هو. و`shown` مرآةُ آخر ما عُرض فعلًا — تُكتب بعد
+   * التصيير لا داخله.
+   */
+  const shown = useRef<LibraryFile[]>([]);
+  useEffect(() => {
+    shown.current = files;
+  }, [files]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   /**
    * **جوابٌ متأخّر لا يمحو جوابًا أحدث منه.**
@@ -91,12 +121,65 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
   const latest = useRef(0);
   const loadFiles = useCallback(() => {
     const ticket = (latest.current += 1);
-    apiFetch<LibraryFile[]>("/api/v1/files", { locale })
-      .then((next) => { if (ticket === latest.current) setFiles(next); })
+    const take = Math.min(LIBRARY_MAX_FETCH, Math.max(LIBRARY_PAGE, shown.current.length));
+    const tail = shown.current.slice(take);
+    listLibraryFilePage(locale, { limit: take })
+      .then((page) => {
+        const next = page.length < take ? page : page.concat(tail);
+        if (ticket === latest.current) setFiles(next);
+        if (ticket === latest.current) setFilesLoad("ready");
+        // ونهايةُ القائمة لا يقرّرها إلا من بلغها: قراءةٌ لا تشمل الذيل
+        // لا تعرف ما بعده، فلا تُبطل زرًّا لم تسأل عنه.
+        if (ticket === latest.current && tail.length === 0) setHasMore(page.length === take);
+      })
+      .catch((err) => {
+        if (ticket === latest.current) setFilesLoad("failed");
+        setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      });
+  }, [locale]);
+
+  /**
+   * «حمّل المزيد» — والمؤشّر معرّف آخر ملفٍ معروض.
+   *
+   * ويأخذ رقمه من الترتيب نفسه: لو وصل ردُّ صفحةٍ أولى بعده لكان يمحو ما
+   * أُلحق للتوّ، فيضغط الباحث الزرّ ولا يرى شيئًا يزيد.
+   */
+  const loadMore = useCallback(() => {
+    const after = shown.current[shown.current.length - 1]?.id;
+    if (!after) return;
+    const ticket = (latest.current += 1);
+    const base = shown.current;
+    setLoadingMore(true);
+    listLibraryFilePage(locale, { limit: LIBRARY_PAGE, after })
+      .then((page) => {
+        if (ticket === latest.current) setFiles(base.concat(page));
+        if (ticket === latest.current) setHasMore(page.length === LIBRARY_PAGE);
+      })
       .catch((err) =>
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
-      );
+      )
+      .finally(() => setLoadingMore(false));
   }, [locale]);
+
+  /**
+   * **الملف الذي رُفع للتوّ يُعرض فورًا.**
+   *
+   * كان العرض ينتظر قراءةً كاملة للمكتبة بعد الرفع؛ وتلك القراءة هي بعينها
+   * ما ثبت بطؤه على حساب فيه ملفات كثيرة. فيرى الباحث «تم الحفظ» ومكتبته
+   * خالية من ملفه، ولا شيء يقول له أن ينتظر. وقد سقطت رحلة القبول على ذلك
+   * ثلاث مرات: صفر بطاقة ملف بعد رفعٍ نجح.
+   *
+   * والقيم المعروضة ليست اختلاقًا: الخادم أنشأ صفّ الملف وحده — لا رسالة
+   * ولا تشغيلة ولا مرشّح — وهي نفسها ما يردّه المسار لو سُئل عنه الآن.
+   * والقراءة تُطلق بعدها فتحلّ الحقيقةُ محلّ التوقّع، ورقمُ الترتيب يُرفع
+   * أولًا فلا يمحو الملفَ ردٌّ صدر قبل رفعه.
+   */
+  const fileUploaded = useCallback((stored: LibraryFile) => {
+    latest.current += 1;
+    setFiles((previous) => [stored, ...previous.filter((row) => row.id !== stored.id)]);
+    setFilesLoad("ready");
+    loadFiles();
+  }, [loadFiles]);
 
   /**
    * **المعالجة تجري، والبطاقة واقفة.**
@@ -158,19 +241,35 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
       <h1>{t("library.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("library.subtitle")}</p>
       <div style={{ marginBlock: "18px 24px" }}>
-        <FileUpload locale={locale} messages={getMessages(locale)} onUploaded={loadFiles} />
+        <FileUpload locale={locale} messages={getMessages(locale)} onUploaded={fileUploaded} />
       </div>
 
       {/* ── ملفاتي: ما يملكه الباحث فعلًا ── */}
       <section>
         <h2>{t("library.myFiles")}</h2>
         <p style={{ color: "var(--muted)" }}>{t("library.filesNote")}</p>
-        {files.length === 0 ? (
+        {/*
+          الحالات الثلاث تُقال منفصلة: «تُقرأ الآن» غير «لا ملفات» غير
+          «تعذّرت القراءة». وجمعُها في نصٍّ واحد يجعل بطء الخادم يبدو
+          مكتبةً خالية — وهو أسوأ ما تقوله شاشةٌ لمن يملك ملفاته.
+        */}
+        {filesLoad === "loading" ? (
+          <p data-testid="library-files-loading" role="status" aria-live="polite">
+            {t("library.loadingFiles")}
+          </p>
+        ) : filesLoad === "failed" ? (
+          <p className="error" role="alert" data-testid="library-files-error">
+            {t("library.filesFailed")}
+          </p>
+        ) : files.length === 0 ? (
           <p>{t("library.noFiles")}</p>
         ) : (
           <div className="cards">
             {files.map((file) => (
-              <article className="card" key={file.id}>
+              // بطاقةُ ملفٍ تُميَّز عن بطاقةِ مرجع: `article.card` يطابق
+              // الاثنتين، فعدُّها لا يفرّق بين مكتبةٍ بلا ملفات ومكتبةٍ لم
+              // تُقرأ — والسمة لا تحمل اسمًا ولا سرًّا.
+              <article className="card" data-testid="library-file-card" key={file.id}>
                 <h3>{file.original_filename}</h3>
                 <div className="metric-label">
                   {file.content_type} · {Math.max(1, Math.round(file.size_bytes / 1024))} KB ·{" "}
@@ -248,6 +347,18 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
             ))}
           </div>
         )}
+        {/* ما عُرض لا يُستبدل بما يُضاف: الزرّ يُلحق ولا يعيد البناء. */}
+        {filesLoad === "ready" && hasMore ? (
+          <button
+            type="button"
+            data-testid="library-load-more"
+            disabled={loadingMore}
+            onClick={loadMore}
+            style={{ marginBlockStart: 12 }}
+          >
+            {loadingMore ? t("library.loadingMore") : t("library.loadMore")}
+          </button>
+        ) : null}
       </section>
 
       <h2>{t("library.sourcesTab")}</h2>

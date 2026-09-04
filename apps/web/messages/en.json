@@ -219,7 +219,11 @@
     "subtitle": "Every source with its access state, retraction status and last verification.",
     "title": "Research Library",
     "uploaded": "Uploaded",
-    "askAi": "Ask PUBRIVA AI about this document"
+    "askAi": "Ask PUBRIVA AI about this document",
+    "loadingFiles": "Reading your files…",
+    "filesFailed": "Could not read your files. Try again.",
+    "loadMore": "Load more files",
+    "loadingMore": "Loading…"
   },
   "claims": {
     "title": "Claims ledger",
@@ -676,7 +680,9 @@
     "failed": "Upload failed.",
     "readyNote": "The file is stored privately and tied to your account. **It has not been parsed or analyzed** — analysis is a separate, announced stage.",
     "gateTitle": "File storage is not configured yet.",
-    "gateBody": "Upload is disabled until provider credentials are set on the server. This is independent of PUBRIVA AI."
+    "gateBody": "Upload is disabled until provider credentials are set on the server. This is independent of PUBRIVA AI.",
+    "progress": "Uploaded",
+    "keepOpen": "Keep this page open until the upload finishes."
   },
   "review": {
     "title": "Review",
