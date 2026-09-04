@@ -34,7 +34,7 @@ const STATE_LABEL: Record<string, string> = {
 
 
 export function AtheraAiInput({
-  locale, messages, rows = 3, seed, attachFileId,
+  locale, messages, rows = 3, seed, attachFileId, projectId,
 }: {
   locale: Locale;
   messages: Messages;
@@ -42,6 +42,8 @@ export function AtheraAiInput({
   seed?: string;
   /** مستندٌ في مكتبته يسأل عنه — يُرفَق باسمه، ولا يُطلب منه رفعه ثانية. */
   attachFileId?: string;
+  /** البحثُ الذي يعمل فيه — يُرسَل بمعرّفه، والخادم يتحقّق من مستأجره. */
+  projectId?: string;
 }) {
   const t = translator(messages);
   const { modelEnabled, modelGateReason, loading } = usePosture(locale);
@@ -114,6 +116,7 @@ export function AtheraAiInput({
         body: JSON.stringify({
           question: text,
           ...(attached ? { file_id: attached.id } : {}),
+          ...(projectId ? { project_id: projectId } : {}),
         }),
       }));
     } catch (err) {
@@ -139,6 +142,27 @@ export function AtheraAiInput({
     }
     setBusy(false);
     await ask(pending ?? value);
+  }
+
+  /** يحفظ مرجعًا مكتشَفًا في مكتبته — **بمعرّفٍ شرعي وحده**.
+   *
+   * ونتيجةُ بحثٍ ليست مرجعًا محفوظًا: الحفظ فعلٌ مستقلّ يقرّره الباحث،
+   * ويقع عبر مسار الاستيراد القائم بـDOI. ولا يُخزَّن شيءٌ بلا معرّف.
+   */
+  async function saveReference(doi: string) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch("/api/v1/sources/import", {
+        method: "POST", locale, body: JSON.stringify({ doi }),
+      });
+      setNotice(`${t("ai.refSaved")} — ${doi}`);
+    } catch (err) {
+      setError(err instanceof AtheraApiError ? err.localized(locale) : t("ai.refSaveFailed"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   /** يبدأ معالجة المستند من هنا — فلا يُطلب من الباحث أن يبحث عن مكانها. */
@@ -283,7 +307,13 @@ export function AtheraAiInput({
           {error}
         </p>
       ) : null}
-      {answer ? <AiAnswerCard messages={messages} data={answer} /> : null}
+      {answer ? (
+        <AiAnswerCard
+          messages={messages}
+          data={answer}
+          onSave={(doi) => void saveReference(doi)}
+        />
+      ) : null}
 
       {/* السبب يُعرض كما هو — لا سببٌ واحد يُفترض لكل إغلاق. */}
       {!loading && !modelEnabled ? (

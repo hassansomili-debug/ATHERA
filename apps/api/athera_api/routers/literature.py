@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import os
 import uuid
 
 from fastapi import APIRouter, Depends, status
@@ -19,7 +18,6 @@ from ..discovery import (
     ParsedQuery,
     RankedReference,
     ReferenceCandidate,
-    default_providers,
     discover,
 )
 from ..discovery import throttle
@@ -50,7 +48,7 @@ from ..schemas.literature import (
     SourceResponse,
     SourceSearchRequest,
 )
-from ..services import audit
+from ..services import audit, reference_discovery
 from ..services.literature import ledger, registry, verification
 
 router = APIRouter(prefix="/api/v1", tags=["literature"])
@@ -69,22 +67,16 @@ def _registries() -> list[registry.SourceRegistry]:
 
 
 def _discovery_providers() -> list[DiscoveryProvider]:
-    """فهارس الاكتشاف — أو لا شيء، **وهي حالٌ ثالثة تُعلَن لا تُخفى**.
+    """فهارس الاكتشاف — **من المحوّل وحده، لا من نسخةٍ ثانية هنا**.
 
-    البوابة هي بوابة `_registries` نفسها عمدًا: بيئة الاختبار لا تنادي
-    أحدًا فتبقى CI حتمية بلا شبكة، وما عداها ينادي الفهرسين كما ينادي
-    الاستيراد بـDOI اليوم. ولو رُبطت هنا ببوابةٍ أخرى لصار استيراد المرجع
-    يعمل وبحثُه لا يعمل في النشر ذاته — وهو عيبٌ يقع على الباحث بلا سبب
-    يفهمه.
+    كان القرار مكتوبًا في هذا الملف، ثمّ احتاجته المحادثة. ونسخُه كان
+    يجعل الفهرسين مُفعَّلين في شاشة المراجع ومُطفأين في المحادثة بعد أوّل
+    تعديل يمسّ واحدةً من النسختين — بلا سببٍ يفهمه الباحث.
 
-    و«بلا فهارس» تُعاد إلى الواجهة حالًا مستقلّة: ليست «لا نتائج» ولا
+    و«بلا فهارس» تبقى حالًا ثالثة تُعلَن لا تُخفى: ليست «لا نتائج» ولا
     «تعذّر فهرس».
     """
-    if settings.app_env == "test":
-        return []
-    # أدب الاستعمال يطلب جهة اتصال. الترويسة تحمل نطاق المنتج دائمًا،
-    # ويُضاف بريدٌ إن ضُبط — فيُبلَّغ الفريق قبل أن يُحجب المرور لا بعده.
-    return default_providers(mailto=(os.getenv("LITERATURE_CONTACT_EMAIL") or None))
+    return reference_discovery.enabled_providers()
 
 
 def _claim_views(candidate: ReferenceCandidate) -> list[ProviderClaimView]:
