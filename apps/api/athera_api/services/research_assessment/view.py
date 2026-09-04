@@ -140,9 +140,12 @@ def _recorded_facts(snapshot: ProjectSnapshot) -> list[Item]:
     graph = snapshot.assessment.graph
     items: list[Item] = []
 
+    # و`getattr` هنا اصطلاح المستودع نفسه في `catalogue.py`: `one_of_kind`
+    # يُرجع `Entity` مجرّدة، والحقول المتخصّصة تُقرأ بأسمائها بلا افتراض.
     design = graph.one_of_kind(o.EntityKind.DESIGN)
     if design is not None:
-        recorded = " · ".join(filter(None, (design.study_type, design.design_family)))
+        recorded = " · ".join(filter(None, (getattr(design, "study_type", None),
+                                            getattr(design, "design_family", None))))
         items.append(Item(
             key="design_recorded",
             detail_ar=f"التصميم المسجَّل: {recorded or 'بلا نوعٍ مسجَّل'}.",
@@ -150,21 +153,23 @@ def _recorded_facts(snapshot: ProjectSnapshot) -> list[Item]:
             entity_ids=(design.id,)))
 
     sample = graph.one_of_kind(o.EntityKind.SAMPLE)
-    if sample is not None:
-        label_ar, label_en = sample.size.label()
+    size = getattr(sample, "size", None) if sample is not None else None
+    if sample is not None and size is not None:
+        label_ar, label_en = size.label()
         items.append(Item(
             key="sample_size_recorded",
             detail_ar=f"حجم العيّنة كما هو مسجَّل في المنهج: {label_ar}.",
             detail_en=f"Sample size as recorded in the method: {label_en}.",
             entity_ids=(sample.id,)))
-        if sample.sampling_strategy:
-            allows = SAMPLING_STRATEGIES[sample.sampling_strategy]
+        strategy = getattr(sample, "sampling_strategy", None)
+        if strategy:
+            allows = SAMPLING_STRATEGIES[strategy]
             items.append(Item(
                 key="sampling_strategy_recorded",
-                detail_ar=f"أسلوب المعاينة: {sample.sampling_strategy} — "
+                detail_ar=f"أسلوب المعاينة: {strategy} — "
                           + ("ويسمح بالتعميم على المجتمع."
                              if allows else "ولا يسمح بالتعميم على المجتمع."),
-                detail_en=f"Sampling strategy: {sample.sampling_strategy} — "
+                detail_en=f"Sampling strategy: {strategy} — "
                           + ("generalisation to the population is supported."
                              if allows else "it does not support generalisation."),
                 entity_ids=(sample.id,)))
@@ -188,7 +193,7 @@ def _recorded_facts(snapshot: ProjectSnapshot) -> list[Item]:
 
     sources = graph.of_kind(o.EntityKind.SOURCE)
     if sources:
-        included = [s for s in sources if s.use_state == "included"]
+        included = [s for s in sources if getattr(s, "use_state", None) == "included"]
         items.append(Item(
             key="sources_recorded",
             detail_ar=f"مراجع هذا البحث: {len(sources)}، والمُدرَج منها دليلًا "

@@ -583,6 +583,37 @@ async def test_a_real_project_reaches_the_expected_verdicts():
     assert any("لم تُفحص" in item.detail_ar for item in view.needs_review)
 
 
+@pytest.mark.asyncio
+async def test_a_repeated_key_or_a_twice_cited_source_does_not_break_the_snapshot():
+    """صفٌّ مكرَّرٌ في القاعدة لا يُسقط تقييم بحثٍ لا عيب فيه.
+
+    فلا قيد يمنع أن يظهر مفتاح اختبارٍ في قائمتَي التشغيلة معًا، ولا أن
+    يسند مصدرٌ واحد ادّعاءً بمقتطفَين. ومعرّفان متطابقان يرفضهما
+    `ResearchGraph`، ورابطٌ مكرَّر يُخرج تنبيهين لعطبٍ واحد.
+    """
+    from athera_api.models.literature import ClaimEvidenceLink, EvidenceExcerpt
+    from athera_api.services.research_assessment import build_project_assessment
+
+    rows, ident = _populated_rows()
+    run, plan, version = rows["AnalysisRun"][0]
+    run.exploratory_test_keys = ["h1_ttest"]
+    _link, first, source = rows["ClaimEvidenceLink"][0]
+    second = EvidenceExcerpt(id=uuid.uuid4(), source_id=ident["source"],
+                             quote="اقتباسٌ ثانٍ من المصدر نفسه.", locator="ص9 §1",
+                             access_basis="open_access_full_text")
+    rows["ClaimEvidenceLink"].append((
+        ClaimEvidenceLink(claim_id=ident["claim"], excerpt_id=second.id,
+                          source_id=ident["source"], support_level="direct"),
+        second, source))
+
+    snap = await build_project_assessment(
+        _RecordingSession(rows), tenant_id=uuid.uuid4(), project_id=ident["project"])
+
+    assert len(snap.assessment.graph.of_kind(o.EntityKind.ANALYSIS)) == 1
+    assert len(snap.assessment.graph.links(o.RelationKind.SOURCE_SUPPORTS_CLAIM)) == 1
+    assert len(snap.assessment.graph.of_kind(o.EntityKind.EVIDENCE)) == 3
+
+
 def test_model_output_can_never_be_evidence_through_the_paths_the_bridge_reads():
     """القيدُ هو الحارس هنا لا الشيفرة — ويُقال ذلك صراحةً.
 
@@ -787,14 +818,14 @@ async def test_the_assessment_route_answers_the_owner_and_hides_the_rest(two_ten
     try:
         async with client(a) as http:
             ok = await http.get(path)
-            anonymous = await httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test").get(path)
             malformed = await http.get("/api/v1/workspace/projects/not-a-uuid/assessment")
             absent = await http.get(
                 f"/api/v1/workspace/projects/{uuid.uuid4()}/assessment")
         async with client(b) as http:
             theirs = await http.get(path)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as http:
+            anonymous = await http.get(path)
     finally:
         await engine.dispose()
 

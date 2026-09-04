@@ -129,8 +129,14 @@ class _Collector:
         return entity
 
     def link(self, kind: o.RelationKind, source_id: str, target_id: str) -> None:
-        self.links.append(o.Relationship(kind=kind, source_id=source_id,
-                                         target_id=target_id))
+        """رابطٌ واحد لا يتكرّر.
+
+        فمصدرٌ يسند ادّعاءً بمقتطفَين رابطٌ واحد لا رابطان، وتكراره يُخرج
+        للباحث تنبيهين لعطبٍ واحد — وهو ما يعلّمه تجاهُل التنبيهات.
+        """
+        row = o.Relationship(kind=kind, source_id=source_id, target_id=target_id)
+        if row not in self.links:
+            self.links.append(row)
 
     def note(self, key: str, detail_ar: str, detail_en: str) -> None:
         self.notes.append(ReadNote(key, detail_ar, detail_en))
@@ -285,22 +291,24 @@ async def _read_constructs_and_measures(session: AsyncSession, tenant_id: uuid.U
                 (v.operational_definition_ar or "").strip()
                 for v in variables if v.construct_id == row.id)))
 
-    for row in variables:
-        scale = row.scale_type if row.scale_type in SCALE_TYPES else None
-        if row.scale_type and scale is None:
+    for variable in variables:
+        scale = variable.scale_type if variable.scale_type in SCALE_TYPES else None
+        if variable.scale_type and scale is None:
             out.note("variable_scale_outside_vocabulary",
-                     f"مقياس المتغير «{row.name_ar}» مسجَّل «{row.scale_type}» وليس من "
-                     "المقاييس الأربعة، فلم يُقرأ.",
-                     f"Variable '{row.name_ar}' records scale '{row.scale_type}', which is "
-                     "not one of the four scale types, so it was not read.")
-        entity_id = _eid("variable", row.id)
-        out.add(o.Measure(id=entity_id, label_ar=_label(row.name_ar, fallback="متغير"),
-                          label_en=row.name_en, scale_type=scale,
-                          construct_id=(_eid("construct", row.construct_id)
-                                        if row.construct_id else None)))
-        if row.construct_id and out.has(_eid("construct", row.construct_id)):
+                     f"مقياس المتغير «{variable.name_ar}» مسجَّل «{variable.scale_type}» "
+                     "وليس من المقاييس الأربعة، فلم يُقرأ.",
+                     f"Variable '{variable.name_ar}' records scale "
+                     f"'{variable.scale_type}', which is not one of the four scale types, "
+                     "so it was not read.")
+        entity_id = _eid("variable", variable.id)
+        out.add(o.Measure(id=entity_id,
+                          label_ar=_label(variable.name_ar, fallback="متغير"),
+                          label_en=variable.name_en, scale_type=scale,
+                          construct_id=(_eid("construct", variable.construct_id)
+                                        if variable.construct_id else None)))
+        if variable.construct_id and out.has(_eid("construct", variable.construct_id)):
             out.link(o.RelationKind.CONSTRUCT_OPERATIONALIZED_BY_MEASURE,
-                     _eid("construct", row.construct_id), entity_id)
+                     _eid("construct", variable.construct_id), entity_id)
 
 
 async def _read_datasets(session: AsyncSession, tenant_id: uuid.UUID,
@@ -376,7 +384,11 @@ async def _read_analyses(session: AsyncSession, tenant_id: uuid.UUID,
     by_run: dict[uuid.UUID, list[tuple[str, str | None]]] = {}
     for run, plan, version in runs:
         scales = await _scales_for(session, tenant_id, project_id, version.id)
-        keys = list(run.executed_test_keys or []) + list(run.exploratory_test_keys or [])
+        # مفتاحٌ واحد لا يصير كيانين: لا قيد في القاعدة يمنع أن يظهر المفتاح
+        # في القائمتين معًا، ومعرّفان متطابقان يرفضهما `ResearchGraph` فيسقط
+        # التقييم كله — على بحثٍ لا عيب فيه.
+        keys = list(dict.fromkeys(
+            list(run.executed_test_keys or []) + list(run.exploratory_test_keys or [])))
         entries: list[tuple[str, str | None]] = []
         for key in keys or [None]:
             test_kind = kind_by_key.get((plan.id, key)) if key else None
@@ -718,7 +730,7 @@ async def _read_sections(session: AsyncSession, tenant_id: uuid.UUID,
             ManuscriptSection.tenant_id == tenant_id,
             ManuscriptSection.version_id == version_id)
     )).scalars().all()
-    sections = {row.section_key: row.text_ar for row in rows
+    sections = {row.section_key: row.text_ar or "" for row in rows
                 if row.section_key in MANUSCRIPT_SECTIONS and (row.text_ar or "").strip()}
     return sections, manuscript.id
 
