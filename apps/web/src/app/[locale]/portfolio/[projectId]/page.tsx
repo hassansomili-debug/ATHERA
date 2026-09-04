@@ -471,7 +471,14 @@ export default function ProjectWorkspacePage({
 
                     ولم تُبنَ نسخةٌ ثانية من الفرز هنا: القائمة تعرض الحال
                     وتفتح الشاشة التي تملك القرار وسببه. */}
-                <div className="metric-label" style={{ marginBlockStart: 8 }}>
+                {/* الحال القانونية بجانب نصّها المترجَم — كما في بطاقة
+                    المكتبة وخلايا المصفوفة. والنصّ للإنسان، والسمة للآلة:
+                    فحصٌ يطابق نصًّا مترجَمًا يسقط بأول تحسينٍ للصياغة. */}
+                <div
+                  className="metric-label"
+                  data-use-state={source.use_state}
+                  style={{ marginBlockStart: 8 }}
+                >
                   {t("screening.currentState")}: {t(USE_LABEL[source.use_state])}
                   {source.use_state === "excluded" && source.exclusion_reason_code ? (
                     <> — {t(`screening.reason_${source.exclusion_reason_code}`)}</>

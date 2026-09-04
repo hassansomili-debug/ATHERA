@@ -346,12 +346,15 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     const linked = page.locator("article.card").filter({ hasText: sourceTitle }).first();
     await expect(linked).toBeVisible({ timeout: 30_000 });
 
-    const saved = linked.getByRole("button", { name: "محفوظ فقط", exact: true });
-    await expect(saved).toBeVisible({ timeout: 30_000 });
-    await expect(saved).toHaveAttribute("aria-pressed", "true");
-    await expect(
-      linked.getByRole("button", { name: "مُدرَج دليلًا", exact: true }),
-    ).toHaveAttribute("aria-pressed", "false");
+    // **والقرار انتقل إلى شاشة الفرز، فالبطاقة تعرض الحال ولا تقرّرها.**
+    //
+    // كانت هنا ثلاثة أزرار بأسماءٍ مجرَّدة — «إدراج» بجانب «إدراج» في كل
+    // بطاقة — لا يميّز بينها من يسمع الشاشة؛ والأسوأ أن «استبعاد» كانت تقع
+    // بلا سبب يُسجَّل. فصار القرار حيث يُطلب سببه، وبقيت البطاقة تقول الحال.
+    //
+    // وتُقرأ من عقدها لا من نصّها المترجَم.
+    await expect(linked.locator("[data-use-state]"))
+      .toHaveAttribute("data-use-state", "saved_only", { timeout: 30_000 });
   });
 
   // ── ١٣: أرشفة ثم سلّة ثم استعادة ──
