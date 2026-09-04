@@ -681,7 +681,7 @@
   },
   "upload": {
     "title": "رفع ملف بحث",
-    "hint": "PDF · DOCX · TXT · RIS · BibTeX · CSV · XLSX · SPSS",
+    "hint": "PDF · DOCX · TXT · RIS · BibTeX · CSV · XLSX · SPSS — حتى 50 ميجابايت للملف",
     "pick": "اختر ملفًا",
     "uploading": "جارٍ الرفع…",
     "stored": "تم الحفظ",

@@ -86,11 +86,26 @@ def test_empty_file_is_rejected():
 
 
 def test_oversized_file_is_rejected_per_category():
+    """الرفض يقع عند السقف، والسقفان لا يتجاوزان ما يقبله المخزن فعلًا.
+
+    **وكانت القاعدة «سقفُ المستند أعلى».** وهي صحيحة ما دام السقف رقمًا
+    نكتبه نحن. لكنّ مخزن الكائنات يفرض سقفه هو على الفئتين معًا — قِيس على
+    الإنتاج: خمسون ميجابايت تنجح، وستّون تسقط. فالمستند لا يعلو المخزن،
+    والقاعدة الحقيقية أن سقف البيانات لا يتجاوز سقف المستند.
+    """
     with pytest.raises(AtheraError) as err:
         storage.validate_upload("text/csv", storage.MAX_DATASET_BYTES + 1, filename="huge.csv")
     assert err.value.status_code == 413
-    # والمستند سقفه أعلى: القاعدة القائمة محفوظة لا مضيَّقة.
-    storage.validate_upload("application/pdf", storage.MAX_DATASET_BYTES + 1, filename="big.pdf")
+
+    assert storage.MAX_DATASET_BYTES <= storage.MAX_DOCUMENT_BYTES
+    # وما دون السقف يمرّ في الفئتين.
+    storage.validate_upload("application/pdf", storage.MAX_DOCUMENT_BYTES, filename="big.pdf")
+    storage.validate_upload("text/csv", storage.MAX_DATASET_BYTES, filename="fine.csv")
+
+    with pytest.raises(AtheraError) as err:
+        storage.validate_upload("application/pdf", storage.MAX_DOCUMENT_BYTES + 1,
+                                filename="huge.pdf")
+    assert err.value.status_code == 413
 
 
 # ══════════ المفاتيح: لا تسلّق ولا تصادم ══════════
@@ -389,3 +404,27 @@ def test_posture_reports_real_configuration_not_the_provider_name(
     monkeypatch.setattr(settings, "s3_secret_access_key", "secret", raising=False)
 
     assert storage.is_configured() is expected
+
+
+def test_the_declared_ceiling_does_not_promise_more_than_storage_accepts():
+    """**وعدٌ يُقطع أسوأ من حدٍّ يُعلَن.**
+
+    كان المكتوب ٥١٢ ميجابايت للمستند، ومخزن الكائنات يرفض ما تجاوز نحو
+    خمسين. قِيس على الإنتاج: ٥٠ تنجح في ٢٠٫٤ ثانية، و٦٠ تسقط في ٢٣٫٨،
+    و٨٠ في ٣٣٫١، و١٠٠ في ٢٩٫٢ — فالحدّ حجمٌ لا مهلة. والسقوط `500` من
+    `UploadPart` **بعد** أن رفع الباحث كتابه، ثم يُقال له «حدث خطأ غير
+    متوقع»: وقتٌ يُهدر وسببٌ لا يُقال.
+
+    فالسقف يُقرأ من الإعداد، وقيمته الافتراضية ما يقبله المخزن فعلًا.
+    ورفعُه يبدأ من المخزن لا من ثابتٍ في الشيفرة.
+    """
+    import os
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[1] / "athera_api" / "services"
+              / "storage.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("MAX_DOCUMENT_UPLOAD_MB"' in source, "السقف غير قابل للضبط"
+    # والافتراضي لا يَعِد بما لا يُنجَز: خمسون هي المقيسة.
+    assert '"MAX_DOCUMENT_UPLOAD_MB", "50"' in source, "الافتراضي يَعِد بأكثر مما قِيس"
+    assert storage.MAX_DOCUMENT_BYTES <= 50 * 1024 * 1024 or os.environ.get(
+        "MAX_DOCUMENT_UPLOAD_MB"), "السقف يتجاوز المقيس بلا إعدادٍ صريح"
