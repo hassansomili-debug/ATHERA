@@ -848,6 +848,9 @@ def test_the_approval_is_read_from_its_contract_not_from_translated_prose():
     # أو مُنع، فيبدو كأن النقرة لم تحدث — وهما عطبان مختلفان وعلاجان مختلفان.
     assert 'page.on("requestfailed"' in code, "الطلب المُجهَض لا يُرصد"
     assert "failed=[" in code, "الإجهاض لا يُذكر مع الإخفاق"
+    # وخطأٌ يقع داخل معالج React لا يترك أثرًا في الشبكة ولا في الشاشة.
+    assert 'page.on("console"' in code, "رسائل الطرفية لا تُجمع"
+    assert "pageErrors=" in code, "خطأ الصفحة لا يُذكر مع الإخفاق"
 
 
 def test_the_library_keeps_reading_state_while_work_is_running():
@@ -1079,3 +1082,24 @@ def test_a_consent_granted_elsewhere_is_seen_in_the_library():
     budget = int(re.search(r"const CONSENT_WATCH_POLLS = (\d+);", code).group(1))
     # يكفي الخمسَ والثلاثين ثانية المقيسة، ولا يمتدّ بلا حدّ.
     assert 14 <= budget <= 48, f"ميزانية الترقّب {budget} لا تناسب ما قيس"
+
+
+def test_the_journey_waits_for_a_live_page_before_it_clicks():
+    """**صفحةٌ مرسومة ليست صفحةً حيّة.**
+
+    الوصول إلى المراجعة تحميلٌ كامل: الخادم يرسل HTML ثم يُركّب React
+    معالجاته. والزرّ في تلك الفجوة موجودٌ ومرئيٌّ وصالحٌ للضغط — ولا معالج
+    له. فالنقر لا يفعل شيئًا: لا طلبَ في الشبكة، ولا رسالةَ خطأ، ولا تغيّر
+    في الحصيلة. وقد رأيناه في الإنتاج ثلاث مرّات: `decide=[] failed=[] err=0`.
+
+    و`dic2-granted` لا تُرسم إلا بعد أن يقرأ العميل حال الإذن من الخادم،
+    فظهورها إثباتُ حياة. والباحث يقرأ قبل أن يضغط فلا يقع فيها — والفحص
+    أسرع من أن يقرأ.
+    """
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    approve = code[code.index("review the extracted knowledge and approve one fact"):
+                   code.index("PUBRIVA AI reaches approved knowledge")]
+    assert 'getByTestId("dic2-granted")' in approve, "الفحص ينقر على صفحةٍ قد لا تكون حيّة"
+    assert approve.index("dic2-granted") < approve.index('name: "اعتمد"'), (
+        "إثباتُ الحياة يقع بعد النقر")

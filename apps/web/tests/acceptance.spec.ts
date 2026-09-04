@@ -112,6 +112,12 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   // **وطلبٌ لم يصل ليس طلبًا لم يُرسَل.** `response` لا يقع على طلبٍ
   // أُجهض أو مُنع، فيبدو كأن النقرة لم تحدث أصلًا — وهما عطبان مختلفان.
   const failedCalls: string[] = [];
+  // **وخطأٌ يقع داخل معالج React لا يترك أثرًا في الشبكة ولا في الشاشة.**
+  // فلا يبقى منه إلا رسالة الطرفية — ولولاها تبدو النقرة كأنها لم تقع.
+  const consoleErrors: string[] = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") consoleErrors.push(m.text().slice(0, 120));
+  });
   page.on("requestfailed", (r) => {
     try {
       const path = new URL(r.url()).pathname;
@@ -481,6 +487,20 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await card.getByRole("link", { name: "افتح المراجعة" }).click();
     await page.waitForURL(/\/theses\/[^/]+\/review/, { timeout: 30_000 });
 
+    // **والصفحة تُنتظر حيّةً لا مرسومة.**
+    //
+    // الوصول إلى المراجعة تحميلٌ كامل للصفحة، فالخادم يرسل HTML ثم يُركّب
+    // React معالجاته. والزرّ في تلك الفجوة موجودٌ ومرئيٌّ وصالحٌ للضغط —
+    // ولا معالج له. فالنقر عليه لا يفعل شيئًا: لا طلبَ في الشبكة، ولا
+    // رسالةَ خطأ، ولا تغيّرَ في الحصيلة. وهو ما رأيناه ثلاث مرّات:
+    // `decide=[] failed=[] err=0`.
+    //
+    // و`dic2-granted` لا تُرسم إلا بعد أن يقرأ العميل حال الإذن من الخادم،
+    // فظهورها إثباتٌ أن الصفحة صارت حيّة. والباحث الحقيقي يقرأ قبل أن
+    // يضغط، فلا يقع فيها — والفحص أسرع من أن يقرأ.
+    await expect(page.getByTestId("dic2-granted"), "the review page never became interactive")
+      .toBeVisible({ timeout: 60_000 });
+
     // **اعتمادٌ واحد على الأقل** — والزرّ إن غاب فذلك فشلٌ يُعلَن.
     const tally = page.locator("[data-review-approved]");
     await expect(tally, "the review never reported its tally").toBeVisible({ timeout: 60_000 });
@@ -510,7 +530,9 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
               `approved=${await tally.getAttribute("data-review-approved")}`
               + ` decide=[${decideCalls.join(" ")}]`
               + ` failed=[${failedCalls.join(" ")}]`
-              + ` err=${await page.locator(".error").count()}`,
+              + ` err=${await page.locator(".error").count()}`
+              + ` pageErrors=${errors.length}`
+              + ` console=${consoleErrors.length ? consoleErrors[0] : "-"}`,
             { timeout: 60_000, message: "the approval never took effect" })
       .toMatch(new RegExp(`^approved=${before + 1} `));
   });
