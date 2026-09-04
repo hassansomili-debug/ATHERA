@@ -56,7 +56,17 @@ export interface ThreadReadNote {
 
 export interface GoldenThread {
   project_id: string;
+  /** عنوان البحث كما يُعرض — يمرّ بعقد العرض ولا يُقرأ من العمود مباشرةً. */
   title: string;
+  /**
+   * هل العنوان أعلاه بديلٌ عن فراغ؟
+   *
+   * وبلا هذه الراية يُقرأ «مشروع بدون عنوان» عنوانًا سجّله الباحث بنفسه،
+   * فلا يذهب فيسمّي بحثه.
+   */
+  title_is_fallback: boolean;
+  /** تاريخ الإنشاء حقلٌ مستقلّ — ودمجُه في العنوان أصلُ العناوين المشوَّهة. */
+  created_at: string | null;
   stages: ThreadStage[];
   connections: ThreadConnection[];
   read_notes: ThreadReadNote[];
