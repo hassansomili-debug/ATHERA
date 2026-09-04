@@ -54,6 +54,14 @@ export interface ApiError {
   locale: string;
   message: string;
   messages: Record<string, string>;
+  /**
+   * أرقامُ الخطأ وأسماؤه — يرسلها الخادم دائمًا ولم يكن العقد يعرفها.
+   *
+   * وبدونها لا تستطيع شاشةٌ أن تقول «هذا الملف يسند بحثين»: تقرأ رسالةً
+   * عامّة وتعرض تحذيرًا بلا عدد — **وتحذيرٌ لا رقم فيه ليس تحذيرًا**.
+   * والقيم نصوصٌ لأن مُغلِّف الخطأ يحوّلها كذلك (`str(v)`).
+   */
+  context?: Record<string, string>;
 }
 
 export class AtheraApiError extends Error {

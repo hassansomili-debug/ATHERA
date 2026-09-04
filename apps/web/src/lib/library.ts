@@ -19,6 +19,14 @@ export interface LibraryFile {
   thesis_id: string | null;
   candidates: number;
   reviewed: number;
+  /**
+   * موضعُ الملف في المكتبة — **تنظيمٌ لا حالُ دليل**، و`null` هو الجذر.
+   *
+   * ولا يقول شيئًا عن ربط الملف ببحث ولا عن اعتماد ما استُخرج منه: نقلُه
+   * بين مجلَّدين يغيّر هذا الحقل وحده.
+   */
+  folder_id: string | null;
+  trashed_at: string | null;
 }
 
 /** صفحة المكتبة الواحدة، وسقفُ ما يقبله الخادم في طلبٍ واحد. */
@@ -33,12 +41,21 @@ export const LIBRARY_MAX_FETCH = 100;
  */
 export const listLibraryFilePage = (
   locale: Locale,
-  options: { limit?: number; after?: string } = {},
+  options: { limit?: number; after?: string; folder?: string; trash?: boolean } = {},
 ) => {
   const limit = Math.min(options.limit ?? LIBRARY_PAGE, LIBRARY_MAX_FETCH);
   const cursor = options.after ? `&after=${encodeURIComponent(options.after)}` : "";
-  return apiFetch<LibraryFile[]>(`/api/v1/files?limit=${limit}${cursor}`, { locale });
+  // **غيابُ `folder` يعني كل الملفات**، وهو ما تحتاجه قوائم الاختيار في
+  // شاشاتٍ أخرى. و`ROOT_FOLDER` تعني جذر المكتبة وحده: لو دلّ الغياب على
+  // الجذر لاختفت من تلك القوائم كلُّ ورقةٍ نظّمها الباحث في مجلَّد.
+  const scope = options.folder ? `&folder=${encodeURIComponent(options.folder)}` : "";
+  const bin = options.trash ? "&trash=true" : "";
+  return apiFetch<LibraryFile[]>(
+    `/api/v1/files?limit=${limit}${cursor}${scope}${bin}`, { locale });
 };
+
+/** جذر المكتبة يُطلب باسمه — لا بغياب المعامل. */
+export const ROOT_FOLDER = "root";
 
 /**
  * **قائمةٌ للاختيار منها** — لا صفحةٌ تُتصفَّح.
@@ -73,6 +90,7 @@ export interface StoredFile {
   classification: string;
   status: string;
   created_at: string;
+  folder_id: string | null;
 }
 
 /**
@@ -96,4 +114,102 @@ export const libraryFileFromUpload = (stored: StoredFile): LibraryFile => ({
   thesis_id: null,
   candidates: 0,
   reviewed: 0,
+  // الخادم يردّ المجلَّد الذي نزل فيه الملف؛ فتعرضه الشاشة في موضعه
+  // الصحيح فورًا، لا في الجذر ثم ينتقل بعد قراءةٍ ثانية.
+  folder_id: stored.folder_id ?? null,
+  trashed_at: null,
 });
+
+// ══════════════════════════════════════════════════════════════════════
+// المجلَّدات | Folders
+//
+// **المجلَّد تنظيمٌ لا حالُ دليل.** كل ما تفعله هذه الدوال هو تحريك صفوف
+// تنظيمية: لا واحدة منها تمسّ ربط ملفٍّ ببحث، ولا حالَ مصدر، ولا اعتماد
+// مرشّح. ولذلك «حذف» هنا نقلٌ إلى سلّة، والاستعادة ترجع كل شيء كما كان.
+// ══════════════════════════════════════════════════════════════════════
+
+export interface LibraryFolder {
+  id: string;
+  name: string;
+  parent_folder_id: string | null;
+  created_at: string;
+  trashed_at: string | null;
+  /** ما يحتويه مباشرةً — يُقرأ في العبارة نفسها، ولا تُحمَّل ذرّيته. */
+  files: number;
+  folders: number;
+}
+
+export interface Crumb {
+  id: string;
+  name: string;
+}
+
+export interface FolderListing {
+  folder_id: string | null;
+  breadcrumb: Crumb[];
+  folders: LibraryFolder[];
+}
+
+export interface FolderOption {
+  id: string;
+  name: string;
+  parent_folder_id: string | null;
+  /** المسار كاملًا — فمجلَّدان بالاسم نفسه تحت أبوين لا يُفرَّق بينهما. */
+  path: string;
+}
+
+const FOLDERS = "/api/v1/files/folders";
+
+export const listFolders = (
+  locale: Locale,
+  options: { parent?: string | null; trash?: boolean } = {},
+) => {
+  const parent = options.parent ? `parent=${encodeURIComponent(options.parent)}` : "";
+  const bin = options.trash ? "trash=true" : "";
+  const query = [parent, bin].filter(Boolean).join("&");
+  return apiFetch<FolderListing>(`${FOLDERS}${query ? `?${query}` : ""}`, { locale });
+};
+
+export const listAllFolders = (locale: Locale) =>
+  apiFetch<FolderOption[]>(`${FOLDERS}/all`, { locale });
+
+export const createFolder = (locale: Locale, name: string, parent: string | null) =>
+  apiFetch<LibraryFolder>(FOLDERS, {
+    method: "POST", locale,
+    body: JSON.stringify({ name, parent_folder_id: parent }),
+  });
+
+export const renameFolder = (locale: Locale, id: string, name: string) =>
+  apiFetch<LibraryFolder>(`${FOLDERS}/${id}`, {
+    method: "PATCH", locale, body: JSON.stringify({ name }),
+  });
+
+export const moveFolder = (locale: Locale, id: string, parent: string | null) =>
+  apiFetch<LibraryFolder>(`${FOLDERS}/${id}/move`, {
+    method: "POST", locale, body: JSON.stringify({ parent_folder_id: parent }),
+  });
+
+export const trashFolder = (locale: Locale, id: string) =>
+  apiFetch<LibraryFolder>(`${FOLDERS}/${id}/trash`, { method: "POST", locale });
+
+export const restoreFolder = (locale: Locale, id: string) =>
+  apiFetch<LibraryFolder>(`${FOLDERS}/${id}/restore`, { method: "POST", locale });
+
+export const moveFile = (locale: Locale, id: string, folder: string | null) =>
+  apiFetch<StoredFile>(`/api/v1/files/${id}/move`, {
+    method: "POST", locale, body: JSON.stringify({ folder_id: folder }),
+  });
+
+/**
+ * «حذف» ملفٍّ = نقلُه إلى السلّة.
+ *
+ * و`confirm` ليست زينة: ملفٌّ يسند بحوثًا يردّ الخادمُ عليه 409 بعددها،
+ * فيُقال للباحث ما يترتّب **قبل** أن يقع، ثم يُعاد الطلب بإقراره.
+ */
+export const trashFile = (locale: Locale, id: string, confirm: boolean) =>
+  apiFetch<{ id: string; trashed_at: string | null; project_links: number }>(
+    `/api/v1/files/${id}/trash`,
+    { method: "POST", locale, body: JSON.stringify({ confirm }) });
+
+export const restoreFile = (locale: Locale, id: string) =>
+  apiFetch<StoredFile>(`/api/v1/files/${id}/restore`, { method: "POST", locale });

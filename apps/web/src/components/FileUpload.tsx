@@ -34,12 +34,20 @@ const ACCEPT = ".pdf,.docx,.doc,.txt,.ris,.bib,.csv,.xls,.xlsx,.sav,.zsav";
 const mb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
 
 export function FileUpload({
-  locale, messages, onUploaded,
+  locale, messages, onUploaded, folderId = null,
 }: {
   locale: Locale;
   messages: Messages;
   /** الملف كما أنشأه الخادم — لتعرضه الشاشة فورًا بلا انتظار قراءةٍ ثانية. */
   onUploaded?: (file: LibraryFile) => void;
+  /**
+   * المجلَّد الذي يقف فيه الباحث — و`null` جذر المكتبة.
+   *
+   * **والملف ينزل حيث يقف صاحبه.** والبديل — رفعٌ إلى الجذر ثم نقلٌ ثانٍ —
+   * يترك نافذةً يظهر فيها الملف في غير موضعه، ويكلّف طلبًا زائدًا على كل
+   * رفع، ويسقط صامتًا لو فشل النقل بعد نجاح الرفع.
+   */
+  folderId?: string | null;
 }) {
   const t = translator(messages);
   const { items, loading } = usePosture(locale);
@@ -59,6 +67,7 @@ export function FileUpload({
 
     const body = new FormData();
     body.append("upload", selected);
+    if (folderId) body.append("folder_id", folderId);
     // **عبر عميل الـAPI لا `fetch` خامًّا.** كان يبني الطلب بنفسه ليتجنّب
     // ترويسة JSON التي تكسر `FormData` — فيفقد حارس الإعداد المفقود
     // وتوحيد رسائل الخطأ ومعالجة انتهاء الجلسة. وهذه الأداة تحفظ الثلاثة
