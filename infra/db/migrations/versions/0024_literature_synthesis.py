@@ -128,11 +128,16 @@ def _decision_constraints() -> tuple:
     والعقد طلب `approved_by/at`؛ والعمود هنا `decided_by/at` عمدًا: رفضٌ
     بلا صاحب مثل اعتمادٍ بلا صاحب، وسجلٌّ يعرف من اعتمد ولا يعرف من رفض
     يُقرأ بعد شهرٍ كأن الرفض وقع من تلقائه.
+
+    **و`generated` وحدها بلا صاحب** — وهي حالُ النشأة قبل أن ينظر أحد.
+    و«يحتاج مراجعة» ليست منها: هي حكمُ باحثٍ نظر فتوقّف، ويُنسب إليه كما
+    يُنسب اعتماده. ولو عُدّت بلا صاحبٍ لصار وسمُ مرشَّحٍ بها يمحو أثر من
+    وسمه، ثم تمحوه إعادةُ التوليد لأنه «لم يُحكم فيه».
     """
     return (
         sa.CheckConstraint(_in("status", SYNTHESIS_STATUSES), name="status"),
         sa.CheckConstraint(
-            "(status IN ('generated', 'needs_review')) = (decided_by IS NULL)",
+            "(status = 'generated') = (decided_by IS NULL)",
             name="decision_has_an_author"),
         sa.CheckConstraint(
             "(decided_by IS NULL) = (decided_at IS NULL)",

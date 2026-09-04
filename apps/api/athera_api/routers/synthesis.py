@@ -343,7 +343,17 @@ async def decide_theme(
         raise NotFound("synthesis.theme_not_found")
     await _decide(session, principal, row, payload=payload,
                   object_type="theme_candidate")
-    return _theme_view(row, supporting=0, contradicting=0, traceable=True)
+    # **ولا تُعاد أعدادٌ صفرية بدل الحقيقية.** رقمٌ مخترَع في جوابٍ يُعرض
+    # للباحث أسوأ من غيابه: يقرأ «صفر مراجع مُسنِدة» عن موضوعٍ اعتمده لتوّه.
+    supports = await store.theme_supports(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        theme_ids=[row.id])
+    return _theme_view(
+        row,
+        supporting=sum(1 for s in supports if s.role == "supporting"),
+        contradicting=sum(1 for s in supports if s.role == "contradicting"),
+        traceable=all(s.evidence_scope == "metadata_only" or s.matrix_cell_id
+                      for s in supports))
 
 
 # ═════════════════════ التعارضات ═════════════════════

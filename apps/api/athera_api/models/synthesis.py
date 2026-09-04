@@ -37,8 +37,11 @@ from .base import Base, TenantScoped, Timestamped, uuid_pk
 SYNTHESIS_STATUSES: Final = ("generated", "needs_review", "approved", "rejected",
                              "unknown")
 
-# الحالات التي لم يقلها إنسان بعد — وما عداها يلزمه صاحبٌ ووقت.
-UNDECIDED_STATUSES: Final = ("generated", "needs_review")
+# **الحالة الوحيدة التي لم يقلها إنسان** — وما عداها يلزمه صاحبٌ ووقت.
+#
+# و«يحتاج مراجعة» ليست منها: هي حكمُ باحثٍ نظر فتوقّف، ويُنسب إليه كما يُنسب
+# اعتماده. ولو عُدّت بلا صاحبٍ لمحته إعادةُ التوليد بوصفه «لم يُحكم فيه».
+AUTHORLESS_STATUSES: Final = ("generated",)
 
 # الحالات التي يقبلها الـAPI مُدخَلًا في قرار الباحث. و`generated` ليست
 # منها: هي حالُ النشأة، وقبولها مُدخَلًا يعني «أعِد المرشَّح إلى ما قبل أن
@@ -364,7 +367,7 @@ __all__ = [
     "SYNTHESIS_STATUSES",
     "THEME_BASES",
     "TOPIC_CLUSTER",
-    "UNDECIDED_STATUSES",
+    "AUTHORLESS_STATUSES",
     "ContradictionCandidate",
     "ContradictionSide",
     "GapCandidate",

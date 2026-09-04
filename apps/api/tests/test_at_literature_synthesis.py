@@ -309,6 +309,22 @@ def test_the_lifecycle_reuses_the_platform_words_and_invents_none():
     assert set(DECIDABLE_STATUSES) == set(SYNTHESIS_STATUSES) - {"generated"}
 
 
+def test_marking_needs_review_is_a_decision_and_carries_its_author():
+    """**«يحتاج مراجعة» حكمُ باحثٍ نظر فتوقّف** — لا حالُ نشأةٍ ثانية.
+
+    ولو عُدَّت بلا صاحبٍ لوقع عطبان: يُمحى أثر من وسمها، ثم تمحوها إعادةُ
+    التوليد لأنها «لم يُحكم فيها». فالقيد في القاعدة يستثني `generated`
+    وحدها، والعقد يقبل الأربع الباقية مُدخَلًا.
+    """
+    from athera_api.models.synthesis import AUTHORLESS_STATUSES, DECIDABLE_STATUSES
+
+    assert AUTHORLESS_STATUSES == ("generated",)
+    assert "needs_review" in DECIDABLE_STATUSES
+    text = _migration_text()
+    assert "\"(status = 'generated') = (decided_by IS NULL)\"" in text
+    assert "(status IN ('generated', 'needs_review')) = (decided_by IS NULL)" not in text
+
+
 def test_the_decision_contract_refuses_to_reset_a_candidate_to_generated():
     from pydantic import ValidationError
 
