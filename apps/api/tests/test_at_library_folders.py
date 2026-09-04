@@ -310,11 +310,14 @@ async def _second_user(tenant_id: uuid.UUID) -> uuid.UUID:
     """
     from sqlalchemy import select
 
-    from athera_api.db import system_session
+    from athera_api.db import tenant_session
     from athera_api.models.identity import Membership, Role, User
     from athera_api.security import hash_password
 
-    async with system_session() as session:
+    # **الجلسة بسياق المستأجر لا بلا سياق.** `roles` و`memberships` عليهما
+    # عزلٌ مفروض، وجلسةٌ بلا سياق ترى صفرًا منهما — ففشل القراءة هنا هو
+    # العزل يعمل، لا عطبٌ في التجهيزة.
+    async with tenant_session(tenant_id) as session:
         user = User(email=f"second-{uuid.uuid4().hex[:8]}@example.test",
                     password_hash=hash_password("correct-horse-battery-staple"),
                     full_name_ar="باحثٌ ثانٍ", full_name_en="Second researcher")

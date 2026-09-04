@@ -66,11 +66,31 @@ _SUBTREE_HEIGHT = text(
 # فروعٌ كاملة من المكتبة بلا رسالة. والقفل يجعل الفحص والكتابة فعلًا واحدًا
 # غير قابلٍ للتشابك، ويموت مع المعاملة فلا يبقى معلّقًا. والنقل فعلٌ نادر،
 # فثمنُ التسلسل لا يُحسّ.
-_LOCK_TREE = text("SELECT pg_advisory_xact_lock(hashtext('library_folders'), hashtext(:tenant_id))")
+#
+# **والمفتاح يُحسب هنا لا في القاعدة.** الصياغة الأولى استعملت `hashtext()`،
+# وهي دالّة داخلية غير موثَّقة كواجهة — ولو تغيّرت أو مُنعت لسقط كل إنشاء
+# مجلَّدٍ ونقلٍ في المنتج، لا شيءٌ هامشيّ. والحساب في بايثون صريحٌ ومستقرّ
+# ولا يعتمد على شيء.
+#
+# والقفل يُقيَّد بمساحته: `_TREE_NAMESPACE` يفصل أقفال هذه الشجرة عن أي
+# استعمالٍ آخر للأقفال الاستشارية في المنصّة، فلا يتعطّل مسارٌ بمسار.
+_TREE_NAMESPACE = 0x4C494246  # "LIBF"
+_LOCK_TREE = text(
+    "SELECT pg_advisory_xact_lock(CAST(:namespace AS int), CAST(:tenant_key AS int))")
+
+
+def _tenant_key(tenant_id: uuid.UUID) -> int:
+    """أربعة بايتات من معرّف المستأجر، عددًا صحيحًا بإشارة (حدّ `int4`).
+
+    والتصادم هنا لا يضرّ: أسوأ ما يقع أن ينتظر مستأجرٌ نقلَ مجلَّدٍ لمستأجر
+    آخر أجزاءً من الثانية — والنقل فعلٌ نادر. أمّا الصحّة فمن القفل نفسه.
+    """
+    return int.from_bytes(tenant_id.bytes[:4], "big", signed=True)
 
 
 async def lock_tree(session: AsyncSession, tenant_id: uuid.UUID) -> None:
-    await session.execute(_LOCK_TREE, {"tenant_id": str(tenant_id)})
+    await session.execute(
+        _LOCK_TREE, {"namespace": _TREE_NAMESPACE, "tenant_key": _tenant_key(tenant_id)})
 
 
 async def ancestors(
@@ -78,7 +98,7 @@ async def ancestors(
 ) -> list[tuple[uuid.UUID, str]]:
     """المسار من الجذر إلى المجلَّد نفسه — وهو فتاتُ الطريق كما يُعرض."""
     rows = (await session.execute(_ANCESTORS, {
-        "folder_id": str(folder_id), "tenant_id": str(tenant_id),
+        "folder_id": folder_id, "tenant_id": tenant_id,
         "max_depth": MAX_FOLDER_DEPTH + 1,
     })).all()
     return [(row[0], row[1]) for row in rows]
@@ -97,7 +117,7 @@ async def subtree_height(
     session: AsyncSession, *, tenant_id: uuid.UUID, folder_id: uuid.UUID
 ) -> int:
     height = (await session.execute(_SUBTREE_HEIGHT, {
-        "folder_id": str(folder_id), "tenant_id": str(tenant_id),
+        "folder_id": folder_id, "tenant_id": tenant_id,
         "max_depth": MAX_FOLDER_DEPTH + 1,
     })).scalar_one()
     return int(height or 1)
