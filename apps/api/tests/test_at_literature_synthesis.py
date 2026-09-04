@@ -156,6 +156,48 @@ def test_the_downgrade_drops_every_table_the_upgrade_created():
     assert "uq_literature_matrix_cells_project_scoped" in downgrade
 
 
+def test_the_downgrade_drops_every_index_the_upgrade_created():
+    """فهرسٌ يُنشأ ولا يُسقَط يجعل تدريب head→base→head ينفجر في منتصفه."""
+    text = _migration_text()
+    upgrade, downgrade = text.split("def downgrade()")
+    created = set(re.findall(r'op\.create_index\(\s*"([a-z_]+)"', upgrade))
+    dropped = set(re.findall(r'op\.drop_index\(\s*"([a-z_]+)"', downgrade))
+    assert created and created == dropped, (
+        f"أُنشئ {sorted(created)} وأُسقط {sorted(dropped)}")
+
+
+def test_the_downgrade_drops_the_tables_before_what_they_point_at():
+    """**ترتيبُ الإسقاط ليس ذوقًا.** جدولٌ يُسقَط قبل تابعِه يفشل بمفتاحٍ أجنبي.
+
+    والقيدُ الفريد على خلايا المصفوفة يُسقَط آخرَ شيء: ثلاثة مفاتيح أجنبية
+    تشير إليه، ولا يذهب قبلها.
+    """
+    downgrade = _migration_text().split("def downgrade()")[1]
+    order = re.findall(r'op\.drop_table\("([a-z_]+)"\)', downgrade)
+    for child, parent in (("research_opportunities", "gap_candidates"),
+                          ("gap_candidate_sources", "gap_candidates"),
+                          ("gap_candidates", "contradiction_candidates"),
+                          ("contradiction_sides", "contradiction_candidates"),
+                          ("theme_candidate_supports", "theme_candidates")):
+        assert order.index(child) < order.index(parent), (
+            f"{child} يُسقَط بعد {parent}")
+    tail = downgrade.rsplit('op.drop_table("theme_candidates")', 1)[1]
+    assert "uq_literature_matrix_cells_project_scoped" in tail
+
+
+def test_the_opportunity_link_does_not_restrict_a_whole_project_delete():
+    """`ON DELETE RESTRICT` يفحص فورًا، فيصطدم حذفُ بحثٍ كاملًا بنفسه.
+
+    والافتراضيّ يؤجّل الفحص إلى آخر العبارة: يمنع حذف فجوةٍ وحدها من تحت
+    فرصتها، ويسمح بذهاب الاثنين معًا مع بحثهما.
+    """
+    text = _migration_text()
+    block = text.split("fk_research_opportunities_gap\"")[0]
+    clause = block.rsplit('["gap_candidates.id", "gap_candidates.status"]', 1)[1]
+    assert 'onupdate="RESTRICT"' in clause
+    assert 'ondelete="RESTRICT"' not in clause
+
+
 def test_the_model_and_the_migration_agree_column_by_column():
     """عمودٌ في النموذج لا يقابله عمودٌ في الترحيل يسقط في الإنتاج وحده."""
     from athera_api.models import synthesis as model

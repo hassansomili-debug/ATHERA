@@ -313,10 +313,11 @@ class ResearchOpportunity(Base, TenantScoped, Timestamped):
 
     __tablename__ = "research_opportunities"
     __table_args__ = (
+        # لا `ON DELETE RESTRICT`: يفحص فورًا فيصطدم حذفُ بحثٍ كاملًا بنفسه.
         ForeignKeyConstraint(
             ["gap_candidate_id", "gap_status"],
             ["gap_candidates.id", "gap_candidates.status"],
-            onupdate="RESTRICT", ondelete="RESTRICT",
+            onupdate="RESTRICT",
             name="fk_research_opportunities_gap"),
         ForeignKeyConstraint(
             ["gap_candidate_id", "project_id"],

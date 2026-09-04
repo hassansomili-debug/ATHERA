@@ -444,10 +444,16 @@ def upgrade() -> None:
         sa.CheckConstraint("length(btrim(uncertainties_ar)) > 0",
                            name="uncertainties_are_not_blank"),
         # `ON UPDATE RESTRICT` — لا يُسحب الاعتماد من تحت فرصةٍ قائمة.
+        #
+        # **ولا `ON DELETE RESTRICT` هنا.** الفرق ليس شكليًّا: `RESTRICT`
+        # يفحص فورًا، فحذفُ بحثٍ كاملًا — وهو يُسقط الفجوة والفرصة معًا
+        # بالتتالي — يصطدم بنفسه ويفشل. والسلوك الافتراضي (`NO ACTION`)
+        # يؤجّل الفحص إلى آخر العبارة، فيمنع حذف فجوةٍ وحدها من تحت فرصتها
+        # ويسمح بذهاب الاثنين معًا.
         sa.ForeignKeyConstraint(
             ["gap_candidate_id", "gap_status"],
             ["gap_candidates.id", "gap_candidates.status"],
-            onupdate="RESTRICT", ondelete="RESTRICT",
+            onupdate="RESTRICT",
             name="fk_research_opportunities_gap"),
         sa.ForeignKeyConstraint(
             ["gap_candidate_id", "project_id"],
