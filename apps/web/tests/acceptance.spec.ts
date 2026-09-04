@@ -208,7 +208,16 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await expect(candidate).toBeVisible({ timeout: 30_000 });
 
     // ز — زرُّ الإضافة **الذي يخصّ هذا الملف**، لا أوّل زرٍّ في الصفحة.
-    await candidate.getByRole("button", { name: "+" }).click();
+    //
+    // **واسمُه صار يقول ما يفعل.** كان اسمه المُعلَن «+» وحده، فلا يعرف
+    // قارئُ الشاشة ما الزرّ ولا على أيّ ملف يقع — وفي القسم زرٌّ لكل ملف،
+    // كلّها بالاسم نفسه. فصار يحمل الفعل واسم الملف (A11Y-1).
+    //
+    // والبادئة تُفصَّل: زرُّ إضافة **المرجع** في القسم نفسه يبدأ بـ«أضِف»
+    // أيضًا، فبادئةٌ أقصر تطابق الاثنين.
+    await candidate
+      .getByRole("button", { name: /^أضِف ملفًّا من مكتبتك:/ })
+      .click();
 
     // ح — صار مرتبطًا: بطاقته تحمل زرّ الإزالة.
     const linked = page.locator("article.card", { hasText: FILENAME });

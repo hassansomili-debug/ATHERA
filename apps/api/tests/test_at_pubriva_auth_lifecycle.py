@@ -988,3 +988,26 @@ def test_the_upload_step_proves_the_library_not_the_uploader():
     assert "getByText(FILENAME)" not in upload, "الاسم يُطلب في الصفحة كلها"
     assert 'locator("article.card").filter({ hasText: FILENAME })' in upload, (
         "الرفع لا يُثبَت في قائمة المكتبة")
+
+
+def test_the_file_add_control_is_named_by_what_it_does():
+    """**زرٌّ اسمه «+» لا يقول لأعمى ما يفعل** (A11Y-1).
+
+    وفي قسم الملفات زرٌّ لكل ملف، كلّها بالاسم نفسه — فلا يُميَّز بينها
+    بالسمع إطلاقًا. والنمط الصحيح كان بجانبه: زرُّ إضافة المرجع يحمل الفعل
+    واسم المرجع منذ البداية.
+
+    والرسمُ «+» باقٍ كما هو: هذا إصلاحُ اسمٍ مُعلَن لا إعادةُ تصميم.
+    """
+    project = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
+               / "page.tsx").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(project))
+    assert 't("project.addFile")}: ${file.original_filename}' in code, (
+        "زرّ إضافة الملف بلا اسمٍ يخصّ ملفه")
+
+    # والفحص يتبع الاسم المُعلَن — لا يُبقي على الرسم بعد أن تغيّر.
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    spec_code = "\n".join(line for _, line in code_lines(spec))
+    assert 'getByRole("button", { name: "+" })' not in spec_code, (
+        "الرحلة ما زالت تطلب الزرّ برسمه")
+    assert "/^أضِف ملفًّا من مكتبتك:/" in spec_code, "الرحلة لا تطلبه باسمه المُعلَن"
