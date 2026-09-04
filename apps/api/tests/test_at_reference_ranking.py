@@ -206,8 +206,9 @@ def test_case_7_a_context_specific_match_beats_a_generic_one_missing_the_context
     order = _order(QUERY_CONTEXT)
     assert order.index(CONTEXT_SPECIFIC) < order.index(EXACT_TITLE)
     assert "context_match" in _reasons(QUERY_CONTEXT, CONTEXT_SPECIFIC)
-    # والعامّة تُقال ناقصةً بالاسم: «لا تذكر: السعودية».
-    assert "saudi" in _reasons_terms(QUERY_CONTEXT, EXACT_TITLE, "missing_terms")
+    # والعامّة تُقال ناقصةً بالاسم، **وباللفظة كما كتبها الباحث**: التسوية
+    # أداةُ مقارنة، وتسرّبُها إلى الشاشة يجعلها تبدو كأنها تُخطئ كتابة كلمته.
+    assert _reasons_terms(QUERY_CONTEXT, EXACT_TITLE, "missing_terms") == ["Saudi"]
 
 
 def test_case_8_a_false_positive_title_is_pushed_down_and_named_a_false_positive():

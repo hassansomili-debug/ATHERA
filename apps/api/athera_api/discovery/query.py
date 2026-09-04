@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .normalize import extract_doi_anywhere, tokens
+from .normalize import extract_doi_anywhere, token_forms, tokens
 
 # ألفاظٌ تربط ولا تدلّ على موضوع. إسقاطها من الكلمات المفتاحية يمنع أن
 # يُحسب تطابقُ «في» و«of» تطابقًا في المضمون — وهو أكثر ما يصنع الإيجابيات
@@ -94,6 +94,19 @@ class ParsedQuery:
     sent: str = ""
     accepted_terms: tuple[str, ...] = ()
     suggestions: tuple[SuggestedTerm, ...] = ()
+    # صور الكلمات كما كتبها الباحث، مفهرسةً بصورتها المسوّاة. أزواجٌ لا
+    # قاموس: هذه البنية مجمَّدة، والقاموس فيها يمنع مقارنتها ونسخها.
+    keyword_forms: tuple[tuple[str, str], ...] = ()
+
+    def display(self, term: str) -> str:
+        """صورة اللفظة كما كتبها الباحث — لا صورتها المسوّاة.
+
+        كل نصٍّ يُعرض على الباحث يمرّ من هنا: «لا يذكر: إدارة» لا «اداره».
+        """
+        for folded, surface in self.keyword_forms:
+            if folded == term:
+                return surface
+        return term
 
     @property
     def is_identifier_lookup(self) -> bool:
@@ -248,6 +261,11 @@ def parse_query(text: str, *, accepted_terms: object = ()) -> ParsedQuery:
         keywords=tuple(keywords),
         text=text,
         sent=sent or raw,
+        keyword_forms=tuple(
+            (folded, surface)
+            for folded, surface in token_forms(keyword_source).items()
+            if folded in keywords
+        ),
         accepted_terms=accepted,
         suggestions=suggest_terms(raw, tuple(keywords)),
     )

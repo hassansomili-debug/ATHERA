@@ -100,6 +100,19 @@ def test_a_year_is_read_in_both_languages_and_as_a_range(text, expected):
     assert "2019" not in parsed.keywords and "2015" not in parsed.keywords
 
 
+def test_an_arabic_word_is_displayed_as_written_not_as_normalised():
+    """**التسوية أداةُ مقارنة لا صورةَ عرض.**
+
+    «إدارة» تُسوَّى «اداره» للمطابقة؛ ولو عُرضت مسوّاةً في «لا يذكر: اداره»
+    لقرأها الباحث خطأً إملائيًّا منّا، فشكّ في بقيّة ما نقول.
+    """
+    parsed = parse_query("إدارة التغيير في الجامعات")
+    assert "اداره" in parsed.keywords
+    assert parsed.display("اداره") == "إدارة"
+    # وما لا صورة له يُعاد كما هو، ولا يسقط النصّ.
+    assert parsed.display("غير موجودة") == "غير موجودة"
+
+
 def test_a_quoted_phrase_is_kept_as_a_phrase():
     parsed = parse_query('"technology acceptance model" in nursing')
     assert parsed.phrase == "technology acceptance model"

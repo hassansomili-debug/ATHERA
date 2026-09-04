@@ -222,14 +222,26 @@ def _author_points(candidate: ReferenceCandidate, parsed: ParsedQuery) -> tuple[
     """
     if not parsed.authors:
         return 0, ()
-    wanted = {
-        key for key in (first_author_key([name]) for name in parsed.authors) if key
-    }
     have = {
         key for key in (first_author_key([name]) for name in candidate.authors) if key
     }
-    hits = tuple(sorted(wanted & have))
+    # يُعاد الاسم **كما كتبه الباحث** لا مفتاحه المسوَّى: «Okafor» لا
+    # «okafor». المفتاح أداةُ مقارنة، وعرضُه يجعل الشاشة تبدو كأنها تُخطئ
+    # كتابة اسمٍ كتبه صاحبه صحيحًا.
+    hits = tuple(
+        name for name in parsed.authors
+        if (key := first_author_key([name])) is not None and key in have
+    )
     return min(W_AUTHOR_CAP, W_AUTHOR * len(hits)), hits
+
+
+def _shown(parsed: ParsedQuery, terms: tuple[str, ...]) -> tuple[str, ...]:
+    """ألفاظٌ تُعرض على الباحث بصورته لا بصورتها المسوّاة.
+
+    التسوية أداةُ مقارنة داخلية؛ وتسرّبُها إلى الشاشة يجعل «إدارة» تُعرض
+    «اداره»، فيقرؤها صاحبها خطأً إملائيًّا منّا ويشكّ في بقيّة ما نقول.
+    """
+    return tuple(parsed.display(term) for term in terms)
 
 
 def _build_reasons(
@@ -270,7 +282,7 @@ def _build_reasons(
         reasons.append(RankReason(code="strong_phrase"))
     elif surface_only:
         reasons.append(RankReason(code="surface_similarity", kind=REASON_CAUTION,
-                                  terms=missing[:2]))
+                                  terms=_shown(parsed, missing[:2])))
 
     if parsed.keywords:
         # «مباشرة» تشترط ألّا يغيب شيء: عنوانٌ يذكر ثلاثة من أربعة ويُسقط
@@ -280,9 +292,9 @@ def _build_reasons(
         elif not missing and abstract_only:
             # كل ما سأل عنه حاضرٌ فيه، وبعضه في الملخّص لا العنوان: هذه هي
             # المطابقة السياقية التي يفوّتها البحث بالعنوان وحده.
-            reasons.append(RankReason(code="context_match", terms=abstract_only[:3]))
+            reasons.append(RankReason(code="context_match", terms=_shown(parsed, abstract_only[:3])))
         elif abstract_only:
-            reasons.append(RankReason(code="abstract_terms", terms=abstract_only[:3]))
+            reasons.append(RankReason(code="abstract_terms", terms=_shown(parsed, abstract_only[:3])))
 
         if broader_topic:
             # يذكر مصطلحاتك كلها، لكن عنوانه يحمل من المصطلحات الأخرى أكثر
@@ -311,7 +323,7 @@ def _build_reasons(
         ))
 
     if missing:
-        reasons.append(RankReason(code="missing_terms", kind=REASON_CAUTION, terms=missing[:3]))
+        reasons.append(RankReason(code="missing_terms", kind=REASON_CAUTION, terms=_shown(parsed, missing[:3])))
 
     status = candidate.retraction_status
     if status == "retracted":
