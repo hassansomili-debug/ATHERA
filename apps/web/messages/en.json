@@ -712,6 +712,7 @@
     "status_provider_error": "Provider unreachable",
     "gateUnreachableTitle": "Could not check runtime status.",
     "gateUnreachableBody": "We could not ask the server about the model provider — your session may have expired, or it was unreachable. Sign in and retry; we will not claim execution is disabled when we never asked.",
+    "gateNextAction": "What works right now without a model: search the reference indexes.",
     "soon": "Coming soon",
     "attached": "Attached",
     "detach": "Remove attachment",
