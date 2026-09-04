@@ -10,23 +10,20 @@
 from __future__ import annotations
 
 import abc
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
-DOI_PATTERN = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Za-z0-9]+$")
-
-
-def normalize_doi(value: str) -> str | None:
-    """يقبل DOI خامًا أو داخل رابط، ويرفض ما ليس DOI."""
-    if not value:
-        return None
-    candidate = value.strip().lower()
-    for prefix in ("https://doi.org/", "http://doi.org/", "doi:", "https://dx.doi.org/"):
-        if candidate.startswith(prefix):
-            candidate = candidate[len(prefix):]
-    candidate = candidate.rstrip(".,;)")
-    return candidate if DOI_PATTERN.match(candidate) else None
+# تعريفٌ واحد للـDOI في المنتج كلّه — مكانه حزمة الاكتشاف النقيّة، ويُعاد
+# تصديره هنا لمن اعتاده. ونسختان منه تعنيان قاعدتَي قبولٍ تفترقان يومًا:
+# مُعرّفٌ يقبله الاستيراد ويرفضه البحث، فيُتّهم المنتج بأنه «لا يجد» ما
+# استورده هو نفسه.
+# وترويسةُ الهويّة واحدة كذلك: Crossref وOpenAlex يشترطان في أدب استعمالهما
+# هويّةً وجهةَ اتصال في **كل** طلب. وكان الاستيراد يمضي بلا ترويسة ما لم
+# يُضبط بريد — أي أنّ أكثر النشرات تطلب مجهولةً، وأول ما يُحجب المجهول
+# يسقط الاستيراد بلا أن يعرف أحد لماذا.
+from ...discovery.base import USER_AGENT
+from ...discovery.normalize import DOI_PATTERN as DOI_PATTERN  # noqa: PLC0414
+from ...discovery.normalize import normalize_doi as normalize_doi  # noqa: PLC0414
 
 
 @dataclass(slots=True)
@@ -113,7 +110,9 @@ class OpenAlexRegistry(SourceRegistry):
 
         if self._mailto:
             params = {**params, "mailto": self._mailto}
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=self._timeout, headers={"User-Agent": USER_AGENT}
+        ) as client:
             response = await client.get(f"{self.BASE_URL}{path}", params=params)
             if response.status_code == 404:
                 raise SourceNotFound(path)
@@ -165,8 +164,10 @@ class CrossrefRegistry(SourceRegistry):
     async def _get(self, path: str, params: dict[str, Any]) -> dict:
         import httpx  # noqa: PLC0415
 
-        headers = {"User-Agent": f"ATHERA/0.1 (mailto:{self._mailto})"} if self._mailto else {}
-        async with httpx.AsyncClient(timeout=self._timeout, headers=headers) as client:
+        agent = USER_AGENT + (f" mailto:{self._mailto}" if self._mailto else "")
+        async with httpx.AsyncClient(
+            timeout=self._timeout, headers={"User-Agent": agent}
+        ) as client:
             response = await client.get(f"{self.BASE_URL}{path}", params=params)
             if response.status_code == 404:
                 raise SourceNotFound(path)

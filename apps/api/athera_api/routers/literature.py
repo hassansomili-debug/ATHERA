@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 import uuid
 
 from fastapi import APIRouter, Depends, status
@@ -13,8 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..deps import Principal, get_principal, get_session
+from ..discovery import DiscoveryProvider, ReferenceCandidate, default_providers, discover
 from ..errors import AtheraError, NotFound
 from ..models.literature import ACCESS_STATES, Author, Claim, ClaimEvidenceLink, Source, SourceAuthor
+from ..schemas.discovery import (
+    ExternalAccessLinkView,
+    ProviderClaimView,
+    ProviderStatusView,
+    ReferenceCandidateView,
+    ReferenceSearchRequest,
+    ReferenceSearchResponse,
+)
 from ..schemas.literature import (
     ClaimCreateRequest,
     ClaimResponse,
@@ -45,6 +55,39 @@ def _registries() -> list[registry.SourceRegistry]:
     if settings.app_env == "test":
         return [registry.OfflineRegistry()]
     return [registry.CrossrefRegistry(), registry.OpenAlexRegistry()]
+
+
+def _discovery_providers() -> list[DiscoveryProvider]:
+    """فهارس الاكتشاف — أو لا شيء، **وهي حالٌ ثالثة تُعلَن لا تُخفى**.
+
+    البوابة هي بوابة `_registries` نفسها عمدًا: بيئة الاختبار لا تنادي
+    أحدًا فتبقى CI حتمية بلا شبكة، وما عداها ينادي الفهرسين كما ينادي
+    الاستيراد بـDOI اليوم. ولو رُبطت هنا ببوابةٍ أخرى لصار استيراد المرجع
+    يعمل وبحثُه لا يعمل في النشر ذاته — وهو عيبٌ يقع على الباحث بلا سبب
+    يفهمه.
+
+    و«بلا فهارس» تُعاد إلى الواجهة حالًا مستقلّة: ليست «لا نتائج» ولا
+    «تعذّر فهرس».
+    """
+    if settings.app_env == "test":
+        return []
+    # أدب الاستعمال يطلب جهة اتصال. الترويسة تحمل نطاق المنتج دائمًا،
+    # ويُضاف بريدٌ إن ضُبط — فيُبلَّغ الفريق قبل أن يُحجب المرور لا بعده.
+    return default_providers(mailto=(os.getenv("LITERATURE_CONTACT_EMAIL") or None))
+
+
+def _claim_views(candidate: ReferenceCandidate) -> list[ProviderClaimView]:
+    return [
+        ProviderClaimView(
+            provider=claim.provider, provider_id=claim.provider_id, doi=claim.doi,
+            title=claim.title, authors=list(claim.authors), year=claim.year,
+            venue=claim.venue, volume=claim.volume, issue=claim.issue, pages=claim.pages,
+            abstract=claim.abstract, url=claim.url, open_access=claim.open_access,
+            citation_count=claim.citation_count, type=claim.type,
+            work_type=claim.work_type, retraction_status=claim.retraction_status,
+        )
+        for claim in candidate.ordered_claims
+    ]
 
 
 def _pick(locale: str, ar: str, en: str | None) -> str:
@@ -133,6 +176,89 @@ async def search_sources(
         request_id=principal.request_id,
     )
     return results[: payload.limit]
+
+
+@router.post("/references/search", response_model=ReferenceSearchResponse)
+async def discover_references(
+    payload: ReferenceSearchRequest,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ReferenceSearchResponse:
+    """اكتشاف المراجع: عنوانٌ أو كلماتٌ مفتاحية أو DOI.
+
+    يفترق عن `/sources/search` في ثلاثة، وكلّها مقصودة:
+
+    **يُسأل الفهرسان معًا** ويُعرض ما قاله كلٌّ منهما منسوبًا إليه. أما
+    المسار القديم فيتوقف عند أول فهرسٍ ردّ بشيء، فيرى الباحث نصف ما يعرفه
+    العالم عن ورقته ولا يدري أنه نصف.
+
+    **والتعذّر يُعلَن باسم صاحبه.** فهرسٌ لم يجب ليس فهرسًا قال «لا يوجد»؛
+    والخلط بينهما يجعل الشاشة تكذب في أسوأ لحظة: حين تكون الشبكة معطوبة
+    والباحث يظنّ موضوعه بكرًا فيبني عليه.
+
+    **والنتيجة ليست مرجعًا مخزَّنًا.** لا تُكتب هنا صفوف: الحفظ فعلٌ مستقل
+    يقع في المكتبة بمعرّفٍ شرعي، والإضافة إلى بحثٍ فعلٌ ثالث يبقى `saved_only`.
+
+    ويبقى تسجيل الإفصاح كما هو في المسار القديم: نصّ الاستعلام يغادر
+    المستأجر إلى طرفٍ ثالث، وقد يحمل عنوان بحثٍ غير منشور (§36.2).
+    """
+    providers = _discovery_providers()
+    result = await discover(
+        providers, payload.query, limit=payload.limit,
+        year_from=payload.year_from, year_to=payload.year_to,
+        work_type=payload.work_type, open_access_only=payload.open_access_only,
+    )
+
+    await audit.record(
+        session,
+        tenant_id=principal.tenant_id,
+        action="evidence.references_discovered",
+        object_type="reference_discovery",
+        actor_user_id=principal.user_id,
+        state_after={
+            "query": payload.query[:200],
+            "providers": [status_.provider for status_ in result.provider_statuses],
+            "failed_providers": [
+                status_.provider for status_ in result.provider_statuses if not status_.ok
+            ],
+            "results": len(result.candidates),
+            # الرابط الممنوع جمعه يُسجَّل أنه لم يُطلب — لا أنه طُلب فمُنع.
+            "external_link_host": result.external_link.host if result.external_link else None,
+        },
+        reason="query text disclosed to external scholarly indexes (§36.2)",
+        request_id=principal.request_id,
+    )
+
+    return ReferenceSearchResponse(
+        candidates=[
+            ReferenceCandidateView(
+                doi=candidate.doi, title=candidate.title, authors=list(candidate.authors),
+                year=candidate.year, venue=candidate.venue, volume=candidate.volume,
+                issue=candidate.issue, pages=candidate.pages, abstract=candidate.abstract,
+                url=candidate.url, open_access=candidate.open_access, type=candidate.type,
+                work_type=candidate.work_type,
+                retraction_status=candidate.retraction_status,
+                providers=list(candidate.providers),
+                citation_counts=candidate.citation_counts,
+                match_basis=candidate.match_basis,
+                claims=_claim_views(candidate),
+                can_be_saved=bool(candidate.doi),
+            )
+            for candidate in result.candidates
+        ],
+        providers=[
+            ProviderStatusView(provider=status_.provider, ok=status_.ok,
+                               detail=status_.detail, results=status_.results)
+            for status_ in result.provider_statuses
+        ],
+        providers_enabled=bool(providers),
+        any_provider_failed=result.any_provider_failed,
+        all_providers_failed=result.all_providers_failed,
+        external_link=(
+            ExternalAccessLinkView(url=result.external_link.url, host=result.external_link.host)
+            if result.external_link else None
+        ),
+    )
 
 
 @router.post("/sources/import", response_model=SourceResponse, status_code=status.HTTP_201_CREATED)

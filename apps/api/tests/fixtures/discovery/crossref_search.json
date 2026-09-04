@@ -1,0 +1,54 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message": {
+    "total-results": 3,
+    "items": [
+      {
+        "DOI": "10.1016/J.JBUSRES.2020.06.008",
+        "title": ["Digital transformation in Saudi higher education"],
+        "author": [
+          { "given": "Nora", "family": "Al-Qassim" },
+          { "given": "Peter", "family": "Vance" }
+        ],
+        "issued": { "date-parts": [[2020, 7, 14]] },
+        "container-title": ["Journal of Business Research"],
+        "volume": "117",
+        "issue": "3",
+        "page": "245-259",
+        "abstract": "<jats:p>This study examines how public universities adopt digital platforms.</jats:p>",
+        "URL": "https://doi.org/10.1016/j.jbusres.2020.06.008",
+        "is-referenced-by-count": 120,
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1371/journal.pone.0011111",
+        "title": ["Learning analytics and student retention"],
+        "author": [{ "given": "Huda", "family": "Rashed" }],
+        "issued": { "date-parts": [[2018]] },
+        "container-title": ["PLOS ONE"],
+        "volume": "13",
+        "issue": "9",
+        "page": "e0011111",
+        "URL": "https://doi.org/10.1371/journal.pone.0011111",
+        "is-referenced-by-count": 44,
+        "type": "journal-article",
+        "update-to": [
+          { "type": "retraction", "DOI": "10.1371/journal.pone.0099999" }
+        ]
+      },
+      {
+        "DOI": "10.1109/tlt.2021.3055555",
+        "title": ["A framework for adaptive assessment"],
+        "author": [{ "name": "Adaptive Assessment Working Group" }],
+        "issued": { "date-parts": [[2021, 2]] },
+        "container-title": ["IEEE Transactions on Learning Technologies"],
+        "volume": "14",
+        "page": "88-101",
+        "URL": "https://doi.org/10.1109/tlt.2021.3055555",
+        "is-referenced-by-count": 7,
+        "type": "journal-article"
+      }
+    ]
+  }
+}

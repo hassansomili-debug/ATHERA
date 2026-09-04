@@ -15,9 +15,15 @@ import { usePosture } from "@/lib/posture";
  * تُعطّل الزرّ ما دام سجل الأدبيات «بلا شبكة» — فمتى فُتح السجل صار زرًّا
  * حيًّا لا يفعل شيئًا، والباحث يضغطه فلا يحدث شيء ولا يعرف لماذا.
  *
- * والمسار قائمٌ في الخادم منذ البداية: `POST /literature/sources/search` —
+ * والمسار قائمٌ في الخادم منذ البداية: `POST /api/v1/sources/search` —
  * فيُنادى. ولا نتائج مُصطنعة: ما يُعرض هو ما ردّه السجل، وإن لم يردّ شيئًا
  * قيلت «لا نتائج» **بعد** أن يعود الجواب لا قبله.
+ *
+ * **وكان العنوان المنادى غير موجود.** كُتب `/api/v1/literature/sources/search`
+ * على أن `literature` جزءٌ من المسار، وهي في الخادم وسمُ موجِّهٍ لا سابقة —
+ * فالمسار الحقيقي `/api/v1/sources/search`. فكان الطلب يعود 404، ويُعرض
+ * للباحث خطأٌ عامّ عن بحثٍ لم يقع أصلًا. والعيب كان مستورًا لأن الزرّ
+ * معطَّلٌ ما دام السجل «بلا شبكة»، فلا يظهر إلا في أول نشرٍ يُفتح فيه.
  *
  * **والمرشّح ليس مصدرًا مخزَّنًا.** يُقال ذلك صراحةً تحت النتائج: الاستيراد
  * فعلٌ مستقل يقع في المكتبة، لا أثرٌ جانبي لبحث.
@@ -54,7 +60,7 @@ export default function SearchPage({ params }: { params: Promise<{ locale: strin
     setResults(null);
     try {
       setResults(
-        await apiFetch<SourceCandidate[]>("/api/v1/literature/sources/search", {
+        await apiFetch<SourceCandidate[]>("/api/v1/sources/search", {
           method: "POST",
           locale,
           body: JSON.stringify({ query: query.trim(), limit: 20 }),
