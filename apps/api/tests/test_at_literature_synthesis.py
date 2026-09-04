@@ -1744,3 +1744,147 @@ def test_the_normalizer_misses_the_indefinite_conjunction_and_says_so():
 
     assert terms("التدريب والأداء") == terms("الأداء والتدريب")
     assert terms("أداء وتدريب") != terms("التدريب والأداء")
+
+
+# ═════════════════════ ١٢. قبولٌ عبر HTTP بهويّةٍ حقيقية ═════════════════════
+#
+# **الخدمةُ تُستدعى مباشرةً في الفحوص أعلاه، والباحث لا يستدعيها.** بينه
+# وبينها موجّهٌ ومصادقةٌ وجلسةُ مستأجرٍ وصلاحية. وفحصٌ يبلغ الخدمة من غير
+# هذا الطريق يثبت أنّ الحساب صحيح، ولا يثبت أنّ أحدًا يستطيع بلوغه.
+
+
+def _client(tenant_id: uuid.UUID, user_id: uuid.UUID):
+    """عميلٌ يحمل رمزًا حقيقيًّا — لا تجاوزَ للمصادقة في فحصٍ يدّعي إثباتها."""
+    import httpx
+
+    from athera_api.main import app
+    from athera_api.security import issue_access_token
+
+    token = issue_access_token(user_id=user_id, tenant_id=tenant_id,
+                               roles=["researcher"], mfa_satisfied=True)
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": f"Bearer {token}", "Accept-Language": "ar"})
+
+
+async def _include_source(tid, uid, project_id, source_id):
+    """يضمّ مرجعًا إلى المجموعة — و«مضموم» هي وحدها ما يقرؤه التركيب."""
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectSource
+
+    async with tenant_session(tid, uid) as session:
+        session.add(ProjectSource(
+            tenant_id=tid, project_id=project_id, source_id=source_id,
+            use_state="included", added_by=uid,
+            decided_by=uid, decided_at=_now()))
+        await session.flush()
+
+
+async def _seed_cells(tid, uid, project_id, source_id, **fields):
+    """خلايا مصفوفةٍ بخطّ يد الباحث — `researcher` لا آلة، فلا حارس يمنعها."""
+    from athera_api.db import tenant_session
+    from athera_api.models.screening import LiteratureMatrixCell
+
+    async with tenant_session(tid, uid) as session:
+        for key, value in fields.items():
+            session.add(LiteratureMatrixCell(
+                tenant_id=tid, project_id=project_id, source_id=source_id,
+                field_key=key, value_ar=value, cell_state="known",
+                source_scope="abstract_only", extraction_method="researcher",
+                verification_status="unverified", updated_by=uid))
+        await session.flush()
+
+
+async def _seed_two_opposed_studies(tid, uid):
+    """مشروعٌ فيه دراستان تتعارضان — وهو أصغر ما يُنتج سلسلةً كاملة."""
+    project_id = await _seed_project(tid, "مشروعُ قبولٍ عبر HTTP")
+    first = await _seed_source(tid, "دراسةٌ أولى")
+    second = await _seed_source(tid, "دراسةٌ ثانية")
+    await _include_source(tid, uid, project_id, first)
+    await _include_source(tid, uid, project_id, second)
+    await _seed_cells(tid, uid, project_id, first,
+                      constructs="التدريب والأداء",
+                      findings="علاقة إيجابية دالة إحصائيًا",
+                      context="السعودية")
+    await _seed_cells(tid, uid, project_id, second,
+                      constructs="الأداء والتدريب",
+                      findings="أثر سلبي دال إحصائيًا",
+                      context="الولايات المتحدة")
+    return project_id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_signed_in_researcher_drives_the_whole_chain_over_http(two_tenants):
+    """**السلسلةُ كاملةً من طرف الشبكة**: تحليلٌ ثمّ قراءةٌ ثمّ حكمٌ ثمّ أثر.
+
+    ولا تُستدعى خدمةٌ في هذا الفحص: كلُّ خطوةٍ طلبٌ يحمل رمزًا، كما يفعل
+    المتصفّح. فإن سقط الموجّه من `main.py` سقط هذا الفحص، ولو بقي الحساب
+    تحته سليمًا.
+    """
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    project_id = await _seed_two_opposed_studies(tid, uid)
+
+    async with _client(tid, uid) as client:
+        base = f"/api/v1/synthesis/projects/{project_id}"
+
+        analysed = await client.post(f"{base}/analyze")
+        assert analysed.status_code == 201, analysed.text
+
+        themes = (await client.get(f"{base}/themes")).json()
+        assert themes["themes"], "التحليل مرّ ولم يُخرج موضوعًا واحدًا"
+        theme_id = themes["themes"][0]["id"]
+
+        # **والتعارضُ يظهر للباحث**، لا يبقى في القاعدة بلا طريقٍ إليه.
+        conflicts = (await client.get(f"{base}/contradictions")).json()
+        assert conflicts["contradictions"], "التعارضُ المزروع لم يبلغ الشاشة"
+
+        # **وكلُّ موضوعٍ يُردّ إلى أصله** — وإلّا فهو دعوى لا نتيجة.
+        trace = await client.get(f"{base}/themes/{theme_id}/trace")
+        assert trace.status_code == 200, trace.text
+        assert trace.json()["supporting"], "موضوعٌ بلا سندٍ يُعرض"
+
+        decided = await client.post(f"{base}/themes/{theme_id}/decision",
+                                    json={"status": "approved"})
+        assert decided.status_code == 200, decided.text
+        assert decided.json()["status"] == "approved"
+
+        assert (await client.get(f"{base}/gaps")).status_code == 200
+
+    # **والحكمُ يحمل اسم صاحبه في القاعدة**، لا في الاستجابة وحدها.
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.synthesis import ThemeCandidate
+
+    async with tenant_session(tid, uid) as session:
+        row = (await session.execute(
+            select(ThemeCandidate).where(ThemeCandidate.id == uuid.UUID(theme_id))
+        )).scalar_one()
+        assert row.status == "approved"
+        assert row.decided_by == uid, "حكمٌ بلا صاحبٍ مرّ عبر الموجّه"
+        assert row.decided_at is not None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_other_tenant_is_refused_at_the_route_not_only_in_sql(two_tenants):
+    """**العزل يُثبت من حيث يدخل المهاجم**: برمزٍ صحيحٍ لمستأجرٍ آخر.
+
+    والعزلُ في SQL مُثبتٌ فوق؛ وهذا يثبت أنّ الموجّه لا يفتح بابًا يتجاوزه.
+    """
+    a, b = two_tenants["a"], two_tenants["b"]
+    project_id = await _seed_two_opposed_studies(a["tenant_id"], a["user_id"])
+
+    async with _client(a["tenant_id"], a["user_id"]) as owner:
+        assert (await owner.post(
+            f"/api/v1/synthesis/projects/{project_id}/analyze")).status_code == 201
+
+    async with _client(b["tenant_id"], b["user_id"]) as stranger:
+        base = f"/api/v1/synthesis/projects/{project_id}"
+        for path in (f"{base}/themes", f"{base}/contradictions", f"{base}/gaps",
+                     f"{base}/opportunities"):
+            answer = await stranger.get(path)
+            assert answer.status_code == 404, f"{path} سرّب وجودَ مشروعِ غيره"
+        assert (await stranger.post(f"{base}/analyze")).status_code == 404
