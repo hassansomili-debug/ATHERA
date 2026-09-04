@@ -101,7 +101,7 @@ def _p_value_must_come_from_an_analysis_run(a: Assessment) -> RuleOutcome:
     """
     findings_with_p = [
         f for f in a.graph.of_kind(EntityKind.FINDING)
-        if getattr(f, "p_value").state is not ValueState.MISSING
+        if f.p_value.state is not ValueState.MISSING
     ]
     if not findings_with_p:
         return not_applicable()
@@ -111,7 +111,7 @@ def _p_value_must_come_from_an_analysis_run(a: Assessment) -> RuleOutcome:
     unresolved: list[RuleFinding] = []
 
     for finding in findings_with_p:
-        quantity = getattr(finding, "p_value")
+        quantity = finding.p_value
         if quantity.state is ValueState.UNKNOWN:
             unresolved.append(RuleFinding(
                 RB_FABRICATION_01,
@@ -178,7 +178,7 @@ def _sample_size_must_never_be_invented(a: Assessment) -> RuleOutcome:
             "with no sample recorded in the project behind it.",
         ))
 
-    size = getattr(sample, "size")
+    size = sample.size
     if size.state is ValueState.KNOWN:
         return passed()
 
@@ -515,7 +515,7 @@ def _saved_only_source_cannot_support_a_claim(a: Assessment) -> RuleOutcome:
     for link in links:
         source = a.graph.by_id(link.source_id)
         claim = a.graph.by_id(link.target_id)
-        state = getattr(source, "use_state")
+        state = source.use_state
         if state == "included":
             continue
         if state == "saved_only":
@@ -604,7 +604,7 @@ def _factual_claim_without_evidence_stays_unsupported(a: Assessment) -> RuleOutc
     حقيقةَ مصدر أصلًا، ومطالبتهما بدليلٍ مباشر تعاقب الصدق في التوسيم.
     """
     claims = [c for c in a.graph.of_kind(EntityKind.CLAIM)
-              if getattr(c, "origin") == "fact"]
+              if c.origin == "fact"]
     if not claims:
         return not_applicable()
 
@@ -613,7 +613,7 @@ def _factual_claim_without_evidence_stays_unsupported(a: Assessment) -> RuleOutc
         evidence_ids = a.graph.targets(RelationKind.CLAIM_SUPPORTED_BY_EVIDENCE, claim.id)
         included_sources = [
             sid for sid in a.graph.sources(RelationKind.SOURCE_SUPPORTS_CLAIM, claim.id)
-            if getattr(a.graph.by_id(sid), "use_state") == "included"
+            if a.graph.by_id(sid).use_state == "included"
         ]
         if evidence_ids or included_sources:
             continue
@@ -643,13 +643,13 @@ def _model_output_is_never_verified_knowledge(a: Assessment) -> RuleOutcome:
     أن تصل إلى الجدول، فيُقال للباحث ما الخلل بدل أن يصله رفضُ قاعدة بيانات.
     """
     evidence = a.graph.of_kind(EntityKind.EVIDENCE)
-    model_evidence = [e for e in evidence if getattr(e, "source_type") == "model_output"]
+    model_evidence = [e for e in evidence if e.source_type == "model_output"]
     if not model_evidence:
         return not_applicable()
 
     violations: list[RuleFinding] = []
     for item in model_evidence:
-        if getattr(item, "verification_status") == "verified":
+        if item.verification_status == "verified":
             violations.append(RuleFinding(
                 RB_PROVENANCE_02,
                 f"الدليل «{item.label_ar}» مخرَجُ نموذج وموسومٌ `verified` — "
@@ -660,7 +660,7 @@ def _model_output_is_never_verified_knowledge(a: Assessment) -> RuleOutcome:
 
     model_ids = {e.id for e in model_evidence}
     for claim in a.graph.of_kind(EntityKind.CLAIM):
-        if getattr(claim, "origin") != "fact":
+        if claim.origin != "fact":
             continue
         supporting = set(a.graph.targets(RelationKind.CLAIM_SUPPORTED_BY_EVIDENCE, claim.id))
         if supporting and supporting <= model_ids:
