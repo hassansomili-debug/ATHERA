@@ -28,22 +28,22 @@ def _abstract(raw: str | None) -> str | None:
     return text or None
 
 
-def _retraction(item: dict[str, Any]) -> tuple[str, str | None]:
+def _retraction(item: dict[str, Any]) -> str:
     """`update-to` هو ما يعلنه Crossref عن سحبٍ أو تصحيح.
 
     وغيابه **ليس نفيًا للسحب** — لذلك الافتراض `unknown` لا `none`: الادعاء
     بأن ورقةً غير مسحوبة يحتاج مصدرًا كسائر الادعاءات.
     """
-    status, detail = "unknown", None
+    status = "unknown"
     for update in item.get("update-to") or []:
         label = str(update.get("type", "")).lower()
         if "retraction" in label:
-            return "retracted", update.get("DOI")
+            return "retracted"
         if "concern" in label:
-            status, detail = "expression_of_concern", update.get("DOI")
+            status = "expression_of_concern"
         elif "correction" in label or "erratum" in label:
-            status, detail = "correction", update.get("DOI")
-    return status, detail
+            status = "correction"
+    return status
 
 
 def to_claim(item: dict[str, Any]) -> ProviderClaim:
@@ -54,7 +54,6 @@ def to_claim(item: dict[str, Any]) -> ProviderClaim:
     year = None
     if issued and issued[0]:
         year = issued[0][0]
-    status, _detail = _retraction(item)
     authors = tuple(
         name for name in (
             " ".join(filter(None, [a.get("given"), a.get("family")])).strip()
@@ -82,7 +81,7 @@ def to_claim(item: dict[str, Any]) -> ProviderClaim:
         open_access=None,
         citation_count=item.get("is-referenced-by-count"),
         type=item.get("type") or None,
-        retraction_status=status,
+        retraction_status=_retraction(item),
         raw=item,
     )
 
