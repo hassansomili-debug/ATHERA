@@ -34,6 +34,7 @@ from .planning import (
 )
 from .portfolio import ProjectDecision, ProjectMember, ResearchProgram, ResearchProject
 from .files import File, FileAccessLog
+from .library import FOLDER_OBJECT_TYPE, MAX_FOLDER_DEPTH, LibraryFolder
 from .identity import (
     Membership,
     MfaFactor,
@@ -115,6 +116,7 @@ __all__ = [
     "Membership", "ObjectGrant", "RefreshToken", "MfaFactor",
     "AuditEvent", "ProvenanceEvent", "Approval", "IntegrityAlert",
     "File", "FileAccessLog", "AgentRun", "ToolRun", "ModelRun", "Notification",
+    "LibraryFolder", "MAX_FOLDER_DEPTH", "FOLDER_OBJECT_TYPE",
     "ResearcherProfile", "ResearcherSkill", "ResearcherMemory", "DocumentChunk",
     "ExtractionRun", "FactCandidate", "MEMORY_CATEGORIES", "PROMOTION_PATHS",
     "GuardrailCheck",

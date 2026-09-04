@@ -97,6 +97,13 @@ const OBJECT_BODIES = new Map<string, unknown>([
     },
   ],
   [
+    // **المجلَّدات شكلٌ لا قائمة**: فتاتُ طريقٍ وأبناءٌ مباشرون. والردّ
+    // الفارغ الافتراضي (`[]`) يخالف العقد، فيقرأ الشاشة حقلًا غير موجود —
+    // وهو عطبُ فحصٍ لا عطبُ منتج.
+    "/api/v1/files/folders",
+    { folder_id: null, breadcrumb: [], folders: [] },
+  ],
+  [
     "/api/v1/profile",
     {
       institution: null,
@@ -139,6 +146,7 @@ const PUBLIC_PATHS = ["/login", "/register", "/forgot-password"];
  * شيئًا**، وهي بعينها المواضع التي كانت تقوله قبل السؤال.
  */
 const GUARDED_PATHS = [
+  "/library",
   "/portfolio",
   "/references",
   "/theses",
