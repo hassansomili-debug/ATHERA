@@ -307,6 +307,23 @@ def test_filtering_by_kind_uses_the_shared_basket_not_the_index_wording():
     assert {candidate.doi for candidate in result.candidates} == {"10.5555/conf.2020.4412"}
 
 
+def test_the_wire_contract_keeps_a_candidate_from_posing_as_a_stored_reference():
+    """**النوع نفسه يمنع الخلط.** مرشَّحٌ يحمل `id` أو `use_state` يوشك أن
+    يُمرَّر حيث يُنتظر مرجعٌ مخزَّن، فيصير الاستيراد أثرًا جانبيًّا لبحث.
+    """
+    pytest.importorskip("pydantic")
+    from athera_api.schemas.discovery import ReferenceCandidateView, ReferenceSearchResponse
+
+    fields = set(ReferenceCandidateView.model_fields)
+    assert fields.isdisjoint({"id", "source_id", "use_state", "decided_at"})
+    # والنسبة جزءٌ من العقد لا زينةٌ في الشاشة.
+    assert {"providers", "citation_counts", "claims", "match_basis"} <= fields
+    assert "citation_count" not in fields
+
+    envelope = set(ReferenceSearchResponse.model_fields)
+    assert {"providers", "providers_enabled", "all_providers_failed"} <= envelope
+
+
 def test_open_access_only_excludes_what_no_index_declared_open():
     """«مفتوح الوصول» حقٌّ يُعلَن، والمجهول لا يُدرَج تحته."""
     crossref = _StubProvider("crossref", _crossref_claims())

@@ -99,14 +99,20 @@ def test_the_literature_search_form_actually_calls_the_registry():
     زرٌّ ميت ينتظر أن يُفتح السجل ليُرى موته.
     """
     code = dict(OWNED)["app/[locale]/search/page.tsx"]
-    assert "/api/v1/literature/sources/search" in code, "زرّ البحث لا ينادي شيئًا"
-    # **والمسار ليس مُختَرَعًا**: قائمٌ في الخادم، ويُفحص أنه كذلك.
     router = (
         pathlib.Path(__file__).resolve().parents[1]
         / "athera_api" / "routers" / "literature.py"
     ).read_text(encoding="utf-8")
+
+    # **وكان الحارس نفسه يحرس عنوانًا لا وجود له.** يُطالب الشاشة بنداء
+    # `/api/v1/literature/sources/search` ويُطالب الخادم بـ`"/sources/search"`،
+    # ولا يجمع بينهما — فمرّ نداءٌ يعود ٤٠٤ وهو «محروس». والسابقة تُقرأ من
+    # الموجِّه ويُركَّب المسار منها، فلا يُكتب العنوان مرّتين ولا يفترقان.
+    prefix = re.search(r'APIRouter\(prefix="([^"]+)"', router)
+    assert prefix, "لم تُعلَن سابقة الموجِّه"
     assert '@router.post("/sources/search"' in router, (
         "الواجهة تنادي مسارًا لا وجود له في الخادم")
+    assert f"{prefix.group(1)}/sources/search" in code, "زرّ البحث لا ينادي شيئًا"
 
 
 def test_no_tab_switches_state_without_switching_content():
