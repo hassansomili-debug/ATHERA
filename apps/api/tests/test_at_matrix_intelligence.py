@@ -1388,7 +1388,7 @@ def test_the_guard_names_the_machine_not_one_of_its_kinds():
     """
     import pathlib
 
-    m = (pathlib.Path(__file__).resolve().parents[2] / "infra" / "db" / "migrations"
+    m = (pathlib.Path(__file__).resolve().parents[3] / "infra" / "db" / "migrations"
          / "versions" / "0024_matrix_intelligence.py").read_text(encoding="utf-8")
     assert "machine_needs_human_approval" in m, "القيد ما زال باسم نوعٍ واحد"
     assert "extraction_method NOT IN ('deterministic', 'model')" in m, (
