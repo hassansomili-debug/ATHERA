@@ -20,7 +20,8 @@ import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
-from sqlalchemy import Select, and_, exists, func, or_, select
+from sqlalchemy import Select, and_, exists, false, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # **الاقتباس لا يُكرَّر.** بناءُ الملخّص من ترميز JATS ومن الفهرس المقلوب
@@ -375,8 +376,12 @@ async def readable_project_file_ids(session: AsyncSession, *, tenant_id: uuid.UU
             ProjectFile.tenant_id == tenant_id,
             ProjectFile.project_id == project_id,
             ProjectFile.state == ProjectFile.ACTIVE,
+            # **`correlate` ليست زينة.** بدونها يُضمّ جدولُ الروابط إلى
+            # داخل `EXISTS` ضمًّا ديكارتيًّا، فيصير الشرط «هل قُطِّع أيُّ
+            # ملفٍّ في المستأجر؟» — ويُقال لكل ملفٍّ إنه مقروء.
             exists().where(and_(DocumentChunk.tenant_id == tenant_id,
-                                DocumentChunk.file_id == ProjectFile.file_id)))
+                                DocumentChunk.file_id == ProjectFile.file_id))
+            .correlate(ProjectFile))
     )).scalars().all()
     return set(rows)
 
@@ -412,6 +417,16 @@ def dedup_key_expr():
     return func.coalesce(doi, title)
 
 
+def _json(column, key: str):
+    """`->` مكتوبًا صراحة — **لا اعتمادًا على صياغةٍ تتبدّل بإصدار القاعدة**.
+
+    فـ`column[key]` تُصاغ في SQLAlchemy فهرسةً (`raw_metadata['k']`)، وتلك
+    لم تُقبل على jsonb قبل PostgreSQL 14. والفرق لا يظهر في التطوير ولا في
+    الاختبار، ويظهر يوم يُنشر على قاعدةٍ أقدم — فتُكتب العلامة بيدنا.
+    """
+    return column.op("->", return_type=JSONB)(key)
+
+
 def has_abstract_expr(tenant_id: uuid.UUID):
     """هل لهذا المرجع ملخّص؟ — **سؤالٌ يُجاب في القاعدة لا في الذاكرة**.
 
@@ -425,17 +440,33 @@ def has_abstract_expr(tenant_id: uuid.UUID):
     """
     raw = Source.raw_metadata
     jats = and_(
-        func.jsonb_typeof(raw["abstract"]) == "string",
+        func.jsonb_typeof(_json(raw, "abstract")) == "string",
+        # نزعُ الوسوم يقابل فاكَّ JATS في حزمة الاكتشاف: `<jats:p></jats:p>`
+        # ترميزٌ بلا كلمة، وهو «لا ملخّص» لا «ملخّصٌ فارغ».
         func.length(func.btrim(func.regexp_replace(
             func.coalesce(raw["abstract"].astext, ""), "<[^>]*>", " ", "g"))) > 0,
     )
     inverted = and_(
-        func.jsonb_typeof(raw["abstract_inverted_index"]) == "object",
+        func.jsonb_typeof(_json(raw, "abstract_inverted_index")) == "object",
         raw["abstract_inverted_index"].astext != "{}",
     )
-    stored = exists().where(and_(SourceAbstract.tenant_id == tenant_id,
-                                 SourceAbstract.source_id == Source.id))
-    return or_(stored, jats, inverted)
+    # و`correlate` هنا كذلك: بدونها يُضمّ `sources` داخل `EXISTS`، فيصير
+    # الشرط «هل في المستأجر ملخّصٌ واحد؟» — فتُقال كل ورقةٍ ذاتَ ملخّص.
+    stored = (exists().where(and_(SourceAbstract.tenant_id == tenant_id,
+                                  SourceAbstract.source_id == Source.id))
+              .correlate(Source))
+    return known(or_(stored, jats, inverted))
+
+
+def known(test):
+    """**`NULL` في SQL نفيٌ لا حالٌ ثالثة** — وهذا ما يجعلها كذلك.
+
+    ومرجعٌ بلا بيانات فهرسٍ أصلًا يجعل `jsonb_typeof(NULL)` تعود `NULL`،
+    فيصير الشرط كلُّه `NULL`. فيسقط من «له ملخّص» — وهو صواب — **ويسقط من
+    «بلا ملخّص» أيضًا**، وهو العطب: يختفي المرجع من الوجهين، ويقرأ الباحث
+    عددًا أنقص من مراجعه ولا يعرف أين ذهب الباقي.
+    """
+    return func.coalesce(test, false())
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,8 +523,11 @@ def apply_filters(stmt: Select, filters: ScreeningFilters, *,
         stmt = stmt.where(test if filters.has_abstract else ~test)
     if filters.has_full_text is not None:
         # النصّ الكامل شرطان: حقّ معالجة، وملفٌّ في هذا البحث يُقرأ منه فعلًا.
-        test = and_(Source.access_state.in_(TEXT_BEARING_STATES),
-                    Source.file_id.in_(readable_file_ids))
+        # و`IS NOT NULL` أولًا لأن `NULL IN (...)` تعود `NULL` لا `FALSE` —
+        # فمرجعٌ بلا ملفٍّ كان يسقط من «بلا نصّ كامل» وهو أوّل من يستحقّها.
+        test = known(and_(Source.access_state.in_(TEXT_BEARING_STATES),
+                          Source.file_id.is_not(None),
+                          Source.file_id.in_(readable_file_ids)))
         stmt = stmt.where(test if filters.has_full_text else ~test)
     if filters.possible_duplicate is not None:
         test = ProjectSource.source_id.in_(duplicate_ids)
@@ -970,6 +1004,7 @@ __all__ = [
     "empty_cell",
     "file_is_in_project",
     "has_abstract_expr",
+    "known",
     "included_source_count",
     "locator_is_honest",
     "matrix_rows",

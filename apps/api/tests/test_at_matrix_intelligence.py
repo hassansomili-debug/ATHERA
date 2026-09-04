@@ -234,6 +234,66 @@ def test_every_filter_is_applied_before_any_limit():
     assert applied < limited, "الحدّ يسبق التصفية — والصفحة تكذب"
 
 
+def _filtered_sql(**filters) -> str:
+    """عبارةُ الصفحة كما ستصل القاعدة — تُقرأ نصًّا لأن العطب فيها لا يُرمى."""
+    import uuid as _uuid
+
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+
+    from athera_api.models.literature import Source
+    from athera_api.models.portfolio import ProjectSource
+    from athera_api.services import screening
+
+    stmt = (select(ProjectSource.id)
+            .join(Source, Source.id == ProjectSource.source_id)
+            .where(ProjectSource.tenant_id == _uuid.uuid4()))
+    stmt = screening.apply_filters(
+        stmt, screening.ScreeningFilters(**filters), tenant_id=_uuid.uuid4(),
+        duplicate_ids=frozenset(), readable_file_ids=frozenset())
+    return re.sub(r"\s+", " ",
+                  str(stmt.compile(dialect=postgresql.dialect())))
+
+
+def test_a_null_never_becomes_a_third_state_that_hides_a_reference():
+    """**`NULL` في SQL نفيٌ لا حالٌ ثالثة.**
+
+    ومرجعٌ بلا بيانات فهرسٍ أصلًا كان يسقط من «له ملخّص» — وهو صواب —
+    **ومن «بلا ملخّص» أيضًا**: يختفي من الوجهين، فيقرأ الباحث عددًا أنقص من
+    مراجعه ولا يعرف أين ذهب الباقي.
+    """
+    for name, filters in (("الملخّص", {"has_abstract": False}),
+                          ("النصّ الكامل", {"has_full_text": False})):
+        sql = _filtered_sql(**filters)
+        assert "NOT coalesce(" in sql, f"شرطُ {name} ليس آمنًا من NULL: {sql}"
+    # وشرطُ الملف يفحص وجوده قبل أن يقابله بالمجموعة.
+    assert "sources.file_id IS NOT NULL" in _filtered_sql(has_full_text=True)
+
+
+def test_the_abstract_test_is_correlated_to_the_row_it_judges():
+    """**بلا `correlate` يصير السؤال «هل في المستأجر ملخّصٌ واحد؟».**
+
+    فيُضمّ جدولُ المراجع داخل `EXISTS` ضمًّا ديكارتيًّا، وتُقال كلُّ ورقةٍ
+    ذاتَ ملخّص — والتصفية تعيد كل شيء ولا يبدو أنّ فيها عطبًا.
+    """
+    sql = _filtered_sql(has_abstract=True)
+    inner = sql.split("EXISTS (", 1)[1].split(")", 1)[0]
+    assert "sources" not in inner.split("WHERE")[0], (
+        f"جدولُ المراجع مضمومٌ داخل EXISTS: {inner}")
+    assert "source_abstracts.source_id = sources.id" in sql
+
+
+def test_the_json_arrow_is_written_by_hand_not_left_to_a_subscript():
+    """`raw_metadata['k']` فهرسةٌ لم تُقبل على jsonb قبل PostgreSQL 14.
+
+    والفرق لا يظهر في التطوير ولا في الاختبار — يظهر يوم يُنشر على قاعدةٍ
+    أقدم، وحينها يفشل كل فتحٍ للشاشة.
+    """
+    sql = _filtered_sql(has_abstract=True, document_type="journal-article")
+    assert "raw_metadata ->" in sql
+    assert "raw_metadata[" not in sql
+
+
 def test_the_screening_page_never_loads_the_whole_project():
     """عددُ الذهاب والإياب ثابتٌ لا يتبع عدد المراجع — وإلا فهو عطب `1+N`.
 
@@ -1028,6 +1088,19 @@ async def test_filters_are_applied_before_paging_and_the_counters_follow_them(
         assert with_state.total == 5
         assert with_state.tallies.saved_only == 5, (
             "العدّاد أسقط بقيّة المرشّحات مع الحال")
+
+        # **ولا مرجعَ يسقط من الوجهين.** كلُّ هذه المراجع بلا بيانات فهرس،
+        # فكلُّها «بلا ملخّص» و«بلا نصّ كامل» — ولا واحدٌ منها يختفي.
+        without = await screening.screening_page(
+            session, tenant_id=a["tenant_id"], project_id=project,
+            filters=screening.ScreeningFilters(has_abstract=False),
+            page=1, page_size=1)
+        assert without.total == 30, "مرجعٌ بلا بيانات فهرسٍ سقط من «بلا ملخّص»"
+        no_text = await screening.screening_page(
+            session, tenant_id=a["tenant_id"], project_id=project,
+            filters=screening.ScreeningFilters(has_full_text=False),
+            page=1, page_size=1)
+        assert no_text.total == 30, "مرجعٌ بلا ملفٍّ سقط من «بلا نصّ كامل»"
 
 
 @requires_db
