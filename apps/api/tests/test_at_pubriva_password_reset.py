@@ -441,3 +441,46 @@ def test_revocation_does_not_depend_on_a_pre_bound_tenant():
     assert "SECURITY DEFINER" in migration
     assert "SET search_path = public, pg_temp" in migration, "حقنُ مخطط ممكن"
     assert "REVOKE ALL ON FUNCTION app_user_tenants(uuid) FROM PUBLIC" in migration
+
+
+def test_a_placeholder_sender_is_refused_before_a_message_is_promised():
+    """**وقيمةٌ نائبة ليست قيمة.**
+
+    الحارس كان يسأل «هل هي فارغة؟» وحدها، و`<YOUR-DOMAIN>` ليست فارغة —
+    فتمرّ. فيُبنى المزوّد، ويُقبل طلبُ الاستعادة، ويُقال للباحث إن رسالةً
+    أُرسلت، ثم يرفضها خادمُ البريد لأن المُرسِل ليس عنوانًا. فيقف أمام
+    صندوقٍ فارغ بلا سبب يفهمه.
+
+    وهذه هي حالُ الإنتاج وقت كتابة هذا الفحص: المضيف والمنفذ والاسم وكلمة
+    المرور مضبوطة كلها، و`EMAIL_SENDER` وحده قيمةٌ نائبة.
+
+    وعلامةُ العنوان الوحيدة التي لا تُخطئ: `@` — موجودةٌ في
+    `noreply@pubriva.com` وفي `"PUBRIVA" <noreply@pubriva.com>`، غائبةٌ عن
+    كل قيمةٍ نائبة.
+    """
+    from athera_api.services import email
+
+    class _Fake:
+        app_env = "production"
+        email_provider = "smtp"
+        email_smtp_host = "smtp.example.net"
+        email_smtp_port = 587
+        email_smtp_username = "user"
+        email_smtp_password = "secret"
+        email_smtp_use_tls = True
+        email_sender = "<YOUR-DOMAIN>"
+
+    original = email.get_settings
+    email.get_settings = lambda: _Fake()  # type: ignore[assignment]
+    try:
+        with pytest.raises(email.EmailNotConfigured) as err:
+            email.provider()
+        # والسببُ يُسمّى: من يقرأ السجلّ يعرف أيّ حقلٍ يضبط.
+        assert "EMAIL_SENDER" in str(err.value)
+
+        # وعنوانٌ حقيقي يمرّ — بشكليه.
+        for sender in ("noreply@pubriva.com", '"PUBRIVA" <noreply@pubriva.com>'):
+            _Fake.email_sender = sender
+            email.provider()
+    finally:
+        email.get_settings = original  # type: ignore[assignment]

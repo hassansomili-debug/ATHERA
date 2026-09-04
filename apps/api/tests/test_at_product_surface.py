@@ -348,3 +348,32 @@ def test_the_boundary_of_this_guard_is_declared_not_assumed():
     assert scanned.isdisjoint(NOT_OURS)
     # وما نملكه ليس فارغًا: حارسٌ لا يمسح شيئًا يمرّ دائمًا.
     assert len(scanned) > 30, f"الماسح لم يجد إلا {len(scanned)} ملفًا"
+
+
+def test_the_posture_does_not_deny_a_call_that_happens():
+    """**الشاشة لا تنفي نداءً يقع.**
+
+    كان بند «سجل الأدبيات» يقول «بلا شبكة: لا يُستدعى سجل خارجي» ما دام
+    `LITERATURE_REGISTRY=offline` — وهو حال الإنتاج. ثم وصل اكتشافُ
+    المراجع، وهو ينادي Crossref وOpenAlex في كل بحث بلا مفتاح ولا إعداد.
+    فصارت الشاشة تنفي نداءً يقع، وذلك أسوأ من ألّا تقول شيئًا.
+
+    فالبندان اثنان: أحدهما للرصد المجدول، والآخر لفهارس الاكتشاف.
+    """
+    import pathlib
+
+    settings_src = (pathlib.Path(__file__).resolve().parents[1] / "athera_api" / "routers"
+                    / "settings.py").read_text(encoding="utf-8")
+    assert 'key="reference_indexes"' in settings_src, "الفهارس التي تُستدعى لا تُذكر"
+    assert "لا يُستدعى سجل خارجي." not in settings_src, "الشاشة ما زالت تنفي نداءً يقع"
+
+
+def test_the_posture_reads_its_provider_names_from_the_providers():
+    """**قيمةٌ تُكتب بجانب سجلّها تفترق عنه.** وهو الخطأ المتكرّر هنا:
+    فتُشتقّ أسماءُ الفهارس من المزوّدين أنفسهم، فإن أُضيف فهرسٌ ظهر، وإن
+    أُزيل اختفى — بلا سطرٍ يُحدَّث باليد."""
+    from athera_api.discovery.service import default_providers
+    from athera_api.routers.settings import _discovery_providers
+
+    assert _discovery_providers() == tuple(p.name for p in default_providers())
+    assert _discovery_providers(), "لا فهرس — والبحث عن المراجع يعمل"

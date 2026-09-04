@@ -122,6 +122,20 @@ def provider() -> EmailProvider:
             raise EmailNotConfigured(
                 "EMAIL_PROVIDER=smtp but these are unset: " + ", ".join(missing)
             )
+        # **وقيمةٌ نائبة ليست قيمة.**
+        #
+        # الحارس كان يسأل «هل هي فارغة؟» وحدها. و`<YOUR-DOMAIN>` ليست
+        # فارغة، فتمرّ — فيُبنى المزوّد، ويُقبل طلبُ الاستعادة، ويُقال
+        # للباحث إن رسالةً أُرسلت، ثم يرفضها خادمُ البريد لأن المُرسِل ليس
+        # عنوانًا. فيقف الباحث أمام صندوقٍ فارغ بلا سبب يفهمه.
+        #
+        # وعلامةُ العنوان الوحيدة التي لا تُخطئ: `@`. وهي موجودة في
+        # `noreply@pubriva.com` وفي `"PUBRIVA" <noreply@pubriva.com>`،
+        # وغائبةٌ عن كل قيمةٍ نائبة. فيُرفض الإعداد عند بنائه لا عند إرساله.
+        if "@" not in (settings.email_sender or ""):
+            raise EmailNotConfigured(
+                "EMAIL_SENDER is not an address (no '@') — a placeholder is not a sender"
+            )
         return SmtpProvider(
             host=settings.email_smtp_host,
             port=settings.email_smtp_port,
