@@ -1131,3 +1131,32 @@ def test_every_named_locator_matches_exactly():
     named = re.findall(r'name: "([^"]+)"', code)
     exact = re.findall(r'name: "([^"]+)", exact: true', code)
     assert len(named) == len(exact), f"أسماءٌ بلا مطابقة تامّة: {set(named) - set(exact)}"
+
+
+def test_controls_that_name_their_target_are_matched_by_prefix():
+    """**الاسمُ يسمّي هدفه، فالمُحدِّد يتبعه.**
+
+    مكتبتي V2 أعطت كل زرٍّ اسمًا يحمل الملف الذي يقع عليه: «معالجة المستند:
+    اسم الملف». وذلك هو الصواب — في الشاشة أزرارٌ كثيرة متطابقة النصّ،
+    واحدٌ لكل ملف، ولا يميّزها قارئُ الشاشة إلا بهدفها.
+
+    والمطابقة التامّة التي فُرضت بعد حادثة «اعتمد» صحيحةٌ أيضًا. فلمّا
+    اجتمعتا سقط المُحدِّد: الاسم لم يعد «معالجة المستند» وحده، فلم يُوجد
+    الزرّ أصلًا — وبدا أن المنتج فقد ضابطه وهو لم يفقده.
+
+    فالبادئة تُطلب صراحةً حيث يحمل الاسمُ هدفَه، والمطابقة التامّة تبقى
+    لكل ما عداه.
+    """
+    spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
+    code = "\n".join(line for _, line in code_lines(spec))
+    library = (WEB / "src" / "app" / "[locale]" / "library"
+               / "page.tsx").read_text(encoding="utf-8")
+
+    # كلُّ ضابطٍ تطلبه الرحلة ويحمل اسمُه هدفَه، يُطلب ببادئة لا بمطابقةٍ تامّة.
+    for key, arabic in (("library.processDoc", "معالجة المستند"),
+                        ("library.openReview", "افتح المراجعة"),
+                        ("library.askAi", "اسأل بُبريفا AI عن هذا المستند")):
+        names_target = f'aria-label={{`${{t("{key}")}}: ' in library
+        assert names_target, f"{key} لم يعد يسمّي هدفه — فراجع المُحدِّد"
+        assert f'name: /^{arabic}:/' in code, f"الرحلة تطلب {key} بمطابقةٍ تامّة وقد صار يسمّي هدفه"
+        assert f'name: "{arabic}", exact: true' not in code, f"مطابقةٌ تامّة باقية على {key}"
