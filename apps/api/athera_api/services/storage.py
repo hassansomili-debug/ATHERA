@@ -14,6 +14,7 @@ import abc
 import hashlib
 import re
 import uuid
+from collections.abc import Iterator
 from functools import lru_cache
 from typing import BinaryIO, Final
 
@@ -28,6 +29,9 @@ from ..errors import AtheraError
 MAX_DOCUMENT_BYTES: Final = 512 * 1024 * 1024
 MAX_DATASET_BYTES: Final = 256 * 1024 * 1024
 MAX_UPLOAD_BYTES: Final = MAX_DOCUMENT_BYTES  # السقف المطلق
+
+# مقطع البثّ عند التسليم: ربع ميجابايت يبقى في الذاكرة مهما بلغ حجم الكائن.
+STREAM_CHUNK_BYTES: Final = 256 * 1024
 
 # ── الأنواع المقبولة ───────────────────────────────────────────────────
 #
@@ -70,7 +74,7 @@ class StorageNotConfigured(AtheraError):
 # التجريد
 # ══════════════════════════════════════════════════════════════════════
 class ObjectStore(abc.ABC):
-    """أربع عمليات. لا نوع خاص بمزود يعبر هذا الحد."""
+    """عملياتٌ معدودة. لا نوع خاص بمزود يعبر هذا الحد."""
 
     name: str = "abstract"
 
@@ -83,6 +87,16 @@ class ObjectStore(abc.ABC):
 
     @abc.abstractmethod
     def get(self, key: str) -> bytes: ...
+
+    @abc.abstractmethod
+    def get_stream(self, key: str) -> Iterator[bytes]:
+        """قراءة مقطعًا مقطعًا — **والذاكرة لا تتناسب مع حجم الكائن**.
+
+        و`get` تبقى لمن يحتاج البايتات كلها (تحقّق بصمة، تفكيك مستند). أما
+        تسليمها إلى المتصفح فبثٌّ: رسالة دكتوراه ممسوحة بنصف جيجابايت لا
+        تُحمَّل في ذاكرة آلةٍ بنصف جيجابايت لتُرسل — تلك ليست بطئًا، بل
+        نفاد ذاكرة يقتل العملية ويُسقط كل طلبٍ آخر معها.
+        """
 
     @abc.abstractmethod
     def delete(self, key: str) -> None: ...
@@ -131,6 +145,10 @@ class S3ObjectStore(ObjectStore):
     def get(self, key: str) -> bytes:
         return self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read()
 
+    def get_stream(self, key: str) -> Iterator[bytes]:
+        body = self._client.get_object(Bucket=self._bucket, Key=key)["Body"]
+        return body.iter_chunks(chunk_size=STREAM_CHUNK_BYTES)
+
     def delete(self, key: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=key)
 
@@ -166,6 +184,12 @@ class MemoryObjectStore(ObjectStore):
             raise AtheraError("file.not_found", status_code=404)
         return self._objects[key][0]
 
+    def get_stream(self, key: str) -> Iterator[bytes]:
+        # يقطّع كما يقطّع المزوّد الحقيقي: سلوكٌ مطابق لا مختصر.
+        data = self.get(key)
+        return (data[at:at + STREAM_CHUNK_BYTES]
+                for at in range(0, len(data), STREAM_CHUNK_BYTES))
+
     def delete(self, key: str) -> None:
         self._objects.pop(key, None)
 
@@ -188,6 +212,7 @@ class UnconfiguredStore(ObjectStore):
     def put(self, key: str, data: bytes, content_type: str) -> None: raise StorageNotConfigured()
     def put_stream(self, key: str, fileobj: BinaryIO, content_type: str) -> None: raise StorageNotConfigured()
     def get(self, key: str) -> bytes: raise StorageNotConfigured()
+    def get_stream(self, key: str) -> Iterator[bytes]: raise StorageNotConfigured()
     def delete(self, key: str) -> None: raise StorageNotConfigured()
     def presign_get(self, key: str, *, expires_in: int) -> str: raise StorageNotConfigured()
     def presign_put(self, key: str, content_type: str, *, expires_in: int) -> str: raise StorageNotConfigured()

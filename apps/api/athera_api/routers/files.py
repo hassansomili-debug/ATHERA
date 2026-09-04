@@ -9,11 +9,13 @@ import uuid
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, File as FormFile, Form, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..db import tenant_session
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.audit import ProvenanceEvent
@@ -289,7 +291,6 @@ async def upload_file(
     upload: UploadFile = FormFile(...),
     classification: str = Form(default="C2"),
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
     """رفع يمرّ بالخادم لا بالمتصفح إلى التخزين.
 
@@ -338,60 +339,90 @@ async def upload_file(
     checksum = digest.hexdigest()
 
     # ── المرور الثاني: بثّ إلى التخزين من بداية الملف المؤقت ──
+    #
+    # **وفي خيطٍ جانبي، لا في حلقة الأحداث.** `upload_fileobj` استدعاءٌ
+    # متزامن يحجز الخيط حتى يفرغ الرفع كله. وكان يُستدعى مباشرةً هنا،
+    # فيتوقّف الـAPI بأسره طوال بثّ الملف إلى التخزين: لا صفحةٌ تُحمَّل،
+    # ولا استطلاعُ مكتبةٍ يُجاب، ولا حتى فحص الصحّة يردّ — وآلة Fly واحدة
+    # بمعالجٍ مشترك. فكتابٌ بمئة ميجابايت لا يُبطئ رفعه وحده، بل **يُجمّد
+    # المنتج كله** لمن يستعمله في تلك اللحظة. وهذا وجهٌ من «المكتبة ما
+    # تتحمل كتب» لا يظهر في سجلّ أخطاء: لا خطأ، بل صمت.
+    #
+    # ولا يُغيَّر الترتيب: التخزين قبل القاعدة كما كان.
     await upload.seek(0)
     started = perf_counter()
-    storage.get_store().put_stream(key, upload.file, declared)
+    await run_in_threadpool(storage.get_store().put_stream, key, upload.file, declared)
     elapsed_ms = int((perf_counter() - started) * 1000)
 
+    # ── القاعدة: معاملةٌ تُختم **قبل** أن يُبلَّغ نجاح ──
+    #
+    # **و«تم الحفظ» كانت تُقال قبل أن تُحفظ.** الجلسة كانت تبعيةً
+    # (`Depends(get_session)`)، وFastAPI يُنهي التبعيات المولِّدة **بعد**
+    # إرسال جسم الاستجابة: `response = await f(request)` ثم
+    # `await response(scope, receive, send)` ثم يخرج المكدّس الذي يحمل
+    # الجلسة. فالإيداع يقع بعد أن يقرأ المتصفح ٢٠١.
+    #
+    # وأثره ليس نظريًّا: الواجهة تقرأ المكتبة فور وصول ٢٠١، والقراءة طلبٌ
+    # آخر على **اتصالٍ آخر** — فقد تسبق الإيداع فلا ترى الصفّ. فيرى الباحث
+    # «تم الحفظ» ومكتبته خالية من ملفه، ثم يجده بعد تنقّلٍ كامل. وذلك عين
+    # ما سقطت عليه رحلة القبول ثلاث مرات.
+    #
+    # فتُفتح المعاملة هنا وتُختم هنا — وهو النمط نفسه في `routers/auth.py`
+    # لمن يحتاج ختمًا قبل الردّ — ولا يُعاد «تم» إلا وقد استقرّ الاثنان:
+    # الكائن في التخزين، والصفّ في القاعدة.
     try:
-        record = File(
-            id=file_id,
-            tenant_id=principal.tenant_id,
-            storage_key=key,
-            original_filename=filename[:512],
-            content_type=declared,
-            size_bytes=size,
-            checksum_sha256=checksum,
-            classification=classification,
-            is_untrusted_content=True,  # §33.3 — محتوى الملفات بيانات لا تعليمات.
-            status="stored",
-            uploaded_by=principal.user_id,
-            completed_at=dt.datetime.now(dt.UTC),
-        )
-        session.add(record)
-        await session.flush()
+        async with tenant_session(principal.tenant_id, principal.user_id) as session:
+            record = File(
+                id=file_id,
+                tenant_id=principal.tenant_id,
+                storage_key=key,
+                original_filename=filename[:512],
+                content_type=declared,
+                size_bytes=size,
+                checksum_sha256=checksum,
+                classification=classification,
+                is_untrusted_content=True,  # §33.3 — محتوى الملفات بيانات لا تعليمات.
+                status="stored",
+                uploaded_by=principal.user_id,
+                completed_at=dt.datetime.now(dt.UTC),
+            )
+            session.add(record)
+            await session.flush()
 
-        session.add(ObjectGrant(
-            tenant_id=principal.tenant_id, object_type="file", object_id=file_id,
-            user_id=principal.user_id, grant_level="owner", granted_by=principal.user_id,
-        ))
-        session.add(ProvenanceEvent(
-            tenant_id=principal.tenant_id, object_type="file", object_id=file_id,
-            source_type="upload", source_id=file_id, source_locator=key,
-            created_by=principal.user_id,
-            verification_status="unverified",  # §7.4 — الرفع لا يعني التحقق.
-        ))
-        await audit.record(
-            session,
-            tenant_id=principal.tenant_id,
-            action="file.uploaded",
-            object_type="file",
-            object_id=file_id,
-            actor_user_id=principal.user_id,
-            # لا محتوى ولا اسم كامل ولا مفتاح سرّي في السجل — وصفٌ لا بيانات.
-            state_after={
-                "content_type": declared, "size_bytes": size,
-                "kind": storage.kind_for(declared), "classification": classification,
-                "storage_ms": elapsed_ms,
-            },
-            request_id=principal.request_id,
-            ip_address=principal.ip_address,
-        )
+            session.add(ObjectGrant(
+                tenant_id=principal.tenant_id, object_type="file", object_id=file_id,
+                user_id=principal.user_id, grant_level="owner", granted_by=principal.user_id,
+            ))
+            session.add(ProvenanceEvent(
+                tenant_id=principal.tenant_id, object_type="file", object_id=file_id,
+                source_type="upload", source_id=file_id, source_locator=key,
+                created_by=principal.user_id,
+                verification_status="unverified",  # §7.4 — الرفع لا يعني التحقق.
+            ))
+            await audit.record(
+                session,
+                tenant_id=principal.tenant_id,
+                action="file.uploaded",
+                object_type="file",
+                object_id=file_id,
+                actor_user_id=principal.user_id,
+                # لا محتوى ولا اسم كامل ولا مفتاح سرّي في السجل — وصفٌ لا بيانات.
+                state_after={
+                    "content_type": declared, "size_bytes": size,
+                    "kind": storage.kind_for(declared), "classification": classification,
+                    "storage_ms": elapsed_ms,
+                },
+                request_id=principal.request_id,
+                ip_address=principal.ip_address,
+            )
     except Exception:
         # القاعدة سقطت بعد نجاح التخزين: يُحذف الكائن فلا يبقى بلا سجل.
-        storage.get_store().delete(key)
+        # والإيداع داخل النطاق أعلاه، فسقوطُه يُمسك هنا أيضًا — لا بعد الردّ.
+        await run_in_threadpool(storage.get_store().delete, key)
         raise
 
+    # `expire_on_commit=False` يبقي الحقول محمَّلة بعد الإيداع، فلا قراءة
+    # على جلسةٍ مغلقة.
     return FileResponse.model_validate(record, from_attributes=True)
 
 
@@ -413,7 +444,15 @@ async def stream_file(
     await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
                                      "file", file_id, "read")
 
-    data = storage.get_store().get(record.storage_key)
+    # **والتسليم بثٌّ لا تحميل.** كانت الصياغة `get(...)` ثم `iter([data])`:
+    # الكائن كله في ذاكرة العملية قبل أن يُرسل منه بايت. فرسالةٌ ممسوحة
+    # بنصف جيجابايت على آلةٍ بنصف جيجابايت ذاكرة ليست تنزيلًا بطيئًا — هي
+    # نفاد ذاكرة يقتل العملية ويُسقط معها كل طلبٍ آخر جارٍ.
+    #
+    # و`get_object` نفسها استدعاءٌ متزامن، فتُنفَّذ في خيطٍ جانبي: فتحُ
+    # المجرى لا يُجمّد حلقة الأحداث. وStarlette يستهلك المُكرِّر المتزامن
+    # في خيطٍ جانبي أيضًا، فلا يعود شيءٌ من مسار التنزيل يحجز الحلقة.
+    stream = await run_in_threadpool(storage.get_store().get_stream, record.storage_key)
 
     session.add(FileAccessLog(
         tenant_id=principal.tenant_id, file_id=file_id, user_id=principal.user_id,
@@ -425,7 +464,7 @@ async def stream_file(
         request_id=principal.request_id, ip_address=principal.ip_address,
     )
     return StreamingResponse(
-        iter([data]),
+        stream,
         media_type=record.content_type,
         headers={
             "Content-Disposition":
