@@ -1143,7 +1143,6 @@
     "loadFailedNote": "لم يصل جواب الخادم، فلا تُعرض مصفوفة قد تكون ناقصة.",
     "notStated": "غير مذكور في المصدر",
     "edit": "حرِّر",
-    "confirmCell": "أعتمدها",
     "stateLabel": "حال الخانة",
     "scopeLabel": "من أين قرأتَها",
     "valueLabel": "ما وجدتَه",
@@ -1184,6 +1183,9 @@
     "field_analysis": "التحليل",
     "field_findings": "النتائج",
     "field_limitations": "الحدود",
-    "field_gaps": "الفجوات"
+    "field_gaps": "الفجوات",
+    "verdict_approved": "أعتمدها",
+    "verdict_rejected": "أرفضها",
+    "verdict_unknown": "لا أستطيع الحكم"
   }
 }

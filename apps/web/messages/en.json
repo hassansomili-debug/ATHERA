@@ -1143,7 +1143,6 @@
     "loadFailedNote": "The server did not answer, so no partial matrix is shown.",
     "notStated": "Not stated in the source",
     "edit": "Edit",
-    "confirmCell": "Confirm",
     "stateLabel": "Cell state",
     "scopeLabel": "Where you read it",
     "valueLabel": "What you found",
@@ -1184,6 +1183,9 @@
     "field_analysis": "Analysis",
     "field_findings": "Findings",
     "field_limitations": "Limitations",
-    "field_gaps": "Gaps"
+    "field_gaps": "Gaps",
+    "verdict_approved": "Confirm",
+    "verdict_rejected": "Reject",
+    "verdict_unknown": "Cannot judge"
   }
 }

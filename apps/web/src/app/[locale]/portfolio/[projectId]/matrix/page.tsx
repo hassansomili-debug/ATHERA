@@ -267,18 +267,25 @@ export default function LiteratureMatrixPage({
                           >
                             {t("matrix.edit")}
                           </button>
+                          {/* **الحكم فعلٌ ثانٍ مستقلّ عن الكتابة**، وثلاثةٌ
+                              لا اثنان: من راجع الخانة ولم يستطع الحكم عليها
+                              **لم يرفضها**، وخلطُ الاثنين يجعل التردّد يبدو
+                              بطلانًا (الترحيل 0016). */}
                           {cell.cell_state !== "missing" &&
-                          cell.verification_status === "unverified" ? (
-                            <button
-                              type="button"
-                              className="chip chip-muted"
-                              disabled={busy}
-                              aria-label={`${t("matrix.verification_approved")}: ${t(`matrix.field_${cell.field_key}`)} — ${describe(row)}`}
-                              onClick={() => review(row, cell, "approved")}
-                            >
-                              {t("matrix.confirmCell")}
-                            </button>
-                          ) : null}
+                          cell.verification_status === "unverified"
+                            ? (["approved", "rejected", "unknown"] as const).map((verdict) => (
+                                <button
+                                  key={verdict}
+                                  type="button"
+                                  className="chip chip-muted"
+                                  disabled={busy}
+                                  aria-label={`${t(`matrix.verification_${verdict}`)}: ${t(`matrix.field_${cell.field_key}`)} — ${describe(row)}`}
+                                  onClick={() => review(row, cell, verdict)}
+                                >
+                                  {t(`matrix.verdict_${verdict}`)}
+                                </button>
+                              ))
+                            : null}
                         </div>
                       </td>
                     ))}
