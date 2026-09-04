@@ -584,7 +584,10 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
       runBulk(bulkMove(locale, chosen, target), "library.bulkMoved");
       return;
     }
-    if (!panel) return;
+    // **واللوحات صارت أكثر من نوعين، فيُسمَّى المقصود منها لا ما عداه.**
+    // ولوحاتُ المختار لا تحمل معرّفًا بل عددًا، فشرطُ «ليست فارغة» وحده
+    // يمرّر إليها ما يطلب معرّفًا لا وجود له.
+    if (panel?.kind !== "moveFile" && panel?.kind !== "moveFolder") return;
     const { id, kind } = panel;
     setBusy(id);
     setActionError(null);
