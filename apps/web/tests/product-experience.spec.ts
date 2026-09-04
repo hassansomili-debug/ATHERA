@@ -300,6 +300,40 @@ test.describe("home: five intents, and truthful routing", () => {
     await expect(page.locator("#home-intake")).toBeVisible();
   });
 
+  test("home verifies the session with the server — it does not render for a dead one", async ({
+    page,
+  }) => {
+    /**
+     * **`AuthGate` يعرف وجود الرمز لا صلاحيته.**
+     *
+     * ولمّا نُزع مربّع المحادثة من الرئيسية نُزع معه النداءُ الوحيد الذي
+     * كان يجرّب الرمز — فصارت الرئيسية تُصيَّر كاملةً لجلسةٍ ميتة، ولا
+     * يكتشف الباحث موتها حتى ينقر. والعطب لم يظهر في شاشةٍ معطوبة بل في
+     * غياب طلب، وهو ما لا تلتقطه لقطةٌ ولا فحصُ تصيير.
+     *
+     * فيُثبَت الطلبُ نفسه: نداءٌ محميّ يحمل رمز الوصول، من الرئيسية.
+     */
+    const authorized: string[] = [];
+    await page.route("**/api/v1/**", (route: Route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/api/v1/settings/posture") {
+        authorized.push(route.request().headers()["authorization"] ?? "");
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          OBJECT_BODIES.has(url.pathname) ? OBJECT_BODIES.get(url.pathname) : [],
+        ),
+      });
+    });
+
+    await page.goto(`/${AR}`);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect.poll(() => authorized.length, { timeout: 20_000 }).toBeGreaterThan(0);
+    expect(authorized[0]).toBe("Bearer experience-access");
+  });
+
   test("a DOI is accepted, named as a DOI, and actually searched — no «coming soon»", async ({
     page,
   }) => {

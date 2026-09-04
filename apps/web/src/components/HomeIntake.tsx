@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { detectIntent, destinationFor } from "@/lib/intent";
 import { type Locale, type Messages, translator } from "@/lib/i18n";
+import { usePosture } from "@/lib/posture";
 
 /**
  * مربّع البداية في الرئيسية — **موجِّهٌ لا محادثة**.
@@ -28,6 +29,23 @@ export function HomeIntake({ locale, messages }: { locale: Locale; messages: Mes
   const [value, setValue] = useState("");
   const [going, setGoing] = useState(false);
 
+  /**
+   * **الرئيسية تسأل الخادم عن نفسها — ولها في ذلك سببان.**
+   *
+   * الأول أنّ التوجيه لا يصدق إلا بمعرفة الوجهة: من لصق فكرةً يذهب إلى
+   * «بُبريفا AI»، فإن كان مزوّد النموذج غير مضبوط وصل إلى مربّعٍ معطَّل بعد
+   * أن قيل له إنّ فكرته «تُفتح» هناك. فتُقال الحال **قبل** النقر، ويبقى
+   * الطريق مفتوحًا لمن أراد أن يقرأ السبب والفعل التالي في الصفحة نفسها.
+   *
+   * والثاني أنّ `AuthGate` يعرف **وجود** الرمز لا **صلاحيته**. فرئيسيةٌ لا
+   * تنادي شيئًا تُصيَّر كاملةً لجلسةٍ ميتة، ولا يكتشف الباحث موتها حتى
+   * ينقر. وهذا النداء هو ما يجرّب الرمز فعلًا — و`apiFetch` يتكفّل بما
+   * بعده: تجديدٌ، ثم محوٌ وإرسالٌ إلى الدخول إن فشل.
+   */
+  const { modelGateReason } = usePosture(locale);
+  // `unreachable` ليست حكمًا على المزوّد: لم نسأل أصلًا، ولا يُدّعى ما لم يُفحَص.
+  const modelOff = modelGateReason === "provider";
+
   // مشتقٌّ في التصيير لا مضبوطٌ في تأثير — فلا تصيير متتالٍ ولا حالة ثانية.
   const intent = detectIntent(value);
 
@@ -36,7 +54,10 @@ export function HomeIntake({ locale, messages }: { locale: Locale; messages: Mes
     ? {
         doi: { icon: "⌕", text: t("home.routeDoi") },
         url: { icon: "⌕", text: t("home.routeUrl") },
-        idea: { icon: "✦", text: t("home.routeIdea") },
+        idea: {
+          icon: "✦",
+          text: modelOff ? t("home.routeIdeaGated") : t("home.routeIdea"),
+        },
       }[intent.kind]
     : null;
 

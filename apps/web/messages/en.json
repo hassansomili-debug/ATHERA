@@ -666,6 +666,7 @@
     "startGoing": "Opening…",
     "routeIdle": "Write your idea, or paste a DOI or a link — we tell you where it opens before it opens.",
     "routeIdea": "An idea — opens in PUBRIVA AI.",
+    "routeIdeaGated": "An idea — opens in PUBRIVA AI; execution is not activated right now, and the page gives the reason and the next action.",
     "routeDoi": "A DOI — resolved in the reference indexes (Crossref and OpenAlex).",
     "routeUrl": "A link — searched in the reference indexes.",
     "ideaTitle": "Build a paper from an idea",
