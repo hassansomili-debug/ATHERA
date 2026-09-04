@@ -6,6 +6,12 @@ import uuid
 
 from pydantic import BaseModel, Field
 
+from ..models.screening import EXCLUSION_REASON_CODES
+
+# النمط يُشتقّ من السجل ولا يُكتب بجانبه: قائمتان تفترقان بأول إضافة، فيقبل
+# العقد رمزًا يرفضه القيد — أو يرفض رمزًا تعرضه الشاشة، وهو أسوأ.
+REASON_CODE_PATTERN = "^(" + "|".join(EXCLUSION_REASON_CODES) + ")$"
+
 
 class ProjectCreateRequest(BaseModel):
     """إنشاء بحث — **بأقلّ ما يلزم**.
@@ -79,6 +85,10 @@ class ProjectSourceView(BaseModel):
     use_state: str = Field(description="included | saved_only | excluded")
     added_at: dt.datetime
     decided_at: dt.datetime | None = None
+    # سببُ الاستبعاد يُعاد مع الصفّ: حالٌ بلا سببها تُعرض حكمًا بلا تعليل،
+    # فيقرأ الباحث «مستبعَدة» ولا يعرف لماذا — وهو ما يمنعه الترحيل 0023.
+    exclusion_reason_code: str | None = None
+    reason_ar: str | None = None
 
 
 class LinkRequest(BaseModel):
@@ -88,7 +98,21 @@ class LinkRequest(BaseModel):
 
 
 class SourceUseRequest(BaseModel):
+    """قرارُ الفرز — **مسارٌ واحد لا مساران**.
+
+    شاشةُ الفرز وقائمةُ مراجع البحث تكتبان هنا كلتاهما: حالُ الاستعمال حقٌّ
+    واحد في `project_sources`، ومسارٌ ثانٍ يكتبها كان سيصنع حقيقتين تفترقان
+    — واحدةٌ تشترط سبب الاستبعاد وأخرى لا تشترطه.
+
+    **والاستبعاد وحده يلزمه سبب.** أما «مُدرَج» و«محفوظ فقط» فلا: اشتراطُ
+    تبريرٍ لكل قرار يجعل الباحث يكتب أيّ شيء ليمضي، فيصير الحقل ضجيجًا
+    يُلغي قيمة السبب حيث يلزم فعلًا.
+    """
+
     use_state: str = Field(pattern="^(included|saved_only|excluded)$")
+    # رمزٌ من قائمةٍ مغلقة — يُعدّ ويُقارن ويُكتب منه قسم المنهجية.
+    reason_code: str | None = Field(default=None, pattern=REASON_CODE_PATTERN)
+    # النصّ الحرّ يرافق «سبب آخر» ويكون اختياريًّا مع غيره.
     reason_ar: str | None = Field(default=None, max_length=1000)
 
 

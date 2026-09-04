@@ -58,6 +58,14 @@ export interface ProjectSource {
   use_state: "included" | "saved_only" | "excluded";
   added_at: string;
   decided_at: string | null;
+  /**
+   * سببُ الاستبعاد يرافق حاله دائمًا.
+   *
+   * وحالٌ بلا سببها تُعرض حكمًا بلا تعليل: يقرأ الباحث «مستبعَدة» ولا يعرف
+   * لماذا، فيعيد قراءة الدراسة — أو يخترع لها سببًا من ذاكرته.
+   */
+  exclusion_reason_code: string | null;
+  reason_ar: string | null;
 }
 
 export interface Impact {
@@ -130,16 +138,25 @@ export const unlinkFile = (
 export const projectSources = (locale: Locale, id: string) =>
   apiFetch<ProjectSource[]>(`${base}/projects/${id}/sources`, { locale });
 
+/**
+ * قرّر حال المرجع في هذا البحث.
+ *
+ * **والاستبعاد يحمل سببه معه.** فالخادم يردّ استبعادًا بلا رمزٍ من قائمته
+ * المغلقة، و«سبب آخر» يلزمه نصّه. وإرسالُ الحال أولًا ثم السبب في طلبٍ ثانٍ
+ * كان سيترك دراسةً مستبعَدة بلا سبب لو فشل الثاني — وهي الحال نفسها التي
+ * أُنشئ الحقل ليمنعها.
+ */
 export const setSourceUse = (
   locale: Locale,
   id: string,
   sourceId: string,
   useState: ProjectSource["use_state"],
+  reason?: { reason_code?: string; reason_ar?: string },
 ) =>
   apiFetch<ProjectSource>(`${base}/projects/${id}/sources/${sourceId}`, {
     locale,
     method: "PATCH",
-    body: JSON.stringify({ use_state: useState }),
+    body: JSON.stringify({ use_state: useState, ...(reason ?? {}) }),
   });
 
 /** مصدرٌ في مكتبة الباحث — مرشَّحٌ للربط ببحث. */

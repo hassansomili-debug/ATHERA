@@ -199,3 +199,12 @@ class ProjectSource(Base, TenantScoped, Timestamped):
     decided_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     reason_ar: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # **الاستبعاد حكمٌ يلزمه سبب** (الترحيل 0023). و«استُبعد» بلا سببٍ
+    # مسجَّل لا يُراجَع بعد شهر ولا يُكتب في قسم المنهجية: يقرأ الباحث اسم
+    # الدراسة ولا يذكر لماذا تركها — فيعيد قراءتها، أو يذكر لها سببًا من
+    # ذاكرته الآن وهو أسوأ.
+    #
+    # والرمز من قائمةٍ مغلقة تُعدّ وتُقارن؛ و`reason_ar` نصُّها الحرّ، لازمٌ
+    # مع «سبب آخر» وحده. والقيد في القاعدة يرفض الاستبعاد بلا رمز، ويرفض
+    # بقاء الرمز بعد أن يزول الاستبعاد.
+    exclusion_reason_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
