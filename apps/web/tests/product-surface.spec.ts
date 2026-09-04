@@ -140,6 +140,7 @@ const PUBLIC_PATHS = ["/login", "/register", "/forgot-password"];
  */
 const GUARDED_PATHS = [
   "/portfolio",
+  "/references",
   "/theses",
   "/manuscripts",
   "/analysis",
