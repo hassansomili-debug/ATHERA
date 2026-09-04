@@ -551,8 +551,16 @@ export default function ProjectWorkspacePage({
       ) : null}
 
       {pendingRemoval ? (
-        <div className="card" role="alertdialog" aria-modal="true">
-          <strong>{pendingRemoval.impact.summary}</strong>
+        // **حوارٌ بلا اسمٍ مُعلَن.** الدور والنمطية معلَنان، والاسم غائب —
+        // فقارئ الشاشة يقول «حوار تنبيه» ولا يقول على أيّ شيء يُنبّه. وخلاصة
+        // الأثر هي الاسم الصحيح: هي ما يُقرأ أوّلًا بالعين أصلًا.
+        <div
+          className="card"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="impact-summary"
+        >
+          <strong id="impact-summary">{pendingRemoval.impact.summary}</strong>
           <ul>
             {pendingRemoval.impact.consequences.map((consequence) => (
               <li key={consequence.kind}>

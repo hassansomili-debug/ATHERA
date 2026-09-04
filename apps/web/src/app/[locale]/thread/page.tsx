@@ -139,7 +139,10 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("thread.subtitle")}</p>
 
       {projects.length > 1 ? (
+        // قائمةُ اختيارٍ بلا اسمٍ مُعلَن: قارئ الشاشة يقول «قائمة» ولا يقول
+        // قائمةَ ماذا — والصفحة كلّها تتغيّر بها.
         <select
+          aria-label={t("thread.chooseProject")}
           value={projectId ?? ""}
           onChange={(e) => setProjectId(e.target.value)}
           style={{

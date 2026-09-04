@@ -285,7 +285,8 @@
       "result": "Result",
       "discussion": "Discussion",
       "recommendation": "Recommendation"
-    }
+    },
+    "chooseProject": "Choose a research project"
   },
   "theses": {
     "title": "Thesis library",
@@ -391,7 +392,8 @@
       "converted": "Converted to a project",
       "rejected": "Rejected"
     },
-    "noTheses": "No thesis is registered yet, and the opportunity map is derived from one. Start by uploading your thesis under “My Theses”."
+    "noTheses": "No thesis is registered yet, and the opportunity map is derived from one. Start by uploading your thesis under “My Theses”.",
+    "chooseThesis": "Choose a thesis"
   },
   "manuscripts": {
     "title": "Manuscript Studio",

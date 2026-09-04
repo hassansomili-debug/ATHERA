@@ -120,7 +120,9 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
       <p className="provenance-note">{t("opportunities.analysisNote")}</p>
 
       {theses.length > 1 ? (
+        // قائمةُ اختيارٍ بلا اسمٍ مُعلَن — والخريطة كلّها تُشتقّ من اختيارها.
         <select
+          aria-label={t("opportunities.chooseThesis")}
           value={thesisId ?? ""}
           onChange={(e) => setThesisId(e.target.value)}
           style={{

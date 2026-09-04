@@ -102,7 +102,14 @@ export default function FactsPage({ params }: { params: Promise<{ locale: string
             </blockquote>
 
             <div style={{ display: "flex", gap: 8, marginBlockStart: 12, flexWrap: "wrap" }}>
+              {/* **حقلٌ لكل مقترح، وكلّها كانت بلا اسمٍ مُعلَن.** فقارئ
+                  الشاشة يجد صفًّا من حقولٍ متطابقة لا يُميَّز بينها — ولذلك
+                  يحمل الاسم اسمَ المعلومة التي يُعلَّل قرارها. */}
+              <label className="sr-only" htmlFor={`fact-reason-${fact.id}`}>
+                {`${t("facts.reasonPlaceholder")}: ${fact.statement}`}
+              </label>
               <input
+                id={`fact-reason-${fact.id}`}
                 className="reason"
                 placeholder={t("facts.reasonPlaceholder")}
                 value={reasons[fact.id] ?? ""}

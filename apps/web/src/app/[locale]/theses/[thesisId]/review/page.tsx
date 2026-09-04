@@ -302,12 +302,23 @@ export default function ReviewPage({
 
                       {editing === field.id ? (
                         <div style={{ display: "grid", gap: 8, marginBlockStart: 10 }}>
+                          {/* حقلا التحرير كانا بلا اسمٍ مُعلَن، ونائبُهما
+                              يختفي بأول حرف. والاسم يحمل اسم الحقل المُحرَّر
+                              لأن الشاشة قد تعرض حقولًا كثيرة متشابهة. */}
+                          <label className="sr-only" htmlFor={`review-value-${field.id}`}>
+                            {`${t("thesisReview.valuePlaceholder")}: ${field.label}`}
+                          </label>
                           <input
+                            id={`review-value-${field.id}`}
                             value={draft}
                             onChange={(event) => setDraft(event.target.value)}
                             placeholder={t("thesisReview.valuePlaceholder")}
                           />
+                          <label className="sr-only" htmlFor={`review-reason-${field.id}`}>
+                            {`${t("thesisReview.reasonPlaceholder")}: ${field.label}`}
+                          </label>
                           <input
+                            id={`review-reason-${field.id}`}
                             value={reason}
                             onChange={(event) => setReason(event.target.value)}
                             placeholder={t("thesisReview.reasonPlaceholder")}

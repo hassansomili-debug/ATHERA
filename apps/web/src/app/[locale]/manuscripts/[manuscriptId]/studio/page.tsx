@@ -102,7 +102,10 @@ export default function StudioPage({
   const pending = (overview?.sections ?? []).filter((s) => !s.enabled);
 
   return (
-    <main dir={locale === "ar" ? "rtl" : "ltr"}>
+    // `main` واحدٌ في الهيكل العام — وهذا كان ثانيًا داخله، وثالثٌ تحته في
+    // مساحة القسم. وقارئ الشاشة يتنقّل بالمعالم، فثلاثةُ «محتوى رئيسي» تعني
+    // ألّا معلَم أصلًا. والاتجاه يبقى معلَنًا كما كان.
+    <div dir={locale === "ar" ? "rtl" : "ltr"}>
       <header>
         <h1>{t("studio.title")}</h1>
         {overview ? (
@@ -202,6 +205,6 @@ export default function StudioPage({
       </div>
 
       {overview ? <footer>{overview.note}</footer> : null}
-    </main>
+    </div>
   );
 }

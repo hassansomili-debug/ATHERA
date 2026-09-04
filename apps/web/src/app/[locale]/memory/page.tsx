@@ -60,7 +60,10 @@ export default function MemoryPage({ params }: { params: Promise<{ locale: strin
       <h1>{t("memory.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("memory.subtitle")}</p>
 
+      {/* حقل البحث كان بلا اسمٍ مُعلَن — والنائب يختفي بأول حرف. */}
+      <label className="sr-only" htmlFor="memory-query">{t("memory.search")}</label>
       <input
+        id="memory-query"
         placeholder={t("memory.search")}
         value={query}
         onChange={(e) => setQuery(e.target.value)}

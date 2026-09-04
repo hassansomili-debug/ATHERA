@@ -190,7 +190,12 @@ export function SectionWorkspace({
   }, [base, draftText, load, locale, onChanged, t]);
 
   return (
-    <main className="page">
+    // **معلَمُ `main` كان مُعشَّشًا مرّتين.** الهيكل العام يضع المحتوى كلّه
+    // في `<main className="content">`، والاستوديو يضع مساحته في `<main>`
+    // ثانٍ، وهذا المكوّن ثالثٌ داخلهما. ومعالم `main` متعدّدة أو متداخلة
+    // تكسر تنقّل قارئ الشاشة بالمعالم: يقفز إلى «المحتوى الرئيسي» فيجد ثلاثة.
+    // فالمعلَم واحدٌ في الهيكل، وما تحته أقسام.
+    <section className="page">
       <header>
         <h1>{c("title")}</h1>
         <p>{c("subtitle")}</p>
@@ -413,6 +418,6 @@ export function SectionWorkspace({
           <p>{c("noDraft")}</p>
         )}
       </section>
-    </main>
+    </section>
   );
 }
