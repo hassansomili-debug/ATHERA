@@ -28,13 +28,19 @@ export default function TracesPage({ params }: { params: Promise<{ locale: strin
 
   const [rows, setRows] = useState<TraceSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // **القائمة تبدأ فارغة، والفراغ ليس جوابًا.** كانت «لا تشغيلات» تُعرض قبل
+  // أن يعود الطلب — أي دعوى عن حال النظام لم تُفحص بعد. والباحث يقرؤها
+  // حكمًا فينصرف، والجواب في طريقه إليه.
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     apiFetch<TraceSummary[]>("/api/v1/traces", { locale })
       .then(setRows)
       .catch((err) =>
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
-      );
+      )
+      // في دالّة رد نداء لا في جسم التأثير — `react-hooks/set-state-in-effect`.
+      .finally(() => setLoaded(true));
   }, [locale, t]);
 
   return (
@@ -42,7 +48,11 @@ export default function TracesPage({ params }: { params: Promise<{ locale: strin
       <h1>{t("traces.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("traces.subtitle")}</p>
       {error ? <p className="error">{error}</p> : null}
-      {rows.length === 0 ? <p style={{ color: "var(--muted)" }}>{t("traces.empty")}</p> : null}
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : rows.length === 0 && !error ? (
+        <p style={{ color: "var(--muted)" }}>{t("traces.empty")}</p>
+      ) : null}
 
       <div style={{ display: "grid", gap: 8 }}>
         {rows.map((row, index) => (

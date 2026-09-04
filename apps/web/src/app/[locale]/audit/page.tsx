@@ -45,6 +45,9 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
   const [objectType, setObjectType] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // «لا أحداث» في سجلٍّ لا يقبل الحذف أصلًا دعوى ثقيلة — فلا تُقال قبل أن
+  // يعود الجواب. وكانت تُقال، فيبدو السجل المحمي فارغًا لحظةَ فتح الشاشة.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -55,6 +58,8 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
       setEvents(await apiFetch<AuditEvent[]>(`/api/v1/audit/events${query}`, { locale }));
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, objectType, t]);
 
@@ -102,7 +107,9 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
         </p>
       ) : null}
 
-      {events.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : events.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("audit.empty")}</p>
       ) : null}
 

@@ -71,6 +71,10 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
   const [data, setData] = useState<MapResponse | null>(null);
   const [gates, setGates] = useState<Record<string, Gate>>({});
   const [error, setError] = useState<string | null>(null);
+  // **الفراغ كان صامتًا تمامًا.** لا رسالة تحميل، ولا رسالة «لا رسالة لك»:
+  // من لا رسالة له يبقى `thesisId` عنده `null`، فترجع `load` من أوّلها
+  // ويبقى `data` فارغًا — فيرى عنوانًا وحده ولا يعرف أينتظر أم يبدأ.
+  const [thesesLoaded, setThesesLoaded] = useState(false);
 
   useEffect(() => {
     apiFetch<Thesis[]>("/api/v1/theses", { locale })
@@ -80,7 +84,8 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
       })
       .catch((err) =>
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
-      );
+      )
+      .finally(() => setThesesLoaded(true));
   }, [locale]);
 
   const load = useCallback(async () => {
@@ -131,7 +136,13 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
       ) : null}
 
       {error ? <p className="error">{error}</p> : null}
-      {data && data.opportunities.length === 0 ? (
+      {/* ثلاثة أحوال لا تُخلط: لم يصل الجواب بعد، ثم لا رسالة أصلًا، ثم
+          رسالةٌ لا فرصة فيها. والأخيرة وحدها حكمٌ على البحث. */}
+      {!thesesLoaded || (thesisId && !data && !error) ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : theses.length === 0 && !error ? (
+        <p style={{ color: "var(--muted)" }}>{t("opportunities.noTheses")}</p>
+      ) : data && data.opportunities.length === 0 ? (
         <p style={{ color: "var(--muted)" }}>{t("opportunities.empty")}</p>
       ) : null}
 

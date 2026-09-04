@@ -72,6 +72,11 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
   const [newTitle, setNewTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // **«لا أبحاث بعد» على شاشة محفظةِ باحثٍ له أبحاث.** القائمتان تبدآن
+  // فارغتين، والرسالتان كانتا تُعرضان قبل عودة الطلبين — فيرى الباحث محفظته
+  // خالية لجزء من ثانية، وهي أكثر جملة تُقرأ حكمًا في المنتج كلّه.
+  const [loaded, setLoaded] = useState(false);
+  const [trashLoaded, setTrashLoaded] = useState(false);
 
   const say = useCallback(
     (err: unknown) =>
@@ -80,8 +85,14 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
   );
 
   const reload = useCallback(() => {
-    apiFetch<Project[]>("/api/v1/portfolio/projects", { locale }).then(setProjects).catch(say);
-    listProjects(locale, true).then(setTrashed).catch(say);
+    apiFetch<Project[]>("/api/v1/portfolio/projects", { locale })
+      .then(setProjects)
+      .catch(say)
+      .finally(() => setLoaded(true));
+    listProjects(locale, true)
+      .then(setTrashed)
+      .catch(say)
+      .finally(() => setTrashLoaded(true));
   }, [locale, say]);
 
   async function startProject(event: React.FormEvent) {
@@ -131,8 +142,12 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
         setProjects(rows);
         setPlan(referencePlan);
       })
-      .catch(say);
-    listProjects(locale, true).then(setTrashed).catch(say);
+      .catch(say)
+      .finally(() => setLoaded(true));
+    listProjects(locale, true)
+      .then(setTrashed)
+      .catch(say)
+      .finally(() => setTrashLoaded(true));
   }, [locale, say]);
 
   return (
@@ -171,7 +186,11 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
         </form>
       </article>
 
-      {projects.length === 0 ? <p style={{ color: "var(--muted)" }}>{t("portfolio.empty")}</p> : null}
+      {!loaded ? (
+        <p data-testid="projects-loading" style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : projects.length === 0 && !error ? (
+        <p style={{ color: "var(--muted)" }}>{t("portfolio.empty")}</p>
+      ) : null}
 
       <div style={{ display: "grid", gap: 8 }}>
         {projects.map((project) => (
@@ -211,7 +230,9 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
       {/* السلّة: لا يُتلف شيء، والاستعادة ترجع البحث كما كان. */}
       <h2>{t("project.trashTab")}</h2>
       <p className="metric-label" style={{ marginBlockStart: 0 }}>{t("project.trashNote")}</p>
-      {trashed.length === 0 ? (
+      {!trashLoaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : trashed.length === 0 ? (
         <p style={{ color: "var(--muted)" }}>{t("project.emptyTrash")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>

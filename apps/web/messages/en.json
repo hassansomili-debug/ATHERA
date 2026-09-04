@@ -140,7 +140,8 @@
     "guards": "Applied guardrails",
     "gate": "Approval gate",
     "noGate": "No gate",
-    "toolsNote": "No tool in the platform mutates raw data, decides an approval, or writes verified memory."
+    "toolsNote": "No tool in the platform mutates raw data, decides an approval, or writes verified memory.",
+    "empty": "No agents are registered in this deployment."
   },
   "traces": {
     "title": "Execution trace",
@@ -540,7 +541,8 @@
     "superseded": "Superseded",
     "current": "Current",
     "supersedesEarlier": "Supersedes an earlier decision.",
-    "decisionHistoryNote": "Superseded decisions stay visible: hiding them makes the log look as if the current view were the only one ever held."
+    "decisionHistoryNote": "Superseded decisions stay visible: hiding them makes the log look as if the current view were the only one ever held.",
+    "noProject": "No research project yet. Team and decisions belong to a specific project — start one under “My Research” first."
   },
   "briefs": {
     "title": "Intelligence brief",

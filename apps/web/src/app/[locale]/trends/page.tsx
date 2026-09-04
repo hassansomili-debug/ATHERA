@@ -71,6 +71,9 @@ export default function TrendsPage({ params }: { params: Promise<{ locale: strin
   const [pipelines, setPipelines] = useState<Record<string, Pipeline>>({});
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // «لا اتجاهات» و«لا بطاقات» كانتا تُعرضان قبل عودة الطلبين — وشاشةُ رصدٍ
+  // تقول «لم أجد شيئًا» وهي لم تسأل بعد تُفهَم حكمًا على الرصد نفسه.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -82,6 +85,8 @@ export default function TrendsPage({ params }: { params: Promise<{ locale: strin
       setTrends(trendRows);
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, t]);
 
@@ -140,7 +145,9 @@ export default function TrendsPage({ params }: { params: Promise<{ locale: strin
       {error ? <p className="error">{error}</p> : null}
 
       <h2>{t("trends.validatedTrends")}</h2>
-      {trends.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : trends.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("trends.emptyTrends")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>
@@ -175,7 +182,9 @@ export default function TrendsPage({ params }: { params: Promise<{ locale: strin
 
       <h2>{t("trends.cards")}</h2>
       <p className="provenance-note">{t("trends.twoScoresNote")}</p>
-      {cards.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : cards.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("trends.emptyCards")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>

@@ -65,24 +65,30 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
   const [credit, setCredit] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // **رايتان لا واحدة، لأنهما سؤالان مختلفان**: هل وصلت قائمة أبحاثه؟ وهل
+  // وصل فريق البحث المختار؟ ودمجهما كان يُنتج أسوأ الحالين: باحثٌ لا بحث
+  // له يقرأ «لا مؤلفين مسجّلين» و«لا قرارات» — وهما دعويان عن بحثٍ غير
+  // موجود أصلًا، والصواب أن يُقال له: ابدأ ببحث.
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
+  // سلسلةُ وعدٍ لا `await` في تأثير — `react-hooks/set-state-in-effect`.
   useEffect(() => {
-    async function boot() {
-      try {
-        const [list, creditRoles, memberRoles] = await Promise.all([
-          apiFetch<Project[]>("/api/v1/portfolio/projects", { locale }),
-          apiFetch<Vocabulary[]>("/api/v1/vocab/credit-roles", { locale }),
-          apiFetch<Vocabulary[]>("/api/v1/vocab/member-roles", { locale }),
-        ]);
+    Promise.all([
+      apiFetch<Project[]>("/api/v1/portfolio/projects", { locale }),
+      apiFetch<Vocabulary[]>("/api/v1/vocab/credit-roles", { locale }),
+      apiFetch<Vocabulary[]>("/api/v1/vocab/member-roles", { locale }),
+    ])
+      .then(([list, creditRoles, memberRoles]) => {
         setProjects(list);
         setCreditVocab(creditRoles);
         setRoleVocab(memberRoles);
-        if (list.length > 0) setProjectId(list[0].id);
-      } catch (err) {
-        setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
-      }
-    }
-    void boot();
+        if (list.length > 0) setProjectId(list[0]!.id);
+      })
+      .catch((err) =>
+        setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
+      )
+      .finally(() => setProjectsLoaded(true));
   }, [locale, t]);
 
   const load = useCallback(async () => {
@@ -96,6 +102,8 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
       setDecisions(log);
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, projectId, t]);
 
@@ -157,8 +165,16 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
         </select>
       </label>
 
+      {/* لا بحث ⇒ لا فريق ولا قرارات: تُقال العلّة مرّة، ولا تُقال مرّتين
+          بصيغةٍ توهم أن البحث قائمٌ وفريقه خالٍ. */}
+      {projectsLoaded && projects.length === 0 ? (
+        <p style={{ color: "var(--muted)" }}>{t("team.noProject")}</p>
+      ) : null}
+
       <h2>{t("team.members")}</h2>
-      {members.length === 0 && !error ? (
+      {!projectsLoaded || (projectId && !loaded) ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : projectId && members.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("team.emptyMembers")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>
@@ -237,7 +253,9 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
       </article>
 
       <h2>{t("team.decisions")}</h2>
-      {decisions.length === 0 && !error ? (
+      {!projectsLoaded || (projectId && !loaded) ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : projectId && decisions.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("team.emptyDecisions")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>

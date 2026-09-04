@@ -117,6 +117,12 @@ export default function ProjectWorkspacePage({
   // فيذهب يبحث عن ملفاته في مكانٍ آخر وهي في طريقها إليه.
   const [filesLoad, setFilesLoad] = useState<"loading" | "ready" | "failed">("loading");
   const [libraryLoad, setLibraryLoad] = useState<"loading" | "ready" | "failed">("loading");
+  // **والمراجع المرتبطة سقطت من ذلك الإصلاح.** الملفات ومرشّحو الإضافة
+  // ومرشّحو المراجع صار لكلٍّ منها حالُ تحميلها، وبقيت `sources` وحدها
+  // تُقرأ في `reload` بلا رايةٍ — فتقول الشاشة «لا مراجع مرتبطة» قبل أن
+  // يعود الجواب، وهو العطب نفسه في الموضع الرابع.
+  const [linkedSourcesLoad, setLinkedSourcesLoad] =
+    useState<"loading" | "ready" | "failed">("loading");
 
   const say = useCallback(
     (err: unknown) =>
@@ -137,7 +143,15 @@ export default function ProjectWorkspacePage({
         setFilesLoad("failed");
         say(err);
       });
-    projectSources(locale, projectId).then(setSources).catch(say);
+    projectSources(locale, projectId)
+      .then((rows) => {
+        setSources(rows);
+        setLinkedSourcesLoad("ready");
+      })
+      .catch((err) => {
+        setLinkedSourcesLoad("failed");
+        say(err);
+      });
   }, [locale, projectId, say]);
 
   useEffect(reload, [reload]);
@@ -433,7 +447,11 @@ export default function ProjectWorkspacePage({
       {section === "literature" ? (
         <>
           <p className="metric-label">{t("project.useHint")}</p>
-          {sources.length === 0 ? (
+          {linkedSourcesLoad === "loading" ? (
+            <p data-testid="sources-loading" style={{ color: "var(--muted)" }}>
+              {t("app.loading")}
+            </p>
+          ) : sources.length === 0 ? (
             <p data-testid="sources-empty" style={{ color: "var(--muted)" }}>
               {t("project.noSources")}
             </p>

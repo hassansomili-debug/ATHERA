@@ -116,6 +116,12 @@ export function SectionWorkspace({
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draftText, setDraftText] = useState("");
+  // **ثلاث دعاوى كانت تُقال قبل أن يعود الجواب**: «لا أدلة»، و«لا مخرجات
+  // تحليل مؤهَّلة»، و«لا مسودة بعد». وكلّها تصف حال القسم، و`context`
+  // و`section` يبدآن `null` — فتُقال الثلاث في اللحظة التي لا يُعرف فيها
+  // شيء. والثانية أسوأها: باحثٌ جمّد بياناته وأجرى تحليله يقرأ أن مخرجاته
+  // غير مؤهَّلة، فيعود يبحث عن عطبٍ ليس هناك.
+  const [loaded, setLoaded] = useState(false);
 
   const base = `/api/v1/manuscripts/${manuscriptId}/sections/${sectionKey}`;
 
@@ -130,6 +136,8 @@ export function SectionWorkspace({
       }
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [base, locale, t]);
 
@@ -189,6 +197,7 @@ export function SectionWorkspace({
       </header>
 
       {error ? <p role="alert">{error}</p> : null}
+      {!loaded ? <p data-testid="section-loading">{t("app.loading")}</p> : null}
 
       {/* ١ — الأدلة المتاحة */}
       <section>
@@ -223,7 +232,9 @@ export function SectionWorkspace({
         <section>
           <p>{t("results.strictNote")}</p>
           <h2>{t("results.outputs")}</h2>
-          {(context?.analysis_outputs ?? []).length === 0 ? (
+          {!loaded ? (
+            <p>{t("app.loading")}</p>
+          ) : (context?.analysis_outputs ?? []).length === 0 ? (
             <p>{t("results.noOutputs")}</p>
           ) : (
             <ul>
@@ -396,6 +407,8 @@ export function SectionWorkspace({
               {c("requestRevision")}
             </button>
           </>
+        ) : !loaded ? (
+          <p>{t("app.loading")}</p>
         ) : (
           <p>{c("noDraft")}</p>
         )}

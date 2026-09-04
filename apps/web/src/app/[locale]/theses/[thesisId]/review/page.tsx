@@ -78,12 +78,18 @@ export default function ReviewPage({
   // وتبقى عليها. فتُعاد القراءة مرّاتٍ **معدودة**، ثم تتوقّف: رسالةُ «لا
   // مقترحات» بعد ذلك صادقة، وليست انتظارًا بلا نهاية.
   const [awaiting, setAwaiting] = useState(0);
+  // **الشاشة كانت صامتة تمامًا ريثما تصل المراجعة.** `review === null` تعني
+  // «لا شيء يُعرض» — ولا تُفرَّق عن مراجعةٍ وصلت وهي خالية. والباحث جاء
+  // ليراجع، فالصمت أوّل ما يقرؤه ولا يعرف أينتظر أم لا شيء هناك.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setReview(await apiFetch<Review>(`/api/v1/theses/${thesisId}/review`, { locale }));
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, t, thesisId]);
 
@@ -143,6 +149,9 @@ export default function ReviewPage({
       </Link>
 
       {error ? <p className="error">{error}</p> : null}
+      {!loaded ? (
+        <p data-testid="review-loading" style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : null}
 
       {/* **الإذن قبل المراجعة.** المكتبة تقول للباحث إن المتابعة تنتظر
           موافقته، وتحيله إلى هنا؛ فيجب أن يجد الباب حيث أُرسل — لا قائمةً

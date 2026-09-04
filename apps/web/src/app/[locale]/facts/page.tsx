@@ -31,12 +31,17 @@ export default function FactsPage({ params }: { params: Promise<{ locale: string
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
+  // **«لا مقترحات بانتظار مراجعتك» كانت تُعرض قبل عودة الطلب.** وهي دعوى
+  // عن حال بوابة G0 لم تُفحص بعد: الباحث يقرؤها فينصرف عن مراجعةٍ تنتظره.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setFacts(await apiFetch<FactCandidate[]>("/api/v1/profile/facts", { locale }));
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, t]);
 
@@ -66,7 +71,11 @@ export default function FactsPage({ params }: { params: Promise<{ locale: string
       <p className="provenance-note">{t("facts.groundingNote")}</p>
 
       {error ? <p className="error">{error}</p> : null}
-      {facts.length === 0 ? <p style={{ color: "var(--muted)" }}>{t("facts.empty")}</p> : null}
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : facts.length === 0 && !error ? (
+        <p style={{ color: "var(--muted)" }}>{t("facts.empty")}</p>
+      ) : null}
 
       <div style={{ display: "grid", gap: "var(--space)" }}>
         {facts.map((fact) => (

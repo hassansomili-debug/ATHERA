@@ -76,6 +76,10 @@ export default function SettingsPage({ params }: { params: Promise<{ locale: str
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // «لا إشعارات» كانت تُعرض قبل عودة الطلب، ووضعُ التشغيل يبقى بلا أثرٍ
+  // على الشاشة إطلاقًا ريثما يصل — فراغٌ صامت لا يُفرَّق فيه بين انتظارٍ
+  // وخلوّ.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -87,6 +91,8 @@ export default function SettingsPage({ params }: { params: Promise<{ locale: str
       setNotifications(notes);
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, t]);
 
@@ -110,6 +116,7 @@ export default function SettingsPage({ params }: { params: Promise<{ locale: str
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("settings.subtitle")}</p>
       <p className="provenance-note">{t("settings.readOnlyNote")}</p>
       {error ? <p className="error">{error}</p> : null}
+      {!loaded ? <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p> : null}
 
       {posture ? (
         <>
@@ -140,7 +147,9 @@ export default function SettingsPage({ params }: { params: Promise<{ locale: str
       <ChangePassword locale={locale} messages={getMessages(locale)} />
 
       <h2>{t("settings.notifications")}</h2>
-      {notifications.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : notifications.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("settings.emptyNotifications")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>

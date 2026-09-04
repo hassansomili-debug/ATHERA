@@ -47,13 +47,18 @@ export default function ClaimsPage({ params }: { params: Promise<{ locale: strin
 
   const [claims, setClaims] = useState<ClaimRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // «لا ادعاءات مسجّلة» كانت تُعرض قبل عودة الطلب — وسجلٌّ يُقال عنه فارغٌ
+  // وهو لم يُقرأ بعدُ دعوى لم تُفحص، لا حالٌ للسجل.
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     apiFetch<ClaimRow[]>("/api/v1/claims", { locale })
       .then(setClaims)
       .catch((err) =>
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
-      );
+      )
+      // في دالّة رد نداء لا في جسم التأثير — `react-hooks/set-state-in-effect`.
+      .finally(() => setLoaded(true));
   }, [locale, t]);
 
   return (
@@ -62,7 +67,9 @@ export default function ClaimsPage({ params }: { params: Promise<{ locale: strin
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("claims.subtitle")}</p>
       <p className="provenance-note">{t("claims.gapNote")}</p>
       {error ? <p className="error">{error}</p> : null}
-      {claims.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : claims.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("claims.empty")}</p>
       ) : null}
 

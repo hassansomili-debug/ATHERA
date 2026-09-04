@@ -60,6 +60,10 @@ export default function AnalysisPage({ params }: { params: Promise<{ locale: str
   const [plans, setPlans] = useState<AnalysisPlan[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // **«لا بيانات مرفوعة» بعد رفعٍ للتوّ رسالةٌ تُفزع.** والقائمتان تبدآن
+  // فارغتين، فكانت الجملتان تُعرضان قبل عودة الطلب — والباحث الذي رفع
+  // بياناته قبل دقيقة يقرأ أنها ليست هناك.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -71,6 +75,8 @@ export default function AnalysisPage({ params }: { params: Promise<{ locale: str
       setPlans(pl);
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+    } finally {
+      setLoaded(true);
     }
   }, [locale, t]);
 
@@ -100,7 +106,9 @@ export default function AnalysisPage({ params }: { params: Promise<{ locale: str
       {error ? <p className="error">{error}</p> : null}
 
       <h2>{t("analysis.datasets")}</h2>
-      {datasets.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : datasets.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("analysis.emptyDatasets")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>
@@ -144,7 +152,9 @@ export default function AnalysisPage({ params }: { params: Promise<{ locale: str
       </div>
 
       <h2>{t("analysis.plans")}</h2>
-      {plans.length === 0 && !error ? (
+      {!loaded ? (
+        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
+      ) : plans.length === 0 && !error ? (
         <p style={{ color: "var(--muted)" }}>{t("analysis.emptyPlans")}</p>
       ) : null}
       <div style={{ display: "grid", gap: 8 }}>
