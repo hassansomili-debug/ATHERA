@@ -367,6 +367,15 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   });
 
   // ── ١٧–٢٠: بُبريفا AI تجيب بلا ترميز عقد ──
+  // **الاسمُ صار يسمّي هدفه — فالمُحدِّد يتبعه.**
+  //
+  // مكتبتي V2 أعطت كل زرٍّ اسمًا يحمل الملف الذي يقع عليه: «معالجة
+  // المستند: اسم الملف». وذلك هو الصواب — في الشاشة أزرارٌ كثيرة متطابقة
+  // النصّ، واحدٌ لكل ملف، ولا يميّزها قارئُ الشاشة إلا بهدفها.
+  //
+  // والمطابقة التامّة التي فرضناها بعد حادثة «اعتمد» صحيحةٌ أيضًا. فلمّا
+  // اجتمعتا سقط المُحدِّد: الاسم لم يعد «معالجة المستند» وحده. فتُطلب
+  // البادئة صراحةً — لا تُفكّ المطابقة التامّة عن بقيّة المُحدِّدات.
   // ── ١٤–١٦: مستندٌ يُرفع ثم يُعالَج ثم تُراجَع معرفته ──
   await test.step("upload a parseable synthetic document", async () => {
     await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
@@ -403,7 +412,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   await test.step("start document processing, reaching a decision state", async () => {
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
     // **زرٌّ حقيقي، لا استدعاء.** وغيابه فشلٌ لا تخطٍّ.
-    const process = card.getByRole("button", { name: "معالجة المستند", exact: true });
+    const process = card.getByRole("button", { name: /^معالجة المستند:/ });
     await expect(process, "no processing control for a parseable document").toBeVisible();
     await process.click();
 
@@ -456,7 +465,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await expect(card.getByText("بانتظار موافقتك للمتابعة")).toBeVisible();
 
     // **الرابط يقصد رسالته هو** — لا قائمةً يبحث فيها عن بطاقةٍ تشبه غيرها.
-    await card.getByRole("link", { name: "افتح المراجعة", exact: true }).click();
+    await card.getByRole("link", { name: /^افتح المراجعة:/ }).click();
     await page.waitForURL(/\/theses\/[^/]+\/review/, { timeout: 30_000 });
 
     // والباب موجودٌ حيث أُرسل: غيابه هنا عطبُ منتج لا تخطٍّ في الفحص.
@@ -484,7 +493,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // أول رابطٍ نصُّه «راجع» — فحسابٌ راكم رسائل من تشغيلاتٍ سابقة يفتح
     // رسالةً أخرى، ويُعتمد فيها مرشّحٌ ليس من هذا المستند.
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
-    await card.getByRole("link", { name: "افتح المراجعة", exact: true }).click();
+    await card.getByRole("link", { name: /^افتح المراجعة:/ }).click();
     await page.waitForURL(/\/theses\/[^/]+\/review/, { timeout: 30_000 });
 
     // **والصفحة تُنتظر حيّةً لا مرسومة.**
@@ -558,7 +567,7 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
     await page.waitForURL(/\/library/);
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
-    await card.getByRole("link", { name: "اسأل بُبريفا AI عن هذا المستند", exact: true }).click();
+    await card.getByRole("link", { name: /^اسأل بُبريفا AI عن هذا المستند:/ }).click();
     await page.waitForURL(/\/ai\?/, { timeout: 30_000 });
 
     // والمرفق يُعلَن باسمه قبل السؤال — لا يُسأل عن مستندٍ لا يراه.
