@@ -417,8 +417,28 @@ h2.nav-label { line-height: 1.6; }
 }
 
 /* ══════ النماذج ══════ */
-.form { display: grid; gap: 13px; max-inline-size: 420px; }
-.form label { display: grid; gap: 5px; font-size: 13.5px; color: var(--fg-soft); }
+/*
+ * **عمودٌ لا يتجاوز حاويَه.**
+ *
+ * كان النموذج شبكةً بلا أعمدةٍ مُعلَنة، فتُنشئ CSS عمودًا ضمنيًّا مقاسُه
+ * `auto` — وحدُّه الأعلى `max-content`. **والمسارُ في الشبكة يجوز أن يتجاوز
+ * حاويَه**، بخلاف الصندوق العادي. فلمّا دخل حقلٌ ومعه زرُّ كشفٍ في صفٍّ
+ * واحد بلغ `max-content` أربعمئة واثني عشر بكسلًا في حاوٍ عرضُه ثلاثمئة
+ * واثنا عشر — فامتدّ العمود، **وامتدّ معه كلُّ عنصرٍ في النموذج**: حقلُ
+ * البريد وزرُّ الدخول وما بينهما، لا الصفُّ الجاني وحده. وذاك ما أرباك
+ * التشخيص: الشاشةُ كلُّها تُزاح، فيبدو العطبُ في كلّ شيء.
+ *
+ * و`minmax(0, 1fr)` يجعل أدنى المسار صفرًا وأعلاه ما يتّسع له الحاوي —
+ * فلا يتجاوزه مهما بلغ `max-content` لما فيه.
+ */
+.form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 13px;
+  max-inline-size: 420px;
+}
+.form label { display: grid; grid-template-columns: minmax(0, 1fr);
+              gap: 5px; font-size: 13.5px; color: var(--fg-soft); }
 .form input,
 .form select,
 .form textarea {
