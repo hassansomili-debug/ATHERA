@@ -120,9 +120,13 @@ const MANUAL_TITLE_AR = `رسالةٌ مسجّلة يدويًّا ${STAMP}`;
 // حالةٌ مشتركة عبر الرحلة
 // ══════════════════════════════════════════════════════════════════════
 //
-// الرحلة متسلسلة عمدًا: كلُّ دعوى تبني على ما قبلها، كما يفعل الباحث.
-// و**الإعادةُ مُطفأة**: إعادةُ رحلةٍ نصفُها وقع تُنتج فشلًا لا يصف شيئًا.
-test.describe.configure({ mode: "serial", retries: 0 });
+// **الإعادةُ مُطفأة**: إعادةُ رحلةٍ نصفُها وقع تُنتج فشلًا لا يصف شيئًا.
+//
+// و**التسلسلُ داخل المجموعات لا فوقها**. كلُّ مجموعةٍ متسلسلةٌ في ذاتها،
+// فسقوطُ أولى دعاويها لا يُغرق ما بعدها بأخطاءٍ مشتقّة. أمّا بين المجموعات
+// فلا تسلسل: عطبٌ في الرفع لا يجوز أن يُسكت الاتجاهَ ولا العزلَ ولا الجلسة
+// — فيصير التقريرُ «واحدةٌ سقطت وثمانٍ مجهولة»، وذلك أسوأ من فشلٍ صريح.
+test.describe.configure({ retries: 0 });
 
 interface Session { access: string; refresh: string; expiry: string }
 
@@ -140,6 +144,19 @@ const theses: Record<string, string> = {};
 const serverErrors: string[] = [];
 const pageErrors: string[] = [];
 
+/**
+ * **وطلبٌ يُرفض على مستوى الشبكة لا يظهر ردًّا البتّة** — فيُلتقط وحده.
+ *
+ * وهذه ليست زيادةً احتياطية، بل الثقب الذي مرّ منه العَرَض المُبلَّغ عنه:
+ * استثناءٌ غيرُ ملتقَط في نقطةٍ يردّ عليه Starlette بخمسمئة **من خارج
+ * `CORSMiddleware`**، فتخرج الاستجابة بلا `Access-Control-Allow-Origin`،
+ * فيحجبها المتصفّح. ولا يرى JS رمزًا ولا يرى `page.on("response")` ردًّا:
+ * يُرفض `fetch` نفسه، فتقول الشاشة «Could not load the data.» — وهي
+ * الجملةُ بعينها. فمراقبةُ الـ٥٠٠ وحدها كانت ستُخضِرّ هذه الدعوى على
+ * خمسمئةٍ وقعت فعلًا.
+ */
+const requestFailures: string[] = [];
+
 function watch(page: Page): void {
   page.on("pageerror", (error) => pageErrors.push(String(error)));
   page.on("response", (response) => {
@@ -148,6 +165,12 @@ function watch(page: Page): void {
     if (response.status() >= 500) {
       serverErrors.push(`${response.status()} ${response.request().method()} ${response.url()}`);
     }
+  });
+  page.on("requestfailed", (request) => {
+    const origin = new URL(request.url()).origin;
+    if (origin !== APP_ORIGIN && origin !== API_ORIGIN) return;
+    requestFailures.push(
+      `${request.method()} ${request.url()} — ${request.failure()?.errorText ?? "?"}`);
   });
 }
 
@@ -271,6 +294,9 @@ async function waitForTerminalState(page: Page, needle: string): Promise<string>
 // ══════════════════════════════════════════════════════════════════════
 // ١ — حسابٌ اصطناعي يُسجَّل، ثمّ يُدخَل به
 // ══════════════════════════════════════════════════════════════════════
+test.describe("المكدّس يقوم والجلسةُ تعمل | the stack answers", () => {
+test.describe.configure({ mode: "serial" });
+
 test("١ · حسابٌ اصطناعي يُنشأ بالنموذج ثمّ يُدخَل به | register, then sign in", async ({
   page,
 }) => {
@@ -340,12 +366,88 @@ test("٢·٣ · /en/theses تُحمَّل والجلسةُ متّسقة | loads,
   await expect(page.getByText(SIGN_IN_EN, { exact: true })).toHaveCount(0);
 });
 
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ٧أ — رسالةٌ بلا ملفّ: «لم يبدأ» ليست فشلًا، ولا صفرًا صامتًا
+// ══════════════════════════════════════════════════════════════════════
+//
+// **ومجموعتُها مستقلّة عن الرفع عمدًا.** هي نصفُ الدعوى السابعة — طرفُ
+// «الفراغ» الذي يُقابَل به طرفُ «الفشل» — ولا تحتاج ملفًّا ولا تخزينًا.
+// فلو عُلّقت بسلسلة الرفع لسقطت معها، ولَما عُرف أصلًا أهذا الطرفُ سليم.
+test.describe("رسالةٌ بلا ملفّ | a thesis with no file", () => {
+test.describe.configure({ mode: "serial" });
+
+test("٧أ · التسجيلُ اليدوي يقول «لم يبدأ» لا «٠» | manual registration says why, not zero",
+  async ({ page }) => {
+    await useSession(page, "a");
+    await page.goto(`/${EN}/theses`);
+    await expect(page.getByRole("heading", { name: THESES_TITLE_EN })).toBeVisible();
+
+    const registered = page.waitForResponse(
+      (r) => r.url() === `${API_ORIGIN}/api/v1/theses` && r.request().method() === "POST",
+      { timeout: 60_000 },
+    );
+    await page.getByLabel("Thesis title in Arabic").fill(MANUAL_TITLE_AR);
+    await page.getByRole("button", { name: "Register the thesis" }).click();
+    expect((await registered).status(), "POST /api/v1/theses").toBe(201);
+
+    await page.reload();
+    const card = cardWith(page, MANUAL_TITLE_AR);
+    await expect(card).toHaveCount(1);
+
+    const body = (await card.innerText()).trim();
+    // **«لم يبدأ التحليل» لا «٠ أقسام».** ستُّ حالاتٍ تُنتج الصفر ومعناها
+    // مختلف؛ فالسببُ يُقال، والرقمُ لا يُعرض إلّا حين يكون العدُّ قد وقع.
+    expect(body).toContain("Analysis has not started");
+    expect(body).toContain("Opportunity mining has not started");
+    expect(body, `بطاقةٌ تعرض «٠ أقسام» بلا سبب:\n${body}`)
+      .not.toMatch(/Sections extracted:\s*0(\D|$)/);
+    expect(body, `بطاقةٌ تعرض «٠ فرص» بلا سبب:\n${body}`)
+      .not.toMatch(/Opportunities found:\s*0(\D|$)/);
+
+    // ولا زرَّ إعادةٍ يَعِد بما لا ملفَّ له — **ومعه سببُه مكتوبًا**.
+    await expect(card.getByRole("button", { name: "Try again" })).toHaveCount(0);
+    expect(body).toContain("No file is attached to this thesis.");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// **الرحلةُ مجموعاتٌ لا سلسلةٌ واحدة.**
+//
+// كانت الرقعةُ كلُّها `describe` واحدًا متسلسلًا، فسقوطُ الرفع كان
+// يُسكت الدعاوى التي لا علاقةَ لها به — الاتجاهُ والجلسةُ والعزل —
+// فيصير التقريرُ «واحدةٌ سقطت وثمانٍ لم تُقَل». وذلك أسوأ من فشلٍ
+// صريح: عطبٌ واحد يُخفي حالَ المنتج كلَّه.
+//
+// فما يعتمد على الرفع في مجموعته، وما لا يعتمد عليه في مجموعته —
+// **ولا تُضعَّف دعوى واحدة**: كلُّها باقيةٌ بحرفها.
+// ══════════════════════════════════════════════════════════════════════
+test.describe("رفعُ رسالةٍ وقراءتُها | the upload chain", () => {
+test.describe.configure({ mode: "serial" });
+
 // ══════════════════════════════════════════════════════════════════════
 // ٤ + ٥ — الرفع ينجح، والبطاقةُ تحمل اسمَ الملفّ
 // ══════════════════════════════════════════════════════════════════════
 test("٤·٥ · الرفع ينجح والبطاقةُ تحمل اسمَ الملفّ | upload succeeds, filename fallback", async ({
-  page,
+  page, request,
 }) => {
+  // **الرمزُ يُسأل عنه مباشرةً أوّلًا — ثمّ يُقاد المتصفّح.**
+  //
+  // ولهذا الترتيبِ سبب: خمسمئةٌ تخرج من خارج `CORSMiddleware` تصل المتصفّحَ
+  // بلا ترويسة أصلٍ، فيحجبها ولا يرى JS رمزًا ولا ترى الرقعةُ ردًّا — فيقول
+  // الفحصُ «انتهت المهلة» عن عطبٍ رمزُه معروف. والسؤالُ من خارج المتصفّح
+  // يقرأ الرمز كما هو، فيصير سطرُ الفشل يقول العطبَ لا يصف انتظارًا.
+  const direct = await request.post(`${API_ORIGIN}/api/v1/theses/upload`, {
+    headers: { Authorization: `Bearer ${sessions.a?.access}`, "Accept-Language": EN },
+    multipart: {
+      upload: {
+        name: TEXT_PDF_NAME, mimeType: "application/pdf", buffer: pdfWithText(),
+      },
+    },
+  });
+  expect(direct.status(), "POST /api/v1/theses/upload (بلا متصفّح)").toBe(202);
+
   await useSession(page, "a");
   await page.goto(`/${EN}/theses`);
   await expect(page.getByRole("heading", { name: THESES_TITLE_EN })).toBeVisible();
@@ -373,16 +475,6 @@ test("٤·٥ · الرفع ينجح والبطاقةُ تحمل اسمَ الم�
     name: SCANNED_PDF_NAME, mimeType: "application/pdf", buffer: pdfWithoutText(),
   });
   expect((await scanned).status(), "POST /api/v1/theses/upload (scanned)").toBe(202);
-
-  // ورسالةٌ ثالثة تُسجَّل **بلا ملفّ** من النموذج اليدوي: نظيرُ «الفراغ»
-  // في الدعوى ٧، وهو ما لا يُنتجه رفعٌ أبدًا.
-  const registered = page.waitForResponse(
-    (r) => r.url() === `${API_ORIGIN}/api/v1/theses` && r.request().method() === "POST",
-    { timeout: 60_000 },
-  );
-  await page.getByLabel("Thesis title in Arabic").fill(MANUAL_TITLE_AR);
-  await page.getByRole("button", { name: "Register the thesis" }).click();
-  expect((await registered).status(), "POST /api/v1/theses").toBe(201);
 
   // **الدعوى ٥** — لا عنوانَ مستخرَجًا، فالهويّة اسمُ الملفّ، **ويُقال
   // إنّه اسمُ ملفّ**. وهذان شرطان لا واحد: اسمٌ بلا إقرارٍ بمصدره ادّعاءُ
@@ -525,9 +617,13 @@ test("٨ · إعادةُ المحاولة تُعرض وتُردّ ٤٠٩ | retry
     expect((await refusedTwin.json())?.error?.code).toBe("thesis.processing_in_flight");
   });
 
+});
+
 // ══════════════════════════════════════════════════════════════════════
 // ٩ + ١٠ — العربيةُ من اليمين، وحالُ الجلسة واحدةٌ باللغتين
 // ══════════════════════════════════════════════════════════════════════
+test.describe("اللغتان | both locales", () => {
+test.describe.configure({ mode: "serial" });
 test("٩·١٠ · /ar/theses من اليمين، والجلسةُ واحدةٌ باللغتين | RTL, and one session state",
   async ({ page }) => {
     await useSession(page, "a");
@@ -560,10 +656,14 @@ test("٩·١٠ · /ar/theses من اليمين، والجلسةُ واحدةٌ �
     await expect(page.getByText(LOAD_FAILED_EN, { exact: true })).toHaveCount(0);
   });
 
+});
+
 // ══════════════════════════════════════════════════════════════════════
 // ١٢ — لا تسرّب: بين مستأجرين، ولا بين رسالتين في مستأجرٍ واحد
 // ══════════════════════════════════════════════════════════════════════
-test("١٢ · لا تسرّبَ بين حسابين ولا بين رسالتين | no cross-tenant, no cross-record leakage",
+test.describe("العزل | isolation", () => {
+test.describe.configure({ mode: "serial" });
+test("١٢أ · الجارُ لا يرى شيئًا من رسائل جاره | the neighbour sees nothing",
   async ({ page, request }) => {
     // ــ الجارُ لا يرى شيئًا: لا في الشاشة ولا في الـAPI ــ
     await useSession(page, "b");
@@ -582,19 +682,28 @@ test("١٢ · لا تسرّبَ بين حسابين ولا بين رسالتين
 
     // **والقراءةُ بالمعرّف تُردّ.** قائمةٌ فارغة تُثبت أنّ الترشيح واقع؛
     // ولا تُثبت أنّ الوصولَ بالمعرّف ممنوع — وهما بابان.
+    //
+    // والمعرّفُ يُقرأ من قائمة صاحبه الآن، لا من حالةٍ ملأتها دعوى أخرى:
+    // فحصُ العزل لا يجوز أن يتوقّف على نجاح الرفع.
+    const own = await listTheses(request, "a");
+    expect(own.length, "الحسابُ الأوّل بلا رسالةٍ واحدة").toBeGreaterThanOrEqual(1);
+    const target = own[0].id as string;
     const stolen = await request.get(
-      `${API_ORIGIN}/api/v1/theses/${theses[TEXT_PDF_NAME]}/extraction`,
+      `${API_ORIGIN}/api/v1/theses/${target}/extraction`,
       { headers: { Authorization: `Bearer ${sessions.b?.access}`, "Accept-Language": EN } },
     );
     expect([403, 404], `الجارُ بلغ رسالةَ غيره بـ${stolen.status()}`)
       .toContain(stolen.status());
+  });
 
-    // ــ ولا تسرّبَ بين رسالتين في المستأجر الواحد ــ
-    //
-    // **وRLS لا تحمي هنا**: الرسالتان لمستأجرٍ واحد. فالشرط في `WHERE`
-    // هو الحارس، والفحصُ أن عدَّ كلِّ بطاقةٍ يخصّها هي.
+// ــ ولا تسرّبَ بين رسالتين في المستأجر الواحد ــ
+//
+// **وRLS لا تحمي هنا**: الرسالتان لمستأجرٍ واحد. فالشرط في `WHERE` هو
+// الحارس وحده — وهو عطبٌ وقع في هذا المنتج من قبل. والفحصُ أن عدَّ كلِّ
+// بطاقةٍ يخصّها هي، لا جارتها.
+test("١٢ب · لا تعدّ رسالةٌ ما لجارتها | one thesis never counts its neighbour rows",
+  async ({ request }) => {
     const own = await listTheses(request, "a");
-    expect(own.length, "رسائلُ الحساب الأوّل الثلاث").toBe(3);
     const byName = new Map(own.map((row) =>
       [(row.source_filename as string | null) ?? MANUAL_TITLE_AR, row]));
 
@@ -606,10 +715,13 @@ test("١٢ · لا تسرّبَ بين حسابين ولا بين رسالتين
     expect(manual?.opportunities_found, "رسالةٌ بلا ملفّ تعدّ فرصًا").toBe(0);
 
     // والمستندُ الممسوح لم يُقرأ منه شيء، فلا أقسامَ له مهما جاورته رسالة.
+    expect(own.length, "الرسائلُ الثلاث — رفعتان وتسجيلٌ يدويّ").toBe(3);
     const scanned = byName.get(SCANNED_PDF_NAME);
     expect(scanned?.sections_extracted, "مستندٌ بلا نصّ يعدّ أقسامًا").toBe(0);
     expect(scanned?.processing_state).toBe("text_layer_missing");
   });
+
+});
 
 // ══════════════════════════════════════════════════════════════════════
 // ١١ — ولا خمسمئةٌ في الرحلة كلّها
@@ -619,5 +731,12 @@ test("١٢ · لا تسرّبَ بين حسابين ولا بين رسالتين
 // وُضعت أوّلًا لحكمت على لا شيء وقالت «أخضر».
 test("١١ · لا ٥٠٠ في الرحلة كلّها | no 5xx anywhere in the journey", async () => {
   expect(serverErrors, "ردودٌ ≥٥٠٠ في الرحلة").toEqual([]);
+
+  // **وخمسمئةٌ تُحجب ليست خمسمئةً غائبة.** استجابةٌ تخرج من خارج
+  // `CORSMiddleware` تصل بلا ترويسة أصل، فيحجبها المتصفّح ولا تُحسب ردًّا.
+  // فلو اكتفت هذه الدعوى بعدّ الـ٥٠٠ لأخضرّت على خمسمئةٍ وقعت — وهي
+  // الحالُ التي تُنتج «Could not load the data.» عند الباحث.
+  expect(requestFailures, "طلباتٌ رُفضت قبل أن تصير ردًّا").toEqual([]);
+
   expect(pageErrors, "استثناءاتٌ في المتصفّح أثناء الرحلة").toEqual([]);
 });
