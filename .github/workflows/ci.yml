@@ -89,30 +89,6 @@ jobs:
         run: cd apps/api && ruff check .
       - name: Architecture boundaries (§38.6.8 / ADR-0003)
         run: cd apps/api && lint-imports
-      - name: Acceptance tests AT-S0-*
-        run: cd apps/api && pytest -v
-
-      # ── تدريب الترحيل: على قاعدة نظيفة مخصَّصة ──
-      #
-      # `DATABASE_MIGRATION_URL` هي الآلية القائمة التي يقرأها `env.py`؛
-      # تُوجَّه هنا إلى قاعدة أخرى بدل أن تُخترع آلية ثانية.
-      - name: Create a clean migration-drill database
-        env:
-          PGPASSWORD: athera_owner_pw
-        run: |
-          psql -h localhost -U athera_owner -d postgres \
-            -c 'DROP DATABASE IF EXISTS athera_migration' \
-            -c 'CREATE DATABASE athera_migration'
-
-      - name: Assert the drill database is empty before the drill
-        env:
-          PGPASSWORD: athera_owner_pw
-        run: |
-          tables=$(psql -h localhost -U athera_owner -d athera_migration -tAc \
-            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
-          echo "public tables in athera_migration: $tables"
-          test "$tables" = "0" || { echo "::error::drill database is not clean"; exit 1; }
-
       # ── قاعدةُ النافذة: 0028 بلا 0029 ──
       - name: Build the expand-window database (stops at 0028)
         env:
@@ -139,6 +115,30 @@ jobs:
             -c "GRANT USAGE ON SCHEMA public TO athera_app" \
             -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO athera_app" \
             -c "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO athera_app"
+
+      - name: Acceptance tests AT-S0-*
+        run: cd apps/api && pytest -v
+
+      # ── تدريب الترحيل: على قاعدة نظيفة مخصَّصة ──
+      #
+      # `DATABASE_MIGRATION_URL` هي الآلية القائمة التي يقرأها `env.py`؛
+      # تُوجَّه هنا إلى قاعدة أخرى بدل أن تُخترع آلية ثانية.
+      - name: Create a clean migration-drill database
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          psql -h localhost -U athera_owner -d postgres \
+            -c 'DROP DATABASE IF EXISTS athera_migration' \
+            -c 'CREATE DATABASE athera_migration'
+
+      - name: Assert the drill database is empty before the drill
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          tables=$(psql -h localhost -U athera_owner -d athera_migration -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          echo "public tables in athera_migration: $tables"
+          test "$tables" = "0" || { echo "::error::drill database is not clean"; exit 1; }
 
       - name: Migration roundtrip drill (AT-S0-13) — head → base → head
         env:
