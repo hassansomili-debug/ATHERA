@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { BrandMark } from "@/components/BrandMark";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { AuthGate } from "@/components/AuthGate";
 import { SideNav } from "@/components/SideNav";
@@ -25,6 +26,7 @@ export async function generateMetadata(
     // ويُفهرَس اسمٌ ليس هو المنتج.
     metadataBase: new URL("https://pubriva.com"),
     title: `${t("app.name")} — ${t("app.tagline")}`,
+    icons: { icon: "/favicon.svg" },
     alternates: {
       // اللغة المُتحقَّق منها لا الخام: مسارٌ غير صالح لا يُعلن أصلًا لنفسه.
       canonical: `/${active}`,
@@ -57,7 +59,7 @@ export default async function LocaleLayout({
         <div className="shell">
           <aside className="sidebar">
             <div className="brand">
-              <span className="brand-mark" aria-hidden="true" />
+              <BrandMark idSuffix="shell" />
               {/*
                 **الوعد تحت الاسم، لا اسمٌ ثانٍ مكتوب بيده.**
 
