@@ -32,7 +32,11 @@ from athera_api.dbtarget import parse as parse_target
 ALLOWED_HOSTS = LOCAL_HOSTS
 
 # أسماء قواعد الاختبار المعروفة في هذا المستودع.
-ALLOWED_DATABASES = frozenset({"athera", "athera_test", "athera_migration"})
+# `athera_expand` قاعدةُ نافذة النشر: تقف عند 0028 ليُجرَّب عليها خادمُ
+# الموجة قبل أن يُطبَّق العقد. وإضافتُها هنا **تغييرٌ في المستودع يُراجَع**،
+# كما يقتضي هذا الحارس — لا متغيّرَ بيئةٍ يُصدَّر في لحظة عجلة.
+ALLOWED_DATABASES = frozenset({
+    "athera", "athera_test", "athera_migration", "athera_expand"})
 
 # اسم قاعدة Supabase الافتراضي — ليس اسم قاعدة اختبار بحال.
 FORBIDDEN_DATABASES = frozenset({"postgres", "template1"})
