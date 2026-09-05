@@ -36,13 +36,13 @@ PAGE = WEB / "src" / "app" / "[locale]" / "theses" / "page.tsx"
 # **خالصةٌ بلا قاعدة بيانات** — فتُشغَّل في كل بيئة، وهي التي تحمل العقد.
 
 def _actions(state: str, *, has_file: bool = True, sections: int = 0,
-             results: int = 0, locale: str = "ar"):
+             results: int = 0, locale: str = "ar", archived: bool = False):
     from athera_api.services.thesis import card_actions
 
     return card_actions.compute(
         processing_state=state,
         file_id=uuid.uuid4() if has_file else None,
-        sections=sections, results=results, locale=locale,
+        sections=sections, results=results, locale=locale, archived=archived,
     )
 
 
@@ -272,10 +272,15 @@ def test_the_router_refuses_to_write_a_proposal_that_already_exists():
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "mine_opportunities")
     body = ast.dump(handler)
 
-    assert "with_for_update" in body, (
+    assert "arg='lock'" in body or "with_for_update" in body, (
         "التنقيب بلا قفلٍ على صفّ الرسالة — طلبان متزامنان يكتبان معًا")
     assert "PublicationOpportunity" in body and "Continue" in body, (
         "لا تخطٍّ مشروطٌ في الحلقة — فكلُّ مقترحٍ يُكتب ولو كان قائمًا")
+    # والقفلُ حقيقيّ في الحارس المشترك، لا اسمًا في وسيط.
+    guard = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_thesis_or_404")
+    assert "with_for_update" in ast.dump(guard), "الحارس لا يقفل صفًّا أصلًا"
 
 
 def test_the_response_tells_the_researcher_that_nothing_new_was_written():
@@ -310,7 +315,9 @@ def test_an_unknown_decision_counts_as_a_decision_like_any_other():
     assert set(removal.REVIEWED_CANDIDATE_STATES) == {"approved", "rejected", "unknown"}
 
 
-def test_a_preview_with_any_blocking_dependency_is_not_removable():
+def test_only_human_decided_work_makes_the_archive_ask_for_an_acknowledgement():
+    """**والسؤالُ تغيّر مع الفعل.** كان «أيجوز حذفُها؟»؛ والحذفُ ذهب من
+    المنتج، فصار «أيستوجب إخفاؤها إقرارًا صريحًا؟»."""
     from athera_api.services.thesis import removal
 
     def build(**counts):
@@ -321,29 +328,32 @@ def test_a_preview_with_any_blocking_dependency_is_not_removable():
                                    blocking=key in removal.BLOCKING_KEYS)
                 for key in removal.DEPENDENCY_KEYS))
 
-    assert build().removable is True
-    # أقسامٌ ونتائجُ كثيرة لا تمنع: آلةٌ كتبتها، وقراءةٌ ثانية تُعيدها.
-    assert build(sections=9, results=4).removable is True
-    assert build(publication_opportunities=1).removable is False
-    assert build(reviewed_candidates=1).removable is False
-    assert build(verified_sections=1).removable is False
-    blocked = build(publication_opportunities=2, sections=5)
-    assert blocked.blocking_counts() == {"publication_opportunities": 2}
+    assert build().needs_acknowledgement is False
+    # أقسامٌ ونتائجُ كثيرة لا تستوجب شيئًا: آلةٌ كتبتها، وقراءةٌ ثانية تُعيدها.
+    assert build(sections=9, results=4).needs_acknowledgement is False
+    assert build(publication_opportunities=1).needs_acknowledgement is True
+    assert build(reviewed_candidates=1).needs_acknowledgement is True
+    assert build(verified_sections=1).needs_acknowledgement is True
+    asked = build(publication_opportunities=2, sections=5)
+    assert asked.acknowledged_counts() == {"publication_opportunities": 2}
 
 
-def test_the_refusal_explains_itself_in_the_readers_language():
+def test_the_acknowledgement_prompt_explains_itself_in_the_readers_language():
     from athera_api.services.thesis import removal
 
-    blocked = removal.RemovalPreview(
+    asked = removal.RemovalPreview(
         thesis_id=uuid.uuid4(),
         dependencies=(removal.Dependency(
             key=removal.DEP_OPPORTUNITIES, count=3, blocking=True),))
-    assert blocked.removable is False
-    assert blocked.explanation("ar") != blocked.explanation("en")
-    assert blocked.explanation("ar").strip() and blocked.explanation("en").strip()
+    assert asked.needs_acknowledgement is True
+    assert asked.explanation("ar") != asked.explanation("en")
+    assert asked.explanation("ar").strip() and asked.explanation("en").strip()
+    # **ولا يَعِد النصُّ بحذف** — الأرشفة تُخفي، والاسترجاع يعيد.
+    assert "لا تحذف" in asked.explanation("ar")
+    assert "deletes nothing" in asked.explanation("en")
 
 
-def test_removing_the_record_is_never_the_same_action_as_trashing_the_file():
+def test_archiving_the_record_is_never_the_same_action_as_trashing_the_file():
     """**فعلان لصاحبين** — ولا يُنفَّذ أحدهما بأثرٍ جانبيّ للآخر.
 
     وموجّهُ الإزالة لا يذكر `trashed_at` ولا `File` في مسار الحذف: نقلُ
@@ -352,7 +362,7 @@ def test_removing_the_record_is_never_the_same_action_as_trashing_the_file():
     tree = ast.parse((API / "routers" / "thesis.py").read_text(encoding="utf-8"))
     handler = next(
         node for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "remove_thesis")
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "archive_thesis")
     body = ast.dump(handler)
     assert "trashed_at" not in body, "الإزالة تمسّ ملفّ المكتبة بأثرٍ جانبيّ"
     assert "delete_object" not in body and "s3" not in body.lower(), (
@@ -392,8 +402,10 @@ def test_the_card_contract_carries_the_actions_the_screen_must_render():
     assert "actions" in ThesisResponse.model_fields
     assert ThesisResponse.model_fields["actions"].annotation is ThesisCardActions
     for field in ("primary", "is_running", "can_review", "can_process", "can_reprocess",
-                  "can_parse", "can_attach_file", "can_mine", "can_remove",
-                  "can_trash_file", "mining_state", "mining_reason", "blocked_reason"):
+                  "can_parse", "can_attach_file", "can_mine", "can_archive",
+                  "can_restore", "can_trash_file", "is_archived",
+                  "lifecycle_blocked_reason", "mining_state", "mining_reason",
+                  "blocked_reason"):
         assert field in ThesisCardActions.model_fields, field
 
 
@@ -428,6 +440,39 @@ def test_every_action_result_is_rendered_inside_its_own_card():
     assert "busyId" not in page, "حالُ انشغالٍ واحدة لكلّ الصفحة — والضغطتان تتصادمان"
 
 
+def test_the_screen_never_sends_a_delete_for_a_thesis():
+    """**الحذفُ رُفع من المنتج** — فلا الشاشةُ ترسله ولا الخادمُ يقبله."""
+    page = PAGE.read_text(encoding="utf-8")
+    assert '"DELETE"' not in page, "الشاشة ما زالت ترسل حذفًا على رسالة"
+    # والاسترجاع يمرّ بـ`run(id, "restore", …)` التي تبني المسار، فيُسأل عن
+    # اسم الفعل لا عن سلسلةٍ حرفيّة لا وجود لها.
+    assert "/archive" in page, "الشاشة لا تعرف الأرشفة"
+    assert '"restore"' in page, "الشاشة لا تعرف الاسترجاع"
+
+
+def test_the_screen_shows_the_archive_and_the_way_back_from_it():
+    """**أرشفةٌ بلا طريقِ عودةٍ مرئيّ حذفٌ في تجربة الباحث.**"""
+    page = PAGE.read_text(encoding="utf-8")
+    assert "theses.viewArchived" in page, "لا عرضَ للأرشيف في القائمة"
+    assert "actions.can_restore" in page, "لا استرجاع في الشاشة"
+    assert "actions.is_archived" in page, "البطاقة لا تقول إنّها مؤرشَفة"
+
+
+def test_the_screen_hides_lifecycle_actions_while_work_is_running_and_says_why():
+    page = PAGE.read_text(encoding="utf-8")
+    assert "actions.can_archive" in page, "الأرشفة تُعرض بلا شرطٍ من الخادم"
+    assert "actions.can_trash_file" in page, "السلّة تُعرض بلا شرطٍ من الخادم"
+    assert "actions.lifecycle_blocked_reason" in page, "منعٌ بلا تفسيرٍ في الشاشة"
+
+
+def test_the_screen_sends_the_acknowledgement_explicitly():
+    """**والإقرارُ يُرسَل صريحًا** — لا يُفترض في الخادم ولا يُرسَل دائمًا `true`."""
+    page = PAGE.read_text(encoding="utf-8")
+    assert "acknowledge" in page
+    assert "needs_acknowledgement" in page, (
+        "الشاشة لا تقرأ حاجةَ الإقرار من المعاينة، فتُقرّ عن الباحث")
+
+
 def test_every_new_message_key_exists_in_both_catalogues():
     """**تكافؤُ الكتالوجين مفروضٌ بفحص** — ونصٌّ ناقصٌ يُعرض مفتاحًا للباحث."""
     arabic = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
@@ -457,17 +502,137 @@ def test_the_browser_spec_is_wired_into_both_the_scripts_and_the_workflow():
     assert "npm run test:thesis-center" in workflow, "المشغّل لا ينادي الرقعة"
 
 
-def test_this_repair_needed_no_migration():
-    """**الترقيم `0030` مملوكٌ لموجة 2-A** — ولا يُنشأ ترحيلٌ منافس هنا.
+def test_migration_0030_belongs_to_this_wave_and_is_purely_additive():
+    """**ترحيلٌ واحد، وتوسعةٌ محضة** — والخادمُ القائم يبقى صحيحًا عليه.
 
-    والقفلُ على صفّ الرسالة يحرس ما كان قيدُ التفرّد سيحرسه على هذا المسار،
-    ووسمُ الإزالة لم يُحتَجْ أصلًا: رسالةٌ بلا تبعاتٍ علميّة تُسقط صفُّها،
-    وسجلُّ التدقيق يبقى.
+    بين ترحيل القاعدة ونشر الموجة نافذةٌ يخدم فيها الخادمُ القديم مخطَّطًا
+    جديدًا (الدرس المكتوب في 0028/0029). فيُطلب من هذا الترحيل ثلاثة:
+
+      • **لا عمودَ إلزاميّ ولا افتراضٌ يكتب شيئًا** — الخادمُ القائم يُدرج
+        صفوفًا بلا ذكر العمودين، فيأخذان `NULL` ومعناها «غير مؤرشَفة».
+      • **ولا `ALTER` ولا `DROP` ولا `UPDATE` على ما هو قائم** — توسعةٌ لا
+        تعديل، فلا صفَّ يُمسّ ولا عمودَ قديمٌ يتغيّر عقده.
+      • **ولا حذفَ صفوفٍ في المنتج** يوجب هذا العمود أصلًا.
     """
     versions = ROOT / "infra" / "db" / "migrations" / "versions"
-    numbers = sorted(p.name.split("_", 1)[0] for p in versions.glob("0*.py"))
-    assert "0030" not in numbers, "ترحيلٌ 0030 أُنشئ هنا — والترقيم مملوكٌ لموجةٍ أخرى"
-    assert numbers[-1] == "0029", f"آخر ترحيلٍ ليس 0029: {numbers[-1]}"
+    numbers = sorted(path.name.split("_", 1)[0] for path in versions.glob("0*.py"))
+    assert numbers[-1] == "0030", f"آخرُ ترحيلٍ ليس 0030: {numbers[-1]}"
+    assert numbers.count("0030") == 1, "ترحيلان يحملان الرقم 0030"
+
+    body = (versions / "0030_thesis_archive.py").read_text(encoding="utf-8")
+    upgrade = body[body.index("def upgrade()"):body.index("def downgrade()")]
+
+    assert "nullable=True" in upgrade
+    assert "nullable=False" not in upgrade, "عمودٌ إلزاميّ يكسر الخادمَ القائم"
+    assert "server_default" not in upgrade, "افتراضٌ يكتب في صفوفٍ قائمة"
+    # و«ON DELETE RESTRICT» وصفُ مفتاحٍ أجنبيّ لا حذفُ صفوف — فيُسأل عن
+    # عبارات الكتابة بأسمائها الكاملة لا عن كلمةٍ تقع فيها.
+    for forbidden in ("DROP COLUMN", "ALTER COLUMN", "UPDATE THESES",
+                      "DELETE FROM", "TRUNCATE"):
+        assert forbidden not in upgrade.upper(), (
+            f"الترحيل ليس توسعةً محضة — فيه {forbidden}")
+    # والقيدُ الوحيد يصف العمودين الجديدين وحدهما، فتحقّقه الصفوفُ القائمة
+    # جميعًا (كلاهما `NULL` فيها). ونصُّه ثابتٌ في رأس الملفّ لا في الجسم.
+    assert "(archived_at IS NULL) = (archived_by IS NULL)" in body
+    assert "ADD CONSTRAINT" in upgrade and "CHECK" in upgrade
+
+
+def test_the_product_has_no_way_to_physically_delete_a_thesis():
+    """**الحذفُ رُفع من المنتج، ولم يُستبدل بحذفٍ أهدأ.**
+
+    وأوّلُ علاجٍ كتب `DELETE FROM theses` على رسالةٍ لا تبعات لها اليوم —
+    و«لا تبعات اليوم» ليست «لن تكون»، و`ON DELETE CASCADE` قائمٌ تحتها على
+    خمسة جداول. فلا نقطةَ حذفٍ ولا عبارةَ حذفٍ على الرسائل في أيّ موجّه.
+    """
+    tree = ast.parse((API / "routers" / "thesis.py").read_text(encoding="utf-8"))
+    dumped = ast.dump(tree)
+    assert "delete(Thesis)" not in ast.unparse(tree), "عبارةُ حذفٍ على الرسائل"
+    assert "'delete'" in dumped or '"delete"' in dumped  # مستوى الإذن، لا الفعل
+
+    for path in sorted((API / "routers").glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        assert "@router.delete(\"/theses" not in source, (
+            f"{path.name}: نقطةُ حذفٍ على الرسائل")
+
+
+def test_an_archived_thesis_is_offered_restore_and_no_work_action():
+    """**المؤرشَفة ساكنة**: قراءةٌ أو تنقيبٌ على سجلٍّ مُخفًى يكتب في ما لا يراه صاحبه."""
+    from athera_api.services.thesis import card_actions
+
+    actions = _actions("ready_for_review", sections=3, archived=True)
+    assert actions.is_archived is True
+    assert actions.primary == card_actions.ACTION_RESTORE
+    assert actions.can_restore is True
+    assert actions.can_archive is False
+    assert actions.can_review is False
+    assert actions.can_reprocess is False and actions.can_process is False
+    assert actions.can_mine is False
+    assert actions.can_trash_file is False
+
+
+@pytest.mark.parametrize("state", ["queued", "parsing", "extracting"])
+def test_no_lifecycle_action_is_offered_while_work_is_running(state):
+    """**ولا عقدَ إلغاءٍ يُدَّعى.** أرشفةٌ أو سلّةٌ أثناء مهمّةٍ تقرأ الملفّ
+    وتكتب مرشّحاتها تتركان نصفَ حال، ولا سبيل إلى إيقافها في هذه المرحلة."""
+    actions = _actions(state, sections=4)
+    assert actions.can_archive is False, "أرشفةٌ معروضةٌ أثناء عملٍ جارٍ"
+    assert actions.can_trash_file is False, "سلّةٌ معروضةٌ أثناء عملٍ جارٍ"
+    assert actions.lifecycle_blocked_reason, "منعٌ بلا تفسير"
+    assert "إلغاء" in actions.lifecycle_blocked_reason
+
+
+def test_the_lifecycle_block_is_stated_in_both_languages_and_promises_no_cancel():
+    from athera_api.services.thesis import card_actions
+
+    arabic, english = card_actions.LIFECYCLE_BLOCKED_LABELS
+    assert arabic.strip() and english.strip() and arabic != english
+    # **ولا وعدَ بإلغاء**: النصّ يقول إنّه غير متاح، لا إنّه سيقع.
+    assert "no cancellation contract" in english
+
+
+def test_the_server_refuses_lifecycle_actions_in_flight_not_only_the_screen():
+    """**شاشةٌ تُخفي زرًّا وخادمٌ يقبل الطلب حارسٌ واحدٌ لا اثنان.**
+
+    فيُقرأ الشجرُ: كلُّ نقطةٍ تغيّر دورة الحياة تنادي `_refuse_if_in_flight`.
+    """
+    tree = ast.parse((API / "routers" / "thesis.py").read_text(encoding="utf-8"))
+    guarded = {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and "_refuse_if_in_flight" in ast.dump(node)
+    }
+    for endpoint in ("archive_thesis", "parse_thesis", "mine_opportunities"):
+        assert endpoint in guarded, f"{endpoint} لا يفحص العمل الجاري"
+
+
+def test_every_thesis_endpoint_asks_for_an_object_permission_not_only_a_tenant():
+    """**العزلُ بين المستأجرين لا يحمي بين عضوين في المستأجر الواحد.**
+
+    والحارسُ المشترك `_thesis_or_404` يسأل `require_object_action` على ملفّ
+    الرسالة — وهو النموذج نفسه الذي يستعمله `document_intelligence`. فيُطلب
+    أن تمرّ كلُّ نقطةٍ به، وأن يكون المستوى المطلوب مذكورًا صراحةً.
+    """
+    tree = ast.parse((API / "routers" / "thesis.py").read_text(encoding="utf-8"))
+    guard = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_thesis_or_404")
+    assert "require_object_action" in ast.dump(guard), (
+        "الحارس لا يسأل عن إذنٍ على الكائن — العزلُ وحده لا يكفي")
+
+    wanted = {
+        "parse_thesis": "write",
+        "mine_opportunities": "write",
+        "removal_preview": "read",
+        "archive_thesis": "delete",
+        "restore_thesis": "delete",
+    }
+    for name, level in wanted.items():
+        node = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
+        body = ast.dump(node)
+        assert "_thesis_or_404" in body, f"{name} لا يمرّ بالحارس"
+        assert f"'{level}'" in body, f"{name} لا يطلب مستوى `{level}`"
 
 
 # ═════════════════════ ٦. القاعدةُ الحقيقية ═════════════════════
@@ -502,6 +667,33 @@ async def _seed(tenant_id, user_id, *, filename="رسالة.pdf", with_file=True
         session.add(thesis)
         await session.flush()
         return thesis.id, file_id
+
+
+async def _second_member(tenant_id):
+    """عضوٌ ثانٍ في **المستأجر نفسه** — لا مستأجرٌ آخر.
+
+    **وهو الفجوة التي كُشفت**: RLS تحمي بين المستأجرين، ولا تحمي بين عضوين
+    تحت المظلّة نفسها. فبلا إذنٍ على الكائن يبلغ أيُّ عضوٍ رسالةَ زميله.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import system_session
+    from athera_api.models.identity import Membership, Role, User
+    from athera_api.security import hash_password
+
+    async with system_session() as session:
+        user = User(
+            email=f"second-{uuid.uuid4().hex[:10]}@example.test",
+            password_hash=hash_password("correct-horse-battery-staple"),
+            full_name_ar="زميلٌ في المستأجر نفسه",
+            full_name_en="A colleague in the same tenant")
+        session.add(user)
+        await session.flush()
+        role = (await session.execute(
+            select(Role).where(Role.tenant_id == tenant_id, Role.key == "researcher")
+        )).scalar_one()
+        session.add(Membership(tenant_id=tenant_id, user_id=user.id, role_id=role.id))
+        return user.id
 
 
 def _client(tenant_id, user_id, locale="ar"):
@@ -636,10 +828,12 @@ async def test_over_http_the_parse_endpoint_still_refuses_a_thesis_with_no_file(
 
 @requires_db
 @pytest.mark.asyncio
-async def test_over_http_a_disposable_thesis_is_removed_and_its_history_survives(two_tenants):
-    """**رسالةٌ لا يقوم عليها شيءٌ علميّ تُزال** — ويبقى سجلُّها كاملًا.
+async def test_over_http_the_history_of_an_archived_thesis_stays_readable(two_tenants):
+    """**التاريخ يبقى، والصفُّ يبقى معه.**
 
-    ولا يُمسّ ملفُّ المكتبة: صفُّه باقٍ و`trashed_at` فيه `NULL`.
+    وكانت هذه الدعوى تفحص أنّ سجلّ التدقيق ينجو من حذفِ الصفّ. والحذفُ ذهب،
+    فصارت تفحص ما هو أقوى: أنّ الصفّ **والسجلّ** كليهما باقيان، وأنّ حدث
+    الأرشفة نفسه مكتوبٌ بمن فعله.
     """
     from sqlalchemy import func, select
 
@@ -655,36 +849,41 @@ async def test_over_http_a_disposable_thesis_is_removed_and_its_history_survives
     async with _client(tid, uid) as client:
         preview = await client.get(f"/api/v1/theses/{thesis_id}/removal-preview")
         assert preview.status_code == 200, preview.text
-        assert preview.json()["removable"] is True
+        assert preview.json()["needs_acknowledgement"] is False
         assert preview.json()["explanation"]
         assert preview.json()["source_file_id"] == str(file_id)
 
-        removed = await client.delete(f"/api/v1/theses/{thesis_id}")
-        assert removed.status_code == 200, removed.text
-        assert removed.json()["removed"] is True
+        archived = await client.post(f"/api/v1/theses/{thesis_id}/archive", json={})
+        assert archived.status_code == 200, archived.text
+        assert archived.json()["archived"] is True
 
         assert not [row for row in (await client.get("/api/v1/theses")).json()
                     if row["id"] == str(thesis_id)]
 
     async with tenant_session(tid, uid) as session:
-        assert (await session.execute(
-            select(Thesis).where(Thesis.id == thesis_id))).scalar_one_or_none() is None
-        # **التاريخ يبقى** — والسجلُّ يذكر ما جرى على معرّفٍ لم يعد له صفّ.
+        # **والصفُّ باقٍ** — مؤرشَفًا، لا محذوفًا.
+        row = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        assert row.archived_at is not None
+        assert row.archived_by == uid, "أرشفةٌ لا يُعرف بيد مَن"
+
         trail = (await session.execute(
             select(func.count(AuditEvent.id))
-            .where(AuditEvent.object_id == thesis_id))).scalar_one()
-        assert trail > 0, "سجلُّ التدقيق مُحي مع الرسالة"
+            .where(AuditEvent.object_id == thesis_id,
+                   AuditEvent.action == "thesis.archived"))).scalar_one()
+        assert trail > 0, "الأرشفة لم تُسجَّل"
+
         # **وملفُّ المكتبة لم يُمسّ** — نقلُه إلى السلّة فعلٌ آخر.
         record = (await session.execute(
             select(File).where(File.id == file_id))).scalar_one()
-        assert record.trashed_at is None, "الإزالة نقلت الملفّ إلى السلّة بأثرٍ جانبيّ"
+        assert record.trashed_at is None, "الأرشفة نقلت الملفّ إلى السلّة بأثرٍ جانبيّ"
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_over_http_removal_is_refused_when_a_human_decision_rests_on_the_thesis(
-        two_tenants):
-    """**لا حذفٌ متسلسلٌ صامت.** فرصةُ نشرٍ قائمة تمنع، ويُقال ما يمنع بعدده."""
+async def test_over_http_archiving_asks_before_it_hides_human_decided_work(two_tenants):
+    """**لا إخفاءَ صامتٌ لما بُني عليها.** فرصةُ نشرٍ قائمة تستوجب إقرارًا،
+    ويُقال ما يستوجبه بعدده — ثمّ يمضي الفعل بالإقرار، ويُستعاد بالاسترجاع."""
     from sqlalchemy import select
 
     from athera_api.db import tenant_session
@@ -704,28 +903,30 @@ async def test_over_http_removal_is_refused_when_a_human_decision_rests_on_the_t
         preview = await client.get(f"/api/v1/theses/{thesis_id}/removal-preview")
         assert preview.status_code == 200, preview.text
         body = preview.json()
-        assert body["removable"] is False
-        blocking = {row["key"]: row for row in body["blocking"]}
-        assert blocking["publication_opportunities"]["count"] == 1
-        assert blocking["publication_opportunities"]["label"], "تبعةٌ بلا اسمٍ يُقرأ"
+        assert body["needs_acknowledgement"] is True
+        asked = {row["key"]: row for row in body["blocking"]}
+        assert asked["publication_opportunities"]["count"] == 1
+        assert asked["publication_opportunities"]["label"], "تبعةٌ بلا اسمٍ يُقرأ"
 
-        refused = await client.delete(f"/api/v1/theses/{thesis_id}")
+        refused = await client.post(f"/api/v1/theses/{thesis_id}/archive", json={})
         assert refused.status_code == 409, refused.text
-        assert refused.json()["error"]["code"] == "thesis.removal_blocked"
+        assert refused.json()["error"]["code"] == "thesis.archive_needs_acknowledgement"
         assert refused.json()["error"]["message"], "رفضٌ بلا تفسير"
 
     # **ولم تُمسّ**: لا الرسالة ولا ما بُني عليها.
     async with tenant_session(tid, uid) as session:
-        assert (await session.execute(
-            select(Thesis).where(Thesis.id == thesis_id))).scalar_one_or_none() is not None
+        row = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        assert row.archived_at is None
         assert (await session.execute(
             select(PublicationOpportunity)
             .where(PublicationOpportunity.thesis_id == thesis_id))).scalars().all()
 
 
+
 @requires_db
 @pytest.mark.asyncio
-async def test_over_http_another_tenant_can_neither_read_nor_mine_nor_remove(two_tenants):
+async def test_over_http_another_tenant_can_neither_read_nor_mine_nor_archive(two_tenants):
     """**العزلُ يُجرَّب على كلّ نقطةٍ جديدة، لا على القراءة وحدها.**
 
     وسياسةٌ تمنع القراءة وتسمح بالحذف عزلٌ نصفيّ يُقرأ سليمًا في اختبارٍ
@@ -748,17 +949,427 @@ async def test_over_http_another_tenant_can_neither_read_nor_mine_nor_remove(two
         for response in (
             await intruder.get(f"/api/v1/theses/{thesis_id}/removal-preview"),
             await intruder.post(f"/api/v1/theses/{thesis_id}/mine-opportunities"),
-            await intruder.delete(f"/api/v1/theses/{thesis_id}"),
+            await intruder.post(f"/api/v1/theses/{thesis_id}/archive",
+                                json={"acknowledge": True}),
+            await intruder.post(f"/api/v1/theses/{thesis_id}/restore"),
         ):
             assert response.status_code == 404, response.text
             assert response.json()["error"]["code"] == "thesis.not_found"
 
-    # **والرسالةُ باقيةٌ كما هي** — ولا فرصةَ كُتبت عليها من خارج مستأجرها.
+    # **والرسالةُ باقيةٌ كما هي** — ولا فرصةَ كُتبت عليها من خارج مستأجرها،
+    # ولا أُرشفت من خارجه.
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
-        assert (await session.execute(
-            select(Thesis).where(Thesis.id == thesis_id))).scalar_one_or_none() is not None
+        row = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one_or_none()
+        assert row is not None
+        assert row.archived_at is None
 
     async with _client(a["tenant_id"], a["user_id"]) as owner:
         card = next(row for row in (await owner.get("/api/v1/theses")).json()
                     if row["id"] == str(thesis_id))
     assert card["opportunities_found"] == 0, "تنقيبُ مستأجرٍ آخر أصاب رسالةً ليست له"
+
+
+# ═════════════════════ ٧. الأرشفة على قاعدةٍ حيّة ═════════════════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_archiving_hides_the_record_and_deletes_not_one_row(two_tenants):
+    """**الأرشفة تُخفي ولا تحذف** — ويُثبَت ذلك بالعدّ لا بالوعد.
+
+    فتُبنى رسالةٌ بكلّ ما يتدلّى منها — أقسامٌ ونتائجُ وفرصةُ نشر — ثمّ
+    تُؤرشَف، ثمّ **تُعدّ الصفوفُ كلُّها من جديد**: لا صفَّ نقص. وذاك هو
+    الفرق بين هذا العقد وأوّل صياغةٍ كتبت `DELETE FROM theses`.
+    """
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import (
+        PublicationOpportunity, Thesis, ThesisResult, ThesisSection,
+    )
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id = await _seed(tid, uid, filename="تُؤرشَف.pdf",
+                                     title_ar="رسالةٌ يقوم عليها عمل")
+    await _give_the_miner_something_to_read(tid, uid, thesis_id)
+    async with tenant_session(tid, uid) as session:
+        session.add(PublicationOpportunity(
+            tenant_id=tid, thesis_id=thesis_id,
+            opportunity_kind="independent_question", paper_kind="extraction",
+            working_title_ar="ورقةٌ قائمة"))
+        await session.flush()
+
+    async def census():
+        async with tenant_session(tid, uid) as session:
+            out = {}
+            for label, model in (("sections", ThesisSection), ("results", ThesisResult),
+                                 ("opportunities", PublicationOpportunity)):
+                out[label] = (await session.execute(
+                    select(func.count(model.id))
+                    .where(model.thesis_id == thesis_id))).scalar_one()
+            out["thesis"] = (await session.execute(
+                select(func.count(Thesis.id))
+                .where(Thesis.id == thesis_id))).scalar_one()
+            return out
+
+    before = await census()
+    assert before == {"sections": 1, "results": 1, "opportunities": 1, "thesis": 1}
+
+    async with _client(tid, uid) as client:
+        # **ما يتدلّى منه عملُ إنسانٍ يستوجب إقرارًا** — ولا يقع بغفلة.
+        refused = await client.post(f"/api/v1/theses/{thesis_id}/archive", json={})
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["error"]["code"] == "thesis.archive_needs_acknowledgement"
+        assert await census() == before, "طلبٌ مردودٌ غيّر شيئًا"
+
+        done = await client.post(f"/api/v1/theses/{thesis_id}/archive",
+                                 json={"acknowledge": True})
+        assert done.status_code == 200, done.text
+        assert done.json()["archived"] is True
+        assert done.json()["rows_deleted"] == 0
+
+        # **خرجت من القائمة** — ولم تُحذف.
+        assert not [row for row in (await client.get("/api/v1/theses")).json()
+                    if row["id"] == str(thesis_id)]
+        archived = (await client.get("/api/v1/theses", params={"view": "archived"})).json()
+        assert [row["id"] for row in archived] == [str(thesis_id)]
+        assert archived[0]["actions"]["is_archived"] is True
+        assert archived[0]["actions"]["primary"] == "restore"
+
+    # **ولا صفَّ نقص** — وهو بيتُ القصيد.
+    assert await census() == before, "الأرشفة حذفت صفوفًا"
+
+    async with _client(tid, uid) as client:
+        back = await client.post(f"/api/v1/theses/{thesis_id}/restore")
+        assert back.status_code == 200, back.text
+        assert back.json()["archived"] is False
+        listed = (await client.get("/api/v1/theses")).json()
+        assert str(thesis_id) in {row["id"] for row in listed}, "الاسترجاع لم يُعدها"
+
+    assert await census() == before
+    # وملفُّ المكتبة لم يُمسّ في شيءٍ من ذلك.
+    from athera_api.models.files import File
+    async with tenant_session(tid, uid) as session:
+        record = (await session.execute(
+            select(File).where(File.id == file_id))).scalar_one()
+        assert record.trashed_at is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_a_disposable_thesis_archives_without_an_acknowledgement(two_tenants):
+    """**ولا يُسأل الباحث عمّا لا يقوم عليه شيء.** سؤالٌ يُطرح دائمًا لا يُقرأ."""
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _ = await _seed(tid, uid, filename="لا شيء عليها.pdf")
+
+    async with _client(tid, uid) as client:
+        preview = await client.get(f"/api/v1/theses/{thesis_id}/removal-preview")
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["needs_acknowledgement"] is False
+
+        done = await client.post(f"/api/v1/theses/{thesis_id}/archive", json={})
+        assert done.status_code == 200, done.text
+        assert done.json()["archived"] is True
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_mining_a_thesis_with_no_extracted_title_never_returns_5xx(
+        two_tenants):
+    """**رسالةٌ بلا عنوانٍ مستخرَج كانت تُسقط التنقيب بخمسمئة.**
+
+    `theses.title_ar` عمودٌ يقبل `NULL` (ترحيل 0015)، و`ThesisFacts.title`
+    كان موصوفًا `str`. فـ`" ".join([facts.title, …])` يسقط بـ`TypeError`،
+    ويُردّ الباحثُ بخمسمئة على مسارٍ صحيحٍ تمامًا: رسالةٌ فُكِّكت بالمسار
+    القديم فصار عندها أقسامٌ ونتائج، ولم يُستخرَج عنوانها بعد.
+
+    **والعلاجُ لا يخترع عنوانًا**: ما يقوم على العنوان يُعلَّق ويُقال عددُه،
+    وما يقوم على السؤال يُقترح كما هو.
+    """
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    # `title_ar=None` صراحةً — وهي حالُ كلّ رسالةٍ رُفعت ولم تُقرأ بعد.
+    thesis_id, _ = await _seed(tid, uid, filename="بلا عنوان.pdf", title_ar=None)
+    await _give_the_miner_something_to_read(tid, uid, thesis_id)
+
+    async with _client(tid, uid) as client:
+        response = await client.post(f"/api/v1/theses/{thesis_id}/mine-opportunities")
+
+    assert response.status_code < 500, f"خمسمئة على مسارٍ صحيح: {response.text}"
+    assert response.status_code == 202, response.text
+    body = response.json()
+    # المقترحُ المعلَّق بالسؤال قائم، والمعلَّق بالعنوان مؤجَّلٌ ومعلَنٌ عددُه.
+    assert body["opportunities_created"] >= 1
+    assert body["withheld_for_missing_title"] >= 1
+    assert body["title_note"], "عُلِّقت مقترحاتٌ بلا أن يُقال لماذا"
+
+    async with _client(tid, uid) as client:
+        card = next(row for row in (await client.get("/api/v1/theses")).json()
+                    if row["id"] == str(thesis_id))
+    # **ولا عنوانَ مخترَع** تسرّب إلى العمود ولا إلى البطاقة.
+    assert card["title_ar"] is None
+    assert card["title"] is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_legacy_parse_never_drags_the_state_back_to_extracting(two_tenants):
+    """**المسار القديم كان يكتب حالًا بائتة فوق حالٍ أحدث.**
+
+    التسلسل المعروف: الخطُّ الحديث يبلغ `ready_for_review`، ثمّ يُشغَّل
+    التفكيك القديم بعده. وكان يقرأ الحال في أوّل الطلب ويكتبها بلا شرط، فإن
+    كانت `extracting` وقتَ القراءة عادت البطاقة إليها بعد أن بلغت المراجعة
+    — وتبقى كذلك بلا مهمّةٍ ترفعها.
+
+    **والحالُ النهائية هنا يجب أن تبقى قانونية**، ولا تصير `extracting`
+    ولا تبقى عليها.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+    from athera_api.services.thesis import processing
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _ = await _seed(tid, uid, filename="تسلسلٌ معروف.pdf")
+
+    # ١ — الخطُّ الحديث يبلغ المراجعة.
+    async with tenant_session(tid, uid) as session:
+        await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
+                              state=processing.READY_FOR_REVIEW)
+
+    # ٢ — ثمّ يُشغَّل التفكيك القديم بعده. والملفّ في التجهيزة بلا محتوًى
+    #     صالح، فيُردّ الطلب بـ٤٢٢ — **والحال هي المفحوصة لا رمزُ الردّ**.
+    async with _client(tid, uid) as client:
+        parsed = await client.post(f"/api/v1/theses/{thesis_id}/parse")
+    assert parsed.status_code < 500, f"خمسمئة من التفكيك: {parsed.text}"
+
+    async with tenant_session(tid, uid) as session:
+        state = (await session.execute(
+            select(Thesis.processing_state).where(Thesis.id == thesis_id))).scalar_one()
+
+    assert state != processing.EXTRACTING, "التفكيك أعاد الحال إلى «جارٍ الاستخراج»"
+    assert state not in processing.IN_FLIGHT, (
+        f"التفكيك ترك حالًا جاريةً بلا مهمّةٍ ترفعها: {state}")
+    assert state in processing.PROCESSING_STATES
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_the_settle_rule_is_evaluated_at_write_time(two_tenants):
+    """**والشرطُ يُقيَّم وقت الكتابة** — فتُجرَّب الدالّة على حالٍ تغيّرت.
+
+    ويُبلَغ الحدُّ من طرف الخدمة مباشرةً: تُوضع الرسالة في `extracting` ثمّ
+    يُطلب التثبيت، فيجب أن تبقى كما هي — لا أن تُرفع ولا أن تُخفض.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+    from athera_api.services.thesis import processing
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+
+    async def settle_from(state: str) -> str:
+        thesis_id, _ = await _seed(tid, uid, filename=f"{state}.pdf")
+        async with tenant_session(tid, uid) as session:
+            await processing.mark(
+                session, tenant_id=tid, thesis_id=thesis_id, state=state,
+                failure_code="parse_failed" if state == processing.FAILED else (
+                    "text_layer_missing" if state == processing.TEXT_LAYER_MISSING
+                    else None),
+                text_layer=(processing.TEXT_LAYER_ABSENT
+                            if state == processing.TEXT_LAYER_MISSING else None))
+        async with tenant_session(tid, uid) as session:
+            await processing.settle_after_legacy_parse(
+                session, tenant_id=tid, thesis_id=thesis_id)
+        async with tenant_session(tid, uid) as session:
+            return (await session.execute(
+                select(Thesis.processing_state)
+                .where(Thesis.id == thesis_id))).scalar_one()
+
+    # ما يجوز رفعه يُرفع.
+    for state in processing.LEGACY_PARSE_MAY_SETTLE:
+        assert await settle_from(state) == processing.READY_FOR_REVIEW, state
+
+    # **وما لا يجوز يبقى حرفيًّا** — ومنها الحالُ الجارية بعينها.
+    for state in (processing.EXTRACTING, processing.PARSING, processing.QUEUED,
+                  processing.AWAITING_CONSENT, processing.COMPLETED):
+        assert await settle_from(state) == state, f"التثبيت غيّر حالًا ليست له: {state}"
+
+
+# ═════════════════════ ٨. الإذنُ على الكائن، لا العزل وحده ═════════════════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_a_colleague_in_the_same_tenant_cannot_touch_another_thesis(
+        two_tenants):
+    """**العزلُ بين المستأجرين لا يحمي بين عضوين تحت المظلّة نفسها.**
+
+    و`files.upload_file` تكتب `ObjectGrant(grant_level="owner")` مع صفّ
+    الملفّ، والصلاحية تُقرأ من تلك المِنحة لا من عمود `uploaded_by`. فعضوٌ
+    ثانٍ في المستأجر نفسه — مصادَقٌ، وله دورُ باحث — لا مِنحة له على ملفّ
+    زميله. فيجب أن يُردّ عن كلّ فعلٍ يمسّ الرسالة.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+
+    a = two_tenants["a"]
+    tid, owner = a["tenant_id"], a["user_id"]
+    colleague = await _second_member(tid)
+
+    thesis_id, _ = await _seed(tid, owner, filename="ليست لزميلي.pdf",
+                               title_ar="رسالةٌ لصاحبها")
+    await _give_the_miner_something_to_read(tid, owner, thesis_id)
+
+    async with _client(tid, colleague) as intruder:
+        # يراها في مستأجره — والعزلُ وحده لا يمنع ذلك، وهو بيتُ القصيد.
+        attempts = {
+            "parse": await intruder.post(f"/api/v1/theses/{thesis_id}/parse"),
+            "mine": await intruder.post(
+                f"/api/v1/theses/{thesis_id}/mine-opportunities"),
+            "preview": await intruder.get(
+                f"/api/v1/theses/{thesis_id}/removal-preview"),
+            "archive": await intruder.post(
+                f"/api/v1/theses/{thesis_id}/archive", json={"acknowledge": True}),
+            "restore": await intruder.post(f"/api/v1/theses/{thesis_id}/restore"),
+        }
+
+    for name, response in attempts.items():
+        assert response.status_code == 403, f"{name} مرّ بلا إذنٍ على الكائن: {response.text}"
+        assert response.json()["error"]["code"] == "authz.forbidden", name
+
+    # **ولم يقع شيء**: الرسالة كما تركها صاحبها، ولا فرصةَ كُتبت عليها.
+    async with tenant_session(tid, owner) as session:
+        row = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        assert row.archived_at is None, "زميلٌ أرشف رسالةَ غيره"
+        assert row.parsed_at is None, "زميلٌ فكّك رسالةَ غيره"
+        assert row.opportunities_mined_at is None, "زميلٌ نقّب في رسالةِ غيره"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_the_owner_of_the_linked_file_still_passes_every_action(two_tenants):
+    """**والحارسُ لا يُغلق البابَ على صاحبه.**
+
+    فحصُ منعٍ بلا فحصِ سماحٍ يمرّ على حارسٍ يردّ الجميع — وذاك عطبٌ آخر.
+    """
+    a = two_tenants["a"]
+    tid, owner = a["tenant_id"], a["user_id"]
+    thesis_id, _ = await _seed(tid, owner, filename="لصاحبها.pdf", title_ar="رسالتي")
+
+    async with _client(tid, owner) as client:
+        assert (await client.get(
+            f"/api/v1/theses/{thesis_id}/removal-preview")).status_code == 200
+        assert (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).status_code == 202
+        archived = await client.post(f"/api/v1/theses/{thesis_id}/archive", json={})
+        assert archived.status_code == 200, archived.text
+        assert (await client.post(
+            f"/api/v1/theses/{thesis_id}/restore")).status_code == 200
+
+
+# ═════════════════════ ٩. لا فعلَ دورةِ حياةٍ أثناء عملٍ جارٍ ═════════════════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_the_server_refuses_to_archive_while_work_is_running(two_tenants):
+    """**الخادمُ يفرض الحدّ، لا الشاشةُ وحدها.**
+
+    من نادى النقطة مباشرةً وهي جارية كان يمرّ. ولا عقدَ إلغاءٍ في هذا
+    المنتج، فالمهمّة تمضي وتكتب مرشّحاتها لسجلٍّ غاب عن الشاشة.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+    from athera_api.services.thesis import processing
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+
+    for state in processing.IN_FLIGHT:
+        thesis_id, _ = await _seed(tid, uid, filename=f"{state}.pdf")
+        async with tenant_session(tid, uid) as session:
+            await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
+                                  state=state)
+
+        async with _client(tid, uid) as client:
+            refused = await client.post(f"/api/v1/theses/{thesis_id}/archive",
+                                        json={"acknowledge": True})
+            assert refused.status_code == 409, f"{state}: {refused.text}"
+            assert refused.json()["error"]["code"] == "thesis.processing_in_flight"
+            # والبطاقة تقول ذلك أيضًا، بالسبب نفسه.
+            card = next(row for row in (await client.get("/api/v1/theses")).json()
+                        if row["id"] == str(thesis_id))
+            assert card["actions"]["can_archive"] is False
+            assert card["actions"]["can_trash_file"] is False
+            assert card["actions"]["lifecycle_blocked_reason"]
+
+        async with tenant_session(tid, uid) as session:
+            row = (await session.execute(
+                select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+            assert row.archived_at is None, f"{state}: أُرشفت أثناء عملٍ جارٍ"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_old_server_can_still_write_a_thesis_on_the_new_schema(two_tenants):
+    """**نافذةُ النشر المتدحرج**: خادمُ الموجة الأولى على مخطَّط 0030.
+
+    بين ترحيل القاعدة ونشر الموجة نافذةٌ يخدم فيها الخادمُ القائم (واجهة
+    v88) مخطَّطًا لا يعرف عموديه الجديدين. وهو يُدرج صفوفَ رسائل بقائمة
+    أعمدةٍ صريحة يولّدها SQLAlchemy من نماذجه — فلا ذكر لـ`archived_at` ولا
+    `archived_by` فيها.
+
+    فيُحاكى ذلك حرفيًّا: `INSERT` بالأعمدة التي يعرفها 0029 وحدها. ويجب أن
+    ينجح، وأن يأخذ العمودان `NULL` — ومعناها «غير مؤرشَفة»، وهي الحالُ
+    الصحيحة لكلّ ما يكتبه ذلك الخادم. **ولو كان أحدُهما إلزاميًّا أو ذا
+    افتراضٍ كاتب، لسقط كلُّ رفعِ رسالةٍ في تلك النافذة بخمسمئة.**
+
+    (وهو الدرسُ نفسه المكتوب في 0028/0029، مطبَّقًا على هذا الترحيل.)
+    """
+    from sqlalchemy import text
+
+    from athera_api.db import system_session
+
+    a = two_tenants["a"]
+    tid = a["tenant_id"]
+    thesis_id = uuid.uuid4()
+
+    async with system_session() as session:
+        head = (await session.execute(
+            text("SELECT version_num FROM alembic_version"))).scalar_one()
+        if head < "0030":
+            pytest.skip(f"قاعدةُ الاختبارات عند {head}، والعمودان يُضافان في 0030")
+
+        # **بأعمدة 0029 وحدها** — لا ذكرَ للعمودين الجديدين، كخادمِ v88.
+        await session.execute(
+            text("INSERT INTO theses (id, tenant_id, title_ar, degree, "
+                 "processing_state, processing_attempts, text_layer_state, ocr_state) "
+                 "VALUES (:id, :tenant, :title, 'masters', 'uploaded', 0, "
+                 "'not_checked', 'unavailable')"),
+            {"id": thesis_id, "tenant": tid, "title": "رسالةٌ كتبها الخادمُ القديم"})
+
+        row = (await session.execute(
+            text("SELECT archived_at, archived_by FROM theses WHERE id = :id"),
+            {"id": thesis_id})).one()
+
+    assert row.archived_at is None, "عمودٌ جديد كُتب فيه شيءٌ لم يطلبه الخادمُ القديم"
+    assert row.archived_by is None
+    # **وما كتبه الخادمُ القديم يُقرأ «في القائمة»** لا «مؤرشَفًا».
+    async with _client(tid, a["user_id"]) as client:
+        listed = (await client.get("/api/v1/theses")).json()
+    card = next(row for row in listed if row["id"] == str(thesis_id))
+    assert card["archived_at"] is None
+    assert card["actions"]["is_archived"] is False

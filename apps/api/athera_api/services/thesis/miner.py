@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Final
 
 from .vocab import OPPORTUNITY_KINDS, PAPER_KINDS
 
@@ -19,7 +20,13 @@ class ThesisFacts:
     """ما استُخرج من الرسالة — مدخل المنقّب."""
 
     thesis_id: str
-    title: str
+    #: **`None` = «لم يُستخرَج العنوان بعد»** — لا سلسلةٌ فارغة ولا اسمُ ملفّ.
+    #:
+    #: و`theses.title_ar` عمودٌ يقبل `NULL` (ترحيل 0015)، ورسالةٌ رُفعت ولم
+    #: تُقرأ بعدُ لا عنوان لها. وكان هذا الحقل موصوفًا `str` فيُمرَّر `None`
+    #: على أيّ حال — فيسقط `" ".join([...])` بـ`TypeError` ويُردّ الباحثُ
+    #: بخمسمئة على مسارٍ صحيح تمامًا.
+    title: str | None = None
     questions: tuple[str, ...] = ()
     hypotheses: tuple[str, ...] = ()
     results: tuple[tuple[str, str], ...] = ()      # (result_id, label)
@@ -117,26 +124,60 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
             result_refs=list(facts.null_result_ids), sample_refs=list(facts.sample_ids),
         ))
 
-    # 5/6/7 — محددات، نتائج مترتبة، مقارنة: من صياغة العنوان والأسئلة.
-    haystack = " ".join([facts.title, *facts.questions, *facts.hypotheses])
-    for pattern, kind, title in (
-        (_ANTECEDENT_MARKERS, "antecedents", "ورقة المحددات"),
-        (_CONSEQUENCE_MARKERS, "consequences", "ورقة النتائج المترتبة"),
-        (_COMPARATIVE_MARKERS, "comparative", "ورقة المقارنة"),
-    ):
-        if pattern.search(haystack):
-            drafts.append(OpportunityDraft(
-                opportunity_kind=kind, paper_kind="extraction",
-                working_title_ar=f"{title}: {facts.title[:60]}",
-                research_question_ar=None,
-                rationale_ar="ورد في الرسالة ما يشير إلى هذا المسار صراحةً.",
-                rationale_en="The thesis explicitly signals this line of enquiry.",
-                result_refs=list(unpublished), variable_refs=list(facts.variables),
-                sample_refs=list(facts.sample_ids),
-            ))
+    # 5/6/7/9 — محددات، نتائج مترتبة، مقارنة، تحليل ثانوي.
+    #
+    # **وهذه الأربعة وحدها عنوانُها العامل مشتقٌّ من عنوان الرسالة**، فتُعلَّق
+    # حين لا عنوان — ولا يُخترع لها واحد. انظر `_titled_drafts`.
+    drafts += _titled_drafts(facts, unpublished)
+    return drafts
 
-    # 9. تحليل ثانوي — يحتاج بيانات وعينة، وهو امتداد لا استخلاص.
-    if facts.sample_ids and len(facts.variables) >= 3:
+
+# ═════════ المقترحاتُ التي لا تقوم إلّا بعنوانٍ مستخرَج ═════════
+#
+# **ولا يُخترع عنوانٌ ليمرّ مقترح.** أربعةُ أنواعٍ عنوانُها العامل هو عنوان
+# الرسالة مقصوصًا؛ ورسالةٌ لم يُستخرَج عنوانها بعد (`title_ar IS NULL`) لا
+# اسم لها يُقتبس. فالخياران: أن يُخترع نصٌّ — وهو كذبٌ صغير يُكتب في قاعدة
+# البيانات ويُقرأ عنوانَ ورقة — أو أن تُعلَّق هذه الأربعة ويُقال إنّها
+# عُلِّقت. **والثاني هو الصادق**، وهو ما يقع.
+#
+# وما عداها يبقى عاملًا: «سؤال مستقل» عنوانُه من السؤال، و«بناء مقياس» من
+# اسم الأداة، و«المرحلة الكيفية» من اسم المرحلة، و«النتائج السالبة» نصٌّ
+# ثابت. فغيابُ العنوان لا يُعطّل التنقيب، ويُنقص منه ما لا يقوم بدونه.
+
+_TITLED_KINDS: Final = (
+    (_ANTECEDENT_MARKERS, "antecedents", "ورقة المحددات"),
+    (_CONSEQUENCE_MARKERS, "consequences", "ورقة النتائج المترتبة"),
+    (_COMPARATIVE_MARKERS, "comparative", "ورقة المقارنة"),
+)
+
+
+def _marker_haystack(facts: ThesisFacts) -> str:
+    """**والغائبُ لا يُضمّ إلى النصّ.** `" ".join` على `None` يسقط بـ`TypeError`."""
+    return " ".join(
+        part for part in (facts.title, *facts.questions, *facts.hypotheses) if part)
+
+
+def _secondary_analysis_fits(facts: ThesisFacts) -> bool:
+    return bool(facts.sample_ids) and len(facts.variables) >= 3
+
+
+def _titled_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[OpportunityDraft]:
+    if not facts.title:
+        return []
+    haystack = _marker_haystack(facts)
+    drafts = [
+        OpportunityDraft(
+            opportunity_kind=kind, paper_kind="extraction",
+            working_title_ar=f"{label}: {facts.title[:60]}",
+            research_question_ar=None,
+            rationale_ar="ورد في الرسالة ما يشير إلى هذا المسار صراحةً.",
+            rationale_en="The thesis explicitly signals this line of enquiry.",
+            result_refs=list(unpublished), variable_refs=list(facts.variables),
+            sample_refs=list(facts.sample_ids),
+        )
+        for pattern, kind, label in _TITLED_KINDS if pattern.search(haystack)
+    ]
+    if _secondary_analysis_fits(facts):
         drafts.append(OpportunityDraft(
             opportunity_kind="secondary_analysis", paper_kind="extension",
             working_title_ar=f"تحليل ثانوي على بيانات: {facts.title[:60]}",
@@ -145,5 +186,17 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
             rationale_en="The data supports a new question the thesis did not test.",
             variable_refs=list(facts.variables), sample_refs=list(facts.sample_ids),
         ))
-
     return drafts
+
+
+def withheld_for_missing_title(facts: ThesisFacts) -> int:
+    """كم مقترحًا **عُلِّق** لأنّ العنوان لم يُستخرَج بعد.
+
+    **و«لم يُقترح» ليست «لا يوجد».** تنقيبٌ يعود بأقلّ ممّا كان ليعود به،
+    بلا أن يُقال لماذا، يُقرأ حكمًا على الرسالة لا نقصًا في مدخلاتها.
+    """
+    if facts.title:
+        return 0
+    haystack = _marker_haystack(facts)
+    return (sum(1 for pattern, _kind, _label in _TITLED_KINDS if pattern.search(haystack))
+            + (1 if _secondary_analysis_fits(facts) else 0))

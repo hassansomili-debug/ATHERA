@@ -1,24 +1,30 @@
-"""إزالةُ رسالةٍ من مركز الرسائل | Safe thesis removal (Wave 1.1).
+"""أرشفةُ رسالةٍ من مركز الرسائل | Safe thesis archiving (Wave 1.1).
 
-**القاعدة: لا حذفٌ متسلسلٌ صامت.** الرسالة أصلُ سلسلةٍ علميّة — منها تُشتقّ
-الفرص، ومن الفرص تُبنى اتفاقاتُ التأليف واعتماداتُ الحقوق، ومنها تُحوَّل
-مشاريع. و`ON DELETE CASCADE` في القاعدة سيمحو الأوّل ويترك الباقي معلَّقًا
-أو يمحوه معه — وكلاهما فقدٌ لقرارٍ بشريّ وقع.
+**القاعدة الأولى: لا حذفٌ فيزيائيّ، ولا حذفٌ متسلسلٌ صامت.**
 
-فالإزالة تسبقها **معاينةُ تبعات** تُحسب في القاعدة وتُعرض على الباحث:
+وأوّلُ علاجٍ لغياب المخرج كتب `DELETE FROM theses` على رسالةٍ لا تبعات
+علميّة لها. والصفُّ أصلُ سلسلةٍ: منه الأقسام والنتائج ومرشّحاتُ الوقائع
+والفرص واتفاقاتُ التأليف واعتماداتُ الحقوق والمشاريع المحوَّلة، و
+`ON DELETE CASCADE` قائمٌ على خمسة جداول. و«لا تبعات **اليوم**» ليست «لن
+تكون»، والحذفُ لا يُستعاد.
 
-  • **ما يُعاد إنتاجه بقراءةٍ ثانية لا يمنع** — أقسامٌ ونتائجُ استخرجتها
-    الآلة ولم يحكم عليها إنسان.
-  • **وما فيه حكمُ إنسانٍ يمنع** — مرشّحٌ اعتُمد أو رُفض أو قيل فيه «لا
-    أعرف»، وقسمٌ صار «متحقَّقًا»، وفرصةُ نشرٍ قائمة، ومشروعٌ حُوِّل عنها،
-    واتفاقُ تأليفٍ أو اعتمادُ حقوق.
+فلا تُحذف رسالة. تُؤرشَف: وسمٌ بوقتٍ وفاعل (ترحيل 0030)، تخرج به من
+القائمة الافتراضية، **ويبقى كلُّ ما تحتها كما هو** — والاسترجاع يمحو الوسم
+فتعود حرفًا بحرف.
 
-**والإزالة غيرُ نقل الملفّ إلى السلّة.** الأولى تُسقط سجلَّ مركز الرسائل،
+## والمعاينةُ بقيت، ومعناها تغيّر
+
+كانت تقول «هذا يمنع الحذف». والحذفُ ذهب، فما عادت تمنع شيئًا: صارت تقول
+**«هذا ما سيُخفى معها»** — ويبقى موجودًا، ويعود بالاسترجاع.
+
+**لكنّها لا تُهمَل.** إخفاءُ رسالةٍ تتدلّى منها فرصُ نشرٍ ومشاريعُ محوَّلة
+واعتماداتُ حقوق قرارٌ يُتّخذ بعلمٍ لا بغفلة. فما فيه حكمُ إنسانٍ يستوجب
+**إقرارًا صريحًا** (`acknowledge`)، ويردّ الخادمُ الطلبَ بلا إقرارٍ بـ409
+ومعه المعاينة. وهو حدٌّ يقف على الخادم لا في الشاشة وحدها.
+
+**والأرشفةُ غيرُ نقل الملفّ إلى السلّة.** الأولى تُخفي سجلَّ مركز الرسائل،
 والثاني يُخفي ملفَّ المكتبة — فعلان لصاحبين، ونقطتان مختلفتان، ولا يُنفَّذ
-أحدهما بأثرٍ جانبيّ للآخر. **ولا يُمحى كائنُ التخزين نهائيًّا في أيٍّ منهما.**
-
-**والتاريخ يبقى.** `audit_log.object_id` عمودٌ بلا مفتاحٍ أجنبيّ إلى
-`theses` — قصدًا — فسجلُّ ما جرى على الرسالة يبقى مقروءًا بعد إسقاط صفّها.
+أحدهما بأثرٍ جانبيّ للآخر. **ولا يُمحى كائنُ تخزينٍ نهائيًّا في أيٍّ منهما.**
 """
 from __future__ import annotations
 
@@ -54,9 +60,10 @@ DEPENDENCY_KEYS: Final[tuple[str, ...]] = (
     DEP_RIGHTS_APPROVALS,
 )
 
-#: **التبعاتُ التي تمنع.** كلُّ واحدةٍ منها أثرُ حكمٍ بشريٍّ أو أصلٌ علميٌّ
-#: قائمٌ عليها؛ وإسقاطُ الرسالة يُسقطها أو يقطع صلتها بأصلها. والأقسامُ
-#: والنتائجُ **ليست** منها: آلةٌ كتبتها، وقراءةٌ ثانية تُعيدها كما هي.
+#: **التبعاتُ التي تستوجب إقرارًا صريحًا.** كلُّ واحدةٍ منها أثرُ حكمٍ
+#: بشريٍّ أو أصلٌ علميٌّ قائمٌ على الرسالة؛ وإخفاؤها يُخفيه معها — **ولا
+#: يُتلفه**، والاسترجاع يعيده. فالإقرار شرطُ علمٍ لا حاجزُ منع. والأقسامُ
+#: والنتائجُ ليست منها: آلةٌ كتبتها، وقراءةٌ ثانية تُعيدها كما هي.
 BLOCKING_KEYS: Final[frozenset[str]] = frozenset({
     DEP_VERIFIED_SECTIONS, DEP_REVIEWED_CANDIDATES, DEP_OPPORTUNITIES,
     DEP_CONVERTED_PROJECTS, DEP_AUTHORSHIP_RECORDS, DEP_RIGHTS_APPROVALS,
@@ -77,29 +84,28 @@ DEPENDENCY_LABELS: Final[dict[str, tuple[str, str]]] = {
 #: قرارات الإنسان على مرشَّح — و«لا أعرف» قرارٌ مثل «معتمَد» تمامًا (§7).
 REVIEWED_CANDIDATE_STATES: Final[tuple[str, ...]] = ("approved", "rejected", "unknown")
 
-_REFUSAL_AR: Final = (
-    "لا تُزال هذه الرسالة: يقوم عليها عملٌ علميٌّ حسمتَه بنفسك. إزالتُها تُسقط "
-    "ما بُني عليها أو تقطع صلتَه بأصله، وكلاهما فقدٌ لا يُستعاد. أزِل ما بُني "
-    "عليها أوّلًا إن أردت — أو اترك السجلّ كما هو."
+_NEEDS_ACK_AR: Final = (
+    "تقوم على هذه الرسالة نتائجُ عملٍ حسمتَه بنفسك. الأرشفة **لا تحذف شيئًا**: "
+    "تُخفي السجلّ من مركز الرسائل ويبقى كلُّ ما تحته كما هو، ويعود بالاسترجاع. "
+    "لكنّ إخفاءَ ما يتدلّى منه عملٌ قائم قرارٌ يُتّخذ بعلم — فيُطلب إقرارُك صراحةً."
 )
-_REFUSAL_EN: Final = (
-    "This thesis cannot be removed: scientific work you decided on rests on it. Removing "
-    "it would drop what was built on it or sever that work from its source, and neither "
-    "can be undone. Remove what was built on it first if that is what you want, or leave "
-    "the record as it is."
+_NEEDS_ACK_EN: Final = (
+    "Work you decided on yourself rests on this thesis. Archiving deletes nothing: it "
+    "hides the record from the Thesis Center, everything under it stays exactly as it "
+    "is, and restoring brings it all back. But hiding a record that live work hangs "
+    "from is a decision to take knowingly, so your explicit acknowledgement is required."
 )
 
 _DISPOSABLE_AR: Final = (
-    "لا شيء علميٌّ قائمٌ على هذه الرسالة. إزالتُها تُسقط سجلَّها من مركز الرسائل "
-    "وما استخرجته الآلة منه، ويبقى سجلُّ التدقيق كاملًا. **ولا يُمسّ ملفُّ "
-    "المكتبة**: نقلُه إلى السلّة فعلٌ آخر تطلبه وحدك."
+    "لا شيء علميٌّ قائمٌ على هذه الرسالة. الأرشفة تُخفي سجلَّها من مركز الرسائل "
+    "ولا تحذف شيئًا، ويبقى سجلُّ التدقيق كاملًا. **ولا يُمسّ ملفُّ المكتبة**: "
+    "نقلُه إلى السلّة فعلٌ آخر تطلبه وحدك."
 )
 _DISPOSABLE_EN: Final = (
-    "Nothing scientific rests on this thesis. Removing it drops its Thesis Center record "
-    "and what the machine extracted into it; the audit history stays complete. The library "
-    "file is untouched: moving it to the trash is a separate action you ask for yourself."
+    "Nothing scientific rests on this thesis. Archiving hides its Thesis Center record "
+    "and deletes nothing; the audit history stays complete. The library file is "
+    "untouched: moving it to the trash is a separate action you ask for yourself."
 )
-
 
 # ═════════════════════ ٢. المعاينة ═════════════════════
 
@@ -122,19 +128,23 @@ class RemovalPreview:
         return tuple(d for d in self.dependencies if d.blocking and d.count > 0)
 
     @property
-    def removable(self) -> bool:
-        return not self.blocking
+    def needs_acknowledgement(self) -> bool:
+        """**هل يستوجب الإخفاءُ إقرارًا صريحًا؟** — لا «هل يُمنع».
+
+        الأرشفة لا تُمنع: هي فعلٌ يُستعاد. والمطلوب أن يقع بعلمٍ لا بغفلة.
+        """
+        return bool(self.blocking)
 
     def counts(self) -> dict[str, int]:
         return {d.key: d.count for d in self.dependencies}
 
-    def blocking_counts(self) -> dict[str, int]:
+    def acknowledged_counts(self) -> dict[str, int]:
         return {d.key: d.count for d in self.blocking}
 
     def explanation(self, locale: str) -> str:
-        if self.removable:
-            return _DISPOSABLE_EN if locale == "en" else _DISPOSABLE_AR
-        return _REFUSAL_EN if locale == "en" else _REFUSAL_AR
+        if self.needs_acknowledgement:
+            return _NEEDS_ACK_EN if locale == "en" else _NEEDS_ACK_AR
+        return _DISPOSABLE_EN if locale == "en" else _DISPOSABLE_AR
 
 
 def label(key: str, locale: str) -> str:

@@ -11,7 +11,7 @@ import uuid
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy import delete, func, or_, select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import Principal, get_principal, get_session
@@ -42,16 +42,17 @@ from ..schemas.thesis import (
     OpportunityResponse,
     OverlapMatrixResponse,
     OverlapPairResponse,
+    ArchiveRequest,
+    ArchiveResponse,
     ParseResponse,
     PublicationMapResponse,
     RemovalDependency,
     RemovalPreviewResponse,
-    RemovalResponse,
     ThesisCardActions,
     ThesisCreateRequest,
     ThesisResponse,
 )
-from ..services import audit
+from ..services import audit, rbac
 from ..services.parsing import NoTextLayer, UnsupportedDocument, parse
 from ..services.thesis import (
     aging,
@@ -191,13 +192,30 @@ async def create_thesis(
                 File.id == payload.file_id, File.tenant_id == principal.tenant_id)
         )).scalar_one_or_none()
     return _card(thesis, principal.locale, source_filename=filename,
-                 sections=0, opportunities=0, results=0)
+                 sections=0, opportunities=0, results=0, archived=None)
 
 
 async def _thesis_or_404(
     session: AsyncSession, principal: Principal, thesis_id: uuid.UUID, *,
-    lock: bool = False,
+    action: str, lock: bool = False, allow_archived: bool = False,
 ) -> Thesis:
+    """الرسالةُ بعد حارسَين — **العزلُ بين المستأجرين، والإذنُ على الملفّ**.
+
+    **والعزلُ وحده لا يكفي، وهو العطبُ الذي يُغلق هنا.** الموجّهُ كان يقف
+    عند `tenant_id`، فأيُّ عضوٍ في المستأجر يبلغ رسالةَ زميله فيقرأها
+    ويفكّكها وينقّب فيها ويؤرشفها. و`document_intelligence` لا يفعل ذلك:
+    يسأل `rbac.require_object_action(… "file" … )` — والصلاحيةُ تُقرأ من
+    **مِنحةٍ صريحة** يكتبها `files.upload_file` مع الصفّ، لا من عمود
+    `uploaded_by`. فيُسأل السؤال نفسه هنا، بالمستوى الذي يستحقّه كلُّ فعل:
+
+      • `read`  — معاينةُ ما يقوم على الرسالة.
+      • `write` — التفكيك والتنقيب: كلاهما يكتب في الرسالة.
+      • `delete` — الأرشفة والاسترجاع: دورةُ حياة السجلّ، ولا يملكها إلّا
+        صاحبُ الملفّ (`owner` وحدها تحمل `delete` في `_GRANT_ACTIONS`).
+
+    **ورسالةٌ بلا ملفّ لا كائنَ لها يُسأل عنه**، فيبقى عليها العزلُ وحده —
+    ويُقال ذلك صراحةً ولا يُترك يُفهم ضمنًا.
+    """
     statement = select(Thesis).where(
         Thesis.id == thesis_id, Thesis.tenant_id == principal.tenant_id)
     if lock:
@@ -207,11 +225,37 @@ async def _thesis_or_404(
         # **رسالةُ مستأجرٍ آخر غير موجودة، لا «ممنوعة»** — و٤٠٤ لا تُفشي
         # أنّ المعرّف قائمٌ عند غيرك.
         raise NotFound("thesis.not_found")
+    if thesis.file_id is not None:
+        await rbac.require_object_action(
+            session, principal.tenant_id, principal.user_id,
+            "file", thesis.file_id, action)
+    if thesis.archived_at is not None and not allow_archived:
+        raise AtheraError("thesis.archived", status_code=409)
     return thesis
+
+
+def _refuse_if_in_flight(thesis: Thesis, locale: str) -> None:
+    """**فعلٌ يغيّر دورةَ الحياة لا يقع على رسالةٍ يجري عليها عملٌ الآن.**
+
+    مهمّةٌ خلفيّة تقرأ الرسالة وتكتب مرشّحاتها بينما يُخفيها الباحث تُنتج
+    نصفَ حال: صفوفٌ تُكتب لسجلٍّ غاب عن الشاشة، أو تشغيلةٌ تنتهي فتُعيد
+    الحالَ فوق الأرشفة. **ولا عقدَ إلغاءٍ في هذا المنتج** — لا سبيل إلى
+    إيقاف المهمّة ولا إلى تسلسلها مع الأرشفة. فيُمنع الفعل صراحةً بسببه،
+    ولا يُدَّعى إلغاءٌ لا وجود له.
+
+    **والحدُّ يقف على الخادم لا في الشاشة وحدها**: شاشةٌ تُخفي زرًّا وخادمٌ
+    يقبل الطلبَ حارسٌ واحدٌ لا اثنان.
+    """
+    if thesis.processing_state in processing.IN_FLIGHT:
+        raise AtheraError(
+            "thesis.processing_in_flight", status_code=409,
+            processing_state=thesis.processing_state,
+            state_label=_pick(locale, *processing.STATE_LABELS[thesis.processing_state]))
 
 
 def _preview_response(
     view: removal.RemovalPreview, locale: str, *, source_file_id: uuid.UUID | None,
+    archived: bool,
 ) -> RemovalPreviewResponse:
     def _row(dep: removal.Dependency) -> RemovalDependency:
         return RemovalDependency(key=dep.key, label=removal.label(dep.key, locale),
@@ -219,11 +263,12 @@ def _preview_response(
 
     return RemovalPreviewResponse(
         thesis_id=view.thesis_id,
-        removable=view.removable,
+        needs_acknowledgement=view.needs_acknowledgement,
         dependencies=[_row(dep) for dep in view.dependencies],
         blocking=[_row(dep) for dep in view.blocking],
         explanation=view.explanation(locale),
         source_file_id=source_file_id,
+        archived=archived,
     )
 
 
@@ -233,76 +278,119 @@ async def removal_preview(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> RemovalPreviewResponse:
-    """**ما يقوم على هذه الرسالة — قبل أن يُسأل «أمتأكّد؟»، لا بعده.**
+    """**ما سيُخفى مع هذه الرسالة — قبل أن يُسأل «أمتأكّد؟»، لا بعده.**
 
     سؤالُ التأكيد بلا هذا الجواب زينةٌ: الباحث يُقرّ بما لا يعرفه. فيُحسب
     الأثرُ أوّلًا ويُعرض بأسمائه وأعداده، ثمّ يُسأل.
+
+    **ولا شيء منه يُحذف**: الأرشفة تُخفي، والاسترجاع يعيد.
     """
-    thesis = await _thesis_or_404(session, principal, thesis_id)
+    thesis = await _thesis_or_404(session, principal, thesis_id,
+                                  action="read", allow_archived=True)
     view = await removal.preview(
         session, tenant_id=principal.tenant_id, thesis_id=thesis_id,
         file_id=thesis.file_id)
-    return _preview_response(view, principal.locale, source_file_id=thesis.file_id)
+    return _preview_response(view, principal.locale, source_file_id=thesis.file_id,
+                             archived=thesis.archived_at is not None)
 
 
-@router.delete("/theses/{thesis_id}", response_model=RemovalResponse)
-async def remove_thesis(
+@router.post("/theses/{thesis_id}/archive", response_model=ArchiveResponse)
+async def archive_thesis(
+    thesis_id: uuid.UUID,
+    payload: ArchiveRequest | None = None,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ArchiveResponse:
+    """يُخفي سجلَّ الرسالة من مركز الرسائل — **ولا يحذف منه شيئًا**.
+
+    **ولا نقطةَ حذفٍ في هذا الموجّه أصلًا.** أوّلُ علاجٍ لغياب المخرج كتب
+    `DELETE FROM theses`، و`ON DELETE CASCADE` قائمٌ تحته على خمسة جداول —
+    فكان صفٌّ واحد يمحو سلسلةَ قراراتٍ بشريّة. والأرشفة تقول ما تفعل: وسمٌ
+    بوقتٍ وفاعل، والقائمةُ الافتراضية تتخطّاه، **وكلُّ ما تحته باقٍ كما
+    هو** — أقسامًا ونتائجَ ومرشّحاتٍ وفرصًا وحقوقًا وتأليفًا وتدقيقًا.
+
+    وثلاثةُ حدودٍ عليها:
+
+      ١ **لا أرشفةَ على رسالةٍ يجري عليها عملٌ الآن** — ولا عقدَ إلغاءٍ
+        يُدَّعى (انظر `_refuse_if_in_flight`).
+      ٢ **وما يتدلّى منها عملٌ حسمه إنسان يستوجب إقرارًا صريحًا** — لا
+        منعًا: الفعلُ يُستعاد، والمطلوب أن يقع بعلم.
+      ٣ **ولا يُمسّ ملفُّ المكتبة**: نقلُه إلى السلّة نقطةٌ أخرى يطلبها
+        الباحث وحده، ولا يُمحى كائنُ تخزينٍ نهائيًّا في أيٍّ منهما.
+    """
+    thesis = await _thesis_or_404(session, principal, thesis_id,
+                                  action="delete", lock=True, allow_archived=True)
+    if thesis.archived_at is not None:
+        # **مؤرشَفةٌ تُؤرشَف ثانيةً لا تُغيَّر**: وسمُها الأوّل يبقى بوقته
+        # وفاعله، فلا يُنسب الفعلُ إلى غير صاحبه ولا يُزاح تاريخُه.
+        return ArchiveResponse(
+            thesis_id=thesis_id, archived=True, archived_at=thesis.archived_at,
+            hidden={}, acknowledged=False)
+    _refuse_if_in_flight(thesis, principal.locale)
+
+    view = await removal.preview(
+        session, tenant_id=principal.tenant_id, thesis_id=thesis_id,
+        file_id=thesis.file_id)
+    acknowledged = bool(payload and payload.acknowledge)
+    if view.needs_acknowledgement and not acknowledged:
+        await audit.record(
+            session, tenant_id=principal.tenant_id, action="thesis.archive_needs_acknowledgement",
+            object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
+            state_after={"resting_on_it": view.acknowledged_counts()},
+            reason="archiving hides a record that human-decided work hangs from; "
+                   "the researcher is told what, and asked, before it is hidden",
+        )
+        raise AtheraError("thesis.archive_needs_acknowledgement", status_code=409,
+                          **{k: str(v) for k, v in view.acknowledged_counts().items()})
+
+    hidden = {key: count for key, count in view.counts().items() if count}
+    now = dt.datetime.now(dt.UTC)
+    thesis.archived_at = now
+    thesis.archived_by = principal.user_id
+    await session.flush()
+
+    await audit.record(
+        session, tenant_id=principal.tenant_id, action="thesis.archived",
+        object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
+        state_before={"processing_state": thesis.processing_state, "archived": False},
+        state_after={"archived": True, "hidden_with_it": hidden,
+                     "acknowledged": acknowledged, "rows_deleted": 0,
+                     "library_file_touched": False},
+        reason="the record is hidden, not deleted; every row under it survives and "
+               "restoring brings it back unchanged",
+    )
+    return ArchiveResponse(thesis_id=thesis_id, archived=True, archived_at=now,
+                           hidden=hidden, acknowledged=acknowledged)
+
+
+@router.post("/theses/{thesis_id}/restore", response_model=ArchiveResponse)
+async def restore_thesis(
     thesis_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
-) -> RemovalResponse:
-    """يُزيل سجلَّ الرسالة من مركز الرسائل — **أو يرفض ويقول لماذا**.
+) -> ArchiveResponse:
+    """يعيد رسالةً مؤرشَفة إلى مركز الرسائل — **كما كانت حرفًا بحرف**.
 
-    **ولا حذفٌ متسلسلٌ صامت.** `ON DELETE CASCADE` قائمٌ في القاعدة على
-    خمسة جداول، وفيها فرصُ النشر — ومنها تتدلّى اتفاقاتُ التأليف واعتماداتُ
-    الحقوق والمشاريع المحوَّلة. فإسقاطُ صفٍّ واحد هنا يمحو سلسلةَ قراراتٍ
-    بشريّة بلا أن يراها أحد. فتُحسب التبعات أوّلًا:
-
-      • **ما تُعيده قراءةٌ ثانية لا يمنع** — أقسامٌ ونتائجُ كتبتها آلة.
-      • **وما فيه حكمُ إنسانٍ يمنع** — ويُردّ الطلب بـ409 ومعه المعاينة.
-
-    **والقفلُ ليس زخرفًا**: بين حساب التبعات وإسقاط الصفّ نافذةٌ قد تُكتب
-    فيها فرصةٌ جديدة، فيقع الحذفُ على حالٍ لم تُفحص. فيُقفل صفُّ الرسالة
-    قبل الحساب، وهو الصفُّ نفسه الذي يقفله التنقيب.
-
-    **ولا يُمسّ ملفُّ المكتبة، ولا يُمحى كائنُ تخزينٍ نهائيًّا.** نقلُ
-    الملفّ إلى السلّة فعلٌ آخر بنقطةٍ أخرى (`POST /files/{id}/trash`)،
-    يطلبه الباحث وحده. **وسجلُّ التدقيق يبقى**: `audit_log.object_id` بلا
-    مفتاحٍ أجنبيّ إلى `theses` قصدًا، فتاريخُ ما جرى يبقى مقروءًا بعد
-    إسقاط الصفّ.
+    ولا شيء يُعاد بناؤه: لم يُحذف شيء أصلًا. يُمحى الوسم، فتعود الرسالة إلى
+    القائمة بحالها وأقسامها ونتائجها وفرصها كما تركها الباحث.
     """
-    thesis = await _thesis_or_404(session, principal, thesis_id, lock=True)
-    file_id = thesis.file_id
-    view = await removal.preview(
-        session, tenant_id=principal.tenant_id, thesis_id=thesis_id, file_id=file_id)
+    thesis = await _thesis_or_404(session, principal, thesis_id,
+                                  action="delete", lock=True, allow_archived=True)
+    if thesis.archived_at is None:
+        raise AtheraError("thesis.not_archived", status_code=409)
 
-    if not view.removable:
-        await audit.record(
-            session, tenant_id=principal.tenant_id, action="thesis.removal_refused",
-            object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
-            state_after={"blocking": view.blocking_counts()},
-            reason="removal refused: scientific work decided by a human rests on this "
-                   "thesis; nothing is cascade-deleted silently",
-        )
-        raise AtheraError("thesis.removal_blocked", status_code=409,
-                          **{k: v for k, v in view.blocking_counts().items()})
+    thesis.archived_at = None
+    thesis.archived_by = None
+    await session.flush()
 
-    dropped = {key: count for key, count in view.counts().items() if count}
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="thesis.removed",
+        session, tenant_id=principal.tenant_id, action="thesis.restored",
         object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
-        state_before={"processing_state": thesis.processing_state,
-                      "file_id": str(file_id) if file_id else None},
-        state_after={"dropped": dropped, "library_file_touched": False},
-        reason="the thesis carried no human decision; its record and the machine output "
-               "under it are dropped, the library file is untouched and the audit stays",
+        state_before={"archived": True}, state_after={"archived": False},
+        reason="the archive is a waiting room; restoring returns the record as it was",
     )
-    # الشرطان معًا: المعرّف **والمستأجر**. و`tenant_session` تختم المعاملة —
-    # ولا يختم الموجّه معاملةً لا يملكها.
-    await session.execute(
-        delete(Thesis).where(Thesis.id == thesis_id,
-                             Thesis.tenant_id == principal.tenant_id))
-    return RemovalResponse(thesis_id=thesis_id, removed=True, dropped=dropped)
+    return ArchiveResponse(thesis_id=thesis_id, archived=False, archived_at=None,
+                           hidden={}, acknowledged=False)
 
 
 async def _remember_failure(
@@ -347,14 +435,28 @@ async def parse_thesis(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ParseResponse:
-    """§23.3 — التفكيك يعيد استخدام مفكِّك Sprint 1 وحاجزه: كل قسم بموضعه."""
-    thesis = (await session.execute(select(Thesis).where(
-        Thesis.id == thesis_id, Thesis.tenant_id == principal.tenant_id
-    ))).scalar_one_or_none()
-    if thesis is None:
-        raise NotFound("thesis.not_found")
+    """§23.3 — التفكيك يعيد استخدام مفكِّك Sprint 1 وحاجزه: كل قسم بموضعه.
+
+    **والمسارُ القديم لا يكتب حالًا ليست له** (الموجة 1.1).
+
+    كان يقرأ `processing_state` في أوّل الطلب، ثمّ يجلب الملفّ ويفكّكه —
+    وذاك عملٌ طويل — ثمّ يكتب الحال التي قرأها **بلا شرط**. فإن تقدّم
+    الخطُّ الحديث في تلك النافذة إلى `ready_for_review` كتب التفكيكُ فوقه
+    قيمةً بائتة: تعود البطاقة إلى `extracting` بعد أن بلغت المراجعة، ويرى
+    الباحث عملَه يتراجع بلا سبب.
+
+    فحُسم الأمر بحدّين:
+
+      • **لا تفكيكَ على رسالةٍ يجري عليها عملٌ الآن** — يُردّ بـ409، فلا
+        مسارانِ يكتبان مرشّحاتٍ متوازية على مستندٍ واحد.
+      • **والحالُ تُثبَّت بعبارةٍ شرطيّة واحدة** تقرأ القيمة الراهنة وقت
+        الكتابة لا وقت القراءة (`processing.settle_after_legacy_parse`)،
+        فلا تُكتب قيمةٌ بائتة ولو تقدّم الخطُّ الحديث أثناء التفكيك.
+    """
+    thesis = await _thesis_or_404(session, principal, thesis_id, action="write")
     if thesis.file_id is None:
         raise AtheraError("thesis.no_file", status_code=422)
+    _refuse_if_in_flight(thesis, principal.locale)
 
     record = (await session.execute(select(File).where(
         File.id == thesis.file_id, File.tenant_id == principal.tenant_id
@@ -414,13 +516,10 @@ async def parse_thesis(
     # يقول «تعذّرت القراءة» وقد قُرئ للتوّ تناقضٌ يُقرأ في الشاشة كذبًا.
     # وما عدا ذلك تبقى الحال كما هي — **ولا تُقفز بوابة الإذن من هنا**:
     # DIC2 حدٌّ مستقلّ لا يُمنَح بأثرٍ جانبي لعمليةٍ أخرى.
-    settled = (processing.READY_FOR_REVIEW
-               if thesis.processing_state in (*processing.FAILURE_STATES,
-                                              processing.UPLOADED)
-               else thesis.processing_state)
-    await processing.mark(
-        session, tenant_id=principal.tenant_id, thesis_id=thesis_id,
-        state=settled, text_layer=processing.TEXT_LAYER_PRESENT)
+    #
+    # **والقاعدة تُقيَّم وقت الكتابة لا وقت القراءة** — انظر شرحَ الدالّة.
+    await processing.settle_after_legacy_parse(
+        session, tenant_id=principal.tenant_id, thesis_id=thesis_id)
 
     results = (
         await session.execute(select(ThesisResult).where(ThesisResult.thesis_id == thesis_id))
@@ -469,11 +568,9 @@ async def mine_opportunities(
     أخرى، وإضافةُ ترحيلٍ منافس تكسر الترتيب. والقفلُ يحرس ما كان القيدُ
     سيحرسه على هذا المسار؛ ويبقى القيد عملًا مؤجَّلًا مذكورًا في نصّ الطلب.
     """
-    thesis = (await session.execute(select(Thesis).where(
-        Thesis.id == thesis_id, Thesis.tenant_id == principal.tenant_id
-    ).with_for_update())).scalar_one_or_none()
-    if thesis is None:
-        raise NotFound("thesis.not_found")
+    thesis = await _thesis_or_404(session, principal, thesis_id,
+                                  action="write", lock=True)
+    _refuse_if_in_flight(thesis, principal.locale)
 
     sections = (
         await session.execute(select(ThesisSection).where(ThesisSection.thesis_id == thesis_id))
@@ -491,6 +588,10 @@ async def mine_opportunities(
         published_result_ids=tuple(str(r.id) for r in results if r.is_published),
     )
     drafts = miner.mine(facts)
+    # **ولا يُخترع عنوانٌ ليمرّ مقترح.** أربعةُ أنواعٍ عنوانُها العامل مشتقٌّ
+    # من عنوان الرسالة، ورسالةٌ لم يُستخرَج عنوانها بعد لا اسم لها يُقتبس.
+    # فتُعلَّق ويُقال عددُها — و«لم يُقترح» ليست «لا يوجد».
+    withheld = miner.withheld_for_missing_title(facts)
 
     report = aging.compute(
         as_of=dt.date.today(), data_collected_on=thesis.data_collected_on,
@@ -544,6 +645,7 @@ async def mine_opportunities(
         object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
         state_after={
             "created": created, "already_present": already,
+            "withheld_for_missing_title": withheld,
             "kinds": sorted({d.opportunity_kind for d in drafts}),
             "data_age_years": report.data_age_years,
             "literature_age_years": report.literature_age_years,
@@ -554,6 +656,16 @@ async def mine_opportunities(
     return MineResponse(
         thesis_id=thesis_id, opportunities_created=created,
         opportunities_already_present=already,
+        withheld_for_missing_title=withheld,
+        title_note=(_pick(
+            principal.locale,
+            f"عُلِّق {withheld} مقترحًا لأنّ عنوان الرسالة لم يُستخرَج بعد — "
+            "وعناوينها العاملة تُشتقّ منه، ولا يُخترع لها عنوان. راجع ما "
+            "استُخرج وأثبت العنوان، ثمّ أعد الفحص.",
+            f"{withheld} proposal(s) were withheld because the thesis title has not "
+            "been extracted yet: their working titles derive from it, and none is "
+            "invented. Review the extraction, confirm the title, then scan again.",
+        ) if withheld else None),
         kinds=sorted({d.opportunity_kind for d in drafts}),
         aging=AgingResponse(
             data_age_years=report.data_age_years,
@@ -882,8 +994,11 @@ GROUPED_VIEWS: dict[str, tuple[str, ...]] = {
 
 #: «الأحدث» ليست تصفية بل الترتيب الافتراضي — وتُقبل صراحةً لأنّ الشاشة
 #: تعرضها زرًّا، وزرٌّ يُرسل قيمةً يرفضها الخادم عطبٌ في المنتج.
+#: عرضُ الأرشيف — **الوحيد الذي يُظهر المؤرشَفات**، وما عداه يتخطّاها.
+ARCHIVED_VIEW: str = "archived"
+
 LISTING_VIEWS: tuple[str, ...] = (
-    ("all", "recent") + tuple(GROUPED_VIEWS) + processing.PROCESSING_STATES
+    ("all", "recent", ARCHIVED_VIEW) + tuple(GROUPED_VIEWS) + processing.PROCESSING_STATES
 )
 
 
@@ -894,6 +1009,9 @@ def _view_predicate(view: str | None):
     كلّها متعثّرة. (وهي القاعدة نفسها المكتوبة في `library.unknown_filter`.)
     """
     if view is None or view in ("all", "recent"):
+        return None
+    if view == ARCHIVED_VIEW:
+        # الشرطُ الحقيقيّ يُضاف في `list_theses`؛ وهنا لا شرطَ حال.
         return None
     if view in GROUPED_VIEWS:
         return Thesis.processing_state.in_(GROUPED_VIEWS[view])
@@ -940,7 +1058,7 @@ _UNSET = object()
 
 
 def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
-          opportunities=_UNSET, results=_UNSET) -> ThesisResponse:
+          opportunities=_UNSET, results=_UNSET, archived=_UNSET) -> ThesisResponse:
     """بطاقةٌ واحدة — **والرقمُ فيها لا يخرج بلا سببه**.
 
     ولا نسبةٌ مئوية ولا «٧٣٪ اكتمالًا»: خطُّ الأنابيب لا يقيس تقدّمًا، ورقمٌ
@@ -960,6 +1078,8 @@ def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
     result_rows = int(
         (row.results_extracted if results is _UNSET else results) or 0)
     filename = row.source_filename if source_filename is _UNSET else source_filename
+    archived_at = row.archived_at if archived is _UNSET else archived
+    is_archived = archived_at is not None
 
     shown, extracted = processing.display_title(
         row.title_ar, row.title_en, filename, locale)
@@ -1020,9 +1140,11 @@ def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
         source_file_id=row.file_id,
         # **آلةُ الحال في موضعٍ واحد** — والشاشة تعرض ما يقوله الخادم، ولا
         # تعيد بناء الشروط في JSX فتفترق عنه.
+        archived_at=archived_at,
         actions=ThesisCardActions(**asdict(card_actions.compute(
             processing_state=state, file_id=row.file_id,
-            sections=sections, results=result_rows, locale=locale))),
+            sections=sections, results=result_rows, locale=locale,
+            archived=is_archived))),
     )
 
 
@@ -1062,11 +1184,17 @@ async def list_theses(
             Thesis.processing_state, Thesis.processing_state_changed_at,
             Thesis.processing_attempts, Thesis.failure_code,
             Thesis.text_layer_state, Thesis.ocr_state, Thesis.opportunities_mined_at,
+            Thesis.archived_at,
         )
         .where(Thesis.tenant_id == principal.tenant_id)
         .order_by(Thesis.created_at.desc(), Thesis.id.desc())
         .limit(limit)
     )
+    # **المؤرشَفة تخرج من القائمة ولا تُحذف.** والشرطُ في العبارة نفسها —
+    # لا تصفيةٌ في بايثون بعد الاقتطاع، فتلك تُنقص صفحةً ممتلئة إلى ناقصة
+    # فيظنّ العميل أنّه بلغ آخر القائمة. وفهرسٌ جزئيّ يخدمه (ترحيل 0030).
+    page = page.where(Thesis.archived_at.is_not(None) if view == ARCHIVED_VIEW
+                      else Thesis.archived_at.is_(None))
     chosen = _view_predicate(view)
     if chosen is not None:
         page = page.where(chosen)

@@ -42,8 +42,12 @@ class ThesisCardActions(BaseModel):
     can_parse: bool = False
     can_attach_file: bool = False
     can_mine: bool = False
-    can_remove: bool = True
+    can_archive: bool = False
+    can_restore: bool = False
     can_trash_file: bool = False
+    is_archived: bool = False
+    #: سببُ منعِ الأرشفة والسلّة أثناء عملٍ جارٍ — **والخادم يفرضه أيضًا**.
+    lifecycle_blocked_reason: str | None = None
 
     #: available · in_flight · no_evidence
     mining_state: str
@@ -137,6 +141,9 @@ class ThesisResponse(BaseModel):
     # السلّة»؛ فعلان لصاحبين، ولا يُنفَّذ أحدهما بأثرٍ جانبيّ للآخر.
     source_file_id: uuid.UUID | None = None
 
+    #: **مؤرشَفة = مُخفاة لا محذوفة** (ترحيل 0030). و`None` تعني «في القائمة».
+    archived_at: dt.datetime | None = None
+
     # ── الأفعال: قرارٌ واحد يُحسب في الخادم ──
     actions: ThesisCardActions
 
@@ -152,33 +159,55 @@ class RemovalDependency(BaseModel):
 
 
 class RemovalPreviewResponse(BaseModel):
-    """**ما يقوم على الرسالة، قبل الإزالة لا بعدها.**"""
+    """**ما سيُخفى مع الرسالة، قبل الأرشفة لا بعدها.**
+
+    وكان هذا العقد يقول «removable» — أي «أيجوز حذفُها؟». والحذفُ ذهب من
+    المنتج، فذهب السؤال معه: الأرشفة تُخفي ولا تحذف، والاسترجاع يعيد. وما
+    بقي سؤالٌ آخر — **«أيستوجب إخفاؤها إقرارًا صريحًا؟»** — ويستوجبه حين
+    يتدلّى منها عملٌ حسمه إنسان.
+    """
 
     thesis_id: uuid.UUID
-    removable: bool
+    #: هل يتدلّى منها عملٌ حسمه إنسان، فيُطلب إقرارٌ صريح قبل الإخفاء.
+    needs_acknowledgement: bool
     dependencies: list[RemovalDependency]
+    #: ما يستوجب الإقرار بعينه، بأسمائه وأعداده.
     blocking: list[RemovalDependency]
     explanation: str
     #: نقلُ ملفّ المكتبة إلى السلّة فعلٌ آخر — ومعرّفُه هنا ليُطلب صراحةً.
     source_file_id: uuid.UUID | None = None
+    archived: bool = False
     note_ar: str = (
-        "الإزالة تُسقط سجلّ مركز الرسائل ولا تمسّ ملفّ المكتبة، "
-        "ولا يُمحى كائنُ التخزين نهائيًّا في أيّ حال."
+        "الأرشفة تُخفي سجلّ مركز الرسائل ولا تحذف صفًّا واحدًا، ولا تمسّ ملفّ "
+        "المكتبة، ولا يُمحى كائنُ التخزين نهائيًّا في أيّ حال."
     )
     note_en: str = (
-        "Removal drops the Thesis Center record and does not touch the library file; "
-        "no stored object is ever permanently deleted."
+        "Archiving hides the Thesis Center record and deletes not one row; it does not "
+        "touch the library file, and no stored object is ever permanently deleted."
     )
 
 
-class RemovalResponse(BaseModel):
+class ArchiveRequest(BaseModel):
+    """الإقرارُ بعد أن يُقال ما يترتّب — لا قبله.
+
+    والافتراضُ `False`: إقرارٌ صامتٌ افتراضيّ يجعل السؤال زينة. (وهي القاعدة
+    نفسها في `library.TrashRequest`.)
+    """
+
+    acknowledge: bool = False
+
+
+class ArchiveResponse(BaseModel):
     thesis_id: uuid.UUID
-    removed: bool
-    #: ما أُسقط معها من مخرجات الآلة — يُقال بالعدد لا يُترك يُخمَّن.
-    dropped: dict[str, int]
-    audit_preserved: bool = True
-    note_ar: str = "سجلّ التدقيق يبقى كاملًا بعد الإزالة."
-    note_en: str = "The audit history stays complete after removal."
+    archived: bool
+    archived_at: dt.datetime | None = None
+    #: ما خرج من القائمة معها — **باقيًا كما هو**، لا محذوفًا.
+    hidden: dict[str, int] = Field(default_factory=dict)
+    acknowledged: bool = False
+    #: **صفرٌ يُصرَّح به**: لا صفَّ يُحذف في هذا المسار، ولا كائنَ تخزين.
+    rows_deleted: int = 0
+    note_ar: str = "لم يُحذف شيء؛ الاسترجاع يعيد السجلّ كما كان."
+    note_en: str = "Nothing was deleted; restoring returns the record exactly as it was."
 
 
 class ParseResponse(BaseModel):
@@ -205,6 +234,10 @@ class MineResponse(BaseModel):
     opportunities_created: int
     kinds: list[str]
     aging: AgingResponse
+    #: **مقترحاتٌ عُلِّقت لأنّ عنوان الرسالة لم يُستخرَج بعد** — ولا يُخترع
+    #: لها عنوان. و«لم يُقترح» ليست «لا يوجد»، فيُقال العدد ومعه سببه.
+    withheld_for_missing_title: int = 0
+    title_note: str | None = None
     #: **ما اقترحه المنقّب ووُجد مثلُه قائمًا فلم يُكتب ثانيةً.** بدونه تُقرأ
     #: التشغيلة الثانية «٠ فرص» فيُظنّ أنّ المنقّب لم يجد شيئًا — وهو وجد
     #: ما كان موجودًا. والتنقيب مُعادٌ بلا أثر، لا مُلغًى.

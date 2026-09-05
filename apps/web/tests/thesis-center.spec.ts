@@ -25,7 +25,7 @@ const LOADING_AR = "جارٍ التحميل…";
 const APP_ORIGIN = new URL(process.env.PUBRIVA_WEB_URL ?? "http://127.0.0.1:3000").origin;
 
 /** أسماءُ الأفعال كما في `services/thesis/card_actions.py` — مفردةٌ واحدة. */
-type Primary = "review" | "process" | "reprocess" | "attach_file" | null;
+type Primary = "review" | "process" | "reprocess" | "attach_file" | "restore" | null;
 
 interface Actions {
   primary: Primary;
@@ -36,8 +36,11 @@ interface Actions {
   can_parse: boolean;
   can_attach_file: boolean;
   can_mine: boolean;
-  can_remove: boolean;
+  can_archive: boolean;
+  can_restore: boolean;
   can_trash_file: boolean;
+  is_archived: boolean;
+  lifecycle_blocked_reason: string | null;
   mining_state: "available" | "in_flight" | "no_evidence";
   mining_reason: string;
   parse_withdrawn_reason: string;
@@ -55,6 +58,7 @@ interface Card {
   opportunities: number;
   minedAt: string | null;
   failureCode: string | null;
+  archivedAt: string | null;
 }
 
 const NO_EVIDENCE_AR =
@@ -63,6 +67,10 @@ const NO_EVIDENCE_AR =
 const IN_FLIGHT_AR = "المعالجة جاريةٌ الآن — واستخراج الفرص ينتظر انتهاءها.";
 const AVAILABLE_AR = "استخراج الفرص متاح: توجد عناصر مستخرجة يقرؤها المنقّب.";
 const PARSE_WITHDRAWN_AR = "«تفكيك الرسالة» مسارٌ قديم بقي في الواجهة البرمجية.";
+/** نصُّ المنع أثناء العمل الجاري — **والخادم يفرضه أيضًا، لا الشاشةُ وحدها**. */
+const LIFECYCLE_BLOCKED_AR =
+  "لا تُؤرشَف رسالةٌ يجري عليها عملٌ الآن، ولا يُنقل ملفُّها إلى السلّة: " +
+  "ولا سبيل إلى إلغاء المهمّة في هذه المرحلة.";
 
 const IN_FLIGHT_STATES = new Set(["queued", "parsing", "extracting"]);
 const REVIEWABLE_STATES = new Set(["awaiting_consent", "ready_for_review", "completed"]);
@@ -79,15 +87,17 @@ const RETRYABLE_STATES = new Set([
 function actionsFor(card: Card): Actions {
   const inFlight = IN_FLIGHT_STATES.has(card.state);
   const hasFile = card.fileId !== null;
-  const retryable = hasFile && RETRYABLE_STATES.has(card.state);
+  const archived = card.archivedAt !== null;
+  const retryable = hasFile && RETRYABLE_STATES.has(card.state) && !archived;
   const firstRead = retryable && card.state === "uploaded";
-  const canReview = !inFlight && REVIEWABLE_STATES.has(card.state);
-  const canAttach = !hasFile && !inFlight;
+  const canReview = !inFlight && !archived && REVIEWABLE_STATES.has(card.state);
+  const canAttach = !hasFile && !inFlight && !archived;
   const hasEvidence = card.sections > 0 || card.results > 0;
   const mining = hasEvidence ? "available" : inFlight ? "in_flight" : "no_evidence";
 
   let primary: Primary = null;
-  if (canAttach) primary = "attach_file";
+  if (archived) primary = "restore";
+  else if (canAttach) primary = "attach_file";
   else if (canReview) primary = "review";
   else if (firstRead) primary = "process";
   else if (retryable) primary = "reprocess";
@@ -100,9 +110,13 @@ function actionsFor(card: Card): Actions {
     can_reprocess: retryable && !firstRead,
     can_parse: false,
     can_attach_file: canAttach,
-    can_mine: mining === "available" && !inFlight,
-    can_remove: true,
-    can_trash_file: hasFile,
+    can_mine: mining === "available" && !inFlight && !archived,
+    // **دورةُ الحياة تقف أثناء العمل الجاري** — ولا عقدَ إلغاءٍ يُدَّعى.
+    can_archive: !archived && !inFlight,
+    can_restore: archived,
+    can_trash_file: hasFile && !inFlight && !archived,
+    is_archived: archived,
+    lifecycle_blocked_reason: inFlight ? LIFECYCLE_BLOCKED_AR : null,
     mining_state: mining as Actions["mining_state"],
     mining_reason:
       mining === "available" ? AVAILABLE_AR : mining === "in_flight" ? IN_FLIGHT_AR : NO_EVIDENCE_AR,
@@ -152,6 +166,7 @@ function body(card: Card) {
         : "لم يبدأ استخراج الفرص بعد",
     opportunities_mined_at: card.minedAt,
     opportunities_are_candidates: true,
+    archived_at: card.archivedAt,
     actions: actionsFor(card),
   };
 }
@@ -181,6 +196,7 @@ function make(id: string, over: Partial<Card> = {}): Card {
     opportunities: over.opportunities ?? 0,
     minedAt: over.minedAt ?? null,
     failureCode: over.failureCode ?? null,
+    archivedAt: over.archivedAt ?? null,
   };
 }
 
@@ -243,7 +259,11 @@ async function serve(page: Page, server: Server) {
     if (refusal) return error(route, refusal.status, refusal.code, refusal.message);
 
     if (path === "/api/v1/theses" && method === "GET") {
-      return json(route, 200, [...server.cards.values()].map(body));
+      // **المؤرشَفة تخرج من القائمة الافتراضية ولا تُحذف** — كالخادم تمامًا.
+      const wantArchived = url.searchParams.get("view") === "archived";
+      return json(route, 200, [...server.cards.values()]
+        .filter((c) => (c.archivedAt !== null) === wantArchived)
+        .map(body));
     }
 
     const listed = path.match(/^\/api\/v1\/theses\/([^/]+)(\/[a-z-]+)?$/);
@@ -277,28 +297,45 @@ async function serve(page: Page, server: Server) {
       }
       if (tail === "/removal-preview" && method === "GET") {
         const deps = server.deps.get(id) ?? [];
-        const blocking = deps.filter((d) => d.blocking && d.count > 0);
+        const asked = deps.filter((d) => d.blocking && d.count > 0);
         return json(route, 200, {
           thesis_id: id,
-          removable: blocking.length === 0,
+          needs_acknowledgement: asked.length > 0,
           dependencies: deps,
-          blocking,
+          blocking: asked,
           explanation:
-            blocking.length === 0
+            asked.length === 0
               ? "لا شيء علميٌّ قائمٌ على هذه الرسالة."
-              : "لا تُزال هذه الرسالة: يقوم عليها عملٌ علميٌّ حسمتَه بنفسك.",
+              : "تقوم على هذه الرسالة نتائجُ عملٍ حسمتَه بنفسك. الأرشفة لا تحذف شيئًا.",
           source_file_id: card.fileId,
+          archived: card.archivedAt !== null,
         });
       }
-      if (!tail && method === "DELETE") {
-        const blocking = (server.deps.get(id) ?? []).filter((d) => d.blocking && d.count > 0);
-        if (blocking.length > 0) {
-          return error(route, 409, "thesis.removal_blocked",
-                       "لا تُزال هذه الرسالة: يقوم عليها عملٌ علميٌّ حسمتَه بنفسك.");
+      if (tail === "/archive" && method === "POST") {
+        // **والخادمُ يفرض الحدَّ نفسه** — لا الشاشةُ وحدها.
+        if (IN_FLIGHT_STATES.has(card.state)) {
+          return error(route, 409, "thesis.processing_in_flight",
+                       "المعالجة جارية على هذه الرسالة الآن.");
         }
-        server.cards.delete(id);
-        return json(route, 200, { thesis_id: id, removed: true, dropped: {},
-                                  audit_preserved: true });
+        const asked = (server.deps.get(id) ?? []).filter((d) => d.blocking && d.count > 0);
+        const payload = route.request().postDataJSON() as { acknowledge?: boolean } | null;
+        if (asked.length > 0 && !payload?.acknowledge) {
+          return error(route, 409, "thesis.archive_needs_acknowledgement",
+                       "إخفاؤها يحتاج إقرارك صراحةً.");
+        }
+        // **يُخفى ولا يُحذف**: الصفُّ باقٍ في الخادم المحاكى كما في الحقيقي.
+        card.archivedAt = "2026-03-03T00:00:00Z";
+        return json(route, 200, {
+          thesis_id: id, archived: true, archived_at: card.archivedAt,
+          hidden: {}, acknowledged: Boolean(payload?.acknowledge), rows_deleted: 0,
+        });
+      }
+      if (tail === "/restore" && method === "POST") {
+        card.archivedAt = null;
+        return json(route, 200, {
+          thesis_id: id, archived: false, archived_at: null, hidden: {},
+          acknowledged: false, rows_deleted: 0,
+        });
       }
     }
 
@@ -401,7 +438,7 @@ test.describe("the card offers only what the server accepts", () => {
       // ولا «انقل الملفّ إلى السلّة» على رسالةٍ لا ملفّ لها.
       await card.getByTestId("card-menu").click();
       await expect(card.getByTestId("menu-trash-file")).toHaveCount(0);
-      await expect(card.getByTestId("menu-remove")).toBeVisible();
+      await expect(card.getByTestId("menu-archive")).toBeVisible();
     });
 
   /**
@@ -598,36 +635,76 @@ test.describe("every action reports inside its own card", () => {
     });
 });
 
-test.describe("removal previews before it drops anything", () => {
-  test("a disposable thesis is previewed, confirmed and then gone", async ({ page }) => {
-    const server = newServer([
-      make("drop-me", { state: "uploaded" }),
-      make("keep-me", { state: "uploaded" }),
-    ]);
-    server.deps.set("drop-me", [
-      { key: "sections", label: "أقسام مستخرجة", count: 0, blocking: false },
-    ]);
-    await serve(page, server);
-    await openTheses(page);
+test.describe("archiving hides, and previews before it hides", () => {
+  test("a disposable thesis is previewed, archived and leaves the default list",
+    async ({ page }) => {
+      const server = newServer([
+        make("hide-me", { state: "uploaded" }),
+        make("keep-me", { state: "uploaded" }),
+      ]);
+      server.deps.set("hide-me", [
+        { key: "sections", label: "أقسام مستخرجة", count: 0, blocking: false },
+      ]);
+      await serve(page, server);
+      await openTheses(page);
 
-    const card = cardOf(page, "drop-me");
-    await card.getByTestId("card-menu").click();
-    await card.getByTestId("menu-remove").click();
+      const card = cardOf(page, "hide-me");
+      await card.getByTestId("card-menu").click();
+      await card.getByTestId("menu-archive").click();
 
-    await expect(card.getByTestId("removal-preview")).toBeVisible();
-    await expect(card.getByTestId("removal-no-dependencies")).toBeVisible();
+      await expect(card.getByTestId("removal-preview")).toBeVisible();
+      await expect(card.getByTestId("removal-no-dependencies")).toBeVisible();
 
-    const deleted = page.waitForResponse((r) =>
-      r.url().endsWith("/api/v1/theses/drop-me") && r.request().method() === "DELETE");
-    await card.getByTestId("removal-confirm").click();
-    expect((await deleted).status()).toBe(200);
+      const archived = page.waitForResponse((r) =>
+        r.url().endsWith("/api/v1/theses/hide-me/archive")
+        && r.request().method() === "POST");
+      await card.getByTestId("archive-confirm").click();
+      const sent = await archived;
+      expect(sent.status()).toBe(200);
+      // **ولا حذف**: الخادم يقول صراحةً إنّ صفرًا من الصفوف حُذف.
+      expect((await sent.json()).rows_deleted).toBe(0);
 
-    await expect(cardOf(page, "drop-me")).toHaveCount(0);
-    // **ولا تُمسّ جارتُها** — الإزالة فعلٌ على بطاقةٍ واحدة.
-    await expect(cardOf(page, "keep-me")).toBeVisible();
-  });
+      await expect(cardOf(page, "hide-me")).toHaveCount(0);
+      // **ولا تُمسّ جارتُها** — الأرشفة فعلٌ على بطاقةٍ واحدة.
+      await expect(cardOf(page, "keep-me")).toBeVisible();
+      await expect(page.getByTestId("page-notice")).toBeVisible();
 
-  test("removal is refused with a named explanation when work rests on the thesis",
+      // **ولم تُحذف**: عرضُ الأرشيف يجدها كما هي.
+      await page.getByLabel("العرض").selectOption("archived");
+      await expect(cardOf(page, "hide-me")).toBeVisible();
+      await expect(cardOf(page, "hide-me").getByTestId("card-archived")).toBeVisible();
+      await expect(cardOf(page, "keep-me")).toHaveCount(0);
+    });
+
+  test("an archived thesis offers restore and no work action, and restoring brings it back",
+    async ({ page }) => {
+      const server = newServer([
+        make("in-archive", { state: "ready_for_review", sections: 3,
+                             archivedAt: "2026-03-03T00:00:00Z" }),
+      ]);
+      await serve(page, server);
+      await openTheses(page);
+
+      // القائمةُ الافتراضية لا تعرضها.
+      await expect(cardOf(page, "in-archive")).toHaveCount(0);
+      await page.getByLabel("العرض").selectOption("archived");
+
+      const card = cardOf(page, "in-archive");
+      await expect(card).toBeVisible();
+      // **ساكنة**: لا مراجعةَ ولا تنقيبَ ولا إعادةَ قراءةٍ على سجلٍّ مُخفًى.
+      await expect(card.getByTestId("card-review")).toHaveCount(0);
+      await expect(card.getByTestId("card-mine")).toHaveCount(0);
+      await expect(card.getByTestId("card-reprocess")).toHaveCount(0);
+      await expect(card.getByTestId("card-restore")).toBeVisible();
+
+      const restored = page.waitForResponse((r) =>
+        r.url().endsWith("/api/v1/theses/in-archive/restore")
+        && r.request().method() === "POST");
+      await card.getByTestId("card-restore").click();
+      expect((await restored).status()).toBe(200);
+    });
+
+  test("archiving work the researcher decided on asks for an acknowledgement first",
     async ({ page }) => {
       const server = newServer([make("busy-thesis", { state: "completed", sections: 3 })]);
       server.deps.set("busy-thesis", [
@@ -640,21 +717,27 @@ test.describe("removal previews before it drops anything", () => {
 
       const card = cardOf(page, "busy-thesis");
       await card.getByTestId("card-menu").click();
-      await card.getByTestId("menu-remove").click();
+      await card.getByTestId("menu-archive").click();
 
       const preview = card.getByTestId("removal-preview");
       await expect(preview).toContainText("فرص نشرٍ مرشَّحة: 2");
-      await expect(preview).toContainText("يمنع الإزالة");
-      await expect(card.getByTestId("removal-refused")).toBeVisible();
-      // **ولا زرَّ يَعِد بحذفٍ سيُردّ** — والإزالة لا تُعرض فعلًا هنا.
-      await expect(card.getByTestId("removal-confirm")).toHaveCount(0);
+      await expect(preview).toContainText("يستوجب إقرارك");
+      // **ولا يَعِد النصّ بحذف** — الأرشفة تُخفي والاسترجاع يعيد.
+      await expect(preview).toContainText("لا تحذف شيئًا");
 
-      // ولا طلبَ حذفٍ خرج أصلًا.
-      expect(server.seen.filter((r) => r.method === "DELETE")).toEqual([]);
-      await expect(cardOf(page, "busy-thesis")).toBeVisible();
+      // والزرُّ يقول إنّه إقرار، لا مجرّد إخفاء.
+      const confirm = card.getByTestId("archive-confirm");
+      await expect(confirm).toHaveText("أقرّ وأخفِ السجلّ");
+
+      const sent = page.waitForRequest((r) =>
+        r.url().endsWith("/api/v1/theses/busy-thesis/archive")
+        && r.method() === "POST");
+      await confirm.click();
+      // **والإقرارُ يُرسَل صراحةً** — لا يُفترض في الخادم.
+      expect((await sent).postDataJSON()).toEqual({ acknowledge: true });
     });
 
-  test("trashing the source file is a separate action from removing the record",
+  test("trashing the source file is a separate action from archiving the record",
     async ({ page }) => {
       const server = newServer([make("with-file", { state: "uploaded" })]);
       await serve(page, server);
@@ -662,7 +745,7 @@ test.describe("removal previews before it drops anything", () => {
 
       const card = cardOf(page, "with-file");
       await card.getByTestId("card-menu").click();
-      await expect(card.getByTestId("menu-remove")).toBeVisible();
+      await expect(card.getByTestId("menu-archive")).toBeVisible();
       await expect(card.getByTestId("menu-trash-file")).toBeVisible();
 
       const trashed = page.waitForResponse((r) =>
@@ -671,8 +754,64 @@ test.describe("removal previews before it drops anything", () => {
       expect((await trashed).status()).toBe(200);
 
       await expect(card.getByTestId("card-notice")).toContainText("سلّة المكتبة");
-      // **والسجلُّ باقٍ**: نقلُ الملفّ لم يُزل البطاقة.
+      // **والسجلُّ باقٍ في القائمة**: نقلُ الملفّ لم يُؤرشف الرسالة.
       await expect(cardOf(page, "with-file")).toBeVisible();
-      expect(server.seen.filter((r) => r.method === "DELETE")).toEqual([]);
+      expect(server.seen.filter((r) => r.path.endsWith("/archive"))).toEqual([]);
     });
+});
+
+test.describe("no lifecycle write leaves the client while work is running", () => {
+  for (const state of ["queued", "parsing", "extracting"]) {
+    test(`a ${state} thesis offers no archive and no trash, and says why`,
+      async ({ page }) => {
+        const server = newServer([make(`live-${state}`, { state, sections: 4 })]);
+        server.deps.set(`live-${state}`, [
+          { key: "sections", label: "أقسام مستخرجة", count: 4, blocking: false },
+        ]);
+        await serve(page, server);
+        await openTheses(page);
+
+        const card = cardOf(page, `live-${state}`);
+        await card.getByTestId("card-menu").click();
+
+        // **لا زرَّ يَعِد بما يردّه الخادم** — والسببُ مكتوبٌ مكانه.
+        await expect(card.getByTestId("menu-archive")).toHaveCount(0);
+        await expect(card.getByTestId("menu-trash-file")).toHaveCount(0);
+        await expect(card.getByTestId("menu-lifecycle-blocked"))
+          .toContainText("لا سبيل إلى إلغاء");
+
+        // **ولا كتابةَ دورةِ حياةٍ خرجت أصلًا** — لا حذفًا ولا أرشفةً ولا سلّة.
+        const writes = server.seen.filter((r) =>
+          r.method === "DELETE"
+          || r.path.endsWith("/archive")
+          || r.path.endsWith("/trash"));
+        expect(writes, `طلبُ دورةِ حياةٍ خرج أثناء ${state}`).toEqual([]);
+      });
+  }
+
+  test("the product never sends a DELETE for a thesis in any state", async ({ page }) => {
+    // **الحذفُ رُفع من المنتج** — ولا نقطةَ له في الخادم أصلًا.
+    const server = newServer([
+      make("s1", { state: "uploaded" }),
+      make("s2", { state: "ready_for_review", sections: 2 }),
+      make("s3", { state: "failed", failureCode: "parse_failed" }),
+      make("s4", { state: "text_layer_missing" }),
+    ]);
+    for (const id of ["s1", "s2", "s3", "s4"]) {
+      server.deps.set(id, [
+        { key: "sections", label: "أقسام مستخرجة", count: 0, blocking: false },
+      ]);
+    }
+    await serve(page, server);
+    await openTheses(page);
+
+    for (const id of ["s1", "s2", "s3", "s4"]) {
+      const card = cardOf(page, id);
+      await card.getByTestId("card-menu").click();
+      await card.getByTestId("menu-archive").click();
+      await card.getByTestId("archive-confirm").click();
+      await expect(cardOf(page, id)).toHaveCount(0);
+    }
+    expect(server.seen.filter((r) => r.method === "DELETE")).toEqual([]);
+  });
 });

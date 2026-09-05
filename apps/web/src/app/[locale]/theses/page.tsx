@@ -69,8 +69,12 @@ interface CardActions {
   can_parse: boolean;
   can_attach_file: boolean;
   can_mine: boolean;
-  can_remove: boolean;
+  can_archive: boolean;
+  can_restore: boolean;
   can_trash_file: boolean;
+  is_archived: boolean;
+  /** سببُ منعِ الأرشفة والسلّة أثناء عملٍ جارٍ — **والخادم يفرضه أيضًا**. */
+  lifecycle_blocked_reason: string | null;
   /** available · in_flight · no_evidence */
   mining_state: string;
   mining_reason: string;
@@ -120,6 +124,9 @@ interface Thesis {
   opportunities_outcome_label: string;
   opportunities_are_candidates: boolean;
 
+  /** **مؤرشَفة = مُخفاة لا محذوفة.** `null` تعني «في القائمة». */
+  archived_at: string | null;
+
   actions: CardActions;
 }
 
@@ -132,7 +139,8 @@ interface RemovalDependency {
 
 interface RemovalPreview {
   thesis_id: string;
-  removable: boolean;
+  /** **لا «أيجوز حذفُها؟»** — الحذفُ ذهب. بل «أيستوجب إخفاؤها إقرارًا؟». */
+  needs_acknowledgement: boolean;
   dependencies: RemovalDependency[];
   blocking: RemovalDependency[];
   explanation: string;
@@ -168,6 +176,8 @@ const VIEWS = [
   ["awaiting_action", "theses.viewAwaitingAction"],
   ["failed", "theses.viewFailed"],
   ["completed", "theses.viewCompleted"],
+  // **الأرشيف مرئيّ** — وإلّا صارت الأرشفة حذفًا في تجربة الباحث.
+  ["archived", "theses.viewArchived"],
 ] as const;
 
 const BUTTON: React.CSSProperties = {
@@ -189,6 +199,9 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
 
   const [theses, setTheses] = useState<Thesis[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // **خبرٌ على مستوى الصفحة لفعلٍ تغادر بطاقتُه القائمة** — وهو الاستثناء
+  // الوحيد: بطاقةٌ خرجت من القائمة لا تحمل خبرَ خروجها.
+  const [notice, setNotice] = useState<string | null>(null);
 
   // **حالُ كلّ بطاقةٍ على حدة** — والمفتاح معرّفُ الرسالة. وحالُ انشغالٍ
   // واحدة للصفحة كلّها كانت تجعل ضغطتين على بطاقتين تتصادمان، وخبرَ إحداهما
@@ -337,7 +350,8 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
    * ومن ضغط البطاقة الخامسة عشرة لا يصعد ليعرف أنجح أم سقط، ولا يقرأ خطأً
    * لا يعرف أيَّ بطاقةٍ يخصّ.
    */
-  async function run(id: string, action: "mine-opportunities" | "reprocess",
+  async function run(id: string,
+                     action: "mine-opportunities" | "reprocess" | "restore",
                      successKey: string) {
     patchCard(id, { busy: action, error: null, notice: null, menuOpen: false });
     try {
@@ -361,17 +375,27 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
     }
   }
 
-  async function confirmRemoval(id: string) {
-    patchCard(id, { busy: "remove", error: null });
+  /**
+   * **الأرشفة تُخفي ولا تحذف** — ولا نقطةَ حذفٍ في الخادم أصلًا.
+   *
+   * و`acknowledge` يُرسَل صريحًا حين يتدلّى من الرسالة عملٌ حسمه إنسان:
+   * الخادمُ يردّ بلا إقرارٍ بـ409، والمعاينةُ التي قرأها الباحث للتوّ هي
+   * التي تجعل الإقرار إقرارًا لا ضغطةً ثانية.
+   */
+  async function confirmArchive(id: string, acknowledge: boolean) {
+    patchCard(id, { busy: "archive", error: null });
     try {
-      await apiFetch(`/api/v1/theses/${id}`, { method: "DELETE", locale });
-      // البطاقة تختفي مع الصفّ، فالخبرُ يُقال في الصفحة — ولا بطاقةَ تحمله.
+      await apiFetch(`/api/v1/theses/${id}/archive`, {
+        method: "POST", locale, body: JSON.stringify({ acknowledge }),
+      });
+      // البطاقة تغادر القائمة الافتراضية، فالخبرُ يُقال في الصفحة.
       setCardState((current) => {
         const next = { ...current };
         delete next[id];
         return next;
       });
       setError(null);
+      setNotice(t("theses.archived"));
       await load();
     } catch (err) {
       // **والرفضُ يُقرأ في بطاقته** ومعه المعاينة التي تشرحه.
@@ -454,6 +478,11 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       </form>
 
       {error ? <p className="error">{error}</p> : null}
+      {notice ? (
+        <p className="provenance-note" role="status" data-testid="page-notice">
+          {notice}
+        </p>
+      ) : null}
       {!loaded ? (
         <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
       ) : theses.length === 0 && !error ? (
@@ -498,6 +527,14 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
               {!thesis.title_is_extracted && thesis.display_title ? (
                 <div className="provenance-note" style={{ marginBlockStart: 2 }}>
                   {t("theses.identifiedByFilename")}
+                </div>
+              ) : null}
+
+              {/* **المؤرشَفة تقول إنّها مؤرشَفة** — لا تُعرض كأنّها في القائمة. */}
+              {actions.is_archived ? (
+                <div className="provenance-note" data-testid="card-archived"
+                     style={{ marginBlockStart: 4 }}>
+                  {t("theses.archivedBadge")}
                 </div>
               ) : null}
 
@@ -550,6 +587,20 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
 
               {/* ── الأفعال: ما يقوله الخادم، لا ما تجتهد فيه الشاشة ── */}
               <div style={{ display: "flex", gap: 8, marginBlockStart: 12, flexWrap: "wrap" }}>
+                {actions.can_restore ? (
+                  <button
+                    type="button"
+                    data-testid="card-restore"
+                    onClick={() => void run(thesis.id, "restore", "theses.restored")}
+                    disabled={busy}
+                    style={{ ...lead("restore"), opacity: busy ? 0.6 : 1 }}
+                  >
+                    {state.busy === "restore"
+                      ? t("theses.busyLabel")
+                      : t("theses.restoreCta")}
+                  </button>
+                ) : null}
+
                 {actions.can_review ? (
                   <Link
                     href={`/${locale}/theses/${thesis.id}/review`}
@@ -615,7 +666,8 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                   </button>
                 ) : null}
 
-                {actions.can_remove || actions.can_trash_file ? (
+                {actions.can_archive || actions.can_restore
+                  || actions.can_trash_file || actions.lifecycle_blocked_reason ? (
                   <button
                     type="button"
                     data-testid="card-menu"
@@ -678,15 +730,26 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                       {t("theses.reprocessCta")}
                     </button>
                   ) : null}
-                  {actions.can_remove ? (
+                  {actions.can_archive ? (
                     <button
                       type="button"
-                      data-testid="menu-remove"
+                      data-testid="menu-archive"
                       disabled={busy}
                       onClick={() => void askToRemove(thesis.id)}
                       style={{ ...BUTTON, textAlign: "start" }}
                     >
-                      {t("theses.removeCta")}
+                      {t("theses.archiveCta")}
+                    </button>
+                  ) : null}
+                  {actions.can_restore ? (
+                    <button
+                      type="button"
+                      data-testid="menu-restore"
+                      disabled={busy}
+                      onClick={() => void run(thesis.id, "restore", "theses.restored")}
+                      style={{ ...BUTTON, textAlign: "start" }}
+                    >
+                      {t("theses.restoreCta")}
                     </button>
                   ) : null}
                   {actions.can_trash_file && thesis.source_file_id ? (
@@ -700,6 +763,14 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                     >
                       {t("theses.trashFileCta")}
                     </button>
+                  ) : null}
+                  {/* **ولا زرَّ يَعِد بما يردّه الخادم**: أثناء عملٍ جارٍ
+                      تختفي الأرشفة والسلّة معًا، ويبقى سببُهما مكتوبًا. */}
+                  {actions.lifecycle_blocked_reason ? (
+                    <p className="provenance-note" data-testid="menu-lifecycle-blocked"
+                       style={{ margin: 0 }}>
+                      {actions.lifecycle_blocked_reason}
+                    </p>
                   ) : null}
                   <p className="provenance-note" style={{ margin: 0 }}>
                     {t("theses.removalDistinctNote")}
@@ -735,26 +806,27 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                     </ul>
                   )}
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {state.preview.removable ? (
-                      <button
-                        type="button"
-                        data-testid="removal-confirm"
-                        disabled={busy}
-                        onClick={() => void confirmRemoval(thesis.id)}
-                        style={BUTTON}
-                      >
-                        {state.busy === "remove"
-                          ? t("theses.busyLabel")
-                          : t("theses.removalConfirm")}
-                      </button>
-                    ) : (
-                      <span className="provenance-note" data-testid="removal-refused">
-                        {t("theses.removalRefused")}
-                      </span>
-                    )}
+                    {/* **والإقرارُ يُطلب حيث يقوم عليها عملٌ حسمه إنسان** —
+                        ولا يُمنع الفعل: الأرشفة تُستعاد، والمطلوب أن تقع
+                        بعلم. فالزرّ حاضرٌ في الحالين ونصُّه يقول أيُّهما. */}
                     <button
                       type="button"
-                      data-testid="removal-cancel"
+                      data-testid="archive-confirm"
+                      disabled={busy}
+                      onClick={() =>
+                        void confirmArchive(thesis.id,
+                                            state.preview!.needs_acknowledgement)}
+                      style={BUTTON}
+                    >
+                      {state.busy === "archive"
+                        ? t("theses.busyLabel")
+                        : state.preview.needs_acknowledgement
+                          ? t("theses.archiveAcknowledge")
+                          : t("theses.archiveConfirm")}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="archive-cancel"
                       onClick={() => patchCard(thesis.id, { preview: null })}
                       style={BUTTON}
                     >

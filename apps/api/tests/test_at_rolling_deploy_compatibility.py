@@ -222,7 +222,13 @@ async def test_the_same_write_is_refused_once_the_contract_lands(db_ready):
     async with system_session() as session:
         head = (await session.execute(text(
             "SELECT version_num FROM alembic_version"))).scalar_one()
-    if head != "0029":
+    # **والشرطُ «بلغت 0029» لا «هي 0029» بعينها.**
+    #
+    # وكان `head != "0029"` — فأوّلُ ترحيلٍ بعده يحوّل هذين الفحصين إلى
+    # تخطٍّ صامت، ويبقى العقدُ مفروضًا في القاعدة بلا حارسٍ يشهد له. وقد
+    # وقع ذلك فعلًا عند 0030: القيدُ قائمٌ ولا يمسّه الترحيلُ الجديد، ولا
+    # سببَ لإسقاط الشهادة عليه.
+    if head < "0029":
         pytest.skip(f"قاعدةُ الاختبارات عند {head}، والعقدُ يُفرض في 0029")
 
     async with SessionFactory() as session:
@@ -254,7 +260,13 @@ async def test_the_old_authorship_write_is_also_refused_on_the_contract(db_ready
     async with system_session() as session:
         head = (await session.execute(text(
             "SELECT version_num FROM alembic_version"))).scalar_one()
-    if head != "0029":
+    # **والشرطُ «بلغت 0029» لا «هي 0029» بعينها.**
+    #
+    # وكان `head != "0029"` — فأوّلُ ترحيلٍ بعده يحوّل هذين الفحصين إلى
+    # تخطٍّ صامت، ويبقى العقدُ مفروضًا في القاعدة بلا حارسٍ يشهد له. وقد
+    # وقع ذلك فعلًا عند 0030: القيدُ قائمٌ ولا يمسّه الترحيلُ الجديد، ولا
+    # سببَ لإسقاط الشهادة عليه.
+    if head < "0029":
         pytest.skip(f"قاعدةُ الاختبارات عند {head}، والعقدُ يُفرض في 0029")
 
     async with SessionFactory() as session:
@@ -270,8 +282,14 @@ async def test_the_old_authorship_write_is_also_refused_on_the_contract(db_ready
         f"رُفض اتفاقُ التأليف لسببٍ آخر: {str(caught.value)[:160]}")
 
 
-def test_the_migration_chain_ends_at_the_contract():
-    """السلسلةُ تنتهي بالعقد، ورأسٌ واحد."""
+def test_the_contract_sits_directly_on_the_expand_migration():
+    """**العقدُ يلي التوسعةَ مباشرةً** — ولا ترحيلَ بينهما.
+
+    وترحيلٌ يُدسّ بين 0028 و0029 يفتح نافذةً ثالثة لا يصفها أحد. أمّا ما
+    يأتي **بعد** 0029 فلا يعني هذا الفحص: السلسلة تنمو، والمهمّ أن يبقى
+    العقدُ لاصقًا بتوسعته. (وكان اسمُ هذا الفحص يقول إنّ السلسلة تنتهي عند
+    العقد، وقد صار ذلك غير صحيح عند 0030 — فيُقال ما يُفحَص لا ما كان.)
+    """
     contract = (MIGRATIONS / "0029_research_teams_consent_contract.py").read_text(
         encoding="utf-8")
     assert re.search(r'^revision = "0029"', contract, re.M)

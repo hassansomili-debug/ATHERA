@@ -33,12 +33,26 @@ ACTION_REVIEW: Final = "review"                # افتح شاشة مراجعة 
 ACTION_PROCESS: Final = "process"              # اقرأ الرسالة أوّل مرّة
 ACTION_REPROCESS: Final = "reprocess"          # أعد القراءة (وقد قُرئت من قبل)
 ACTION_ATTACH_FILE: Final = "attach_file"      # رسالةٌ مسجّلة يدويًّا بلا ملفّ
-ACTION_REMOVE: Final = "remove"                # أزل السجلّ من مركز الرسائل
+ACTION_ARCHIVE: Final = "archive"              # أخفِ السجلّ من مركز الرسائل
+ACTION_RESTORE: Final = "restore"              # أعده من الأرشيف
 ACTION_TRASH_FILE: Final = "trash_file"        # انقل ملفّ المصدر إلى السلّة
 
 ACTIONS: Final[tuple[str, ...]] = (
     ACTION_REVIEW, ACTION_PROCESS, ACTION_REPROCESS,
-    ACTION_ATTACH_FILE, ACTION_REMOVE, ACTION_TRASH_FILE,
+    ACTION_ATTACH_FILE, ACTION_ARCHIVE, ACTION_RESTORE, ACTION_TRASH_FILE,
+)
+
+#: **نصُّ المنع أثناء العمل الجاري** — والخادم يفرضه أيضًا، لا الشاشةُ وحدها.
+LIFECYCLE_BLOCKED_LABELS: Final[tuple[str, str]] = (
+    "لا تُؤرشَف رسالةٌ يجري عليها عملٌ الآن، ولا يُنقل ملفُّها إلى السلّة: "
+    "مهمّةٌ تقرأ الملفّ وتكتب مرشّحاتها بينما يُسحب من تحتها تترك نصفَ حال، "
+    "**ولا سبيل إلى إلغائها في هذه المرحلة** — فيُقال ذلك ولا يُدَّعى إلغاء. "
+    "انتظر انتهاءها ثمّ أعد المحاولة.",
+    "A thesis cannot be archived, and its file cannot be trashed, while work is "
+    "running on it: a task reading the file and writing its candidates while the "
+    "record is pulled from under it leaves a half-state, and there is no cancellation "
+    "contract at this stage — so this says so rather than pretending to cancel. Wait "
+    "for it to finish, then try again.",
 )
 
 #: الحالات التي تُفتح عندها المراجعة — **لا كلُّ حالٍ غير فارغة**.
@@ -145,8 +159,11 @@ class CardActions:
     can_parse: bool
     can_attach_file: bool
     can_mine: bool
-    can_remove: bool
+    can_archive: bool
+    can_restore: bool
     can_trash_file: bool
+    is_archived: bool
+    lifecycle_blocked_reason: str | None
     mining_state: str
     mining_reason: str
     parse_withdrawn_reason: str
@@ -164,6 +181,7 @@ def compute(
     sections: int,
     results: int,
     locale: str,
+    archived: bool = False,
 ) -> CardActions:
     """آلةُ حالِ البطاقة — **وكلُّ فعلٍ معروضٍ فعلٌ يقبله الخادم**.
 
@@ -178,28 +196,44 @@ def compute(
       ٣ **`ready_for_review` فعلُها الأول المراجعة**، والثاني إعادة القراءة.
       ٤ **مستندٌ ممسوح ضوئيًّا لا يُعرض عليه فعلٌ يُعيد النتيجة نفسها** —
         `RETRYABLE` لا تشمله عمدًا، ويبقى سببُه معروضًا.
-      ٥ **والإزالة تُقبل طلبًا دائمًا**، ورفضُها يقع بعد حساب التبعات لا
-        قبله: بطاقةٌ تُخفي «أزل» تترك الباحث بلا مخرج، وبطاقةٌ تَعِد بحذفٍ
-        صامت تكذب. فالطلب مقبول والجواب صادق.
+      ٥ **ولا فعلَ يغيّر دورةَ الحياة أثناء عملٍ جارٍ.** أرشفةٌ أو نقلُ
+        ملفٍّ إلى السلّة بينما مهمّةٌ خلفيّة تقرأ الملفّ وتكتب مرشّحاتها
+        يتركان نصفَ حال، **ولا عقدَ إلغاءٍ في هذا المنتج** يُوقفها أو
+        يُسلسلها. فيُمنع الفعل بسببٍ مكتوب، ولا يُدَّعى إلغاءٌ لا وجود له.
+        **والخادم يفرض الحدّ نفسه** — شاشةٌ تُخفي زرًّا وخادمٌ يقبل الطلب
+        حارسٌ واحدٌ لا اثنان.
+      ٦ **والمؤرشَفة لا تُعرض عليها أفعالُ العمل**، بل الاسترجاع وحده:
+        قراءةٌ أو تنقيبٌ على سجلٍّ مُخفًى يكتب في ما لا يراه صاحبه.
     """
     in_flight = processing_state in processing.IN_FLIGHT
     has_file = file_id is not None
-    retryable = has_file and processing_state in processing.RETRYABLE
+    # **والمؤرشَفة ساكنة**: لا يُعرض عليها فعلُ عملٍ ما دامت خارج القائمة.
+    retryable = has_file and processing_state in processing.RETRYABLE and not archived
 
-    can_review = (not in_flight) and processing_state in REVIEWABLE
+    can_review = (not in_flight) and (not archived) and processing_state in REVIEWABLE
     # «اقرأ» و«أعد القراءة» نقطةٌ واحدة وفعلان مختلفان في نصّهما: أوّلُ قراءةٍ
     # ليست إعادةً، وتسميتُها إعادةً تجعل الباحث يظنّ أنّه أضاع شيئًا.
     first_read = retryable and processing_state == processing.UPLOADED
     can_process = first_read
     can_reprocess = retryable and not first_read
-    can_attach_file = (not has_file) and not in_flight
+    can_attach_file = (not has_file) and (not in_flight) and not archived
 
     mining = mining_state(processing_state=processing_state,
                           sections=sections, results=results)
-    can_mine = mining == MINING_AVAILABLE and not in_flight
+    can_mine = mining == MINING_AVAILABLE and not in_flight and not archived
 
-    if can_attach_file:
-        primary: str | None = ACTION_ATTACH_FILE
+    # **دورةُ الحياة تقف أثناء العمل الجاري** — والسببُ يُقال حيث يقع.
+    lifecycle_blocked = (_pick(locale, *LIFECYCLE_BLOCKED_LABELS)
+                         if in_flight else None)
+    can_archive = (not archived) and not in_flight
+    can_restore = archived
+    can_trash_file = has_file and (not in_flight) and not archived
+
+    primary: str | None
+    if archived:
+        primary = ACTION_RESTORE
+    elif can_attach_file:
+        primary = ACTION_ATTACH_FILE
     elif can_review:
         primary = ACTION_REVIEW
     elif can_process:
@@ -224,8 +258,11 @@ def compute(
         can_parse=offers_parse(processing_state, has_file=has_file),
         can_attach_file=can_attach_file,
         can_mine=can_mine,
-        can_remove=True,
-        can_trash_file=has_file,
+        can_archive=can_archive,
+        can_restore=can_restore,
+        can_trash_file=can_trash_file,
+        is_archived=archived,
+        lifecycle_blocked_reason=lifecycle_blocked,
         mining_state=mining,
         mining_reason=_pick(locale, *MINING_LABELS[mining]),
         parse_withdrawn_reason=parse_withdrawn_reason(locale),

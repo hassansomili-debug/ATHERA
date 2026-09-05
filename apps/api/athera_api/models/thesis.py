@@ -95,6 +95,21 @@ class Thesis(Base, TenantScoped, Timestamped):
     opportunities_mined_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
 
+    # ── الأرشفة: وسمٌ يُخفي، **ولا يحذف شيئًا** (ترحيل 0030) ──
+    #
+    # وأوّلُ علاجٍ لغياب المخرج كتب `DELETE FROM theses` على رسالةٍ لا
+    # تبعات علميّة لها. والصفُّ أصلُ سلسلة، و`ON DELETE CASCADE` قائمٌ على
+    # خمسة جداول تحته؛ و«لا تبعات **اليوم**» ليست «لن تكون»، والحذفُ لا
+    # يُستعاد. فتُوسَم الرسالة وتخرج من القائمة، ويبقى كلُّ ما تحتها كما
+    # هو — أقسامًا ونتائجَ ومرشّحاتٍ وفرصًا وحقوقًا وتأليفًا وتدقيقًا.
+    #
+    # **والوسمُ كاملٌ أو غائب**: قيد `archive_is_named` يقرن الوقت بالفاعل،
+    # فلا سجلَّ أرشفةٍ لا يُعرف متى وقع ولا بيد مَن.
+    archived_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    archived_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+
 
 class ThesisOwner(Base, TenantScoped, Timestamped):
     __tablename__ = "thesis_owners"
