@@ -404,6 +404,66 @@ test.describe("the card offers only what the server accepts", () => {
       await expect(card.getByTestId("menu-remove")).toBeVisible();
     });
 
+  /**
+   * **ثلاثةُ أفعالٍ لا واحد، ولكلِّ حالٍ فعلُها** (Wave 1.1، §A).
+   *
+   * ورحلةُ المرشَّح للإصدار تفحص هذا على مكدّسٍ حقيقيّ، لكنّها لا تصنع
+   * «سقطت القراءة» متى شاءت: المستندُ النصّيّ يُقرأ فينجح. **فالفرعُ الذي
+   * لا تبلغه هي يُثبَت هنا** — حيث تُبنى الحالُ الثلاث حرفًا بحرف.
+   *
+   * والنصفُ الثاني هو الذي يحمل الوزن: الفعلان الآخران **غائبان**. فحصٌ
+   * يطلب الحاضر ولا ينفي غيره يمرّ على بطاقةٍ تعرض الثلاثة معًا — وهو
+   * بعينه ما كانت عليه البطاقة قبل هذه الموجة.
+   */
+  const READ_ACTIONS_AR = ["اقرأ الرسالة", "أعد القراءة", "أعد المحاولة"] as const;
+
+  interface ReadActionCase {
+    id: string;
+    card: Card;
+    expected: (typeof READ_ACTIONS_AR)[number];
+    why: string;
+  }
+
+  const READ_ACTION_CASES: ReadActionCase[] = [
+    {
+      id: "never-read",
+      card: make("never-read", { state: "uploaded" }),
+      expected: "اقرأ الرسالة",
+      why: "أوّلُ قراءةٍ ليست إعادة",
+    },
+    {
+      id: "read-once",
+      card: make("read-once", { state: "ready_for_review" }),
+      expected: "أعد القراءة",
+      why: "قُرئ فنجح — فالثانيةُ إعادةُ قراءةٍ لا إصلاحُ عطب",
+    },
+    {
+      id: "read-failed",
+      card: make("read-failed", { state: "failed", failureCode: "parse_failed" }),
+      expected: "أعد المحاولة",
+      why: "سقطت القراءة وللسقوط سبب — فيُعرض إصلاحُها",
+    },
+  ];
+
+  for (const { id, card, expected, why } of READ_ACTION_CASES) {
+    test(`the ${id} state offers exactly «${expected}» and neither of the others`,
+      async ({ page }) => {
+        await serve(page, newServer([card]));
+        await openTheses(page);
+
+        const article = cardOf(page, id);
+        for (const label of READ_ACTIONS_AR) {
+          const control = article.getByRole("button", { name: label, exact: true });
+          if (label === expected) {
+            await expect(control, `${why} — ولا زرَّ به`).toBeVisible();
+          } else {
+            await expect(control, `«${label}» معروضٌ وهو ليس فعلَ هذه الحال`)
+              .toHaveCount(0);
+          }
+        }
+      });
+  }
+
   test("a scanned document is offered nothing and told why", async ({ page }) => {
     const server = newServer([
       make("scanned-one", { state: "text_layer_missing", failureCode: null }),
