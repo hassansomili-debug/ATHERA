@@ -1,53 +1,102 @@
 /*
- * هوية أثيرا | ATHERA design system
+ * هويّة المنتج | The brand token layer.
  *
- * فاتحة أولًا: أبيض وحياد فاتح جدًا، والداكن للنص المقروء وحده. الألوان
- * الستة تحمل معنى لا زينة — الأكوا للفعل، والبنفسجي للذكاء الاصطناعي،
- * والكهرماني للتحذير وحده.
+ * **الهويّة تُعرَّف مرّة، ثمّ تُشتقّ منها كلُّ شاشة.**
  *
- * والخصائص المنطقية (inline-start/end) بدل left/right: التخطيط نفسه يعمل
- * في الاتجاهين بلا ورقة أنماط مرآة.
+ * وكانت الحال قبل هذا طيفًا آخر — أكوا وسماويّ وبنفسجي — مكتوبًا في هذا
+ * الملفّ نفسه، وأسماؤه (`--aqua`, `--sky`, `--teal`) منثورةٌ في أربعٍ
+ * وأربعين شاشة. ولو بُدِّل اللون شاشةً شاشة لبقي نصفُ المنتج على الطيف
+ * القديم إلى أن يُنسى. فالطبقة الأولى وحدها هي التي تُبدَّل: خمسةُ ألوانٍ
+ * معتمدة، ثمّ تُعاد تسميةُ الأسماء القديمة اشتقاقًا منها — فتتبعها كلُّ
+ * شاشةٍ بلا أن تُمسّ.
+ *
+ * ولا يُحذف اسمٌ قديم: حذفُه يترك أربعًا وأربعين شاشةً بلونٍ غير معرَّف —
+ * وهو في CSS صمتٌ لا خطأ، فيمرّ ولا يُرى. فيبقى الاسم ويتغيّر معناه.
+ *
+ * **والألوان الدلاليّة ليست زينة.** أربعُ حالاتٍ علميّة لكلٍّ لونُها:
+ * المقترَح بنفسجيّ، وما ينتظر مراجعةً كهرمانيّ، والمُتحقَّق أخضر،
+ * والمتعارض أحمر. **ولا يحمل اللونُ المعنى وحده أبدًا** — معه نصٌّ
+ * منطوق دائمًا، فمن أطفأ الألوان أو قرأ بلا بصر يبقى عنده المعنى كاملًا.
  */
 :root {
   color-scheme: light;
 
-  /* ── الطيف المعتمد ─────────────────────────────── */
-  --aqua: #00d4c5;
-  --teal: #14b8a6;
-  --sky: #38bdf8;
-  --violet: #8b5cf6;
-  --mint: #a7f3d0;
-  --amber: #f59e0b;
+  /* ── الطيف المعتمد | the approved PUBRIVA palette ───────────────── */
+  --brand-indigo: #4B46A9;   /* اللون الأول: الفعل والهوية */
+  --brand-violet: #7867F2;   /* ذكاءٌ اصطناعي، واقتراحٌ ينتظر إنسانًا */
+  --brand-teal: #17BEBB;     /* لهجةٌ ثانوية — تمييزٌ لا فعل */
+  --brand-ink: #182233;      /* النصّ المقروء */
+  --brand-paper: #F7F8FB;    /* الأرضيّة */
 
-  /* ── حياد فاتح، بميل خفيف نحو الأكوا فلا يبدو رماديًا مصنّعًا ── */
-  --bg: #fbfdfe;
+  /*
+   * درجاتٌ نصّية مشتقّة — **اللون المعتمد لا يصلح نصًّا في كل حال**.
+   * البنفسجي على أبيض يعطي ٤٫١٨، والفيروزيّ ٢٫٣٠؛ وكلاهما دون الحدّ.
+   * فيُحفظ اللون للحشو والحدّ، وتُشتقّ درجةٌ داكنة للنصّ وحده.
+   */
+  --brand-violet-ink: #4A38C8;  /* ٧٫٨٠ على أبيض */
+  --brand-teal-ink: #0E6E6C;    /* ٦٫٠٦ على أبيض */
+
+  /* ── خيط البحث | the Research Thread ────────────────────────────── */
+  --thread: linear-gradient(103deg, var(--brand-indigo) 0%, var(--brand-violet) 58%, var(--brand-teal) 100%);
+  --thread-soft: linear-gradient(103deg,
+    rgba(75, 70, 169, .10) 0%, rgba(120, 103, 242, .09) 58%, rgba(23, 190, 187, .10) 100%);
+  --thread-line: color-mix(in srgb, var(--brand-indigo) 26%, transparent);
+
+  /* ── الأسماء القديمة، تُشتقّ من الجديد فتتبعها الشاشات كلّها ────── */
+  --aqua: var(--brand-indigo);
+  --teal: var(--brand-indigo);
+  --sky: var(--brand-violet);
+  --violet: var(--brand-violet);
+  --mint: #CFF3E7;
+  --amber: #F59E0B;
+  /* أسماءٌ بقيت في ثلاث شاشاتٍ بلا تعريفٍ أصلًا — فكانت تُقرأ لونًا غير
+     صالح، أي لا لون. تُعرَّف هنا اشتقاقًا فلا يبقى في الشجرة اسمٌ ميت. */
+  --athera-teal: var(--brand-indigo);
+  --athera-amber: var(--amber);
+  --athera-gold: var(--brand-violet);
+
+  /* ── حياد فاتح بميلٍ خفيف نحو النيلي ───────────────────────────── */
+  --bg: var(--brand-paper);
   --surface: #ffffff;
-  --surface-2: #f4fafb;
-  --border: #e3edf0;
-  --border-strong: #cfe0e4;
+  --surface-2: #F1F2F8;
+  --border: #E4E5F0;
+  --border-strong: #C9CBE0;
 
-  /* ── النص: داكن حيادي فقط ───────────────────────── */
-  --fg: #0f2027;
-  --fg-soft: #37505a;
-  --muted: #6b8189;
+  /* ── النص ───────────────────────────────────────────────────────── */
+  --fg: var(--brand-ink);
+  --fg-soft: #3D4A60;
+  --muted: #5C6780;
 
-  /* ── تدرّج أثيرا AI — مقيَّد، لا يُستعمل خلفيةً لصفحة ── */
-  --ai-gradient: linear-gradient(103deg, var(--aqua) 0%, var(--sky) 52%, var(--violet) 100%);
-  --ai-tint: linear-gradient(103deg, rgba(0, 212, 197, .09) 0%, rgba(56, 189, 248, .08) 52%, rgba(139, 92, 246, .09) 100%);
+  /* ── تدرّج الذكاء — هو خيط البحث نفسه، لا طيفٌ ثانٍ ─────────────── */
+  --ai-gradient: var(--thread);
+  --ai-tint: var(--thread-soft);
 
-  /* ── دلالات ─────────────────────────────────────── */
-  --ok: var(--teal);
-  --warn: var(--amber);
-  --danger: #e11d48;
+  /*
+   * ── الحالات العلميّة | scientific state semantics ────────────────
+   * أربعٌ لا خامسة لها، ولكلٍّ لونُ حدٍّ ولونُ حشوٍ ولونُ نصّ.
+   */
+  --state-candidate: var(--brand-violet);
+  --state-candidate-ink: var(--brand-violet-ink);
+  --state-review: var(--amber);
+  --state-review-ink: #8A5A06;
+  --state-verified: #17A47A;
+  --state-verified-ink: #0D6B52;
+  --state-conflict: #E11D48;
+  --state-conflict-ink: #B3243F;
 
-  /* ── هندسة ──────────────────────────────────────── */
+  /* ── دلالاتٌ عامّة ───────────────────────────────────────────────── */
+  --ok: var(--state-verified);
+  --warn: var(--state-review);
+  --danger: var(--state-conflict-ink);
+
+  /* ── هندسة ──────────────────────────────────────────────────────── */
   --radius: 14px;
   --radius-lg: 20px;
   --radius-pill: 999px;
   --space: 16px;
-  --shadow-sm: 0 1px 2px rgba(15, 32, 39, .04);
-  --shadow: 0 1px 3px rgba(15, 32, 39, .05), 0 10px 28px -12px rgba(15, 32, 39, .10);
-  --shadow-lift: 0 2px 6px rgba(15, 32, 39, .06), 0 18px 40px -16px rgba(15, 32, 39, .16);
+  --shadow-sm: 0 1px 2px rgba(24, 34, 51, .04);
+  --shadow: 0 1px 3px rgba(24, 34, 51, .05), 0 10px 28px -12px rgba(24, 34, 51, .12);
+  --shadow-lift: 0 2px 6px rgba(24, 34, 51, .06), 0 18px 40px -16px rgba(24, 34, 51, .18);
 }
 
 * { box-sizing: border-box; }
@@ -113,11 +162,17 @@ a { color: var(--teal); }
 .page-head p { color: var(--muted); margin-block: 0; }
 
 /* ══════ العلامة ══════ */
+/*
+ * **العلامة خيطٌ يمرّ بعقد، لا مربّعٌ ملوّن.**
+ *
+ * كان مكانها `span` فارغًا بخلفيّةٍ متدرّجة — شكلٌ لا يقول شيئًا، ولا
+ * يُطبع، ولا يبقى إن أُطفئت الخلفيّات. وصارت رسمًا متجهًا يرسم ما يقوله
+ * المنتج: خطٌّ واحد متّصل يمرّ بأربع عقد، من المشكلة إلى النشر.
+ */
 .brand { display: flex; align-items: center; gap: 10px; padding-inline: 8px; margin-block-end: 8px; }
-.brand-mark {
-  inline-size: 32px; block-size: 32px; border-radius: 10px;
-  background: var(--ai-gradient); flex: 0 0 32px;
-}
+.brand-mark { inline-size: 34px; block-size: 34px; flex: 0 0 34px; display: block; }
+/* والاتجاه ينعكس مع الكتابة: الخيط يبدأ من حيث تبدأ القراءة. */
+html[dir="rtl"] .brand-mark { transform: scaleX(-1); }
 .brand strong { font-size: 17px; font-weight: 640; letter-spacing: -.02em; }
 .brand span { color: var(--muted); font-size: 11px; display: block; line-height: 1.2; }
 
@@ -278,10 +333,43 @@ h2.nav-label { line-height: 1.6; }
   font-size: 12px; font-weight: 550; white-space: nowrap;
   border: 1px solid transparent;
 }
-.chip-stage { background: color-mix(in srgb, var(--sky) 14%, transparent); color: #0c5c86; }
-.chip-ok { background: color-mix(in srgb, var(--mint) 55%, transparent); color: #0d6b52; }
-.chip-warn { background: color-mix(in srgb, var(--amber) 16%, transparent); color: #8a5a06; }
+.chip-stage { background: color-mix(in srgb, var(--brand-indigo) 12%, transparent); color: var(--brand-indigo); }
+.chip-ok { background: color-mix(in srgb, var(--mint) 55%, transparent); color: var(--state-verified-ink); }
+.chip-warn { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--state-review-ink); }
 .chip-muted { background: var(--surface-2); color: var(--muted); border-color: var(--border); }
+
+/*
+ * ══════ الحالات العلميّة الأربع ══════
+ *
+ * **هذه ليست شاراتِ زينة.** «مقترَح» و«ينتظر مراجعتك» و«متحقَّق»
+ * و«متعارض» أربعُ حالاتٍ يبني عليها الباحث قرارًا، فلها لونٌ ثابت لا
+ * يتبدّل من شاشةٍ إلى شاشة — وكانت تتبدّل: «التعارض» كهرمانيّ في شاشةٍ
+ * وأحمر في أخرى، و«المتحقَّق» فيروزيّ هنا وأخضر هناك.
+ *
+ * **ولا يحمل اللونُ المعنى وحده.** كلُّ شارةٍ تحمل نصَّها منطوقًا، ولها
+ * حدٌّ مصمَت يبقى بعد إطفاء الألوان، و`data-state` يُعلن الحال في الشجرة.
+ * فمن قرأ بلا بصر، أو رأى بلا تمييزٍ للألوان، يبقى عنده المعنى كاملًا.
+ */
+.chip-candidate {
+  background: color-mix(in srgb, var(--state-candidate) 13%, transparent);
+  color: var(--state-candidate-ink);
+  border-color: color-mix(in srgb, var(--state-candidate) 42%, transparent);
+}
+.chip-review {
+  background: color-mix(in srgb, var(--state-review) 16%, transparent);
+  color: var(--state-review-ink);
+  border-color: color-mix(in srgb, var(--state-review) 48%, transparent);
+}
+.chip-verified {
+  background: color-mix(in srgb, var(--state-verified) 15%, transparent);
+  color: var(--state-verified-ink);
+  border-color: color-mix(in srgb, var(--state-verified) 45%, transparent);
+}
+.chip-conflict {
+  background: color-mix(in srgb, var(--state-conflict) 12%, transparent);
+  color: var(--state-conflict-ink);
+  border-color: color-mix(in srgb, var(--state-conflict) 45%, transparent);
+}
 
 /* شريط إعلان: قدرة تنتظر تفعيلًا — لا وعد ولا ادعاء */
 .gate {
