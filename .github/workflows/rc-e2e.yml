@@ -1,0 +1,217 @@
+# ═══════════════════════════════════════════════════════════════════════
+# بيئةُ المرشَّح للإصدار | the release-candidate environment
+# ═══════════════════════════════════════════════════════════════════════
+#
+# **الطبقاتُ تُفحص مجتمعةً أو لا تُفحص.** كلُّ مهمّةٍ قائمة تفحص طبقةً
+# وحدها: `api` تسأل بايثون بلا متصفّح، و`browser` تسأل المتصفّح بشبكةٍ
+# معترَضة بلا خادمٍ ولا قاعدة. فبقي السؤال الذي لا تجيبه واحدةٌ منها:
+# **هل تعمل الطبقتان معًا؟**
+#
+# وهذا السؤال ليس ترفًا. مالكُ المنتج فتح معاينةَ الموجة الأولى فرأى على
+# `/en/theses` جملةَ «Could not load the data.» وفي الشريط «Sign in» في
+# اللحظة نفسها — ولا فحصَ أخضرَ واحد كان يكذب: كلُّ طبقةٍ سليمةٌ وحدها،
+# والوصلةُ بينهما هي المعطوبة. وهذه المهمّة هي المِسبار: واجهةُ الموجة
+# الأولى تُبنى وتُشغَّل أمام **API الموجة الأولى** و**قاعدةٍ عند 0028**،
+# وتُقاد بمتصفّحٍ حقيقي بلا اعتراضِ شبكةٍ البتّة.
+#
+# ── العزل ──────────────────────────────────────────────────────────────
+#
+# القاعدةُ خدمةٌ في هذه المهمّة تموت بموتها. والـAPI يُقلع على
+# `127.0.0.1`، والوِب على `127.0.0.1`. **ولا يُنادى الإنتاج، ولا يُقرأ
+# سرٌّ، ولا تُشغَّل هجرةٌ على قاعدةٍ باقية.** والحسابات اصطناعيّةٌ ببادئةٍ
+# مسجّلة (`pubriva-rc-…@example.com`) — ولا تُقرأ `PUBRIVA_ACCEPT_*` هنا
+# بحال، فليس في هذه المهمّة اعتمادٌ حقيقيّ أصلًا.
+name: RC E2E — طبقاتٌ مجتمعة | the whole stack, together
+
+# **ولا تعمل على مسارات الموجة.** المشغّل مقيَّدٌ بالـPR الذي يقصد `main`
+# وحده، فلا يُشغَّل على PRات المسارات التي تقصد فرع الموجة.
+on:
+  pull_request:
+    # **وبوّابةُ المرشَّح تُشغَّل على فرع الموجة أيضًا.** كانت محصورةً في
+    # الطلبات إلى `main`، وفرعُ التكامل هو موضعُ الفحص قبل أن يبلغها.
+    branches: [main, "sprint/**"]
+  workflow_dispatch: {}
+
+jobs:
+  rc:
+    name: RC — رحلةُ رسالةٍ على المكدّس كاملًا | a thesis journey on the full stack
+    runs-on: ubuntu-latest
+
+    # القاعدة والأدوار كما في مهمّة `api` حرفًا بحرف — صورةٌ واحدة، ودورُ
+    # مالكٍ واحد، وفحصُ حياةٍ واحد. واختلافُ بيئتين يجعل الفرقَ في النتيجة
+    # لغزًا: أهو الشيفرة أم الإعداد؟
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: athera_owner
+          POSTGRES_PASSWORD: athera_owner_pw
+          POSTGRES_DB: athera
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U athera_owner -d athera"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://athera_app:athera_app_pw@localhost:5432/athera
+      DATABASE_MIGRATION_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera
+
+      # قيمةُ CI لا سرَّ إنتاج — ولا تُستعمل بيانات اعتماد إنتاجية بحال.
+      JWT_SECRET: ci-only-not-a-real-secret
+      MODEL_PROVIDER: "null"
+
+      # **التخزين في الذاكرة**: الرفع والتنزيل يعملان بلا MinIO ولا S3 ولا
+      # مفتاح. و`storage.is_configured()` تقول «مُهيّأ» عليه، فزرُّ الرفع
+      # يُفتح — وبـ`none` كان يبقى مُطفأً فتموت الرحلة عند بابها.
+      STORAGE_PROVIDER: memory
+
+      # **وهذا السطر بعينه هو موضعُ الانحراف المشتبه به.**
+      #
+      # الوِب يُخدَم من `127.0.0.1:3000` والـAPI من `127.0.0.1:8000` —
+      # أصلان مختلفان، فكلُّ طلبٍ من المتصفّح عبورُ أصل. والافتراض في
+      # `config.py` هو `http://localhost:3000` وحده، و`127.0.0.1` أصلٌ
+      # آخر عند المتصفّح. فلو تُرك الافتراض لسقطت كلُّ الطلبات على حاجز
+      # CORS — وهي بالضبط الحال التي تُنتج «Could not load the data.».
+      CORS_ALLOWED_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+
+      # عنوانُ الـAPI يدخل CSP وقتَ البناء لا وقت التشغيل، فيُضبط قبل البناء.
+      NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:8000
+      PUBRIVA_WEB_URL: http://127.0.0.1:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - run: pip install -e "apps/api[dev,providers]"
+
+      - name: Migrate to head (RLS + append-only audit)
+        run: cd infra/db && alembic upgrade head
+
+      # ── الرأسُ المطلوب `0028` بعينه ─────────────────────────────────
+      #
+      # **وهذه هي الخطوة التي تفصل «عطبَ منتج» عن «انحراف نسخ».** الإنتاج
+      # اليوم عند `0025`، وواجهةُ الموجة الأولى تطلب `limit` و`after` و`q`
+      # و`view` — وهي عقودُ ما بعد `0025`. فلو أقلعت هذه المهمّة على قاعدةٍ
+      # أقدم لأعادت إنتاج العَرَض نفسه، **ولنُسب إلى المنتج ظلمًا**.
+      #
+      # والرقمُ مثبَّتٌ نصًّا هنا **عن قصد**، خلافًا لتدريب الترحيل في
+      # `ci.yml` حيث يُشتقّ: هناك السؤال «أوصل التدريبُ إلى رأس المستودع؟»
+      # فيُشتقّ الرأس. وهنا السؤال «أهذه بيئةُ الموجة الأولى؟» — وجوابه
+      # رقمٌ بعينه اتُّفق عليه، لا «أيًّا كان رأسُ اليوم». ولو أُشتقّ لقال
+      # الفحصُ «موافق» على أيّ رأسٍ كان، فلا يحرس شيئًا.
+      - name: Assert the schema head is exactly 0028
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          head=$(psql -h localhost -U athera_owner -d athera -tAc \
+            "SELECT version_num FROM alembic_version")
+          echo "database head: '$head' · required: '0028'"
+          if [ "$head" != "0028" ]; then
+            echo "::error::the RC database is at schema '$head', not 0028 —"
+            echo "::error::this is NOT a Wave 1 environment, and any result from it"
+            echo "::error::would describe version skew, not the product. Refusing to run."
+            exit 1
+          fi
+          echo "schema head verified: 0028"
+
+      # ── الـAPI: شيفرةُ هذا الفرع، بلا نموذج وبلا سرّ ────────────────
+      - name: Start the Wave 1 API (uvicorn, 127.0.0.1:8000)
+        run: |
+          cd apps/api
+          python -m uvicorn athera_api.main:app \
+            --host 127.0.0.1 --port 8000 --log-level info \
+            > "${RUNNER_TEMP}/api.log" 2>&1 &
+          echo $! > "${RUNNER_TEMP}/api.pid"
+
+      - name: Wait for /healthz
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/healthz > "${RUNNER_TEMP}/healthz.json"; then
+              echo "healthz answered on attempt ${attempt}:"
+              cat "${RUNNER_TEMP}/healthz.json"; echo
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the API never answered /healthz"
+          cat "${RUNNER_TEMP}/api.log" || true
+          exit 1
+
+      # يُعلَن ما أقلع فعلًا: مزوّدٌ صفريّ وتخزينٌ في الذاكرة. وقراءةُ السجل
+      # لاحقًا بلا هذا السطر تخمينٌ في ماذا كانت البيئة.
+      - name: Announce the API posture
+        run: |
+          echo "MODEL_PROVIDER=${MODEL_PROVIDER} · STORAGE_PROVIDER=${STORAGE_PROVIDER}"
+          echo "CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}"
+
+      # ── الوِب: يُبنى بعنوان الـAPI المُقلَع، لا بعنوان الإنتاج ────────
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+
+      - run: cd apps/web && npm ci
+
+      # `--no-save` كما في مهمّة `browser`: لا Node على جهاز التطوير لإعادة
+      # توليد القفل، وإضافةُ الحزمة بلا قفلٍ مطابق تكسر `npm ci`.
+      - run: cd apps/web && npm install --no-save @playwright/test@^1.51.1
+      - run: cd apps/web && npx playwright install --with-deps chromium
+
+      - name: Build the web against the local Wave 1 API
+        run: cd apps/web && npm run build
+
+      - name: Start the web (127.0.0.1:3000)
+        run: |
+          cd apps/web
+          npx next start --hostname 127.0.0.1 --port 3000 \
+            > "${RUNNER_TEMP}/web.log" 2>&1 &
+          echo $! > "${RUNNER_TEMP}/web.pid"
+          for attempt in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3000/en/login; then
+              echo "the web answered on attempt ${attempt}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the web never answered"
+          cat "${RUNNER_TEMP}/web.log" || true
+          exit 1
+
+      # ── الرحلة: متصفّحٌ حقيقي، وقاعدةٌ حقيقية، وبلا اعتراضِ شبكةٍ البتّة ──
+      - name: RC thesis journey (real browser · real API · real database)
+        run: cd apps/web && npm run test:rc
+        env:
+          # الخادمان أُقلعا هنا؛ فلا يُقلع Playwright ثالثًا على منفذٍ مشغول.
+          PUBRIVA_WEB_SERVER: external
+
+      # سجلّا الخادمين يُطبعان عند الفشل — فيُعرف أين سقطت الرحلة من الطرفية
+      # وحدها، قبل فتح أي ملفّ مرفوع.
+      - name: Server logs (on failure)
+        if: failure()
+        run: |
+          echo "───────── API ─────────"; tail -n 300 "${RUNNER_TEMP}/api.log" || true
+          echo "───────── WEB ─────────"; tail -n 200 "${RUNNER_TEMP}/web.log" || true
+
+      # **والمخرجاتُ هنا آمنةٌ للرفع — وهذا تأكيدٌ لا افتراض.**
+      #
+      # `error-context.md` يحمل لقطةَ DOM لصفحةٍ فيها حقول اعتماد، ولذلك
+      # تُمحى مخرجاتُ رحلة القبول في `ci.yml` قبل أي رفع. وهذه المهمّة
+      # مختلفةٌ في الأصل لا في الاحتياط: **لا اعتماد فيها إطلاقًا**. الحساب
+      # اصطناعيٌّ يُولَّد في الرقعة على `example.com`، وكلمتُه ثابتةُ CI لا
+      # سرَّ لها، والقاعدة خدمةٌ تموت مع المهمّة، والرموز تُصدَر لها وحدها.
+      # فما في اللقطة لا يفتح شيئًا، ولا يوجد في هذه المهمّة سرٌّ يُسرَّب.
+      - name: Upload Playwright artifacts (failure only — no credentials exist here)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc-playwright-report
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 7
+
+      - name: Stop the servers
+        if: always()
+        run: |
+          kill "$(cat "${RUNNER_TEMP}/web.pid")" 2>/dev/null || true
+          kill "$(cat "${RUNNER_TEMP}/api.pid")" 2>/dev/null || true

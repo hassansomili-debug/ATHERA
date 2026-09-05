@@ -16,6 +16,18 @@ import { defineConfig, devices } from "@playwright/test";
 const BASE = process.env.PUBRIVA_WEB_URL ?? "http://127.0.0.1:3000";
 const usingLocalServer = BASE.startsWith("http://127.0.0.1") || BASE.startsWith("http://localhost");
 
+/**
+ * خادمٌ يبدأ **خارج** Playwright — لبيئة المرشَّح للإصدار (rc-e2e).
+ *
+ * تلك المهمّة تبني الوِب بنفسها بـ`NEXT_PUBLIC_API_BASE_URL` يشير إلى
+ * الـAPI الذي أقلعته في الخطوة السابقة، ثم تُشغّله. ولو تولّى Playwright
+ * الإقلاع أيضًا لاصطدم بمنفذٍ مشغول: `reuseExistingServer` مُطفأ في CI
+ * عمدًا، فيسقط التشغيل قبل أن يبدأ. فيُقال له صراحةً إنّ الخادم قائم.
+ *
+ * ولا يتغيّر شيء لبقية المهام: المتغيّر غير مضبوط عندها، والسلوك كما كان.
+ */
+const externalServer = process.env.PUBRIVA_WEB_SERVER === "external";
+
 export default defineConfig({
   testDir: "./tests",
   // التوازي مُطفأ: رحلة القبول تُنشئ بحوثًا وتحذفها، وتداخلها يُنتج فشلًا
@@ -35,7 +47,7 @@ export default defineConfig({
     video: "retain-on-failure",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
-  webServer: usingLocalServer
+  webServer: usingLocalServer && !externalServer
     ? {
         command: "npm run build && npm run start",
         url: BASE,
