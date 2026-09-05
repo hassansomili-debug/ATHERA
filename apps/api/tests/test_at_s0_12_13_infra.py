@@ -141,12 +141,43 @@ def test_ci_derives_the_expected_migration_head_instead_of_hardcoding_it():
     assert not re.search(r'test "\$head" = "0\d{3}"', drill), "رقم مثبَّت عاد"
 
 
+#: الخطواتُ المسموح لها بتثبيت رقمِ ترحيل — **بسببٍ مكتوب، لا بالتسامح**.
+#:
+#: قاعدةُ نافذة النشر تقف عند `0028` عمدًا: بين ترحيل الإنتاج ونشر الموجة
+#: يخدم الخادمُ القديم ذلك المخطَّط بعينه، والرقمُ هنا **هو الخاصّيّة
+#: المفحوصة** لا قيمةً تتقادم. ولو اشتُقّ من الرأس لصار الفحصُ يقيس الرأس
+#: مرّتين ولا يقيس النافذة أصلًا.
+PINNED_BY_DESIGN = ("athera_expand", "expand-window", "upgrade 0028")
+
+
 def test_no_ci_step_pins_a_migration_revision_number():
-    """الحارس أوسع من الخطوة الواحدة: لا مقارنة برقم ترحيل في أي مكان."""
+    """الحارس أوسع من الخطوة الواحدة: لا مقارنة برقم ترحيل في أي مكان.
+
+    وللنافذة استثناءٌ معلَّل: يُسمح بتثبيت `0028` في خطواتها وحدها.
+    """
     import re
 
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    block = ""
     for line in workflow.splitlines():
-        if line.strip().startswith("#"):
+        stripped = line.strip()
+        if stripped.startswith("- name:"):
+            block = stripped
+        if stripped.startswith("#"):
             continue
-        assert not re.search(r'=\s*"0\d{3}"', line), f"رقم ترحيل مثبَّت: {line.strip()}"
+        if any(mark in line or mark in block for mark in PINNED_BY_DESIGN):
+            continue
+        assert not re.search(r'=\s*"0\d{3}"', line), f"رقم ترحيل مثبَّت: {stripped}"
+
+
+def test_the_pinned_exception_is_only_the_window():
+    """**واستثناءٌ بلا حدٍّ يصير قاعدة.**
+
+    فيُطلب أن يبقى الرقم المثبَّت `0028` وحده: لو ثُبّت رأسُ السلسلة يومًا
+    لعاد العطبُ الذي وُضع الحارسُ لأجله، متسلّلًا من باب الاستثناء.
+    """
+    import re
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    pinned = {m for m in re.findall(r'=\s*"(0\d{3})"', workflow)}
+    assert pinned <= {"0028"}, f"أرقامٌ مثبَّتة خارج النافذة: {sorted(pinned)}"
