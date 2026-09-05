@@ -124,6 +124,11 @@ async def _one_member_and_agreement(engine):
 
     tenant, project = uuid.uuid4(), uuid.uuid4()
     member, agreement = uuid.uuid4(), uuid.uuid4()
+    # **وسياقُ المستأجر يُضبط في كل معاملة.** `set_config(..., true)` محلّيٌّ
+    # بالمعاملة؛ فمن ضبطه في معاملة الزرع وحدها كتب في التاليات بلا سياق،
+    # فرشّحت RLS كلَّ شيء — **بلا خطأ**. تُحدَّث صفرُ صفوف، ولا يُفحص قيدٌ
+    # واحد، ويخضرّ الفحصُ على لا شيء. وهو العطبُ الذي أسقط عشرة فحوصٍ في
+    # المسار «هـ» من قبل.
     async with engine.begin() as conn:
         await conn.execute(text(
             "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
@@ -161,7 +166,7 @@ async def _one_member_and_agreement(engine):
             "party_id, author_position, consent_status) "
             "VALUES (:i, :t, :o, :y, 1, 'pending')"),
             {"i": agreement, "t": tenant, "o": opportunity, "y": party})
-    return member, agreement
+    return tenant, member, agreement
 
 
 @requires_expand_db
@@ -176,16 +181,27 @@ async def test_the_old_api_can_still_write_consent_on_the_expanded_schema():
 
     engine = create_async_engine(EXPAND_URL, poolclass=None)
     try:
-        member, agreement = await _one_member_and_agreement(engine)
+        tenant, member, agreement = await _one_member_and_agreement(engine)
         async with engine.begin() as conn:
-            await conn.execute(text(OLD_MEMBER_CONSENT), {"member_id": member})
-            await conn.execute(text(OLD_AGREEMENT_CONSENT),
-                               {"agreement_id": agreement})
-        async with engine.connect() as conn:
-            method = (await conn.execute(text(
-                "SELECT consent_method FROM project_members WHERE id = :i"),
-                {"i": member})).scalar_one()
-            assert method is None, "الخادمُ القديم لا يكتب طريقة"
+            await conn.execute(text(
+                "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+            touched = await conn.execute(text(OLD_MEMBER_CONSENT),
+                                         {"member_id": member})
+            # **والصفرُ الصامت يسقط هنا.** لو رشّحت RLS الصفَّ لمرّ التحديث
+            # بلا أثرٍ ولا خطأ، ولخضرّ الفحصُ وهو لم يكتب شيئًا.
+            assert touched.rowcount == 1, "لم يُصب التحديثُ صفًّا — سياقٌ مفقود"
+            agreed = await conn.execute(text(OLD_AGREEMENT_CONSENT),
+                                        {"agreement_id": agreement})
+            assert agreed.rowcount == 1, "لم يُصب تحديثُ الاتفاق صفًّا"
+
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+            row = (await conn.execute(text(
+                "SELECT consent_method, consent_recorded_at FROM project_members "
+                "WHERE id = :i"), {"i": member})).one()
+        assert row.consent_recorded_at is not None, "الوقتُ لم يُكتب"
+        assert row.consent_method is None, "الخادمُ القديم لا يكتب طريقة"
     finally:
         await engine.dispose()
 
@@ -210,10 +226,12 @@ async def test_the_same_write_is_refused_once_the_contract_lands(db_ready):
         pytest.skip(f"قاعدةُ الاختبارات عند {head}، والعقدُ يُفرض في 0029")
 
     async with SessionFactory() as session:
-        member, _ = await _one_member_and_agreement(session.bind)
+        tenant, member, _ = await _one_member_and_agreement(session.bind)
 
     with pytest.raises(IntegrityError) as caught:
         async with SessionFactory() as session, session.begin():
+            await session.execute(text(
+                "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
             await session.execute(text(OLD_MEMBER_CONSENT), {"member_id": member})
     assert "consent_has_a_method" in str(caught.value), (
         "رُفضت الكتابةُ لسببٍ آخر — فالفحصُ لا يثبت العقد")
