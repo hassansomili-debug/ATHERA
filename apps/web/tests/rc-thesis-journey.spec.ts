@@ -1,4 +1,8 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { expect, test, type APIRequestContext, type APIResponse, type Page } from "@playwright/test";
 
 /**
  * رحلةُ المرشَّح للإصدار | The release-candidate journey (Wave 1).
@@ -94,7 +98,53 @@ const IN_FLIGHT_STATE_LABELS_EN = [
 // البادئة `pubriva-rc` مسجّلة في `athera_api.synthetic`، والنطاق
 // `example.com` محجوز. وحارسُ `test_the_browser_journey_uses_the_registered_marker`
 // يقرأ هذا السطر ويقابله بالسجلّ — فلا تفترق علامةٌ عن مصدرها.
-const STAMP = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+/**
+ * **حالةُ الرحلة تعيش في ملفّ لا في ذاكرة العامل.**
+ *
+ * وهذا ليس زخرفًا: Playwright **يُنهي عمليّةَ العامل بعد كلّ فشل** ويبدأ
+ * أخرى نظيفة. فأوّلُ صياغةٍ هنا احتفظت بالرموز وبعدّادات الأخطاء في
+ * متغيّراتٍ على مستوى الوحدة — فلمّا سقط الرفع أُعيد تحميل الوحدة، فصارت
+ * الجلسات `null` فسقطت دعاوى لا علاقة لها بالرفع، **و — وهو الأسوأ —
+ * فرغت قائمةُ الـ٥٠٠ فأخضرّت الدعوى ١١ على خمسمئةٍ وقعت في التشغيلة
+ * نفسها.** حارسٌ يُصفَّر بالفشل الذي جاء ليحرس منه ليس حارسًا.
+ *
+ * والملفّ في مجلّد النظام المؤقّت لا في `test-results`: مخرجاتُ الرقعة
+ * تُرفع عند الفشل، ولا داعيَ لأن يُرفع معها رمزُ جلسةٍ ولو كان اصطناعيًّا.
+ */
+//
+// واسمُ الملفّ يحمل رقمَ التشغيلة حيث يوجد: تشغيلتان على آلةٍ واحدة لا
+// ترثان جلساتِ بعضهما، فتحاول الثانيةُ تسجيلَ بريدٍ مسجَّل وتسقط بلا سبب.
+const STATE_PATH = join(
+  tmpdir(), `pubriva-rc-journey-${process.env.GITHUB_RUN_ID ?? "local"}.json`);
+
+interface JourneyState {
+  stamp: string;
+  born: number;
+  a: Session | null;
+  b: Session | null;
+  theses: Record<string, string>;
+  serverErrors: string[];
+  pageErrors: string[];
+  requestFailures: string[];
+}
+
+/** حالةٌ من تشغيلةٍ قديمة لا تُورَّث — ساعةٌ حدٌّ كافٍ، وCI عذراءُ أصلًا. */
+const STALE_AFTER_MS = 60 * 60 * 1000;
+
+function readState(): JourneyState | null {
+  try {
+    if (!existsSync(STATE_PATH)) return null;
+    const parsed = JSON.parse(readFileSync(STATE_PATH, "utf8")) as JourneyState;
+    if (!parsed?.stamp || Date.now() - parsed.born > STALE_AFTER_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+const RESTORED = readState();
+
+const STAMP = RESTORED?.stamp ?? `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 /**
  * الخاتمةُ تحمل تمييزَ الحساب، **والبادئةُ تبقى بادئةَ السجلّ**.
@@ -130,9 +180,11 @@ test.describe.configure({ retries: 0 });
 
 interface Session { access: string; refresh: string; expiry: string }
 
-const sessions: Record<"a" | "b", Session | null> = { a: null, b: null };
+const sessions: Record<"a" | "b", Session | null> = {
+  a: RESTORED?.a ?? null, b: RESTORED?.b ?? null,
+};
 /** معرّفاتُ الرسائل كما ردّها الخادم — تُقرأ من الـAPI لا تُخمَّن من الشاشة. */
-const theses: Record<string, string> = {};
+const theses: Record<string, string> = RESTORED?.theses ?? {};
 
 /**
  * كلُّ ردٍّ ≥٥٠٠ يُلتقط من **الأصلين معًا**، ويُحكم عليه في الدعوى ١١.
@@ -141,8 +193,8 @@ const theses: Record<string, string> = {};
  * الخادم حقيقي، ومراقبةُ أصله هي الغاية: خمسمئةٌ من الـAPI هي بالضبط ما
  * لا يظهر في أيّ فحصٍ آخر.
  */
-const serverErrors: string[] = [];
-const pageErrors: string[] = [];
+const serverErrors: string[] = RESTORED?.serverErrors ?? [];
+const pageErrors: string[] = RESTORED?.pageErrors ?? [];
 
 /**
  * **وطلبٌ يُرفض على مستوى الشبكة لا يظهر ردًّا البتّة** — فيُلتقط وحده.
@@ -155,7 +207,29 @@ const pageErrors: string[] = [];
  * الجملةُ بعينها. فمراقبةُ الـ٥٠٠ وحدها كانت ستُخضِرّ هذه الدعوى على
  * خمسمئةٍ وقعت فعلًا.
  */
-const requestFailures: string[] = [];
+const requestFailures: string[] = RESTORED?.requestFailures ?? [];
+
+function persist(): void {
+  const state: JourneyState = {
+    stamp: STAMP, born: RESTORED?.born ?? Date.now(),
+    a: sessions.a, b: sessions.b, theses,
+    serverErrors, pageErrors, requestFailures,
+  };
+  writeFileSync(STATE_PATH, JSON.stringify(state), "utf8");
+}
+
+/**
+ * ردٌّ جاء من خارج المتصفّح — **ويُحسب في الدعوى ١١ كما يُحسب ما رآه**.
+ *
+ * فـ`APIRequestContext` لا يمرّ بـ`page.on("response")`؛ وخمسمئةٌ التقطها
+ * سؤالٌ مباشر خمسمئةٌ وقعت على الخادم، ولا فرق.
+ */
+function note(response: APIResponse, what: string): APIResponse {
+  if (response.status() >= 500) {
+    serverErrors.push(`${response.status()} ${what} ${response.url()}`);
+  }
+  return response;
+}
 
 function watch(page: Page): void {
   page.on("pageerror", (error) => pageErrors.push(String(error)));
@@ -176,6 +250,12 @@ function watch(page: Page): void {
 
 test.beforeEach(async ({ page }) => {
   watch(page);
+});
+
+// **بعد كلّ دعوى، لا بعد الرحلة.** الحفظُ في النهاية وحدها يضيع بأوّل فشل
+// — وهو الفشل الذي نريد أن نتذكّره.
+test.afterEach(() => {
+  persist();
 });
 
 // ══════════════════════════════════════════════════════════════════════
@@ -249,12 +329,12 @@ async function readSession(page: Page): Promise<Session> {
 
 /** قراءةُ قائمة الرسائل من الـAPI مباشرةً — للتحقّق ممّا تراه القاعدة. */
 async function listTheses(request: APIRequestContext, which: "a" | "b") {
-  const response = await request.get(`${API_ORIGIN}/api/v1/theses?limit=25`, {
+  const response = note(await request.get(`${API_ORIGIN}/api/v1/theses?limit=25`, {
     headers: {
       Authorization: `Bearer ${sessions[which]?.access}`,
       "Accept-Language": EN,
     },
-  });
+  }), "GET /api/v1/theses");
   expect(response.status(), "GET /api/v1/theses").toBe(200);
   return (await response.json()) as Array<Record<string, unknown>>;
 }
@@ -438,14 +518,14 @@ test("٤·٥ · الرفع ينجح والبطاقةُ تحمل اسمَ الم�
   // بلا ترويسة أصلٍ، فيحجبها ولا يرى JS رمزًا ولا ترى الرقعةُ ردًّا — فيقول
   // الفحصُ «انتهت المهلة» عن عطبٍ رمزُه معروف. والسؤالُ من خارج المتصفّح
   // يقرأ الرمز كما هو، فيصير سطرُ الفشل يقول العطبَ لا يصف انتظارًا.
-  const direct = await request.post(`${API_ORIGIN}/api/v1/theses/upload`, {
+  const direct = note(await request.post(`${API_ORIGIN}/api/v1/theses/upload`, {
     headers: { Authorization: `Bearer ${sessions.a?.access}`, "Accept-Language": EN },
     multipart: {
       upload: {
         name: TEXT_PDF_NAME, mimeType: "application/pdf", buffer: pdfWithText(),
       },
     },
-  });
+  }), "POST /api/v1/theses/upload");
   expect(direct.status(), "POST /api/v1/theses/upload (بلا متصفّح)").toBe(202);
 
   await useSession(page, "a");
@@ -589,10 +669,10 @@ test("٨ · إعادةُ المحاولة تُعرض وتُردّ ٤٠٩ | retry
 
     // **والرفضُ يقع على الخادم لا في الشاشة وحدها.** شاشةٌ تُخفي زرًّا
     // وخادمٌ يقبل الطلب حارسٌ واحدٌ لا اثنان: من نادى النقطة مباشرةً مرّ.
-    const refused = await request.post(
+    const refused = note(await request.post(
       `${API_ORIGIN}/api/v1/theses/${theses[SCANNED_PDF_NAME]}/reprocess`,
       { headers: { Authorization: `Bearer ${sessions.a?.access}`, "Accept-Language": EN } },
-    );
+    ), "POST reprocess (scanned)");
     expect(refused.status(), "reprocess على مستندٍ ممسوح").toBe(409);
     const body = await refused.json();
     expect(body?.error?.code).toBe("thesis.retry_needs_ocr");
@@ -607,9 +687,9 @@ test("٨ · إعادةُ المحاولة تُعرض وتُردّ ٤٠٩ | retry
       Authorization: `Bearer ${sessions.a?.access}`, "Accept-Language": EN,
     };
     const url = `${API_ORIGIN}/api/v1/theses/${theses[TEXT_PDF_NAME]}/reprocess`;
-    const pair = await Promise.all([
+    const pair = (await Promise.all([
       request.post(url, { headers }), request.post(url, { headers }),
-    ]);
+    ])).map((r) => note(r, "POST reprocess"));
     const statuses = pair.map((r) => r.status()).sort();
     expect(statuses, "ضغطتان على «أعد القراءة» — واحدةٌ تُقبل وواحدةٌ تُردّ")
       .toEqual([202, 409]);
@@ -688,10 +768,10 @@ test("١٢أ · الجارُ لا يرى شيئًا من رسائل جاره | t
     const own = await listTheses(request, "a");
     expect(own.length, "الحسابُ الأوّل بلا رسالةٍ واحدة").toBeGreaterThanOrEqual(1);
     const target = own[0].id as string;
-    const stolen = await request.get(
+    const stolen = note(await request.get(
       `${API_ORIGIN}/api/v1/theses/${target}/extraction`,
       { headers: { Authorization: `Bearer ${sessions.b?.access}`, "Accept-Language": EN } },
-    );
+    ), "GET extraction (neighbour)");
     expect([403, 404], `الجارُ بلغ رسالةَ غيره بـ${stolen.status()}`)
       .toContain(stolen.status());
   });
