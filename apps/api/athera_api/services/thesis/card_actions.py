@@ -138,7 +138,7 @@ class CardActions:
     """ما تعرضه البطاقة — **قرارٌ واحد يُحسب في الخادم، لا سبعةٌ في JSX**."""
 
     primary: str | None
-    in_progress: bool
+    is_running: bool
     can_review: bool
     can_process: bool
     can_reprocess: bool
@@ -217,7 +217,7 @@ def compute(
 
     return CardActions(
         primary=primary,
-        in_progress=in_flight,
+        is_running=in_flight,
         can_review=can_review,
         can_process=can_process,
         can_reprocess=can_reprocess,

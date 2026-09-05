@@ -33,7 +33,7 @@ class ThesisCardActions(BaseModel):
     #: الفعل الأول على البطاقة: review · process · reprocess · attach_file · None
     primary: str | None = None
     #: عملٌ يجري الآن — فلا فعلَ يُعرض، ويُعرض ما يجري.
-    in_progress: bool = False
+    is_running: bool = False
 
     can_review: bool = False
     can_process: bool = False

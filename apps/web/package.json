@@ -16,6 +16,7 @@
     "test:brain": "playwright test tests/research-brain-surface.spec.ts",
     "test:project-management": "playwright test tests/project-management.spec.ts",
     "test:brand": "playwright test tests/brand-experience.spec.ts",
+    "test:thesis-center": "playwright test tests/thesis-center.spec.ts",
     "test:rc": "playwright test tests/rc-thesis-journey.spec.ts"
   },
   "dependencies": {
