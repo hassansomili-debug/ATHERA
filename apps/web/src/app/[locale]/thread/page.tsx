@@ -220,7 +220,7 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
               <div
                 className="metric-value"
                 data-testid="thread-structural-count"
-                style={{ color: data.structural_count ? "#b3261e" : undefined }}
+                style={{ color: data.structural_count ? "var(--state-conflict-ink)" : undefined }}
               >
                 {data.structural_count}
               </div>
@@ -292,7 +292,7 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
           <div style={{ display: "grid", gap: 8 }}>
             {data.findings.map((finding, index) => (
               <article className="card" key={`${finding.check_key}-${index}`}>
-                <div className="metric-label" style={{ color: finding.is_blocking ? "#b3261e" : "var(--athera-gold)" }}>
+                <div className="metric-label" style={{ color: finding.is_blocking ? "var(--state-conflict-ink)" : "var(--athera-gold)" }}>
                   {finding.is_blocking ? t("thread.structural") : t("thread.linguistic")}
                 </div>
                 <p style={{ marginBlock: 6, fontSize: 14 }}>{finding.detail}</p>

@@ -1,59 +1,134 @@
 /*
- * هوية أثيرا | ATHERA design system
+ * هويّة المنتج | The brand token layer.
  *
- * فاتحة أولًا: أبيض وحياد فاتح جدًا، والداكن للنص المقروء وحده. الألوان
- * الستة تحمل معنى لا زينة — الأكوا للفعل، والبنفسجي للذكاء الاصطناعي،
- * والكهرماني للتحذير وحده.
+ * **الهويّة تُعرَّف مرّة، ثمّ تُشتقّ منها كلُّ شاشة.**
  *
- * والخصائص المنطقية (inline-start/end) بدل left/right: التخطيط نفسه يعمل
- * في الاتجاهين بلا ورقة أنماط مرآة.
+ * وكانت الحال قبل هذا طيفًا آخر — أكوا وسماويّ وبنفسجي — مكتوبًا في هذا
+ * الملفّ نفسه، وأسماؤه (`--aqua`, `--sky`, `--teal`) منثورةٌ في أربعٍ
+ * وأربعين شاشة. ولو بُدِّل اللون شاشةً شاشة لبقي نصفُ المنتج على الطيف
+ * القديم إلى أن يُنسى. فالطبقة الأولى وحدها هي التي تُبدَّل: خمسةُ ألوانٍ
+ * معتمدة، ثمّ تُعاد تسميةُ الأسماء القديمة اشتقاقًا منها — فتتبعها كلُّ
+ * شاشةٍ بلا أن تُمسّ.
+ *
+ * ولا يُحذف اسمٌ قديم: حذفُه يترك أربعًا وأربعين شاشةً بلونٍ غير معرَّف —
+ * وهو في CSS صمتٌ لا خطأ، فيمرّ ولا يُرى. فيبقى الاسم ويتغيّر معناه.
+ *
+ * **والألوان الدلاليّة ليست زينة.** أربعُ حالاتٍ علميّة لكلٍّ لونُها:
+ * المقترَح بنفسجيّ، وما ينتظر مراجعةً كهرمانيّ، والمُتحقَّق أخضر،
+ * والمتعارض أحمر. **ولا يحمل اللونُ المعنى وحده أبدًا** — معه نصٌّ
+ * منطوق دائمًا، فمن أطفأ الألوان أو قرأ بلا بصر يبقى عنده المعنى كاملًا.
  */
 :root {
   color-scheme: light;
 
-  /* ── الطيف المعتمد ─────────────────────────────── */
-  --aqua: #00d4c5;
-  --teal: #14b8a6;
-  --sky: #38bdf8;
-  --violet: #8b5cf6;
-  --mint: #a7f3d0;
-  --amber: #f59e0b;
+  /* ── الطيف المعتمد | the approved PUBRIVA palette ───────────────── */
+  --brand-indigo: #4B46A9;   /* اللون الأول: الفعل والهوية */
+  --brand-violet: #7867F2;   /* ذكاءٌ اصطناعي، واقتراحٌ ينتظر إنسانًا */
+  --brand-teal: #17BEBB;     /* لهجةٌ ثانوية — تمييزٌ لا فعل */
+  --brand-ink: #182233;      /* النصّ المقروء */
+  --brand-paper: #F7F8FB;    /* الأرضيّة — وهو الحياد المعتمد */
 
-  /* ── حياد فاتح، بميل خفيف نحو الأكوا فلا يبدو رماديًا مصنّعًا ── */
-  --bg: #fbfdfe;
+  /*
+   * درجاتٌ نصّية مشتقّة — **اللون المعتمد لا يصلح نصًّا في كل حال**.
+   * البنفسجي على أبيض يعطي ٤٫١٨، والفيروزيّ ٢٫٣٠؛ وكلاهما دون الحدّ.
+   * فيُحفظ اللون للحشو والحدّ، وتُشتقّ درجةٌ داكنة للنصّ وحده.
+   */
+  --brand-violet-ink: #4A38C8;  /* ٧٫٨٠ على أبيض */
+  --brand-teal-ink: #0E6E6C;    /* ٦٫٠٦ على أبيض */
+
+  /* ── خيط البحث | the Research Thread ────────────────────────────── */
+  --thread: linear-gradient(103deg, var(--brand-indigo) 0%, var(--brand-violet) 58%, var(--brand-teal) 100%);
+  --thread-soft: linear-gradient(103deg,
+    rgba(75, 70, 169, .10) 0%, rgba(120, 103, 242, .09) 58%, rgba(23, 190, 187, .10) 100%);
+  --thread-line: color-mix(in srgb, var(--brand-indigo) 26%, transparent);
+
+  /* ── الأسماء القديمة، تُشتقّ من الجديد فتتبعها الشاشات كلّها ────── */
+  --aqua: var(--brand-indigo);
+  --teal: var(--brand-indigo);
+  --sky: var(--brand-violet);
+  --violet: var(--brand-violet);
+  --mint: #CFF3E7;
+  --amber: var(--warning);
+  /* أسماءٌ بقيت في ثلاث شاشاتٍ بلا تعريفٍ أصلًا — فكانت تُقرأ لونًا غير
+     صالح، أي لا لون. تُعرَّف هنا اشتقاقًا فلا يبقى في الشجرة اسمٌ ميت. */
+  --athera-teal: var(--brand-indigo);
+  --athera-amber: var(--amber);
+  --athera-gold: var(--brand-violet);
+
+  /* ── حياد فاتح بميلٍ خفيف نحو النيلي ───────────────────────────── */
+  --bg: var(--brand-paper);
   --surface: #ffffff;
-  --surface-2: #f4fafb;
-  --border: #e3edf0;
-  --border-strong: #cfe0e4;
+  --surface-2: #F1F2F8;
+  --border: #E4E5F0;
+  --border-strong: #C9CBE0;
 
-  /* ── النص: داكن حيادي فقط ───────────────────────── */
-  --fg: #0f2027;
-  --fg-soft: #37505a;
-  --muted: #6b8189;
+  /* ── النص ───────────────────────────────────────────────────────── */
+  --fg: var(--brand-ink);
+  --fg-soft: #3D4A60;
+  --muted: #5C6780;
 
-  /* ── تدرّج أثيرا AI — مقيَّد، لا يُستعمل خلفيةً لصفحة ── */
-  --ai-gradient: linear-gradient(103deg, var(--aqua) 0%, var(--sky) 52%, var(--violet) 100%);
-  --ai-tint: linear-gradient(103deg, rgba(0, 212, 197, .09) 0%, rgba(56, 189, 248, .08) 52%, rgba(139, 92, 246, .09) 100%);
+  /* ── تدرّج الذكاء — هو خيط البحث نفسه، لا طيفٌ ثانٍ ─────────────── */
+  --ai-gradient: var(--thread);
+  --ai-tint: var(--thread-soft);
 
-  /* ── دلالات ─────────────────────────────────────── */
-  --ok: var(--teal);
-  --warn: var(--amber);
-  --danger: #e11d48;
+  /*
+   * ── الحالات العلميّة | scientific state semantics ────────────────
+   * أربعٌ لا خامسة لها، ولكلٍّ لونُ حدٍّ ولونُ حشوٍ ولونُ نصّ.
+   */
+  /*
+   * والقيمُ الأربع هي قيمُ ورقة الهويّة بحرفها — لا اشتقاقٌ قاربها:
+   * النجاح `#22C55E`، والتحذير `#F59E0B`، والخطأ `#EF4444`، والحياد
+   * `#F7F8FB`. وهي ألوانُ الحشو والحدّ.
+   *
+   * **ومعها درجةٌ نصّية لكلٍّ** — لأنّ لونَ السطح ليس لونَ النصّ: النجاح
+   * المعتمد يعطي ١٫٩٠ على أبيض، والخطأ ٣٫٧٦، وكلاهما دون الحدّ المقروء.
+   * فالسطحُ سطحٌ، والنصُّ يُشتقّ منه غامقًا — والهويّةُ محفوظة، والقراءة
+   * كذلك.
+   */
+  --success: #22C55E;
+  --warning: #F59E0B;
+  --error: #EF4444;
+  --neutral: #F7F8FB;
 
-  /* ── هندسة ──────────────────────────────────────── */
+  --state-candidate: var(--brand-violet);
+  --state-candidate-ink: var(--brand-violet-ink);
+  --state-review: var(--warning);
+  --state-review-ink: #8A5A06;
+  --state-verified: var(--success);
+  --state-verified-ink: #0B7040;
+  --state-conflict: var(--error);
+  --state-conflict-ink: #C22032;
+
+  /* ── دلالاتٌ عامّة ───────────────────────────────────────────────── */
+  --ok: var(--state-verified);
+  --warn: var(--state-review);
+  --danger: var(--state-conflict-ink);
+
+  /* ── هندسة ──────────────────────────────────────────────────────── */
   --radius: 14px;
   --radius-lg: 20px;
   --radius-pill: 999px;
   --space: 16px;
-  --shadow-sm: 0 1px 2px rgba(15, 32, 39, .04);
-  --shadow: 0 1px 3px rgba(15, 32, 39, .05), 0 10px 28px -12px rgba(15, 32, 39, .10);
-  --shadow-lift: 0 2px 6px rgba(15, 32, 39, .06), 0 18px 40px -16px rgba(15, 32, 39, .16);
+  --shadow-sm: 0 1px 2px rgba(24, 34, 51, .04);
+  --shadow: 0 1px 3px rgba(24, 34, 51, .05), 0 10px 28px -12px rgba(24, 34, 51, .12);
+  --shadow-lift: 0 2px 6px rgba(24, 34, 51, .06), 0 18px 40px -16px rgba(24, 34, 51, .18);
 }
 
 * { box-sizing: border-box; }
 
-html[dir="rtl"] body { font-family: "IBM Plex Sans Arabic", "Noto Sans Arabic", system-ui, sans-serif; }
-html[dir="ltr"] body { font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif; }
+/*
+ * **الخطّان يأتيان من `next/font`، والسلسلةُ الاحتياطية تبقى.**
+ *
+ * المتغيّر يحمل اسمَ الملفّ المُستضاف عندنا؛ وما بعده احتياطٌ لو تعذّر —
+ * فصفحةٌ بخطٍّ نظاميّ أصدق من صفحةٍ بلا نصّ. والصوت واحد في اللغتين:
+ * علميّ، دقيق، حديث، واضح.
+ */
+html[dir="rtl"] body {
+  font-family: var(--font-arabic), "IBM Plex Sans Arabic", "Noto Sans Arabic", system-ui, sans-serif;
+}
+html[dir="ltr"] body {
+  font-family: var(--font-latin), "Inter", system-ui, -apple-system, sans-serif;
+}
 
 body {
   margin: 0;
@@ -113,11 +188,19 @@ a { color: var(--teal); }
 .page-head p { color: var(--muted); margin-block: 0; }
 
 /* ══════ العلامة ══════ */
+/*
+ * **العلامة خيطٌ يمرّ بعقد، لا مربّعٌ ملوّن.**
+ *
+ * كان مكانها `span` فارغًا بخلفيّةٍ متدرّجة — شكلٌ لا يقول شيئًا، ولا
+ * يُطبع، ولا يبقى إن أُطفئت الخلفيّات. وصارت رسمًا متجهًا يرسم ما يقوله
+ * المنتج: خطٌّ واحد متّصل يمرّ بأربع عقد، من المشكلة إلى النشر.
+ */
 .brand { display: flex; align-items: center; gap: 10px; padding-inline: 8px; margin-block-end: 8px; }
-.brand-mark {
-  inline-size: 32px; block-size: 32px; border-radius: 10px;
-  background: var(--ai-gradient); flex: 0 0 32px;
-}
+/* المقاس يأتي من الوسم نفسه (`width`/`height`)، فلا تُثبّته الورقة في
+   موضعٍ واحد وتكسره في الآخر: العلامة ٣٤ في الرأس و٢٨ في التذييل. */
+.brand-mark { flex: 0 0 auto; display: block; }
+/* والاتجاه ينعكس مع الكتابة: الخيط يبدأ من حيث تبدأ القراءة. */
+html[dir="rtl"] .brand-mark { transform: scaleX(-1); }
 .brand strong { font-size: 17px; font-weight: 640; letter-spacing: -.02em; }
 .brand span { color: var(--muted); font-size: 11px; display: block; line-height: 1.2; }
 
@@ -278,10 +361,43 @@ h2.nav-label { line-height: 1.6; }
   font-size: 12px; font-weight: 550; white-space: nowrap;
   border: 1px solid transparent;
 }
-.chip-stage { background: color-mix(in srgb, var(--sky) 14%, transparent); color: #0c5c86; }
-.chip-ok { background: color-mix(in srgb, var(--mint) 55%, transparent); color: #0d6b52; }
-.chip-warn { background: color-mix(in srgb, var(--amber) 16%, transparent); color: #8a5a06; }
+.chip-stage { background: color-mix(in srgb, var(--brand-indigo) 12%, transparent); color: var(--brand-indigo); }
+.chip-ok { background: color-mix(in srgb, var(--mint) 55%, transparent); color: var(--state-verified-ink); }
+.chip-warn { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--state-review-ink); }
 .chip-muted { background: var(--surface-2); color: var(--muted); border-color: var(--border); }
+
+/*
+ * ══════ الحالات العلميّة الأربع ══════
+ *
+ * **هذه ليست شاراتِ زينة.** «مقترَح» و«ينتظر مراجعتك» و«متحقَّق»
+ * و«متعارض» أربعُ حالاتٍ يبني عليها الباحث قرارًا، فلها لونٌ ثابت لا
+ * يتبدّل من شاشةٍ إلى شاشة — وكانت تتبدّل: «التعارض» كهرمانيّ في شاشةٍ
+ * وأحمر في أخرى، و«المتحقَّق» فيروزيّ هنا وأخضر هناك.
+ *
+ * **ولا يحمل اللونُ المعنى وحده.** كلُّ شارةٍ تحمل نصَّها منطوقًا، ولها
+ * حدٌّ مصمَت يبقى بعد إطفاء الألوان، و`data-state` يُعلن الحال في الشجرة.
+ * فمن قرأ بلا بصر، أو رأى بلا تمييزٍ للألوان، يبقى عنده المعنى كاملًا.
+ */
+.chip-candidate {
+  background: color-mix(in srgb, var(--state-candidate) 13%, transparent);
+  color: var(--state-candidate-ink);
+  border-color: color-mix(in srgb, var(--state-candidate) 42%, transparent);
+}
+.chip-review {
+  background: color-mix(in srgb, var(--state-review) 16%, transparent);
+  color: var(--state-review-ink);
+  border-color: color-mix(in srgb, var(--state-review) 48%, transparent);
+}
+.chip-verified {
+  background: color-mix(in srgb, var(--state-verified) 15%, transparent);
+  color: var(--state-verified-ink);
+  border-color: color-mix(in srgb, var(--state-verified) 45%, transparent);
+}
+.chip-conflict {
+  background: color-mix(in srgb, var(--state-conflict) 12%, transparent);
+  color: var(--state-conflict-ink);
+  border-color: color-mix(in srgb, var(--state-conflict) 45%, transparent);
+}
 
 /* شريط إعلان: قدرة تنتظر تفعيلًا — لا وعد ولا ادعاء */
 .gate {
@@ -301,8 +417,28 @@ h2.nav-label { line-height: 1.6; }
 }
 
 /* ══════ النماذج ══════ */
-.form { display: grid; gap: 13px; max-inline-size: 420px; }
-.form label { display: grid; gap: 5px; font-size: 13.5px; color: var(--fg-soft); }
+/*
+ * **عمودٌ لا يتجاوز حاويَه.**
+ *
+ * كان النموذج شبكةً بلا أعمدةٍ مُعلَنة، فتُنشئ CSS عمودًا ضمنيًّا مقاسُه
+ * `auto` — وحدُّه الأعلى `max-content`. **والمسارُ في الشبكة يجوز أن يتجاوز
+ * حاويَه**، بخلاف الصندوق العادي. فلمّا دخل حقلٌ ومعه زرُّ كشفٍ في صفٍّ
+ * واحد بلغ `max-content` أربعمئة واثني عشر بكسلًا في حاوٍ عرضُه ثلاثمئة
+ * واثنا عشر — فامتدّ العمود، **وامتدّ معه كلُّ عنصرٍ في النموذج**: حقلُ
+ * البريد وزرُّ الدخول وما بينهما، لا الصفُّ الجاني وحده. وذاك ما أرباك
+ * التشخيص: الشاشةُ كلُّها تُزاح، فيبدو العطبُ في كلّ شيء.
+ *
+ * و`minmax(0, 1fr)` يجعل أدنى المسار صفرًا وأعلاه ما يتّسع له الحاوي —
+ * فلا يتجاوزه مهما بلغ `max-content` لما فيه.
+ */
+.form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 13px;
+  max-inline-size: 420px;
+}
+.form label { display: grid; grid-template-columns: minmax(0, 1fr);
+              gap: 5px; font-size: 13.5px; color: var(--fg-soft); }
 .form input,
 .form select,
 .form textarea {
@@ -373,3 +509,380 @@ h2.nav-label { line-height: 1.6; }
   padding: 0; margin: -1px; overflow: hidden;
   clip-path: inset(50%); white-space: nowrap; border: 0;
 }
+
+/* ══════════════════════════════════════════════════════════════════
+ * قشرةُ الحساب | The auth shell — بلا قائمةِ منتج
+ * ══════════════════════════════════════════════════════════════════ */
+.auth-shell { min-block-size: 100vh; background: var(--bg); }
+/* **حاجزٌ صريح.** بطاقةٌ تتجاوز عمودَها تُمرِّر المستندَ أفقيًّا كلَّه. */
+.auth-card, .auth-main, .auth-card .form { max-inline-size: 100%; }
+.auth-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 26px clamp(18px, 5vw, 30px) 28px;
+}
+.auth-brand {
+  display: flex; align-items: center; gap: 10px;
+  margin-block-end: 20px;
+  color: inherit; text-decoration: none;
+}
+.auth-brand strong { display: block; font-size: 17px; font-weight: 640; letter-spacing: -.02em; }
+.auth-brand > span > span { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.3; }
+.auth-card h1 { font-size: 1.45rem; margin-block: 0 14px; }
+.auth-card .form { max-inline-size: none; }
+.auth-foot { display: flex; justify-content: center; margin-block-start: 14px; }
+.auth-foot .locale-switch { border-block-start: none; margin-block-start: 0; padding: 0; }
+
+/*
+ * **خطوةُ التحقّق بخطوتين — لا حقلٌ دائم.**
+ * تظهر حين يقول الخادم إنّ الرمز مطلوب، ولا تُعرض لمن لا رمز له.
+ */
+.mfa-step {
+  margin-block-start: 4px;
+  padding: 13px 15px;
+  border: 1px solid color-mix(in srgb, var(--brand-indigo) 26%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--brand-indigo) 6%, var(--surface));
+  display: grid;
+  gap: 9px;
+}
+.mfa-step strong { font-size: 14px; font-weight: 620; }
+.mfa-step p { margin: 0; font-size: 13px; color: var(--fg-soft); }
+
+/* ══════════════════════════════════════════════════════════════════
+ * الموقع العام | The public site
+ * ══════════════════════════════════════════════════════════════════ */
+.site { min-block-size: 100vh; display: flex; flex-direction: column; background: var(--bg); }
+
+.site-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  padding: 16px clamp(18px, 5vw, 56px);
+  border-block-end: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky; inset-block-start: 0; z-index: 20;
+}
+.site-brand { display: flex; align-items: center; gap: 10px; color: inherit; text-decoration: none; }
+.site-brand strong { display: block; font-size: 17px; font-weight: 640; letter-spacing: -.02em; }
+.site-brand > span > span { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.3; }
+.site-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.site-nav a {
+  padding: 8px 12px; border-radius: 10px;
+  color: var(--fg-soft); text-decoration: none; font-size: 14px; font-weight: 520;
+}
+.site-nav a:hover { background: var(--surface-2); color: var(--fg); }
+.site-nav .site-cta {
+  background: var(--brand-indigo); color: #fff;
+  padding-inline: 16px; font-weight: 580;
+}
+.site-nav .site-cta:hover { background: color-mix(in srgb, var(--brand-indigo) 86%, #000); color: #fff; }
+
+.site-main { flex: 1; }
+
+/* ── البطل ─────────────────────────────────────────────────────── */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+  align-items: center;
+  gap: clamp(20px, 4vw, 48px);
+  padding: clamp(36px, 6vw, 76px) clamp(18px, 5vw, 56px);
+  max-inline-size: 1180px;
+  margin-inline: auto;
+}
+.hero-copy { min-inline-size: 0; }
+.eyebrow {
+  margin: 0 0 12px;
+  font-size: 12.5px; font-weight: 620; letter-spacing: .04em;
+  color: var(--brand-indigo);
+}
+.hero h1 {
+  font-size: clamp(1.9rem, 5vw, 3rem);
+  line-height: 1.2;
+  margin-block: 0 16px;
+  font-weight: 680;
+}
+.hero-body { margin-block: 0 24px; font-size: clamp(15px, 1.6vw, 17.5px); color: var(--fg-soft); max-inline-size: 56ch; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
+/* النسبةُ مُعلَنة صراحةً: `block-size: auto` على SVG يعتمد على استنتاج
+   النسبة من `viewBox`، وإعلانُها يجعل الارتفاع محسومًا لا مستنتَجًا. */
+.hero-thread {
+  inline-size: 100%; block-size: auto; aspect-ratio: 320 / 180;
+  max-inline-size: 420px; justify-self: center;
+}
+
+.btn-primary {
+  display: inline-block;
+  padding: 12px 24px; border-radius: var(--radius-pill);
+  background: var(--brand-indigo); color: #fff;
+  text-decoration: none; font-weight: 580; font-size: 15px;
+}
+.btn-primary:hover { background: color-mix(in srgb, var(--brand-indigo) 86%, #000); }
+.btn-quiet {
+  display: inline-block;
+  padding: 12px 20px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--surface); color: var(--fg);
+  text-decoration: none; font-weight: 540; font-size: 15px;
+}
+.btn-quiet:hover { border-color: var(--brand-indigo); color: var(--brand-indigo); }
+
+/* ── الأشرطة ───────────────────────────────────────────────────── */
+.band {
+  padding: clamp(30px, 5vw, 60px) clamp(18px, 5vw, 56px);
+  max-inline-size: 1180px;
+  margin-inline: auto;
+  inline-size: 100%;
+  border-block-start: 1px solid var(--border);
+}
+.band h2 { font-size: clamp(1.25rem, 2.6vw, 1.7rem); margin-block: 0 8px; }
+.band-lead { margin-block: 0 22px; color: var(--fg-soft); max-inline-size: 72ch; }
+.band-ink { background: var(--surface); }
+
+/*
+ * ── المراحل الأربع: الخيط يصلها ──
+ * الخطُّ خلف العقد `::before` على القائمة نفسها، فلا عنصرَ زخرفيّ في
+ * الشجرة، ويختفي عند اللفّ على الهاتف حيث يصير عموديًّا.
+ */
+.stages {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  position: relative;
+}
+.stage { position: relative; padding-block-start: 26px; }
+.stage-node {
+  position: absolute; inset-block-start: 0; inset-inline-start: 0;
+  inline-size: 13px; block-size: 13px; border-radius: 50%;
+  background: var(--brand-indigo);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-indigo) 16%, transparent);
+}
+.stage:nth-child(2) .stage-node { background: var(--brand-violet); box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-violet) 16%, transparent); }
+.stage:nth-child(3) .stage-node { background: var(--brand-violet); box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-violet) 16%, transparent); }
+.stage:nth-child(4) .stage-node { background: var(--brand-teal); box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-teal) 20%, transparent); }
+/* الخيط بين العقد — يُرسم داخل كل مرحلةٍ إلى التي بعدها. */
+.stage::after {
+  content: "";
+  position: absolute; inset-block-start: 6px;
+  inset-inline-start: 13px; inset-inline-end: -18px;
+  block-size: 1px;
+  background: var(--thread-line);
+}
+.stage:last-child::after { display: none; }
+.stage strong { display: block; font-size: 16px; font-weight: 620; margin-block-end: 5px; }
+.stage > span { color: var(--muted); font-size: 13.8px; }
+
+/* ── القدرات ───────────────────────────────────────────────────── */
+.cap-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.cap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: var(--shadow-sm);
+}
+.cap h3 { font-size: 15.5px; font-weight: 620; margin-block: 0 6px; color: var(--fg); }
+.cap p { margin: 0; color: var(--muted); font-size: 13.8px; }
+
+/* ── مفتاحُ الحالات: لونٌ ومعه اسمُه دائمًا ───────────────────────── */
+.legend-title { font-size: 15.5px; font-weight: 620; margin-block: 26px 8px; }
+.legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.legend li {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  color: var(--fg-soft); font-size: 14px;
+}
+.legend .chip { flex: 0 0 auto; }
+
+.closing { text-align: center; }
+.closing .band-lead { margin-inline: auto; }
+.closing .hero-actions { justify-content: center; }
+
+/* ── التذييل ───────────────────────────────────────────────────── */
+.site-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  padding: 22px clamp(18px, 5vw, 56px) 34px;
+  border-block-start: 1px solid var(--border);
+  background: var(--surface);
+}
+.site-foot nav { display: flex; gap: 6px; flex-wrap: wrap; }
+.site-foot nav a { padding: 7px 11px; border-radius: 9px; color: var(--fg-soft); text-decoration: none; font-size: 13.5px; }
+.site-foot nav a:hover { background: var(--surface-2); color: var(--fg); }
+
+/* ══════ الموقع العام على الهاتف ══════ */
+@media (max-width: 820px) {
+  .hero { grid-template-columns: 1fr; }
+  .hero-thread { order: -1; max-inline-size: 300px; }
+  /* الخيط الأفقي بين المراحل لا معنى له حين تصير المراحل عمودًا. */
+  .stage::after { display: none; }
+}
+@media (max-width: 520px) {
+  .site-head { padding-inline: 16px; }
+  .site-nav { inline-size: 100%; }
+  .site-nav a { padding-inline: 10px; }
+  .btn-primary, .btn-quiet { inline-size: 100%; text-align: center; }
+}
+
+/* ══════════ ورقةُ الهويّة: العنوان، والعقد الستّ، والنزاهة ══════════ */
+
+/*
+ * السطر الثاني من العنوان بالبنفسجي، وعلى سطرٍ خاصّ به.
+ * و`display: block` لا `<br>`: الفاصلُ تخطيطٌ لا محتوى، فلا يُنطق فراغًا.
+ */
+.hero h1 .accent {
+  display: block;
+  color: var(--brand-violet-ink);
+}
+
+/* ستُّ عقدٍ لا أربع — فالشبكة أضيق، والخيط يصلها كما يصل الأربع. */
+.stages-six { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
+.stages-six .stage strong { margin-block-end: 0; font-size: 15px; }
+
+.thread-foot {
+  margin-block: 22px 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* ── نزاهةُ البحث: ستُّ قواعد ── */
+.integrity {
+  list-style: none; margin: 0 0 8px; padding: 0;
+  display: grid; gap: 11px;
+  grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
+}
+.integrity li {
+  display: flex; align-items: flex-start; gap: 9px;
+  color: var(--fg-soft); font-size: 14.5px;
+}
+/*
+ * العلامة دائرةٌ خضراء — لونُ «المتحقَّق» بعينه، فالقارئ يتعلّم المعنى
+ * مرّة. وهي `aria-hidden`: القاعدة نصٌّ بجانبها، فلا تُقال مرّتين.
+ */
+.integrity .tick {
+  flex: 0 0 auto;
+  inline-size: 20px; block-size: 20px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 12px; line-height: 1;
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--state-verified-ink);
+  margin-block-start: 2px;
+}
+
+/* ── القائمة العامّة: «تسجيل الدخول» محدَّد، و«ابدأ» ممتلئ بالبنفسجي ── */
+.site-nav .site-signin {
+  border: 1px solid var(--border-strong);
+  padding-inline: 15px;
+  color: var(--fg);
+}
+.site-nav .site-signin:hover { border-color: var(--brand-indigo); color: var(--brand-indigo); background: transparent; }
+/*
+ * **الفعل الأول بنفسجيّ** كما في الورقة — والبنفسجي المعتمد يعطي ٤٫١٨
+ * مع الأبيض، وهو دون الحدّ لنصٍّ صغير. فالخلفيّة درجةٌ أغمق منه بقدر ما
+ * يبلغ الحدّ، والهويّةُ باقية: اللونُ هو هو، وقتامتُه وحدها تغيّرت.
+ */
+.site-nav .site-cta {
+  background: var(--brand-violet-ink);
+  color: #fff;
+  padding-inline: 16px;
+  font-weight: 580;
+}
+.site-nav .site-cta:hover { background: color-mix(in srgb, var(--brand-violet-ink) 86%, #000); color: #fff; }
+
+/* والتذييل يحمل ثلاثة أسطر تحت الاسم لا سطرًا. */
+.site-foot .site-brand > span > span { display: block; }
+.site-foot .site-brand > span > span + span { margin-block-start: 1px; }
+
+@media (max-width: 520px) {
+  .stages-six { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+}
+
+/* ══════════ قشرةُ الحساب بنصّ الورقة: لوحةٌ ونموذج ══════════ */
+
+/*
+ * **عمودان على الحاسوب، عمودٌ واحد على الهاتف.**
+ * واللوحةُ تختفي عند الضيق لا تُطوى: لوحةٌ تزاحم حقلَ البريد على شاشةٍ
+ * عرضُها ٣٩٠ بكسلًا تدفع الفعلَ خارج الطيّة، والداخلُ جاء ليدخل.
+ */
+.auth-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 460px);
+  align-items: center;
+  justify-content: center;
+  gap: clamp(24px, 5vw, 64px);
+  padding: 40px clamp(18px, 5vw, 56px);
+}
+.auth-aside {
+  max-inline-size: 460px;
+  justify-self: end;
+  padding: 30px;
+  border-radius: var(--radius-lg);
+  background: var(--thread-soft);
+  border: 1px solid var(--border);
+}
+.auth-art { inline-size: 100%; block-size: auto; aspect-ratio: 320 / 180; display: block; }
+.auth-sequence {
+  margin-block: 20px 6px;
+  font-size: clamp(17px, 2.2vw, 21px);
+  font-weight: 620;
+  color: var(--fg);
+  letter-spacing: -.01em;
+}
+.auth-promise { margin: 0; color: var(--brand-violet-ink); font-weight: 560; }
+
+.auth-main { justify-self: start; inline-size: 100%; max-inline-size: 460px; }
+.auth-sub { margin-block: 0 18px; color: var(--muted); font-size: 14.5px; }
+
+/*
+ * حقلٌ ومعه زرُّ كشف. والزرُّ داخل الإطار لا خارجه، فيقرأ الباحث الحقلَ
+ * وزرَّه شيئًا واحدًا — ويبقى الزرُّ في ترتيب الجدولة بعد الحقل مباشرة.
+ */
+.field-reveal { display: flex; align-items: stretch; gap: 0; max-inline-size: 100%; }
+/*
+ * **`flex-basis: 0` لا `auto`.** الحقلُ النصّي يحمل عرضًا ذاتيًّا (نحو
+ * مئتي بكسل من `size=20`)، و`auto` تجعل ذلك العرضَ أساسَ التوزيع — فيأخذ
+ * الحقلُ الصفَّ كلَّه ويُدفع الزرُّ خارج الحافة. والأساسُ صفرًا يجعل
+ * الحقلَ يأخذ ما يبقى بعد الزرّ لا قبله، فلا يتجاوز الصفُّ حاويَه مهما ضاق.
+ */
+.field-reveal input {
+  flex: 1 1 0; min-inline-size: 0; inline-size: auto;
+  border-start-end-radius: 0; border-end-end-radius: 0;
+  border-inline-end: none;
+}
+.reveal {
+  flex: 0 0 auto;
+  padding-inline: 12px;
+  border: 1px solid var(--border);
+  border-start-start-radius: 0; border-end-start-radius: 0;
+  border-start-end-radius: 10px; border-end-end-radius: 10px;
+  background: var(--surface-2);
+  color: var(--fg-soft);
+  font: inherit; font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.reveal:hover { color: var(--fg); border-color: var(--border-strong); }
+
+@media (max-width: 900px) {
+  .auth-shell { grid-template-columns: minmax(0, 1fr); justify-content: stretch; padding-block: 28px 40px; }
+  /* اللوحةُ زينةٌ تشرح، والنموذجُ هو الفعل — فتُخفى ولا تُزاحم. */
+  .auth-aside { display: none; }
+  .auth-main { justify-self: center; }
+}
+
+/*
+ * ══════════ حاجزُ العرض الأخير ══════════
+ *
+ * **تمريرٌ أفقيّ واحدٌ يفسد الصفحة كلَّها على الهاتف.** وقد وقع: زرُّ كشف
+ * كلمة المرور حمل اسمَه كاملًا و`white-space: nowrap`، فبلغ مئةً وأربعين
+ * بكسلًا ولم يقبل الانكماش، فدفع الصفَّ خارج شاشةٍ عرضُها ٣٩٠.
+ *
+ * والاسمُ صار قصيرًا في العين كاملًا في الشجرة — وهذه القاعدةُ بعده حاجزٌ
+ * لا علاجٌ لسببٍ بعينه: مهما طال نصٌّ في هذه القشرة لا يتجاوز حاويَه.
+ * وتُكتب آخرَ الملفّ عمدًا فلا تسبقها قاعدةٌ تنقضها.
+ */
+.auth-card,
+.auth-card .form,
+.field-reveal,
+.field-reveal input { max-inline-size: 100%; }
+.reveal { min-inline-size: 0; }

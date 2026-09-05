@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- أحاديّةُ اللون | monochrome — حبرٌ واحد، بلا تدرّجٍ ولا أرضيّة.
+       والهندسةُ واحدةٌ في الصيغ الأربع: مسارٌ واحد وأربعُ عقدٍ بمواضعها.
+       تُولَّد من مصدرٍ واحد، ويحرس التطابقَ فحصٌ في مجموعة الـAPI. -->
+  <path d="M16 40V9c8.7 0 13.6 2.9 13.6 8.6 0 5.6-4.9 8.6-13.6 8.6" stroke="#182233" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M16 40h16" stroke="#182233" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <circle cx="16" cy="9" r="3.4" fill="#182233"/>
+  <circle cx="29.6" cy="17.6" r="3.1" fill="#182233"/>
+  <circle cx="16" cy="26.2" r="2.8" fill="#182233"/>
+  <circle cx="32" cy="40" r="3.6" fill="#182233"/>
+</svg>

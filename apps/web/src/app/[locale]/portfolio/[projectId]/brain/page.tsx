@@ -71,12 +71,23 @@ const CATEGORY_HINT: Record<AssessmentCategory, string> = {
 };
 
 /** الوسم يتبع معنى الخانة لا ذوق الشاشة: التعارض ليس خبرًا محايدًا. */
+/**
+ * **الحالُ لها لونٌ واحد في المنتج كلّه.**
+ *
+ * كان «التعارض» كهرمانيًّا هنا وأحمر في شاشةٍ أخرى، و«ما نعرفه» فيروزيًّا
+ * هنا وأخضر هناك — فيتعلّم الباحث الخريطةَ في شاشةٍ ثمّ تكذبه في التي
+ * بعدها. فصارت الأصنافُ الدلاليّة الأربعة هي المرجع: المقترَح بنفسجيّ،
+ * وما ينتظر مراجعةً كهرمانيّ، والمتحقَّق أخضر، والمتعارض أحمر.
+ *
+ * **واللونُ لا يحمل المعنى وحده**: اسمُ الخانة مكتوبٌ فوق الشارة، وعددُها
+ * مكتوبٌ فيها، والحدُّ المصمت يبقى بعد إطفاء الألوان.
+ */
 const CATEGORY_CHIP: Record<AssessmentCategory, string> = {
-  known: "chip chip-ok",
+  known: "chip chip-verified",
   missing: "chip chip-muted",
-  needs_review: "chip chip-stage",
-  conflicts: "chip chip-warn",
-  methodological_alerts: "chip chip-warn",
+  needs_review: "chip chip-review",
+  conflicts: "chip chip-conflict",
+  methodological_alerts: "chip chip-review",
 };
 
 /**
@@ -512,7 +523,8 @@ export default function ResearchBrainPage({
                      style={{ marginBlockEnd: 18 }}>
               <h2 id={`brain-${category}`} style={{ marginBlockEnd: 2 }}>
                 {t(CATEGORY_LABEL[category])}{" "}
-                <span className={CATEGORY_CHIP[category]} data-testid={`brain-count-${category}`}>
+                <span className={CATEGORY_CHIP[category]} data-state={category}
+                      data-testid={`brain-count-${category}`}>
                   {assessment[category].length} {t("brain.itemsCount")}
                 </span>
               </h2>

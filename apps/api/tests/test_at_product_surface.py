@@ -302,14 +302,35 @@ def test_no_field_leans_on_its_placeholder_for_a_name():
         "حقولٌ اسمها المُعلَن نائبٌ يختفي:\n" + "\n".join(nameless))
 
 
+#: القشورُ الثلاث، ولكلٍّ معلَمٌ واحد: هيكلُ العمل، وقشرةُ الحساب،
+#: والموقعُ العام. **والشرط هو الشرط نفسه** — معلَمٌ واحد لا أكثر، ولا
+#: معلَم خارج قشرة. وما تغيّر أنّ القشرة صارت ثلاثًا بعد أن كانت واحدة:
+#: صفحاتُ الحساب لا تُصيَّر في هيكل التطبيق، والموقعُ العام ليس منه أصلًا.
+SHELLS = {
+    "app/[locale]/layout.tsx": 1,
+    "app/(auth)/[locale]/layout.tsx": 1,
+    "app/(marketing)/welcome/[locale]/layout.tsx": 1,
+}
+
+
 def test_the_main_landmark_is_declared_exactly_once():
     """**كان ثلاثةً متداخلة**: الهيكل، ثم الاستوديو، ثم مساحة القسم تحته.
 
     ومن يتنقّل بالمعالم يقفز إلى «المحتوى الرئيسي» فيجد ثلاثة — أي لا معلَم.
     """
     holders = {rel: code.count("<main") for rel, code in OWNED if "<main" in code}
-    assert holders == {"app/[locale]/layout.tsx": 1}, (
-        f"معلَمُ `main` معلَنٌ في غير الهيكل العام أو أكثر من مرّة: {holders}")
+    assert holders == SHELLS, (
+        f"معلَمُ `main` معلَنٌ في غير قشرةٍ أو أكثر من مرّة: {holders}")
+
+
+def test_every_shell_named_here_actually_exists():
+    """**حارسٌ يسمّي ملفًّا لا وجود له لا يحرس شيئًا.**
+
+    لو حُذفت قشرةٌ أو نُقلت لبقي اسمُها في القائمة أعلاه، ولمرّ الفحص وهو
+    يقارن غيابًا بغياب. فيُطلب وجودُ كلٍّ منها صراحةً.
+    """
+    missing = [rel for rel in SHELLS if not (SRC / rel).exists()]
+    assert not missing, f"قشورٌ مسمّاةٌ في الحارس ولا وجود لها: {missing}"
 
 
 def test_the_add_file_button_says_which_file_it_adds():

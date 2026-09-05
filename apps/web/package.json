@@ -14,7 +14,8 @@
     "test:recovery": "playwright test tests/recovery.spec.ts",
     "test:surface": "playwright test tests/product-surface.spec.ts tests/product-experience.spec.ts",
     "test:brain": "playwright test tests/research-brain-surface.spec.ts",
-    "test:project-management": "playwright test tests/project-management.spec.ts"
+    "test:project-management": "playwright test tests/project-management.spec.ts",
+    "test:brand": "playwright test tests/brand-experience.spec.ts"
   },
   "dependencies": {
     "next": "^16.0.0",

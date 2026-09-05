@@ -62,7 +62,7 @@ export default function TracesPage({ params }: { params: Promise<{ locale: strin
               <span
                 style={{
                   fontSize: 13,
-                  color: row.status === "blocked" ? "#b3261e" : "var(--muted)",
+                  color: row.status === "blocked" ? "var(--state-conflict-ink)" : "var(--muted)",
                   fontWeight: row.status === "blocked" ? 600 : 400,
                 }}
               >
@@ -77,7 +77,7 @@ export default function TracesPage({ params }: { params: Promise<{ locale: strin
                 style={{
                   marginBlockStart: 8,
                   paddingInlineStart: 12,
-                  borderInlineStart: "3px solid #b3261e",
+                  borderInlineStart: "3px solid var(--state-conflict-ink)",
                   fontSize: 13,
                 }}
               >
