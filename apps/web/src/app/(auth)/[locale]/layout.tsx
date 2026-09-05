@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { BRAND_ICONS } from "@/lib/brand";
 import { FONT_VARIABLES } from "@/lib/fonts";
 import { ResearchThread } from "@/components/ResearchThread";
 import { BrandMark } from "@/components/BrandMark";
@@ -40,7 +41,7 @@ export async function generateMetadata(
   return {
     metadataBase: new URL("https://pubriva.com"),
     title: `${t("auth.signIn")} — ${t("app.name")}`,
-    icons: { icon: "/favicon.svg" },
+    icons: BRAND_ICONS,
     // صفحاتُ حسابٍ لا تُفهرَس: لا محتوى فيها لباحثٍ يبحث.
     robots: { index: false, follow: true },
   };

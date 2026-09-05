@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { BRAND_ICONS } from "@/lib/brand";
 import { FONT_VARIABLES } from "@/lib/fonts";
 import { BrandMark } from "@/components/BrandMark";
 import { DEFAULT_LOCALE, LOCALES, direction, getMessages, isLocale, otherLocale, translator } from "@/lib/i18n";
@@ -40,7 +41,7 @@ export async function generateMetadata(
     metadataBase: new URL("https://pubriva.com"),
     title: `${t("app.name")} — ${t("app.tagline")}`,
     description: t("landing.body"),
-    icons: { icon: "/favicon.svg" },
+    icons: BRAND_ICONS,
     // **الأصل هو الجذر.** الصفحة تُخدَم من `/` بإعادة كتابة، فلو أعلنت
     // مسارَها الداخلي أصلًا لنفسها لفُهرِس رابطٌ لا يكتبه أحد.
     alternates: {

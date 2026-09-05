@@ -77,7 +77,9 @@
     "showPassword": "أظهِر كلمة المرور",
     "hidePassword": "أخفِ كلمة المرور",
     "panelSequence": "فكّر. رتّب. ابنِ. تحقّق. انشر.",
-    "panelPromise": "وغدٌ أكثر انفتاحًا."
+    "panelPromise": "وغدٌ أكثر انفتاحًا.",
+    "showPasswordShort": "أظهِر",
+    "hidePasswordShort": "أخفِ"
   },
   "dashboard": {
     "title": "ماذا تريد أن تنجز؟",

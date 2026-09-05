@@ -494,6 +494,8 @@ h2.nav-label { line-height: 1.6; }
  * قشرةُ الحساب | The auth shell — بلا قائمةِ منتج
  * ══════════════════════════════════════════════════════════════════ */
 .auth-shell { min-block-size: 100vh; background: var(--bg); }
+/* **حاجزٌ صريح.** بطاقةٌ تتجاوز عمودَها تُمرِّر المستندَ أفقيًّا كلَّه. */
+.auth-card, .auth-main, .auth-card .form { max-inline-size: 100%; }
 .auth-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -815,7 +817,7 @@ h2.nav-label { line-height: 1.6; }
  * حقلٌ ومعه زرُّ كشف. والزرُّ داخل الإطار لا خارجه، فيقرأ الباحث الحقلَ
  * وزرَّه شيئًا واحدًا — ويبقى الزرُّ في ترتيب الجدولة بعد الحقل مباشرة.
  */
-.field-reveal { display: flex; align-items: stretch; gap: 0; }
+.field-reveal { display: flex; align-items: stretch; gap: 0; max-inline-size: 100%; }
 .field-reveal input {
   flex: 1 1 auto; min-inline-size: 0;
   border-start-end-radius: 0; border-end-end-radius: 0;
@@ -836,8 +838,25 @@ h2.nav-label { line-height: 1.6; }
 .reveal:hover { color: var(--fg); border-color: var(--border-strong); }
 
 @media (max-width: 900px) {
-  .auth-shell { grid-template-columns: minmax(0, 460px); justify-content: center; padding-block: 28px 40px; }
+  .auth-shell { grid-template-columns: minmax(0, 1fr); justify-content: stretch; padding-block: 28px 40px; }
   /* اللوحةُ زينةٌ تشرح، والنموذجُ هو الفعل — فتُخفى ولا تُزاحم. */
   .auth-aside { display: none; }
   .auth-main { justify-self: center; }
 }
+
+/*
+ * ══════════ حاجزُ العرض الأخير ══════════
+ *
+ * **تمريرٌ أفقيّ واحدٌ يفسد الصفحة كلَّها على الهاتف.** وقد وقع: زرُّ كشف
+ * كلمة المرور حمل اسمَه كاملًا و`white-space: nowrap`، فبلغ مئةً وأربعين
+ * بكسلًا ولم يقبل الانكماش، فدفع الصفَّ خارج شاشةٍ عرضُها ٣٩٠.
+ *
+ * والاسمُ صار قصيرًا في العين كاملًا في الشجرة — وهذه القاعدةُ بعده حاجزٌ
+ * لا علاجٌ لسببٍ بعينه: مهما طال نصٌّ في هذه القشرة لا يتجاوز حاويَه.
+ * وتُكتب آخرَ الملفّ عمدًا فلا تسبقها قاعدةٌ تنقضها.
+ */
+.auth-card,
+.auth-card .form,
+.field-reveal,
+.field-reveal input { max-inline-size: 100%; }
+.reveal { min-inline-size: 0; }

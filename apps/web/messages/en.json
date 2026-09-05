@@ -77,7 +77,9 @@
     "showPassword": "Show password",
     "hidePassword": "Hide password",
     "panelSequence": "Think. Organize. Build. Verify. Publish.",
-    "panelPromise": "A more open tomorrow."
+    "panelPromise": "A more open tomorrow.",
+    "showPasswordShort": "Show",
+    "hidePasswordShort": "Hide"
   },
   "dashboard": {
     "title": "What do you want to accomplish?",

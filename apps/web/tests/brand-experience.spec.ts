@@ -855,6 +855,19 @@ test.describe("the brand sheet's own content, and the four things left out", () 
 
     const show = page.getByRole("button", { name: "Show password", exact: true });
     await expect(show).toBeVisible();
+
+    /**
+     * **والاسمُ المنطوق كاملٌ، والمرئيُّ قصير.** فالمرئيُّ الكامل بلغ مئةً
+     * وأربعين بكسلًا ولم يقبل الانكماش، فمرَّر المستندَ أفقيًّا على شاشة
+     * الهاتف. فيُقاس الطرفان: الاسمُ في الشجرة كامل (وهو ما يقرؤه أعمى)،
+     * والنصُّ في العين قصير (وهو ما يزاحم الحقل).
+     */
+    expect((await show.innerText()).trim().length).toBeLessThanOrEqual(6);
+    expect(
+      (await show.boundingBox())!.width,
+      "the reveal control is wide enough to push a phone layout sideways",
+    ).toBeLessThan(90);
+
     await show.click();
 
     await expect(field).toHaveAttribute("type", "text");

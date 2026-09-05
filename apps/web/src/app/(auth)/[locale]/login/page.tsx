@@ -103,12 +103,23 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
             required
             autoComplete="current-password"
           />
+          {/*
+            **الاسمُ المنطوق كاملٌ، والمرئيُّ قصير.**
+
+            كان المرئيُّ هو الكامل («أظهِر كلمة المرور»)، فبلغ عرضُ الزرّ
+            مئةً وأربعين بكسلًا ولم يقبل الانكماش — ودفع الصفَّ خارج شاشةٍ
+            عرضُها ٣٩٠، فصار المستند يُمرَّر أفقيًّا. وقصُّ النصّ بالنقاط
+            كان يخفي المعنى؛ وتصغيرُ الخطّ يخفيه على من يحتاجه.
+            فالوسمُ يحمل الاسم كاملًا لقارئ الشاشة، والعين تقرأ كلمةً
+            واحدة بجانب حقلٍ لا لبس فيه.
+          */}
           <button
             type="button"
             className="reveal"
+            aria-label={revealed ? t("auth.hidePassword") : t("auth.showPassword")}
             onClick={() => setRevealed((on) => !on)}
           >
-            {revealed ? t("auth.hidePassword") : t("auth.showPassword")}
+            {revealed ? t("auth.hidePasswordShort") : t("auth.showPasswordShort")}
           </button>
         </div>
         {mfaNeeded ? (

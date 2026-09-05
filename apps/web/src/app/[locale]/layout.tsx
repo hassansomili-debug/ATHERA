@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { BRAND_ICONS } from "@/lib/brand";
 import { FONT_VARIABLES } from "@/lib/fonts";
 import { BrandMark } from "@/components/BrandMark";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
@@ -27,7 +28,7 @@ export async function generateMetadata(
     // ويُفهرَس اسمٌ ليس هو المنتج.
     metadataBase: new URL("https://pubriva.com"),
     title: `${t("app.name")} — ${t("app.tagline")}`,
-    icons: { icon: "/favicon.svg" },
+    icons: BRAND_ICONS,
     alternates: {
       // اللغة المُتحقَّق منها لا الخام: مسارٌ غير صالح لا يُعلن أصلًا لنفسه.
       canonical: `/${active}`,
