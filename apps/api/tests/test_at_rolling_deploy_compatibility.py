@@ -233,8 +233,41 @@ async def test_the_same_write_is_refused_once_the_contract_lands(db_ready):
             await session.execute(text(
                 "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
             await session.execute(text(OLD_MEMBER_CONSENT), {"member_id": member})
-    assert "consent_has_a_method" in str(caught.value), (
+    assert "ck_project_members_consent_has_a_method" in str(caught.value), (
         "رُفضت الكتابةُ لسببٍ آخر — فالفحصُ لا يثبت العقد")
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_old_authorship_write_is_also_refused_on_the_contract(db_ready):
+    """**والمسارُ الثاني يُثبت وحده — لا يُستنتج من أخيه.**
+
+    ولو جُمعا في معاملةٍ واحدة لأبطل أوّلُ `IntegrityError` ما بعده: تُجهض
+    المعاملة، فيصير الفحصُ الثاني يقيس معاملةً ميّتة لا قيدًا. فلكلٍّ
+    معاملتُه، ولكلٍّ زرعُه.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from athera_api.db import SessionFactory, system_session
+
+    async with system_session() as session:
+        head = (await session.execute(text(
+            "SELECT version_num FROM alembic_version"))).scalar_one()
+    if head != "0029":
+        pytest.skip(f"قاعدةُ الاختبارات عند {head}، والعقدُ يُفرض في 0029")
+
+    async with SessionFactory() as session:
+        tenant, _, agreement = await _one_member_and_agreement(session.bind)
+
+    with pytest.raises(IntegrityError) as caught:
+        async with SessionFactory() as session, session.begin():
+            await session.execute(text(
+                "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+            await session.execute(text(OLD_AGREEMENT_CONSENT),
+                                  {"agreement_id": agreement})
+    assert "ck_authorship_agreements_consent_has_a_method" in str(caught.value), (
+        f"رُفض اتفاقُ التأليف لسببٍ آخر: {str(caught.value)[:160]}")
 
 
 def test_the_migration_chain_ends_at_the_contract():

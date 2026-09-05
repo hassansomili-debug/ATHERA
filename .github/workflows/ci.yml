@@ -116,6 +116,23 @@ jobs:
             -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO athera_app" \
             -c "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO athera_app"
 
+      # ── نافذةُ النشر: شيفرةُ الموجة على مخطَّط 0028 ────────────────
+      #
+      # الترتيبُ في الإنتاج: يُرحَّل إلى 0028، ثمّ يُنشر خادمُ الموجة **وهو
+      # عليه**، ثمّ يُطبَّق 0029. فبين النشر والعقد يخدم الجديدُ مخطَّطًا لم
+      # يُفرض عليه العقد.
+      #
+      # ولا تُثبت ذلك رحلةُ المرشَّح — تعمل على الرأس — ولا فحصُ الخادم
+      # القديم، فهو SQL خامّ لا شيفرةَ موجة. فتُشغَّل شيفرتُها هنا وحدها،
+      # و`DATABASE_URL` مُوجَّهٌ صراحةً إلى قاعدة النافذة لا إلى قاعدة
+      # الاختبارات؛ و`ATHERA_EXPECT_SCHEMA` يجعل الخطأ في التوجيه سقوطًا
+      # لا خضرةً صامتة.
+      - name: Deployment window — Wave 1 API against schema 0028
+        env:
+          DATABASE_URL: ${{ env.ATHERA_EXPAND_SCHEMA_URL }}
+          ATHERA_EXPECT_SCHEMA: "0028"
+        run: cd apps/api && pytest -v tests/test_at_wave1_on_expand_window.py
+
       - name: Acceptance tests AT-S0-*
         run: cd apps/api && pytest -v
 
