@@ -179,11 +179,15 @@ def upgrade() -> None:
         (_in("consent_state", CONSENT_STATES), "consent_state"),
         (f"consent_method IS NULL OR {_in('consent_method', CONSENT_METHODS)}",
          "consent_method"),
-        # الموافقةُ لها وقتٌ وطريقة — أو ليست موافقة.
-        ("(consent_recorded_at IS NULL) = (consent_method IS NULL)",
-         "consent_has_a_method"),
-        ("(consent_state IN ('granted', 'declined')) "
-         "= (consent_recorded_at IS NOT NULL)", "consent_has_a_time"),
+        # **الموافقةُ لها وقتٌ وطريقة — والقيدُ مؤجَّلٌ إلى 0029.**
+        #
+        # هذا ترحيلُ **توسعة**: يعمل تحته الخادمُ القديم حتى تُنشر الموجة.
+        # والخادمُ القديم يكتب `consent_recorded_at` وحده ولا يعرف
+        # `consent_method` (`routers/team.py:156`)، فقيدٌ يقرن العمودين
+        # هنا يُسقط كلَّ تسجيل موافقةٍ بـ٥٠٠ في تلك النافذة.
+        #
+        # فيُنقل إلى `0029_research_teams_consent_contract` — يُفرض بعد أن
+        # يصير الكاتبُ هو الموجةَ الأولى، وبعد أن تُرمَّم صفوفُ النافذة.
         # ══ الحارس البنيويّ ضدّ تزوير التأليف ══
         #
         # لا يُصلَح هذا في الموجّه وحده: موجّهٌ ثانٍ يُكتب غدًا يعيد العطب.
@@ -334,8 +338,8 @@ def upgrade() -> None:
     for expression, name in (
         (f"consent_method IS NULL OR {_in('consent_method', CONSENT_METHODS)}",
          "consent_method"),
-        ("(consent_recorded_at IS NULL) = (consent_method IS NULL)",
-         "consent_has_a_method"),
+        # وقيدُ «للموافقة طريقة» مؤجَّلٌ إلى 0029 للسبب نفسه:
+        # `services/thesis/rights.py:190` يكتب الوقت وحده.
         ("consent_method IS DISTINCT FROM 'administrative' OR "
          "(consent_recorded_by IS NOT NULL AND consent_evidence_ar IS NOT NULL "
          "AND length(btrim(consent_evidence_ar)) > 0)",
@@ -452,8 +456,9 @@ def downgrade() -> None:
 
     # **قيدُ check يُحذف بـSQL صريح** — واجهةُ alembic تعيد تطبيق اصطلاح
     # التسمية على اسمٍ طُبّق عليه أصلًا، فتطلب اسمًا لا وجود له (0017).
-    for constraint in ("consent_method", "consent_has_a_method",
-                       "proxy_consent_is_evidenced"):
+    # و«consent_has_a_method» ليست من صنع هذا الترحيل بعد الفصل — تُنشئها
+    # 0029 وتحذفها 0029. وحذفُ ما لم يُنشأ هنا يُسقط التنازل.
+    for constraint in ("consent_method", "proxy_consent_is_evidenced"):
         op.execute("ALTER TABLE authorship_agreements DROP CONSTRAINT "
                    f"ck_authorship_agreements_{constraint}")
     op.drop_column("authorship_agreements", "consent_evidence_ar")
@@ -479,7 +484,6 @@ def downgrade() -> None:
     op.drop_table("project_invitations")
 
     for constraint in ("access_state", "consent_state", "consent_method",
-                       "consent_has_a_method", "consent_has_a_time",
                        "self_consent_is_the_member", "proxy_consent_is_evidenced",
                        "position_needs_authorship", "suspension_has_a_time",
                        "removal_has_a_time"):
