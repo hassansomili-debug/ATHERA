@@ -1,7 +1,7 @@
 # Wave 1.1 — Thesis Center stabilization
 
 **Branch:** `hotfix/thesis-center-stabilization` · **Base:** `main` @ `3fb473d`
-**No migration.** No production touched, no deploy, no merge.
+**Migration `0030`** (coordinated: Wave 2-A rebases after). No production touched, no deploy, no merge.
 
 ---
 
@@ -87,7 +87,12 @@ sentence, bilingual, from the server, that names the missing integration:
 Opportunities remain candidates throughout; no copy claims publication
 readiness or a guaranteed gap.
 
-### E · Safe removal
+### E · Safe removal — *superseded by review round 2 below*
+
+> The dependency preview and the Mumbai-latency reasoning below still
+> stand. What changed: there is no delete, the action is a reversible
+> archive, and the blocking set now asks for an acknowledgement instead
+> of refusing. Read § 1 of “Review round 2” for the contract that shipped.
 
 `⋯` menu per card: Review · Reprocess (when valid) · **Remove from Thesis
 Center** · **Move source file to Trash** (only when a file exists) — with a
@@ -98,7 +103,7 @@ preview in **one statement** (eight scalar subqueries — the DB is in Mumbai
 and the API in Singapore; eight round trips would cost half a second before
 the "are you sure?" is even shown).
 
-| Dependency | Blocks removal? |
+| Dependency | Needs an acknowledgement? |
 |---|---|
 | extracted sections, extracted results | **no** — machine output, a second read reproduces it |
 | sections you verified yourself | **yes** |
@@ -157,24 +162,42 @@ deliberately not created here (see below).
 
 ---
 
-## Migration: none — and why
+## Migration `0030` — what it is and why it is safe
 
-Wave 2-A owns `0030` on `wave2/researcher-intelligence-foundation`. No
-competing migration was created, and none turned out to be needed:
+Round one shipped no migration, on the reading that a thesis with no
+dependency could simply be deleted. Review rejected that, correctly, and
+granted this wave `0030`; Wave 2-A (PR #103) rebases and renumbers afterwards,
+which is the coordinator's to sequence, not mine.
 
-- **Soft-removal marker:** not needed at all. `theses.processing_state` is a
-  closed vocabulary with a DB check constraint, so adding a `removed` value
-  *would* have needed a migration. It is unnecessary because a thesis with no
-  human-decided dependency is genuinely disposable: its row is deleted, the
-  machine output under it goes with it, and the audit trail — which has no FK
-  to `theses` and cannot be deleted by the app role — carries the history. A
-  thesis that *does* carry decisions is never removed, so it never needs a
-  marker either.
-- **Mining uniqueness:** expressed as a row lock plus an in-transaction
-  identity check rather than a unique index.
+`0030_thesis_archive.py` adds exactly:
 
-A test asserts the highest migration on this branch is still `0029` and that
-no `0030` exists here.
+- `theses.archived_at` — nullable timestamp, no server default
+- `theses.archived_by` — nullable FK to `users`, `ON DELETE RESTRICT`
+- `ck_theses_archive_is_named` — `(archived_at IS NULL) = (archived_by IS NULL)`,
+  so there is no such thing as an archive event with no time or no actor. Every
+  existing row is `NULL` in both, so all of them satisfy it on day one.
+- A partial index `(tenant_id, created_at DESC, id DESC) WHERE archived_at IS NULL`
+  for the new default listing filter — Mumbai/Singapore means statement cost is
+  response time, and the filter must not cost a scan.
+
+**Why it cannot break the deployed Wave 1 server** (schema 0029, API v88):
+nullable, no `server_default` writing anything, no constraint touching a column
+the old server knows, and no `ALTER`/`DROP`/`UPDATE`/`DELETE` on existing data.
+The old server inserts with its own explicit column list, so both columns land
+`NULL` — which reads as "not archived", the correct state for everything it
+writes; and nothing in v88 deletes a thesis or reads an archive. Two tests hold
+this: a static one asserting the migration is purely additive, and a live one
+performing exactly the v88-shaped INSERT on schema 0030 and asserting it
+succeeds with both columns `NULL` and the card reading `is_archived: false`.
+
+**Still not created:** a unique index on publication opportunities. Mining
+idempotency remains a row lock plus an in-transaction identity check, as
+instructed.
+
+One knock-on the migration caused and this PR fixes: two rolling-deploy tests
+guarded on `head != "0029"` and would have become silent skips the moment any
+migration landed after 0029 — leaving the 0029 contract enforced in the
+database with no test witnessing it. The guard is now "has reached 0029".
 
 ---
 
@@ -281,15 +304,22 @@ The spec's header states plainly that it does **not** prove tenant isolation
 
 | Method | Path | Change |
 |---|---|---|
-| `GET` | `/api/v1/theses` | **+** `actions` object, `results_extracted`, `source_file_id` |
+| `GET` | `/api/v1/theses` | **+** `actions`, `results_extracted`, `source_file_id`, `archived_at`; archived rows excluded by default; **+** `view=archived` |
 | `POST` | `/api/v1/theses` | same additions on the created card |
-| `POST` | `/api/v1/theses/{id}/mine-opportunities` | idempotent; **+** `opportunities_already_present` |
-| `GET` | `/api/v1/theses/{id}/removal-preview` | **new** |
-| `DELETE` | `/api/v1/theses/{id}` | **new** — 200, or 409 `thesis.removal_blocked` |
-| `POST` | `/api/v1/theses/{id}/parse` | **unchanged, still live** |
+| `POST` | `/api/v1/theses/{id}/parse` | **still live**; now 403 without file `write`, 409 while in flight, and its state write is conditional |
+| `POST` | `/api/v1/theses/{id}/mine-opportunities` | idempotent; **+** `opportunities_already_present`, `withheld_for_missing_title`, `title_note`; 403 without file `write`; no longer 5xx on a null title |
+| `GET` | `/api/v1/theses/{id}/removal-preview` | **new** — `needs_acknowledgement` (not `removable`) |
+| `POST` | `/api/v1/theses/{id}/archive` | **new** — 200, or 409 `thesis.archive_needs_acknowledgement` / `thesis.processing_in_flight` |
+| `POST` | `/api/v1/theses/{id}/restore` | **new** |
+| `DELETE` | `/api/v1/theses/{id}` | **does not exist** — no physical delete anywhere |
 
-All additive on existing responses. New error key `thesis.removal_blocked`
-exists in both catalogue locales.
+All additive on existing responses. New error keys
+`thesis.archive_needs_acknowledgement`, `thesis.archived`, `thesis.not_archived`
+exist in both catalogue locales.
+
+Every one of `parse`, `mine-opportunities`, `removal-preview`, `archive` and
+`restore` resolves object permission on the thesis's linked file: `read` for
+preview, `write` for parse and mine, `delete` for archive and restore.
 
 ## Hard rules
 
@@ -301,6 +331,121 @@ exists in both catalogue locales.
 - Catalogue parity holds in both `messages/*.json` and the API catalogue.
 - The new spec is wired into `package.json` **and** `ci.yml`.
 - No production credentials on the branch.
+
+## Review round 2 — five defects, all addressed
+
+### 1 · Removal is now a soft archive; physical delete is gone from the product
+
+The first cut wrote `DELETE FROM theses` for a thesis with no scientific
+dependency. That was wrong: the row is the head of a chain — sections,
+results, fact candidates, opportunities, authorship agreements, rights
+approvals, converted projects — and `ON DELETE CASCADE` sits on five tables
+beneath it. "No dependency **today**" is not "never will be", and a delete
+does not come back.
+
+- **Migration `0030`** adds `archived_at` and `archived_by`, plus a partial
+  index for the default listing. Nothing else changes.
+- **There is no DELETE endpoint on theses at all**, and no `delete(Thesis)`
+  statement in any router. An AST test fails if either returns.
+- `POST /theses/{id}/archive` hides; `POST /theses/{id}/restore` brings it
+  back. The default listing excludes archived rows; `view=archived` shows
+  them, and the screen exposes that view — an archive with no visible way
+  back is a delete in the researcher's experience.
+- **Everything is preserved.** The DB test counts sections, results,
+  opportunities and the thesis row before and after archive **and** restore,
+  and asserts the census is identical. `rows_deleted: 0` is stated in the
+  response, not implied.
+- Trashing the source file stays a separate explicit action, still a soft
+  trash, and still no S3 object is ever permanently deleted.
+
+**The dependency preview survives, and its meaning changed honestly.** It used
+to say "this blocks the delete". The delete is gone, so it now says "this is
+what gets hidden with it" — and because hiding a record that live work hangs
+from is a decision to take knowingly, it requires an explicit
+`acknowledge: true`; the server answers 409 `thesis.archive_needs_acknowledgement`
+without it. Refusing a reversible action outright would have been the wrong
+shape; asking is the right one.
+
+**Rolling-deploy safety.** Both columns are nullable with no server default
+and no constraint touching an existing column, so the deployed Wave 1 server
+(schema 0029, API v88) keeps inserting theses with its own column list and
+they land `NULL` — meaning "not archived", the correct state for everything it
+writes. A live-database test performs exactly that INSERT with only the
+columns 0029 knows and asserts it succeeds.
+
+### 2 · The nullable-title mining 5xx
+
+`theses.title_ar` is nullable; `ThesisFacts.title` was typed `str`. So
+`" ".join([facts.title, …])` raised `TypeError` and the researcher got a 500
+on a perfectly valid path: a thesis parsed by the legacy route (so it has
+sections and results) whose title has not been extracted yet. Reproduced
+directly before fixing.
+
+The miner is now title-optional **and invents nothing**. Four proposal kinds
+derive their working title from the thesis title; with no title they are
+withheld, and the response says how many and why (`withheld_for_missing_title`
+plus a bilingual `title_note`). The question-derived proposal still runs, so a
+missing title narrows the scan instead of failing it. A PostgreSQL HTTP test
+asserts the endpoint returns 202, never 5xx, and that no invented title
+reaches the column or the card.
+
+### 3 · The legacy `/parse` state regression
+
+`/parse` read `processing_state` at the top of the request, then fetched and
+parsed the document — slow work — then wrote the state it had read, with **no
+condition**. If the modern pipeline advanced to `ready_for_review` in that
+window, parse wrote `extracting` back over it, and the card sat in a running
+state with no task to lift it.
+
+Two limits now:
+
+- `/parse` is refused with 409 while work is in flight, so the two pipelines
+  never write in parallel.
+- `processing.settle_after_legacy_parse` performs a **single conditional
+  UPDATE** whose `CASE` reads the state at write time, not read time. It
+  advances only `uploaded` / `failed` / `text_layer_missing` to
+  `ready_for_review`; anything else is left literally untouched, including
+  `awaiting_consent` (the DIC2 gate is never jumped as a side effect). It has
+  to be one statement: the `missing_text_layer_says_so` constraint means
+  setting `text_layer_state='present'` and lifting the state cannot be split
+  without passing through a moment the database rejects.
+
+Two DB tests: the known sequence (extraction reaches review → legacy parse
+afterwards → final state must stay canonical and must not be `extracting`),
+and a table-driven one asserting the settle rule lifts exactly the three
+states it may and leaves every other state byte-identical.
+
+### 4 · Object-level authorization
+
+`parse`, `mine-opportunities`, `removal-preview`, `archive` and `restore` all
+pass through one guard that asks `rbac.require_object_action` on the thesis's
+linked file — the same model `document_intelligence` uses, resolving from the
+`ObjectGrant` that `files.upload_file` writes, not from `uploaded_by`. Levels:
+`read` for preview, `write` for parse and mine, `delete` for archive and
+restore (only `owner` carries `delete`).
+
+The DB test creates a **second user in the same tenant** with the researcher
+role and asserts all five actions return 403, and that the thesis is untouched
+afterwards. A companion test asserts the file's owner still passes every one
+of them — a guard that refuses everyone is its own defect. A thesis with no
+linked file has no object to check; tenant scope alone applies there, and the
+guard says so in prose rather than leaving it to be inferred.
+
+### 5 · Destructive lifecycle actions are blocked while processing is in flight
+
+For `queued` / `parsing` / `extracting`, archive and trash are withdrawn, with
+a bilingual reason that states there is **no cancellation contract** at this
+stage rather than pretending one exists. **The server enforces it**, not only
+the UI: `archive` returns 409 `thesis.processing_in_flight`, proven per
+in-flight state on a live database, with the row asserted still unarchived.
+The Playwright spec asserts that no lifecycle write — DELETE, archive or trash
+— leaves the client in any in-flight state, and a further spec drives archive
+across four states and asserts the product never sends a DELETE at all.
+
+### Not in this PR, by instruction
+
+The reviewed-FactCandidate → miner integration and the publication-opportunity
+unique index. Neither was built.
 
 ## RC E2E claim 8 — repaired by state, not by swapping a string
 
