@@ -218,7 +218,11 @@ no `0030` exists here.
   and inspected: one `SELECT`, eight scalar subqueries, and the `FOR UPDATE`
   clause is emitted on the thesis read.
 
-**Not observed — no local PostgreSQL, no node/npm on this machine:**
+**Observed in CI on PR #104** (run `33983466943`, commit before the RC fix):
+API, Web typecheck/lint/build, Browser and Security jobs all green — including
+the 7 DB-backed tests and the new `thesis-center.spec.ts`.
+
+**Not observed locally — no PostgreSQL, no node/npm on this machine:**
 
 - The 7 DB-backed tests in `test_at_thesis_center_stabilization.py`
   (mining idempotency over HTTP, modern-pipeline card, manual thesis, parse
@@ -297,6 +301,52 @@ exists in both catalogue locales.
 - Catalogue parity holds in both `messages/*.json` and the API catalogue.
 - The new spec is wired into `package.json` **and** `ci.yml`.
 - No production credentials on the branch.
+
+## RC E2E claim 8 — repaired by state, not by swapping a string
+
+The first RC run failed one claim: «٨ · retry offered where allowed, 409 where
+not» asserted a literal `"Try again"` on the text-PDF thesis. That assertion
+predates this wave, when one retry button served every state. Section A split
+it into three, each honest about what it does:
+
+| State | Control |
+|---|---|
+| `uploaded` (file attached, never read) | **Read the thesis** — a first read is not a retry |
+| `ready_for_review` / `completed` / `awaiting_consent` | **Read it again** — it succeeded; this is a re-read, not a repair |
+| `failed` (a read that failed, `failure_code` set) | **Try again** |
+| `text_layer_missing` | *none* — plus the written reason |
+
+**No product regression.** A failed first read leaves the thesis in `failed`
+with a named `failure_code`, which is retryable, so the card renders **Try
+again** exactly as the claim intends. The text PDF simply succeeds, so it
+now correctly renders "Read it again" — the harness was asserting a label
+that state no longer produces.
+
+The claim now reads the card's state first and demands the control that state
+**requires**, from a named table. Not weakened, strengthened in three ways:
+
+1. `expectReadAction` asserts the required control is present **and that the
+   other two are absent**. A check that only asserts presence would pass on a
+   card showing all three — which is what the card did before this wave.
+2. The negative half now denies **all three** controls on the scanned
+   document, not just "Try again", and still requires the written reason.
+3. No regex that would accept either label regardless of state, and no "any
+   button" — either would stop testing the very distinction this wave added.
+
+Reading state rather than pinning a string also fixes the failure in the other
+direction: a text PDF whose read genuinely fails in some environment lands on
+"Analysis failed", where **Try again** is correct — the claim interrogates the
+state, not the luck of the run.
+
+**The `failed` branch is proved deterministically where it can be built.** The
+RC journey cannot manufacture a failed read on demand (its text PDF succeeds),
+so `thesis-center.spec.ts` gains three intercepted cases — never read, read and
+succeeded, read and failed — each asserting its own control and the absence of
+the other two.
+
+Both 409 paths in the claim are untouched: `thesis.retry_needs_ocr` on the
+scanned document, and `thesis.processing_in_flight` from two concurrent
+reprocess requests.
 
 ## One rename worth flagging
 
