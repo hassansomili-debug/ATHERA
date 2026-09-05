@@ -31,6 +31,7 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
    * والرمزُ `null` ما لم يُكتب. هذا عرضٌ لا سلوك.
    */
   const [mfaNeeded, setMfaNeeded] = useState(false);
+  const [revealed, setRevealed] = useState(false);
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -74,7 +75,8 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
 
   return (
     <>
-      <h1>{t("auth.signIn")}</h1>
+      <h1>{t("auth.welcomeTitle")}</h1>
+      <p className="auth-sub">{t("auth.welcomeSubtitle")}</p>
       <form className="form" onSubmit={onSubmit}>
         <label>
           {t("auth.email")}
@@ -86,16 +88,29 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
             autoComplete="email"
           />
         </label>
-        <label>
-          {t("auth.password")}
+        <label htmlFor="login-password">{t("auth.password")}</label>
+        {/*
+          **الكشفُ زرٌّ اسمُه يتبدّل، لا أيقونةٌ صامتة.** ومن لا يرى الحقل
+          لا يعرف من رسمِ عينٍ أمفتوحةٌ كلمتُه أم مستورة، فيُنطق الاسم:
+          «أظهِر» حين تكون مستورة، و«أخفِ» حين تكون ظاهرة.
+        */}
+        <div className="field-reveal">
           <input
-            type="password"
+            id="login-password"
+            type={revealed ? "text" : "password"}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
             autoComplete="current-password"
           />
-        </label>
+          <button
+            type="button"
+            className="reveal"
+            onClick={() => setRevealed((on) => !on)}
+          >
+            {revealed ? t("auth.hidePassword") : t("auth.showPassword")}
+          </button>
+        </div>
         {mfaNeeded ? (
           <div className="mfa-step" data-testid="login-mfa-step">
             <strong>{t("auth.mfaTitle")}</strong>

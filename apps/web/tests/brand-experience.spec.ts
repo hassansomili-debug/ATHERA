@@ -414,6 +414,57 @@ test.describe("the brand tokens are applied, not merely declared", () => {
     expect(await readToken(page, "--athera-gold")).not.toBe("");
   });
 
+  test("the four semantic colours are the sheet's, to the digit", async ({ page }) => {
+    /**
+     * **ورقةُ الهويّة تكتب أربعةً بأرقامها**، فلا تُقارَب بالاشتقاق:
+     * النجاح والتحذير والخطأ والحياد. وهي ألوانُ الحشو والحدّ.
+     *
+     * وكلٌّ منها **يُربَط بحالته** — فقيمةٌ معرَّفةٌ لا تصل إلى شارةٍ هي
+     * لونٌ في ورقةٍ لا في منتج.
+     */
+    await page.goto("/welcome/ar");
+    expect(await readToken(page, "--success")).toBe("#22c55e");
+    expect(await readToken(page, "--warning")).toBe("#f59e0b");
+    expect(await readToken(page, "--error")).toBe("#ef4444");
+    expect(await readToken(page, "--neutral")).toBe("#f7f8fb");
+
+    // والحالُ تُشتقّ من الرقم المعتمد لا من قيمةٍ ثانية بجانبه.
+    expect(await readToken(page, "--state-verified")).toBe("#22c55e");
+    expect(await readToken(page, "--state-review")).toBe("#f59e0b");
+    expect(await readToken(page, "--state-conflict")).toBe("#ef4444");
+    expect(await readToken(page, "--state-candidate")).toBe("#7867f2");
+  });
+
+  test("the brand typefaces are served from our own origin, never a third party", async ({
+    page,
+  }) => {
+    /**
+     * **سياسةُ المحتوى تقول `font-src 'self'`** — فرابطٌ إلى خطوط خادمٍ
+     * ثالث يُحجب في المتصفّح بلا رسالةٍ مفهومة، وتعود الصفحة إلى خطّ
+     * النظام بلا أن يقول شيءٌ لماذا. فيُفحص الأمران: أن يكون للخطّ ملفٌّ
+     * من أصلنا، وألّا يُطلب من غيره.
+     */
+    const foreign: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.origin !== APP_ORIGIN && /font|\.woff2?$/i.test(url.href)) {
+        foreign.push(url.href);
+      }
+    });
+
+    await page.goto("/welcome/en");
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    expect(foreign, "a font was requested from a third-party origin").toEqual([]);
+
+    // والخطُّ وصل فعلًا: المتغيّر معرَّف، والجسمُ يستعمله.
+    const family = await page
+      .locator("body")
+      .evaluate((node) => getComputedStyle(node).fontFamily);
+    expect(family.length).toBeGreaterThan(0);
+    expect(await readToken(page, "--font-latin")).not.toBe("");
+    expect(await readToken(page, "--font-arabic")).not.toBe("");
+  });
+
   test("the page paints with the brand, not with the retired spectrum", async ({ page }) => {
     await page.goto("/welcome/ar");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
@@ -627,5 +678,236 @@ test.describe("accessibility on the public and auth shells", () => {
     }
     // والرسمُ الكبير كذلك: ما يقوله مكتوبٌ بجانبه.
     await expect(page.locator("svg.hero-thread")).toHaveAttribute("aria-hidden", "true");
+  });
+});
+
+// ══════════════ ٨. نصُّ ورقة الهويّة، وما لم يُنقَل منها ══════════════
+
+test.describe("the brand sheet's own content, and the four things left out", () => {
+  /** بطاقاتُ القدرات الستّ — بعناوينها كما في الورقة. */
+  const CARDS_EN = ["Discover", "Build", "Manage", "Analyze", "Write", "Publish"];
+
+  /** عقدُ الخيط الستّ، **بترتيبها**: الترتيب هو الدعوى. */
+  const NODES_EN = ["Idea", "Literature", "Research", "Evidence", "Manuscript", "Publication"];
+
+  /** قواعدُ النزاهة الستّ — بحرفها، لا بمعناها. */
+  const INTEGRITY_EN = [
+    "No fabricated references",
+    "No invented results",
+    "Clear distinction between suggestions and scientific facts",
+    "Evidence traceability",
+    "Researcher approval for key decisions",
+    "Transparency in AI use",
+  ];
+
+  test("the hero carries the sheet's eyebrow, its two-line headline and its promise", async ({
+    page,
+  }) => {
+    await page.goto("/welcome/en");
+    await expect(page.getByText("THE RESEARCH OPERATING SYSTEM")).toBeVisible();
+
+    // **عنوانٌ واحد في الشجرة وإن كان سطرين في العين.** والكلمةُ الثانية
+    // ملوّنة، فيُفحص أنّها داخل العنوان لا عنوانًا ثانيًا بجانبه.
+    const headline = page.getByRole("heading", { level: 1 });
+    await expect(headline).toContainText("Research to Publication.");
+    await expect(headline).toContainText("Connected.");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
+
+    // والكلمةُ الثانية بالبنفسجي — لهجةُ الذكاء في الورقة.
+    const accent = headline.locator(".accent");
+    await expect(accent).toHaveText("Connected.");
+    expect(await accent.evaluate((n) => getComputedStyle(n).color)).toBe("rgb(74, 56, 200)");
+  });
+
+  test("the six thread nodes read in the sheet's order", async ({ page }) => {
+    await page.goto("/welcome/en");
+    const nodes = page.locator(".stages-six .stage strong");
+    await expect(nodes).toHaveCount(6);
+    // **الترتيب يُقاس، لا الوجود.** «الفكرة قبل الأدبيات» هي الدعوى.
+    expect(await nodes.allTextContents()).toEqual(NODES_EN);
+
+    await expect(page.getByText("One journey. A bigger impact.")).toBeVisible();
+    await expect(page.getByText("Researchers today. A more open tomorrow.")).toBeVisible();
+  });
+
+  test("the six capability cards carry the sheet's titles", async ({ page }) => {
+    await page.goto("/welcome/en");
+    const cards = page.locator(".cap h3");
+    await expect(cards).toHaveCount(6);
+    expect(await cards.allTextContents()).toEqual(CARDS_EN);
+  });
+
+  test("the six integrity rules appear verbatim, and are readable without their marks", async ({
+    page,
+  }) => {
+    await page.goto("/welcome/en");
+    await expect(page.getByRole("heading", { name: "Research integrity by design" })).toBeVisible();
+
+    const rules = page.locator(".integrity li");
+    await expect(rules).toHaveCount(6);
+    for (const rule of INTEGRITY_EN) {
+      await expect(rules.filter({ hasText: rule })).toHaveCount(1);
+    }
+
+    // **والعلامةُ زخرفٌ لا معنى.** القاعدةُ نصٌّ بجانبها، فالعلامة مخفيّة
+    // عن الشجرة — ولو أُطفئت الرموز كلُّها بقيت القواعد الستّ مقروءة.
+    const ticks = page.locator(".integrity .tick");
+    await expect(ticks).toHaveCount(6);
+    for (let index = 0; index < 6; index += 1) {
+      await expect(ticks.nth(index)).toHaveAttribute("aria-hidden", "true");
+    }
+  });
+
+  test("every nav item leads somewhere that actually exists on the page", async ({ page }) => {
+    /**
+     * **رابطٌ في القائمة إلى صفحةٍ غير موجودة يَعِد ثمّ يُخرج.** فتُقرأ
+     * مراسي القائمة كلُّها ويُطلب هدفُ كلٍّ في المستند — والمقياس وجودُ
+     * العنصر لا نيّةُ كاتبه.
+     */
+    await page.goto("/welcome/en");
+    const anchors = await page
+      .locator('.site-nav a[href^="#"]')
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href") ?? ""));
+
+    expect(anchors.length, "the sheet's section links are missing entirely").toBe(3);
+    for (const anchor of anchors) {
+      await expect(
+        page.locator(anchor),
+        `the nav points at ${anchor}, and nothing on the page has that id`,
+      ).toHaveCount(1);
+    }
+
+    // والبابان إلى الحساب: «تسجيل الدخول» محدَّد، و«ابدأ» ممتلئ.
+    await expect(page.locator(`.site-nav a.site-signin[href="/${EN}/login"]`)).toBeVisible();
+    await expect(page.locator(`.site-nav a.site-cta[href="/${EN}/register"]`)).toBeVisible();
+  });
+
+  test("what the sheet asks for and we cannot honour honestly is absent, not faked", async ({
+    page,
+  }) => {
+    /**
+     * **حارسُ الامتناع.** الورقة تطلب «الأسعار» و«شاهد الفيديو» وصفحاتٍ لا
+     * وجود لها. والامتناعُ قرارٌ مكتوب في `docs/integration/brand-requests.md`
+     * — ولو لم يُحرَس لعاد أوّلُ من يقرأ الورقة يضيفه بحسن نيّة.
+     *
+     * وسقوطُ هذا الفحص لا يعني «أضِف الحارس»، بل: أُضيف شيءٌ من هذه
+     * إمّا بوجهةٍ حقيقية (فيُحدَّث الفحص ويُشطب من الوثيقة)، وإمّا بلا
+     * وجهة (فيُزال).
+     */
+    for (const path of ["/welcome/ar", "/welcome/en"]) {
+      await page.goto(path);
+      await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+      const body = (await page.locator("body").innerText()).toLowerCase();
+
+      expect(body, `a pricing entry appears on ${path}`).not.toMatch(/pricing|الأسعار|التسعير/);
+      expect(body, `a video CTA appears on ${path} and no video exists`).not.toMatch(
+        /watch video|شاهد الفيديو/,
+      );
+
+      // **ولا رابطٍ خارج ما بُني.** كلُّ وجهةٍ إمّا مرساةٌ في هذه الصفحة،
+      // وإمّا لغةٌ أخرى، وإمّا بابُ حساب — لا رابعَ لها.
+      const stray = await page
+        .locator(".site-head a, .site-foot a")
+        .evaluateAll((nodes) =>
+          nodes
+            .map((node) => node.getAttribute("href") ?? "")
+            .filter(
+              (href) =>
+                !href.startsWith("#") &&
+                href !== "/" &&
+                !/^\/welcome\/(ar|en)$/.test(href) &&
+                !/^\/(ar|en)\/(login|register)$/.test(href),
+            ),
+        );
+      expect(stray, `links with no destination we built, on ${path}`).toEqual([]);
+    }
+  });
+
+  test("the auth shell says what the sheet says, and hides its panel on a phone", async ({
+    page,
+  }) => {
+    await page.goto(`/${EN}/login`);
+    await expect(page.getByRole("heading", { name: "Welcome back", exact: true })).toBeVisible();
+    await expect(page.getByText("Sign in to your research workspace")).toBeVisible();
+    await expect(page.getByText("Think. Organize. Build. Verify. Publish.")).toBeVisible();
+    await expect(page.getByText("A more open tomorrow.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Forgot your password?" })).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Don't have an account? Create one" }),
+    ).toBeVisible();
+
+    // **واللوحةُ تختفي على الهاتف ولا تزاحم.** الداخلُ جاء ليدخل.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator(".auth-aside")).toBeHidden();
+    await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
+  });
+
+  test("the password reveal names what it does, and changes its name when it does it", async ({
+    page,
+  }) => {
+    /**
+     * **ومن لا يرى الحقل لا يقرأ رسمَ عين.** فالزرُّ اسمُه منطوق، ويتبدّل
+     * بتبدّل الحال — وإلّا قال «أظهِر» وكلمةُ المرور ظاهرة.
+     */
+    await page.goto(`/${EN}/login`);
+    const field = page.getByLabel("Password", { exact: true });
+    await expect(field).toHaveAttribute("type", "password");
+
+    const show = page.getByRole("button", { name: "Show password", exact: true });
+    await expect(show).toBeVisible();
+    await show.click();
+
+    await expect(field).toHaveAttribute("type", "text");
+    await expect(page.getByRole("button", { name: "Hide password", exact: true })).toBeVisible();
+    await expect(show).toHaveCount(0);
+  });
+
+  test("the sidebar keeps the sheet's order and its three named groups", async ({ page }) => {
+    /**
+     * ترتيبُ الورقة هو الترتيبُ القائم من الموجة الأولى — فيُحرَس أنه لم
+     * ينكسر وأنا أنقل الهيكل، لا أنه أُنشئ الآن.
+     */
+    await seedSession(page);
+    await stubApi(page);
+    await page.goto(`/${EN}`);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+
+    const menu = page.getByRole("navigation", { name: "Primary navigation" });
+    expect(
+      await menu.locator("a").allTextContents(),
+      "the sidebar order drifted from the approved sheet",
+    ).toEqual([
+      "Home",
+      "PUBRIVA AI",
+      "My Research",
+      "My Library",
+      "Search & Reference Discovery",
+      "Research Radar",
+      "Theses",
+      "Data & Analysis",
+      "Manuscript Studio",
+      "Peer Review",
+      "Journals & Publishing",
+      "Settings",
+    ]);
+
+    // **`innerText` يُدخل `text-transform` في النصّ المُعاد**، والورقة
+    // تكتب عناوين المجموعات بالكبير. فيُقرأ `textContent` — وهو ما في
+    // الكتالوج بحرفه، ولا يتبدّل بورقة أنماط.
+    expect(await menu.locator("h2.nav-label").allTextContents()).toEqual([
+      "Discovery & literature",
+      "Build the research",
+      "Review & publishing",
+    ]);
+
+    // **ولا أداةٍ مملوكةٍ لبحثٍ بعينه في القائمة العامّة.**
+    const projectScoped = await menu
+      .locator("a")
+      .evaluateAll((nodes) =>
+        nodes
+          .map((node) => node.getAttribute("href") ?? "")
+          .filter((href) => /\/portfolio\/[^/]+\//.test(href)),
+      );
+    expect(projectScoped, "a project-scoped tool leaked into global navigation").toEqual([]);
   });
 });

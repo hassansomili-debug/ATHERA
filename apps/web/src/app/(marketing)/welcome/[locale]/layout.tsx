@@ -80,10 +80,31 @@ export default async function MarketingLayout({
               </span>
             </Link>
             <nav className="site-nav" aria-label={t("landing.siteNavLabel")}>
+              {/*
+                **مرساةٌ إلى قسمٍ موجود، لا رابطٌ إلى صفحةٍ منويّة.**
+
+                ورقةُ الهويّة تطلب ستّة عناصر: المنتج، وكيف يعمل، وللباحثين،
+                وللمؤسسات، والنزاهة، وعن المنصّة. وثلاثةٌ منها لا وجهة لها
+                في المستودع — و«عنصرُ قائمةٍ إلى صفحةٍ لا تُملأ صدقًا» هو
+                بعينه الزرُّ الميّت الذي أزاله المسار أ، إلّا أنه أسوأ:
+                يَعِد الزائرَ بمحتوًى ثمّ يعطيه أربعمئة وأربعة.
+                فالثلاثةُ الباقية مراسٍ إلى أقسامٍ في هذه الصفحة، تُقاس
+                بالنقر. والباقي مكتوبٌ في `docs/integration/brand-requests.md`.
+              */}
+              <a href="#product">{t("landing.navProduct")}</a>
+              <a href="#how-it-works">{t("landing.navHowItWorks")}</a>
+              <a href="#integrity">{t("landing.navIntegrity")}</a>
+              {/*
+                وتبديلُ اللغة يبقى وسمًا عاديًّا لا `Link`: اللغةُ والاتجاه
+                يُحسمان على `<html>` في التخطيط، وانتقالٌ داخل العميل بين
+                مستندَين مختلفَي الاتجاه لا يعيد بناءهما.
+              */}
               <a href={otherHref} lang={other} hrefLang={other}>
                 {other === "ar" ? t("common.arabic") : t("common.english")}
               </a>
-              <a href={`/${locale}/login`}>{t("auth.signIn")}</a>
+              <a className="site-signin" href={`/${locale}/login`}>
+                {t("landing.secondaryCta")}
+              </a>
               <a className="site-cta" href={`/${locale}/register`}>
                 {t("landing.primaryCta")}
               </a>
@@ -99,7 +120,14 @@ export default async function MarketingLayout({
               <BrandMark idSuffix="foot" size={28} />
               <span>
                 <strong>{t("app.name")}</strong>
-                <span>{t("landing.footerNote")}</span>
+                {/*
+                  قفلُ التذييل كما في ورقة الهويّة: الوصفُ ثمّ الوعدُ
+                  بالعربية ثمّ النطاق. والوعدُ عربيٌّ في اللغتين — هو
+                  الجملة التي اعتمدها المالك بحرفها، لا تُترجَم.
+                */}
+                <span>{t("landing.footerTagline")}</span>
+                <span lang="ar" dir="rtl">{t("landing.footerPromise")}</span>
+                <span>{t("landing.footerDomain")}</span>
               </span>
             </div>
             <nav aria-label={t("landing.footerLabel")}>

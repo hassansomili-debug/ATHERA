@@ -493,28 +493,7 @@ h2.nav-label { line-height: 1.6; }
 /* ══════════════════════════════════════════════════════════════════
  * قشرةُ الحساب | The auth shell — بلا قائمةِ منتج
  * ══════════════════════════════════════════════════════════════════ */
-.auth-shell {
-  min-block-size: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 32px 18px 48px;
-  position: relative;
-  overflow: hidden;
-  background: var(--bg);
-}
-/* الخيط يمرّ خلف البطاقة — لهجةٌ واحدة لا سجّادةُ ألوان. */
-.auth-thread {
-  position: absolute;
-  inset-block-start: -160px;
-  inset-inline-end: -180px;
-  inline-size: 520px;
-  block-size: 520px;
-  border-radius: 50%;
-  background: var(--thread-soft);
-  filter: blur(6px);
-  pointer-events: none;
-}
-.auth-main { position: relative; inline-size: 100%; max-inline-size: 460px; }
+.auth-shell { min-block-size: 100vh; background: var(--bg); }
 .auth-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -721,4 +700,144 @@ h2.nav-label { line-height: 1.6; }
   .site-nav { inline-size: 100%; }
   .site-nav a { padding-inline: 10px; }
   .btn-primary, .btn-quiet { inline-size: 100%; text-align: center; }
+}
+
+/* ══════════ ورقةُ الهويّة: العنوان، والعقد الستّ، والنزاهة ══════════ */
+
+/*
+ * السطر الثاني من العنوان بالبنفسجي، وعلى سطرٍ خاصّ به.
+ * و`display: block` لا `<br>`: الفاصلُ تخطيطٌ لا محتوى، فلا يُنطق فراغًا.
+ */
+.hero h1 .accent {
+  display: block;
+  color: var(--brand-violet-ink);
+}
+
+/* ستُّ عقدٍ لا أربع — فالشبكة أضيق، والخيط يصلها كما يصل الأربع. */
+.stages-six { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
+.stages-six .stage strong { margin-block-end: 0; font-size: 15px; }
+
+.thread-foot {
+  margin-block: 22px 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* ── نزاهةُ البحث: ستُّ قواعد ── */
+.integrity {
+  list-style: none; margin: 0 0 8px; padding: 0;
+  display: grid; gap: 11px;
+  grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
+}
+.integrity li {
+  display: flex; align-items: flex-start; gap: 9px;
+  color: var(--fg-soft); font-size: 14.5px;
+}
+/*
+ * العلامة دائرةٌ خضراء — لونُ «المتحقَّق» بعينه، فالقارئ يتعلّم المعنى
+ * مرّة. وهي `aria-hidden`: القاعدة نصٌّ بجانبها، فلا تُقال مرّتين.
+ */
+.integrity .tick {
+  flex: 0 0 auto;
+  inline-size: 20px; block-size: 20px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 12px; line-height: 1;
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--state-verified-ink);
+  margin-block-start: 2px;
+}
+
+/* ── القائمة العامّة: «تسجيل الدخول» محدَّد، و«ابدأ» ممتلئ بالبنفسجي ── */
+.site-nav .site-signin {
+  border: 1px solid var(--border-strong);
+  padding-inline: 15px;
+  color: var(--fg);
+}
+.site-nav .site-signin:hover { border-color: var(--brand-indigo); color: var(--brand-indigo); background: transparent; }
+/*
+ * **الفعل الأول بنفسجيّ** كما في الورقة — والبنفسجي المعتمد يعطي ٤٫١٨
+ * مع الأبيض، وهو دون الحدّ لنصٍّ صغير. فالخلفيّة درجةٌ أغمق منه بقدر ما
+ * يبلغ الحدّ، والهويّةُ باقية: اللونُ هو هو، وقتامتُه وحدها تغيّرت.
+ */
+.site-nav .site-cta {
+  background: var(--brand-violet-ink);
+  color: #fff;
+  padding-inline: 16px;
+  font-weight: 580;
+}
+.site-nav .site-cta:hover { background: color-mix(in srgb, var(--brand-violet-ink) 86%, #000); color: #fff; }
+
+/* والتذييل يحمل ثلاثة أسطر تحت الاسم لا سطرًا. */
+.site-foot .site-brand > span > span { display: block; }
+.site-foot .site-brand > span > span + span { margin-block-start: 1px; }
+
+@media (max-width: 520px) {
+  .stages-six { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+}
+
+/* ══════════ قشرةُ الحساب بنصّ الورقة: لوحةٌ ونموذج ══════════ */
+
+/*
+ * **عمودان على الحاسوب، عمودٌ واحد على الهاتف.**
+ * واللوحةُ تختفي عند الضيق لا تُطوى: لوحةٌ تزاحم حقلَ البريد على شاشةٍ
+ * عرضُها ٣٩٠ بكسلًا تدفع الفعلَ خارج الطيّة، والداخلُ جاء ليدخل.
+ */
+.auth-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 460px);
+  align-items: center;
+  justify-content: center;
+  gap: clamp(24px, 5vw, 64px);
+  padding: 40px clamp(18px, 5vw, 56px);
+}
+.auth-aside {
+  max-inline-size: 460px;
+  justify-self: end;
+  padding: 30px;
+  border-radius: var(--radius-lg);
+  background: var(--thread-soft);
+  border: 1px solid var(--border);
+}
+.auth-art { inline-size: 100%; block-size: auto; aspect-ratio: 320 / 180; display: block; }
+.auth-sequence {
+  margin-block: 20px 6px;
+  font-size: clamp(17px, 2.2vw, 21px);
+  font-weight: 620;
+  color: var(--fg);
+  letter-spacing: -.01em;
+}
+.auth-promise { margin: 0; color: var(--brand-violet-ink); font-weight: 560; }
+
+.auth-main { justify-self: start; inline-size: 100%; max-inline-size: 460px; }
+.auth-sub { margin-block: 0 18px; color: var(--muted); font-size: 14.5px; }
+
+/*
+ * حقلٌ ومعه زرُّ كشف. والزرُّ داخل الإطار لا خارجه، فيقرأ الباحث الحقلَ
+ * وزرَّه شيئًا واحدًا — ويبقى الزرُّ في ترتيب الجدولة بعد الحقل مباشرة.
+ */
+.field-reveal { display: flex; align-items: stretch; gap: 0; }
+.field-reveal input {
+  flex: 1 1 auto; min-inline-size: 0;
+  border-start-end-radius: 0; border-end-end-radius: 0;
+  border-inline-end: none;
+}
+.reveal {
+  flex: 0 0 auto;
+  padding-inline: 12px;
+  border: 1px solid var(--border);
+  border-start-start-radius: 0; border-end-start-radius: 0;
+  border-start-end-radius: 10px; border-end-end-radius: 10px;
+  background: var(--surface-2);
+  color: var(--fg-soft);
+  font: inherit; font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.reveal:hover { color: var(--fg); border-color: var(--border-strong); }
+
+@media (max-width: 900px) {
+  .auth-shell { grid-template-columns: minmax(0, 460px); justify-content: center; padding-block: 28px 40px; }
+  /* اللوحةُ زينةٌ تشرح، والنموذجُ هو الفعل — فتُخفى ولا تُزاحم. */
+  .auth-aside { display: none; }
+  .auth-main { justify-self: center; }
 }

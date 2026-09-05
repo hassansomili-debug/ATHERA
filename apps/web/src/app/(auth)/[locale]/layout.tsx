@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { FONT_VARIABLES } from "@/lib/fonts";
+import { ResearchThread } from "@/components/ResearchThread";
 import { BrandMark } from "@/components/BrandMark";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { DEFAULT_LOCALE, LOCALES, direction, getMessages, isLocale, translator } from "@/lib/i18n";
@@ -66,10 +67,16 @@ export default async function AuthLayout({
         </a>
         <div className="auth-shell">
           {/*
-            الخيط يمرّ خلف البطاقة — عنصرُ الهويّة نفسه الذي في الهيكل
-            وفي الصفحة العامّة، فلا يشعر الداخل أنه انتقل إلى منتجٍ آخر.
+            **لوحةٌ إلى جانب النموذج، لا خلفيّةٌ تحته.** ورقةُ الهويّة تضع
+            تسلسلَ العمل والوعدَ فوق رسم الخيط. وهي تختفي على الهاتف: لوحةٌ
+            تزاحم حقلَ البريد على شاشةٍ عرضُها ٣٩٠ بكسلًا تدفع الفعلَ خارج
+            الطيّة، والداخلُ جاء ليدخل.
           */}
-          <div className="auth-thread" aria-hidden="true" />
+          <aside className="auth-aside">
+            <ResearchThread className="auth-art" idSuffix="auth" />
+            <p className="auth-sequence">{t("auth.panelSequence")}</p>
+            <p className="auth-promise">{t("auth.panelPromise")}</p>
+          </aside>
           <main className="auth-main" id="main-content" tabIndex={-1}>
             <div className="auth-card">
               <Link className="auth-brand" href="/">
