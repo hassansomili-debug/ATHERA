@@ -42,9 +42,9 @@ export function BrandMark({
       {label ? <title>{label}</title> : null}
       <defs>
         <linearGradient id={gradient} x1="8" y1="44" x2="40" y2="6" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="var(--brand-indigo, #4B46A9)" />
-          <stop offset=".58" stopColor="var(--brand-violet, #7867F2)" />
-          <stop offset="1" stopColor="var(--brand-teal, #17BEBB)" />
+          <stop offset="0" style={{ stopColor: "var(--brand-indigo, #4B46A9)" }} />
+          <stop offset=".58" style={{ stopColor: "var(--brand-violet, #7867F2)" }} />
+          <stop offset="1" style={{ stopColor: "var(--brand-teal, #17BEBB)" }} />
         </linearGradient>
       </defs>
       {/*
@@ -66,10 +66,10 @@ export function BrandMark({
         strokeLinecap="round"
       />
       {/* العقد: مواضعُ القرار على الخيط. */}
-      <circle cx="16" cy="9" r="3.4" fill="var(--brand-indigo, #4B46A9)" />
-      <circle cx="29.6" cy="17.6" r="3.1" fill="var(--brand-violet, #7867F2)" />
-      <circle cx="16" cy="26.2" r="2.8" fill="var(--brand-violet, #7867F2)" />
-      <circle cx="32" cy="40" r="3.6" fill="var(--brand-teal, #17BEBB)" />
+      <circle cx="16" cy="9" r="3.4" style={{ fill: "var(--brand-indigo, #4B46A9)" }} />
+      <circle cx="29.6" cy="17.6" r="3.1" style={{ fill: "var(--brand-violet, #7867F2)" }} />
+      <circle cx="16" cy="26.2" r="2.8" style={{ fill: "var(--brand-violet, #7867F2)" }} />
+      <circle cx="32" cy="40" r="3.6" style={{ fill: "var(--brand-teal, #17BEBB)" }} />
     </svg>
   );
 }

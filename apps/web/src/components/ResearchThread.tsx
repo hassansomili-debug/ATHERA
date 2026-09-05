@@ -31,9 +31,9 @@ export function ResearchThread({
     >
       <defs>
         <linearGradient id={gradient} x1="0" y1="180" x2="320" y2="0" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="var(--brand-indigo, #4B46A9)" />
-          <stop offset=".55" stopColor="var(--brand-violet, #7867F2)" />
-          <stop offset="1" stopColor="var(--brand-teal, #17BEBB)" />
+          <stop offset="0" style={{ stopColor: "var(--brand-indigo, #4B46A9)" }} />
+          <stop offset=".55" style={{ stopColor: "var(--brand-violet, #7867F2)" }} />
+          <stop offset="1" style={{ stopColor: "var(--brand-teal, #17BEBB)" }} />
         </linearGradient>
       </defs>
       {/* الخيط: صعودٌ متعرّج لا خطٌّ مستقيم — البحث لا يمضي في خطٍّ مستقيم. */}
@@ -43,10 +43,10 @@ export function ResearchThread({
         strokeWidth="3"
         strokeLinecap="round"
       />
-      <circle cx="14" cy="150" r="6" fill="var(--brand-indigo, #4B46A9)" />
-      <circle cx="104" cy="96" r="7.5" fill="var(--brand-violet, #7867F2)" />
-      <circle cx="192" cy="38" r="9" fill="var(--brand-violet, #7867F2)" />
-      <circle cx="306" cy="72" r="10.5" fill="var(--brand-teal, #17BEBB)" />
+      <circle cx="14" cy="150" r="6" style={{ fill: "var(--brand-indigo, #4B46A9)" }} />
+      <circle cx="104" cy="96" r="7.5" style={{ fill: "var(--brand-violet, #7867F2)" }} />
+      <circle cx="192" cy="38" r="9" style={{ fill: "var(--brand-violet, #7867F2)" }} />
+      <circle cx="306" cy="72" r="10.5" style={{ fill: "var(--brand-teal, #17BEBB)" }} />
     </svg>
   );
 }
