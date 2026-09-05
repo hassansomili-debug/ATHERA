@@ -162,6 +162,13 @@ const CI_PASSWORD = "rc-journey-ci-only-not-a-real-secret";
 
 const TEXT_PDF_NAME = `rc-thesis-with-text-${STAMP}.pdf`;
 const SCANNED_PDF_NAME = `rc-thesis-scanned-${STAMP}.pdf`;
+/** **مسبارٌ خارج المتصفّح — واسمُه خاصٌّ به.**
+ *
+ * أُضيف حين كان الرفع يردّ ٥٠٠: خمسمئةٌ من خارج `CORSMiddleware` تصل
+ * المتصفّحَ بلا ترويسة أصل، فيحجبها ولا يرى JS رمزًا. ولمّا صحّ الرفع
+ * صار المسبارُ يُنشئ رسالةً حقيقيّة — فازدوجت البطاقةُ باسمٍ واحد،
+ * وصارت الرسائلُ أربعًا وهي تُعدّ ثلاثًا. فله اسمُه، ويُعدّ معها. */
+const PROBE_PDF_NAME = `rc-thesis-probe-${STAMP}.pdf`;
 
 /** بحثٌ مُسجَّلٌ يدويًّا بلا ملفّ — نظيرُ «الفراغ» في الدعوى السابعة. */
 const MANUAL_TITLE_AR = `رسالةٌ مسجّلة يدويًّا ${STAMP}`;
@@ -243,6 +250,13 @@ function watch(page: Page): void {
   page.on("requestfailed", (request) => {
     const origin = new URL(request.url()).origin;
     if (origin !== APP_ORIGIN && origin !== API_ORIGIN) return;
+    // **واستباقُ Next المُجهَض ليس فشلًا.** يجلب الإطارُ مكوّنَ الخادم
+    // مسبقًا (`?_rsc=`) ثمّ يُجهضه متى تنقّل المستخدم أو خرج الرابط من
+    // النظر — فـ`ERR_ABORTED` عليه سلوكٌ لا عطب، ولا يراه الباحث.
+    // ويبقى ما عداه محسوبًا: فشلُ CORS يصل `ERR_FAILED` لا `ERR_ABORTED`،
+    // وهو بعينه ما يُنتج «Could not load the data.» — فلا يُبتلع.
+    const aborted = request.failure()?.errorText === "net::ERR_ABORTED";
+    if (aborted && request.url().includes("_rsc=")) return;
     requestFailures.push(
       `${request.method()} ${request.url()} — ${request.failure()?.errorText ?? "?"}`);
   });
@@ -522,7 +536,7 @@ test("٤·٥ · الرفع ينجح والبطاقةُ تحمل اسمَ الم�
     headers: { Authorization: `Bearer ${sessions.a?.access}`, "Accept-Language": EN },
     multipart: {
       upload: {
-        name: TEXT_PDF_NAME, mimeType: "application/pdf", buffer: pdfWithText(),
+        name: PROBE_PDF_NAME, mimeType: "application/pdf", buffer: pdfWithText(),
       },
     },
   }), "POST /api/v1/theses/upload");
@@ -795,7 +809,8 @@ test("١٢ب · لا تعدّ رسالةٌ ما لجارتها | one thesis neve
     expect(manual?.opportunities_found, "رسالةٌ بلا ملفّ تعدّ فرصًا").toBe(0);
 
     // والمستندُ الممسوح لم يُقرأ منه شيء، فلا أقسامَ له مهما جاورته رسالة.
-    expect(own.length, "الرسائلُ الثلاث — رفعتان وتسجيلٌ يدويّ").toBe(3);
+    expect(own.length,
+      "الأربع — مسبارٌ ورفعتان وتسجيلٌ يدويّ").toBe(4);
     const scanned = byName.get(SCANNED_PDF_NAME);
     expect(scanned?.sections_extracted, "مستندٌ بلا نصّ يعدّ أقسامًا").toBe(0);
     expect(scanned?.processing_state).toBe("text_layer_missing");
