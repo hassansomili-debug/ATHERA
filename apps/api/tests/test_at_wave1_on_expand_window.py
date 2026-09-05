@@ -99,6 +99,7 @@ async def test_wave_one_records_self_consent_over_http_on_the_window(two_tenants
 
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ProjectMember, ResearchProject
+    from athera_api.services import collaboration
 
     a = two_tenants["a"]
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
@@ -107,11 +108,19 @@ async def test_wave_one_records_self_consent_over_http_on_the_window(two_tenants
             status="planned", current_gate="G1")
         session.add(project)
         await session.flush()
-        session.add(ProjectMember(
-            tenant_id=a["tenant_id"], project_id=project.id,
-            user_id=a["user_id"], display_name="الباحثُ نفسه", role="co_author"))
-        await session.flush()
         project_id = project.id
+
+        # **العضويةُ من جسر المسار «هـ» لا من صفٍّ بيدي.** الصلاحياتُ
+        # تُمنح هناك كما يمنحها الترحيل، فلا يُختلق مسارٌ ثانٍ للعضوية.
+        member = await collaboration.ensure_owner_membership(
+            session, tenant_id=a["tenant_id"], project_id=project_id,
+            actor_user_id=a["user_id"])
+        assert member is not None, "الجسرُ لم يُنشئ عضويةَ المالك"
+
+        # **وعضويةُ الفريق ليست تأليفًا** (§24): الموافقةُ تلزم من أُعلن
+        # مؤلفًا، ورفضُ المنصّة لغير ذلك صوابٌ لا عائق. فيُعلَن هنا صراحةً.
+        member.is_author = True
+        await session.flush()
 
     async with _client(a["tenant_id"], a["user_id"]) as client:
         answer = await client.post(
@@ -137,7 +146,8 @@ async def test_wave_one_records_self_consent_over_http_on_the_window(two_tenants
 async def test_wave_one_reads_the_member_back_over_http_on_the_window(two_tenants):
     """**وتُقرأ بعد الكتابة**: دورةٌ كاملة على مخطَّط النافذة."""
     from athera_api.db import tenant_session
-    from athera_api.models.portfolio import ProjectMember, ResearchProject
+    from athera_api.models.portfolio import ResearchProject
+    from athera_api.services import collaboration
 
     a = two_tenants["a"]
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
@@ -146,11 +156,11 @@ async def test_wave_one_reads_the_member_back_over_http_on_the_window(two_tenant
             status="planned", current_gate="G1")
         session.add(project)
         await session.flush()
-        session.add(ProjectMember(
-            tenant_id=a["tenant_id"], project_id=project.id,
-            user_id=a["user_id"], display_name="عضوٌ يُقرأ", role="co_author"))
-        await session.flush()
         project_id = project.id
+        # والصلاحيةُ لا تأتي بالعضوية وحدها — تُمنح من الجسر نفسه.
+        assert await collaboration.ensure_owner_membership(
+            session, tenant_id=a["tenant_id"], project_id=project_id,
+            actor_user_id=a["user_id"]) is not None
 
     async with _client(a["tenant_id"], a["user_id"]) as client:
         listing = await client.get(f"/api/v1/projects/{project_id}/members")
