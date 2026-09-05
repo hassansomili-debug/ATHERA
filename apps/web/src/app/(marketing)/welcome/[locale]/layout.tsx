@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { FONT_VARIABLES } from "@/lib/fonts";
 import { BrandMark } from "@/components/BrandMark";
 import { DEFAULT_LOCALE, LOCALES, direction, getMessages, isLocale, otherLocale, translator } from "@/lib/i18n";
 import "../../../../styles/globals.css";
@@ -63,20 +65,20 @@ export default async function MarketingLayout({
   const otherHref = other === DEFAULT_LOCALE ? "/" : `/welcome/${other}`;
 
   return (
-    <html lang={locale} dir={direction(locale)}>
+    <html lang={locale} dir={direction(locale)} className={FONT_VARIABLES}>
       <body>
         <a className="skip-link" href="#main-content">
           {t("common.skipToContent")}
         </a>
         <div className="site">
           <header className="site-head">
-            <a className="site-brand" href="/">
+            <Link className="site-brand" href="/">
               <BrandMark idSuffix="head" size={34} />
               <span>
                 <strong>{t("app.name")}</strong>
                 <span>{t("app.promise")}</span>
               </span>
-            </a>
+            </Link>
             <nav className="site-nav" aria-label={t("landing.siteNavLabel")}>
               <a href={otherHref} lang={other} hrefLang={other}>
                 {other === "ar" ? t("common.arabic") : t("common.english")}

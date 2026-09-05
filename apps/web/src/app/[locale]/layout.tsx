@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { FONT_VARIABLES } from "@/lib/fonts";
 import { BrandMark } from "@/components/BrandMark";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { AuthGate } from "@/components/AuthGate";
@@ -50,7 +51,7 @@ export default async function LocaleLayout({
 
   return (
     // الاتجاه يُحسم على عنصر <html> — لا مرآة CSS لاحقة (§38.4).
-    <html lang={locale} dir={direction(locale)}>
+    <html lang={locale} dir={direction(locale)} className={FONT_VARIABLES}>
       <body>
         {/* أوّلُ ما يبلغه Tab — ولا يظهر لغيره. */}
         <a className="skip-link" href="#main-content">

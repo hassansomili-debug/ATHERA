@@ -279,13 +279,21 @@ test.describe("the auth pages carry no product sidebar", () => {
       route.fulfill({
         status: 401,
         contentType: "application/json",
+        // **الغلاف هو ما يردّه الخادم فعلًا**: `{"error": {...}}` كما في
+        // `athera_error_handler`، وكما يقرؤه `apiFetch` (`body?.error`).
+        // وأوّلُ صياغةٍ لهذا القالب وضعت الحقول عاريةً بلا غلاف، فقرأ
+        // العميلُ `server.error` ولم تُفتح الخطوة — **والعطب كان في
+        // القالب لا في الصفحة**. وقالبٌ يخالف عقد الخادم يفحص وهمًا.
         body: JSON.stringify({
-          code: "auth.mfa_invalid_code",
-          locale: AR,
-          message: "رمز التحقّق بخطوتين غير صحيح.",
-          messages: {
-            ar: "رمز التحقّق بخطوتين غير صحيح.",
-            en: "The two-step verification code is not valid.",
+          error: {
+            code: "auth.mfa_invalid_code",
+            locale: AR,
+            message: "رمز التحقّق بخطوتين غير صحيح.",
+            messages: {
+              ar: "رمز التحقّق بخطوتين غير صحيح.",
+              en: "The two-step verification code is not valid.",
+            },
+            context: {},
           },
         }),
       }),
@@ -356,11 +364,22 @@ test.describe("the brand tokens are applied, not merely declared", () => {
   const INK = "rgb(24, 34, 51)";
   const PAPER = "rgb(247, 248, 251)";
 
-  const readToken = (page: Page, token: string) =>
-    page.evaluate(
-      (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim(),
-      token,
-    );
+  /**
+   * **القيمةُ تُسوّى قبل المقارنة.** مصغِّرُ الأنماط يخفض حالةَ الأحرف في
+   * الرقم السداسي، فيردّ المتصفّح `#4b46a9` والملفُّ يكتب `#4B46A9`.
+   * ومقارنةُ النصّ الخام كانت تسقط على الحالة وحدها — وهو فرقُ عرضٍ لا
+   * فرقُ لون. فتُخفَض الحالة وتُقصّ الفراغات، **ولا يُضعَف الشرط**: القيمة
+   * ما زالت تُقابَل بالرقم بعينه لا بجزءٍ منه.
+   */
+  const readToken = async (page: Page, token: string) =>
+    (
+      await page.evaluate(
+        (name) => getComputedStyle(document.documentElement).getPropertyValue(name),
+        token,
+      )
+    )
+      .trim()
+      .toLowerCase();
 
   test("the approved five are defined once, at the root, on every shell", async ({ page }) => {
     /**
@@ -370,11 +389,11 @@ test.describe("the brand tokens are applied, not merely declared", () => {
      */
     for (const path of ["/welcome/ar", `/${AR}/login`]) {
       await page.goto(path);
-      expect(await readToken(page, "--brand-indigo"), path).toBe("#4B46A9");
-      expect(await readToken(page, "--brand-violet"), path).toBe("#7867F2");
-      expect(await readToken(page, "--brand-teal"), path).toBe("#17BEBB");
+      expect(await readToken(page, "--brand-indigo"), path).toBe("#4b46a9");
+      expect(await readToken(page, "--brand-violet"), path).toBe("#7867f2");
+      expect(await readToken(page, "--brand-teal"), path).toBe("#17bebb");
       expect(await readToken(page, "--brand-ink"), path).toBe("#182233");
-      expect(await readToken(page, "--brand-paper"), path).toBe("#F7F8FB");
+      expect(await readToken(page, "--brand-paper"), path).toBe("#f7f8fb");
     }
   });
 
@@ -387,9 +406,9 @@ test.describe("the brand tokens are applied, not merely declared", () => {
     await page.goto("/welcome/ar");
     // `--aqua` كان `#00d4c5`؛ صار النيليَّ المعتمد. والقيمةُ المحسوبة
     // تُعيد ما استقرّ عليه `var()` لا نصَّ الإحالة.
-    expect(await readToken(page, "--aqua")).toBe("#4B46A9");
+    expect(await readToken(page, "--aqua")).toBe("#4b46a9");
     expect(await readToken(page, "--aqua")).not.toBe("#00d4c5");
-    expect(await readToken(page, "--violet")).toBe("#7867F2");
+    expect(await readToken(page, "--violet")).toBe("#7867f2");
     // ولا اسمَ ميّتًا: ثلاثةٌ كانت تُستعمل بلا تعريفٍ أصلًا.
     expect(await readToken(page, "--athera-teal")).not.toBe("");
     expect(await readToken(page, "--athera-gold")).not.toBe("");

@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { FONT_VARIABLES } from "@/lib/fonts";
 import { BrandMark } from "@/components/BrandMark";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { DEFAULT_LOCALE, LOCALES, direction, getMessages, isLocale, translator } from "@/lib/i18n";
@@ -57,7 +59,7 @@ export default async function AuthLayout({
   const t = translator(messages);
 
   return (
-    <html lang={locale} dir={direction(locale)}>
+    <html lang={locale} dir={direction(locale)} className={FONT_VARIABLES}>
       <body>
         <a className="skip-link" href="#main-content">
           {t("common.skipToContent")}
@@ -70,13 +72,13 @@ export default async function AuthLayout({
           <div className="auth-thread" aria-hidden="true" />
           <main className="auth-main" id="main-content" tabIndex={-1}>
             <div className="auth-card">
-              <a className="auth-brand" href="/">
+              <Link className="auth-brand" href="/">
                 <BrandMark idSuffix="auth" size={36} />
                 <span>
                   <strong>{t("app.name")}</strong>
                   <span>{t("app.promise")}</span>
                 </span>
-              </a>
+              </Link>
               {children}
             </div>
             <div className="auth-foot">
