@@ -31,11 +31,28 @@ VARIANTS = {
     "brand/mark-dark.svg": "صيغةُ الوضع الداكن",
 }
 
-#: هندسةُ العلامة: المسار الأول، ثمّ الذيل، ثمّ مواضع العقد الأربع.
-STROKE = "M16 40V9c8.7 0 13.6 2.9 13.6 8.6 0 5.6-4.9 8.6-13.6 8.6"
-TAIL = "M16 40h16"
-NODES = [("16", "9", "3.4"), ("29.6", "17.6", "3.1"),
-         ("16", "26.2", "2.8"), ("32", "40", "3.6")]
+#: **الهندسةُ تُقرأ من مصدرها، ولا تُنسخ هنا.**
+#:
+#: كانت مكتوبةً في هذا الملفّ حرفًا بحرف، فكان الحارس يقارن نسخةً بنسخة:
+#: تتّفق الصيغُ الأربع والمكوّن على شكلٍ **غير معتمَد** ويمرّ كلُّ شيء
+#: أخضر. وهو ما وقع فعلًا — رُسمت العلامة حرفَ `P` صريحًا بساقٍ وقاعدة،
+#: واتّفقت الخمسةُ عليه، ولم يشتكِ فحصٌ واحد.
+#:
+#: فالمرجعُ الآن `brandMarkGeometry.ts` وحده: تُقرأ منه ويُطلب من الجميع
+#: موافقتُه. واتّفاقُ الصيغ بعضِها ببعض لا يكفي — يجب أن توافق **المعتمَد**.
+GEOMETRY = WEB / "src" / "lib" / "brandMarkGeometry.ts"
+
+
+def _canonical() -> tuple[str, list[tuple[str, str, str]]]:
+    source = GEOMETRY.read_text(encoding="utf-8")
+    block = source.split("THREAD_PATH =", 1)[1].split(";", 1)[0]
+    path = "".join(re.findall(r'"([^"]*)"', block))
+    nodes = re.findall(
+        r"\{ cx: ([\d.]+), cy: ([\d.]+), r: ([\d.]+)", source)
+    return path, nodes
+
+
+STROKE, NODES = _canonical()
 
 
 def _svg(name: str) -> str:
@@ -60,24 +77,27 @@ def test_every_logo_variant_draws_the_same_geometry(name: str):
     """
     svg = _svg(name)
     assert STROKE in svg, f"{name}: مسارُ الخيط يخالف الأصل"
-    assert TAIL in svg, f"{name}: ذيلُ الخيط يخالف الأصل"
     for cx, cy, r in NODES:
         assert re.search(rf'cx="{cx}"\s+cy="{cy}"\s+r="{r}"', svg), (
             f"{name}: عقدةٌ في غير موضعها ({cx},{cy},{r})")
 
 
-def test_the_component_the_app_renders_matches_the_files_on_disk():
+def test_the_component_draws_from_the_canonical_source_not_a_copy():
     """**والمكوّنُ هو ما يراه الباحث فعلًا.**
 
-    فلو طابقت الملفّاتُ الأربعُ بعضَها وخالفها المكوّن لبقيت الشجرة متّسقة
-    والشاشةُ وحدها شاذّة — وهي الموضع الوحيد الذي يهمّ.
+    ولا يُطلب منه أن يحمل المسار حرفًا بحرف — بل ألّا يحمله أصلًا: يستورده
+    من مصدره. فنسخةٌ في المكوّن تطابق المصدر اليوم هي نسخةٌ تفارقه غدًا،
+    والشاشةُ وحدها تشذّ — وهي الموضع الوحيد الذي يهمّ.
     """
     source = MARK.read_text(encoding="utf-8")
-    assert STROKE in source, "المكوّن يرسم مسارًا غير مسار الملفّات"
-    assert TAIL in source, "المكوّن يرسم ذيلًا غير ذيل الملفّات"
-    for cx, cy, r in NODES:
-        assert re.search(rf'cx="{cx}" cy="{cy}" r="{r}"', source), (
-            f"المكوّن يضع عقدةً في غير موضعها ({cx},{cy},{r})")
+
+    assert "brandMarkGeometry" in source, "المكوّن لا يقرأ من المصدر المعتمَد"
+    for symbol in ("THREAD_PATH", "NODES", "STROKE_WIDTH", "VIEW_BOX"):
+        assert symbol in source, f"المكوّن لا يستعمل {symbol} من المصدر"
+
+    # ولا هندسةَ مكتوبةً بيدها: مسارٌ حرفيّ أو عقدةٌ برقمٍ ثابت.
+    assert not re.search(r'd="M[\d.]', source), "مسارٌ مكتوبٌ في المكوّن"
+    assert not re.search(r'cx="[\d.]+"', source), "عقدةٌ برقمٍ ثابت في المكوّن"
 
 
 def test_the_geometry_guard_would_notice_a_drifted_variant():
@@ -85,8 +105,16 @@ def test_the_geometry_guard_would_notice_a_drifted_variant():
 
     فيُحاكى الحسابُ نفسه على صيغةٍ عُدّل مسارُها، ويجب أن تُرى.
     """
-    drifted = '<svg viewBox="0 0 48 48"><path d="M16 40V9c9 0 14 3 14 9"/></svg>'
-    assert STROKE not in drifted
+    drifted = '<svg viewBox="0 0 48 48"><path d="M12 21C13 13 21 7 29 8"/></svg>'
+    assert STROKE not in drifted, "الحارس لا يميّز مسارًا انحرف"
+
+    # **والأهمّ: أن يرفض الحرفَ الصريح الذي رُسم خطأً.** ساقٌ رأسيّة
+    # وقاعدةٌ أفقيّة ليستا العلامة المعتمَدة، ومرورُهما هو العطب بعينه.
+    letterform = 'M16 40V9c8.7 0 13.6 2.9 13.6 8.6 0 5.6-4.9 8.6-13.6 8.6'
+    assert STROKE != letterform, "الهندسةُ المعتمَدة عادت حرفًا صريحًا"
+    assert "V9" not in STROKE, "ساقٌ رأسيّة في العلامة المعتمَدة"
+    assert "h16" not in STROKE, "قاعدةٌ أفقيّة في العلامة المعتمَدة"
+    assert len(NODES) == 3, f"العقدُ المعتمَدة ثلاث، لا {len(NODES)}"
 
 
 #: أرقامُ ورقة الهويّة — تُكتب هنا مرّة، وتُطلب من الطبقة الأولى بحرفها.

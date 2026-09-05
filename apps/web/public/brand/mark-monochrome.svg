@@ -1,11 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
-  <!-- أحاديّةُ اللون | monochrome — حبرٌ واحد، بلا تدرّجٍ ولا أرضيّة.
-       والهندسةُ واحدةٌ في الصيغ الأربع: مسارٌ واحد وأربعُ عقدٍ بمواضعها.
-       تُولَّد من مصدرٍ واحد، ويحرس التطابقَ فحصٌ في مجموعة الـAPI. -->
-  <path d="M16 40V9c8.7 0 13.6 2.9 13.6 8.6 0 5.6-4.9 8.6-13.6 8.6" stroke="#182233" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M16 40h16" stroke="#182233" stroke-width="4" stroke-linecap="round" fill="none"/>
-  <circle cx="16" cy="9" r="3.4" fill="#182233"/>
-  <circle cx="29.6" cy="17.6" r="3.1" fill="#182233"/>
-  <circle cx="16" cy="26.2" r="2.8" fill="#182233"/>
-  <circle cx="32" cy="40" r="3.6" fill="#182233"/>
+  <!-- أحاديّةُ اللون للطباعة — الصمتُ اللونيّ لا يُغيّر الصورة الظلّية. -->
+  <path d="M11.6 21.4C12.4 12.6 20.8 6.9 29.4 8.1C36.9 9.2 40.6 15.4 39.2 21.6C37.8 27.9 30.4 31.1 25.2 28.9C20.6 27 17.2 31.2 16.6 37.2" fill="none" stroke="currentColor" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="11.6" cy="21.4" r="3.3" fill="currentColor"/>
+  <circle cx="25.6" cy="19.2" r="3.7" fill="currentColor"/>
+  <circle cx="16.6" cy="37.4" r="3.5" fill="currentColor"/>
 </svg>
