@@ -521,6 +521,18 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     # محوَّل — وإسقاطُ أصله يمحوه أو يقطع صلتَه به، وكلاهما لا يُستعاد.
     # **مستندٌ معطوبٌ ليس عطبًا في الخادم.** المفردةُ كانت تحمل
     # `parse_failed` ولا مسارَ يكتبه، فكان السقوطُ غيرُ المصنَّف يخرج ٥٠٠.
+    # **حدٌّ لا يُقايَض، ونصُّه لا يَعِد بإلغاء.** الملفُّ تقرؤه مهمّةٌ الآن،
+    # ولا سبيل إلى إيقافها في هذه المرحلة — فيُقال ذلك ولا يُتظاهَر بغيره.
+    "library.file_busy_processing": {
+        "ar": "هذا الملفّ تقرؤه معالجةٌ جاريةٌ الآن على رسالةٍ مرتبطة به، فلا يُنقل "
+              "إلى السلّة قبل انتهائها. **ولا يوجد في هذه المرحلة سبيلٌ إلى إلغاء "
+              "المعالجة** — انتظر انتهاءها ثمّ أعد المحاولة. ولم يُنقل شيء، ولم "
+              "تتغيّر الرسالة.",
+        "en": "This file is being read right now by processing running on a thesis "
+              "linked to it, so it cannot be moved to the trash until that finishes. "
+              "There is no way to cancel processing at this stage — wait for it to "
+              "finish, then try again. Nothing was moved and the thesis is unchanged.",
+    },
     "thesis.parse_failed": {
         "ar": "تعذّرت قراءة هذا المستند — قد يكون مبتورًا أو تالفًا. "
               "السبب مسجَّل على البطاقة، ويمكنك رفع نسخةٍ سليمة.",

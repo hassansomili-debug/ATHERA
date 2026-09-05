@@ -684,6 +684,59 @@ def test_the_lifecycle_block_is_stated_in_both_languages_and_promises_no_cancel(
     assert "no cancellation contract" in english
 
 
+def test_the_library_trash_reads_the_one_in_flight_vocabulary_not_a_copy():
+    """**نسختان تفترقان بأوّل تعديل** — وأوّلُ موضعٍ ينسى التعديل يصير ثغرة.
+
+    فحدُّ السلّة يقرأ `processing.IN_FLIGHT` من موضعه الواحد، ولا يكتب
+    قائمةً ثانية بالأسماء نفسها. ويُقرأ الشجرُ لا النصّ: تعليقٌ يذكر
+    الاستيراد ليس استيرادًا.
+    """
+    files_router = API / "routers" / "files.py"
+    tree = ast.parse(files_router.read_text(encoding="utf-8"))
+    handler = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "trash_file")
+    body = ast.unparse(handler)
+
+    assert "IN_FLIGHT" in body, "حدُّ المعالجة الجارية غائبٌ عن نقطة السلّة"
+    assert "processing.IN_FLIGHT" in body, (
+        "المفردةُ منسوخةٌ لا مستورَدة — فتفترق عن مصدرها بأوّل تعديل")
+    # ولا قائمةَ أسماءٍ مكتوبةً بيدٍ ثانية في هذه النقطة.
+    for state in ("'queued'", "'parsing'", "'extracting'"):
+        assert state not in body, f"اسمُ حالٍ منسوخ في نقطة السلّة: {state}"
+
+    # **والاستيرادُ من الوحدة القانونية** لا من نسخةٍ محلّية.
+    imported = {
+        f"{node.module}"
+        for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert any("services.thesis" in name or name.endswith("thesis") for name in imported), (
+        "نقطةُ السلّة لا تستورد مفردةَ المعالجة من موضعها")
+
+
+def test_the_in_flight_trash_block_is_not_negotiable_by_a_confirmation():
+    """**`confirm` يتجاوز تحذيرًا، ولا يتجاوز منعًا.**
+
+    ولو وقع فحصُ الجريان بعد فحص الارتباط بالبحوث لمرّ طلبٌ يحمل
+    `confirm: true` إلى الكتابة قبل أن يُسأل عن المعالجة أصلًا. فالترتيبُ
+    نفسه هو الضمان، ويُقرأ من الشجر.
+    """
+    files_router = API / "routers" / "files.py"
+    tree = ast.parse(files_router.read_text(encoding="utf-8"))
+    handler = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "trash_file")
+    body = ast.unparse(handler)
+
+    busy_at = body.index("file_busy_processing")
+    links_at = body.index("file_linked_to_projects")
+    assert busy_at < links_at, (
+        "فحصُ المعالجة الجارية يقع بعد فحصِ الارتباط — فإقرارٌ قد يسبقه")
+    # ولا يُقرأ `confirm` قبل حدِّ الجريان.
+    assert "payload.confirm" not in body[:busy_at], (
+        "الإقرارُ يُقرأ قبل حدٍّ لا يُقايَض")
+
+
 def test_the_server_refuses_lifecycle_actions_in_flight_not_only_the_screen():
     """**شاشةٌ تُخفي زرًّا وخادمٌ يقبل الطلب حارسٌ واحدٌ لا اثنان.**
 
@@ -1506,3 +1559,172 @@ async def test_the_old_server_can_still_write_a_thesis_on_the_new_schema(two_ten
     card = next(row for row in listed if row["id"] == str(thesis_id))
     assert card["archived_at"] is None
     assert card["actions"]["is_archived"] is False
+
+
+# ═════ ١٠. سلّةُ المكتبة على ملفٍّ تقرؤه مهمّةٌ جارية ═════
+#
+# **الشاشةُ وحدها لم تكن تكفي.** مركزُ الرسائل يُخفي «انقل إلى السلّة» ما
+# دامت المعالجة جارية، و`POST /files/{id}/trash` كانت تقبل الطلب على أيّ
+# حال: من نادى الواجهة مباشرةً سحب الملفَّ من تحت مهمّةٍ تقرؤه.
+
+
+async def _trash(tenant_id, user_id, file_id, *, confirm=False):
+    async with _client(tenant_id, user_id) as client:
+        return await client.post(f"/api/v1/files/{file_id}/trash",
+                                 json={"confirm": confirm})
+
+
+async def _trashed_at(tenant_id, user_id, file_id):
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+
+    async with tenant_session(tenant_id, user_id) as session:
+        return (await session.execute(
+            select(File.trashed_at).where(File.id == file_id))).scalar_one()
+
+
+@requires_db
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["queued", "parsing", "extracting"])
+async def test_over_http_the_source_file_of_an_in_flight_thesis_cannot_be_trashed(
+        two_tenants, state):
+    """أ·ب·ج — **الحالاتُ الثلاث الجارية، كلٌّ على حدة.**
+
+    ولا تُجمع في فحصٍ واحد: أوّلُ سقوطٍ يُخفي البقيّة، فتُقرأ خضرةٌ عن حالٍ
+    لم تُجرَّب.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import processing
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id = await _seed(tid, uid, filename=f"{state}.pdf")
+    async with tenant_session(tid, uid) as session:
+        await processing.mark(session, tenant_id=tid, thesis_id=thesis_id, state=state)
+
+    refused = await _trash(tid, uid, file_id)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["code"] == "library.file_busy_processing"
+    message = refused.json()["error"]["message"]
+    assert message, "رفضٌ بلا تفسير"
+    # **ولا يَعِد النصُّ بإلغاء** — لا عقدَ إلغاءٍ في هذه المرحلة.
+    assert "إلغاء" in message
+
+    # **ولم يُنقل شيء** — ولا وُسم الملفّ بناقلٍ ولا بوقت.
+    assert await _trashed_at(tid, uid, file_id) is None, "نُقل ملفٌّ تقرؤه مهمّة"
+
+    # **ولا إقرارٌ يتجاوز هذا الحدّ** — `confirm` يتجاوز التحذير لا المنع.
+    forced = await _trash(tid, uid, file_id, confirm=True)
+    assert forced.status_code == 409, forced.text
+    assert forced.json()["error"]["code"] == "library.file_busy_processing"
+    assert await _trashed_at(tid, uid, file_id) is None, "إقرارٌ تجاوز حدًّا لا يُقايَض"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_the_same_file_is_trashable_once_processing_settles(two_tenants):
+    """د — **والحارسُ يبين بطرفيه.** حارسٌ لا يسمح أبدًا ليس حارسًا بل عطلًا.
+
+    فالرسالةُ نفسها والملفُّ نفسه: يُردّ وهي جارية، ويمضي حين تستقرّ.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import processing
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id = await _seed(tid, uid, filename="تستقرّ.pdf")
+
+    async with tenant_session(tid, uid) as session:
+        await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
+                              state=processing.EXTRACTING)
+    assert (await _trash(tid, uid, file_id)).status_code == 409
+
+    async with tenant_session(tid, uid) as session:
+        await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
+                              state=processing.READY_FOR_REVIEW)
+
+    allowed = await _trash(tid, uid, file_id)
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["trashed_at"], "الردّ لا يحمل وقتَ النقل"
+    assert await _trashed_at(tid, uid, file_id) is not None, "لم يُنقل فعلًا"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_a_file_with_no_in_flight_thesis_keeps_the_old_behaviour(
+        two_tenants):
+    """هـ — **ولا يُدفع الثمنُ على كلّ ملفّ.** ملفٌّ لا رسالةَ جاريةً عليه
+    يُنقل كما كان يُنقل قبل هذا الحدّ."""
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+    from athera_api.models.identity import ObjectGrant
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+
+    # ملفٌّ حرّ: لا رسالةَ تشير إليه أصلًا.
+    async with tenant_session(tid, uid) as session:
+        record = File(
+            tenant_id=tid, storage_key=f"tenants/{tid}/files/{uuid.uuid4()}/حرّ.pdf",
+            original_filename="حرّ.pdf", content_type="application/pdf",
+            size_bytes=1024, status="stored", uploaded_by=uid)
+        session.add(record)
+        await session.flush()
+        session.add(ObjectGrant(
+            tenant_id=tid, object_type="file", object_id=record.id,
+            user_id=uid, grant_level="owner", granted_by=uid))
+        loose = record.id
+
+    response = await _trash(tid, uid, loose)
+    assert response.status_code == 200, response.text
+    assert await _trashed_at(tid, uid, loose) is not None
+
+    # وملفُّ رسالةٍ ساكنة كذلك — الارتباطُ وحده لا يمنع، الجريانُ يمنع.
+    _thesis, settled_file = await _seed(tid, uid, filename="ساكنة.pdf")
+    settled = await _trash(tid, uid, settled_file)
+    assert settled.status_code == 200, settled.text
+    assert await _trashed_at(tid, uid, settled_file) is not None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_the_project_link_confirmation_is_neither_bypassed_nor_weakened(
+        two_tenants):
+    """و — **الحدُّ الجديد لم يُزِح القديم.**
+
+    وحارسٌ يُضاف فوق حارسٍ قد يُسقطه بلا أن ينتبه أحد: يُردّ الطلبُ برمزٍ
+    جديد فيُظنّ القديمُ قائمًا وهو لم يُسأل أصلًا. فيُجرَّب القديم وحده،
+    على ملفٍّ لا رسالةَ جاريةً عليه.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectFile, ResearchProject
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    _thesis, file_id = await _seed(tid, uid, filename="يسند بحثًا.pdf")
+
+    # بحثٌ يستعمل الملفّ — **بصفّ `project_files` القائم بعينه**، وهو ما
+    # يعدّه `library.active_project_links`، لا عمودًا على الملفّ.
+    async with tenant_session(tid, uid) as session:
+        project = ResearchProject(tenant_id=tid, working_title_ar="بحثٌ يستعمله",
+                                  status="planned")
+        session.add(project)
+        await session.flush()
+        session.add(ProjectFile(
+            tenant_id=tid, project_id=project.id, file_id=file_id,
+            state=ProjectFile.ACTIVE, added_by=uid))
+        await session.flush()
+
+    # **بلا إقرارٍ يُردّ، وبعدده** — وهو العقد القديم كما هو.
+    unconfirmed = await _trash(tid, uid, file_id)
+    assert unconfirmed.status_code == 409, unconfirmed.text
+    assert unconfirmed.json()["error"]["code"] == "library.file_linked_to_projects", (
+        "الحدُّ الجديد أزاح تحذيرَ الارتباط بالبحوث")
+    assert await _trashed_at(tid, uid, file_id) is None
+
+    # **وبالإقرار يمضي** — فالتحذيرُ يُقايَض، بخلاف حدّ المعالجة الجارية.
+    confirmed = await _trash(tid, uid, file_id, confirm=True)
+    assert confirmed.status_code == 200, confirmed.text
+    assert await _trashed_at(tid, uid, file_id) is not None
