@@ -15,6 +15,12 @@ import pytest
 from tests.tsscan import code_lines
 
 WEB = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web"
+
+#: صفحاتُ الحساب لها قشرةٌ خاصّة بها — مجموعةُ `(auth)` — فلا شريطَ منتجٍ
+#: فيها. والمجموعة لا تظهر في الرابط: `‎/ar/login` كما كان. فيُكتب موضعُها
+#: مرّة واحدة هنا، ولا يبحث كلُّ فحصٍ عنها بيده.
+AUTH_PAGES = WEB / "src" / "app" / "(auth)" / "[locale]"
+
 API_CLIENT = (WEB / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
 SESSION = (WEB / "src" / "lib" / "session.ts").read_text(encoding="utf-8")
 
@@ -100,7 +106,7 @@ def test_the_application_is_protected_at_the_route_boundary():
 
 
 def test_login_returns_the_researcher_to_the_page_they_wanted():
-    login = (WEB / "src" / "app" / "[locale]" / "login" / "page.tsx").read_text(encoding="utf-8")
+    login = (AUTH_PAGES / "login" / "page.tsx").read_text(encoding="utf-8")
     assert 'get("next")' in login
     # ولا يُقبل إلا مسارٌ داخلي — وجهةٌ خارجية تفتح تحويلًا مفتوحًا.
     assert 'startsWith("/")' in login and 'startsWith("//")' in login
@@ -110,7 +116,7 @@ def test_login_returns_the_researcher_to_the_page_they_wanted():
 
 def test_the_browser_has_a_working_account_creation_path():
     """`POST /auth/register` عامل في الخادم بلا بابٍ في المتصفح ليس مسارًا."""
-    page = WEB / "src" / "app" / "[locale]" / "register" / "page.tsx"
+    page = AUTH_PAGES / "register" / "page.tsx"
     assert page.exists(), "لا صفحة إنشاء حساب"
     source = page.read_text(encoding="utf-8")
     assert "/api/v1/auth/register" in source
@@ -119,7 +125,7 @@ def test_the_browser_has_a_working_account_creation_path():
     # وعرضُ الحقل يدعو إلى تخمين الأسماء — وتلك ثغرة التفويض التي أُغلقت.
     assert "tenant_slug" not in source
 
-    login = (WEB / "src" / "app" / "[locale]" / "login" / "page.tsx").read_text(encoding="utf-8")
+    login = (AUTH_PAGES / "login" / "page.tsx").read_text(encoding="utf-8")
     assert "/register" in login, "صفحة الدخول لا تدلّ على إنشاء حساب"
 
 
@@ -530,7 +536,7 @@ def test_the_password_change_ui_exists_for_the_researcher():
 # ══════════ ١٢. الاستعادة: واجهةٌ وآليّاتٌ بلا سرٍّ في أثر ══════════
 
 def test_the_recovery_routes_exist_and_are_public():
-    web = WEB / "src" / "app" / "[locale]"
+    web = AUTH_PAGES
     assert (web / "forgot-password" / "page.tsx").exists()
     assert (web / "reset-password" / "page.tsx").exists()
     gate = (WEB / "src" / "components" / "AuthGate.tsx").read_text(encoding="utf-8")
@@ -542,8 +548,7 @@ def test_the_recovery_routes_exist_and_are_public():
 
 def test_the_reset_page_never_shows_or_keeps_the_token():
     """**ما بعد `#` لا يُرسَل في طلب HTTP** — ويُنزع بعد قراءته."""
-    page = (WEB / "src" / "app" / "[locale]" / "reset-password"
-            / "page.tsx").read_text(encoding="utf-8")
+    page = (AUTH_PAGES / "reset-password" / "page.tsx").read_text(encoding="utf-8")
     assert "window.location.hash" in page, "الرمز لا يُقرأ من الجزء"
     assert "history.replaceState" in page, "الرمز يبقى في شريط العنوان والتاريخ"
     # **والالتقاط يسبق النزع.** واشتقاقُه من الرابط عند كل تصيير يجعله

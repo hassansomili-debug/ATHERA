@@ -17,6 +17,20 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
   const [totp, setTotp] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * **خطوةٌ يفتحها الخادم، لا حقلٌ دائم.**
+   *
+   * كان حقل «رمز التحقّق بخطوتين» معروضًا لكل من فتح الصفحة — ولا يملكه
+   * إلّا من فعّل التحقّق. فيقرأ الأكثرون حقلًا لا يخصّهم، ويُشكّون: هل
+   * نسيتُ شيئًا؟ هل حسابي ناقص؟ وحقلٌ لا يعني القارئَ يُعلّم العين أن
+   * تتخطّى الحقول، فتتخطّى الذي يعنيه.
+   *
+   * فالخادم هو من يقول متى يلزم الرمز: `auth.mfa_invalid_code` تعني أنّ
+   * لهذا الحساب عاملًا ثانيًا مؤكَّدًا وأنّ ما وصل لا يكفي. عندها — وعندها
+   * وحدها — تُفتح الخطوة. **ولا يتغيّر ما يُرسَل**: الجسم هو الجسم نفسه،
+   * والرمزُ `null` ما لم يُكتب. هذا عرضٌ لا سلوك.
+   */
+  const [mfaNeeded, setMfaNeeded] = useState(false);
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -44,6 +58,11 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
       const safe = next && next.startsWith("/") && !next.startsWith("//") ? next : `/${locale}`;
       window.location.assign(safe);
     } catch (err) {
+      // **الرمز هو ما يُقرأ، لا نصّ الرسالة.** النصّ يصل بلغتين ويتبدّل
+      // بتحرير؛ والرمز عقدٌ بين الطرفين.
+      if (err instanceof AtheraApiError && err.payload.code === "auth.mfa_invalid_code") {
+        setMfaNeeded(true);
+      }
       // الخطأ يصل بلغتين؛ نعرض لغة الواجهة الحالية.
       setError(
         err instanceof AtheraApiError ? err.localized(locale) : t("auth.signInFailed"),
@@ -77,16 +96,23 @@ export default function LoginPage({ params }: { params: Promise<{ locale: string
             autoComplete="current-password"
           />
         </label>
-        <label>
-          {t("auth.totp")}
-          <input
-            inputMode="numeric"
-            pattern="[0-9]{6}"
-            value={totp}
-            onChange={(e) => setTotp(e.target.value)}
-            autoComplete="one-time-code"
-          />
-        </label>
+        {mfaNeeded ? (
+          <div className="mfa-step" data-testid="login-mfa-step">
+            <strong>{t("auth.mfaTitle")}</strong>
+            <p>{t("auth.mfaHint")}</p>
+            <label>
+              {t("auth.totp")}
+              <input
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                value={totp}
+                onChange={(e) => setTotp(e.target.value)}
+                autoComplete="one-time-code"
+                required
+              />
+            </label>
+          </div>
+        ) : null}
         {error ? <p className="error" role="alert" data-testid="login-error">{error}</p> : null}
         <button type="submit" disabled={busy}>
           {busy ? t("app.loading") : t("auth.submit")}
