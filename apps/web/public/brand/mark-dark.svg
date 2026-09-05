@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
-  <!-- أيقونةُ اللسان | favicon — أرضيّةٌ حبريّة ليبقى الخيط مقروءًا
-       على لسانٍ فاتح ولسانٍ داكن معًا. والهندسةُ هي هي في الصيغ
-       الأربع، ويحرس التطابقَ فحصٌ في مجموعة الـAPI. -->
+  <!-- الوضعُ الداكن | dark mode — أرضيّةٌ شفّافة وميلٌ مرفوع.
+       والهندسةُ واحدةٌ في الصيغ الأربع: مسارٌ واحد وأربعُ عقدٍ بمواضعها.
+       تُولَّد من مصدرٍ واحد، ويحرس التطابقَ فحصٌ في مجموعة الـAPI. -->
   <defs>
     <linearGradient id="t" x1="8" y1="44" x2="40" y2="6" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#7C77D8"/>
@@ -9,7 +9,6 @@
       <stop offset="1" stop-color="#5FE3E0"/>
     </linearGradient>
   </defs>
-  <rect width="48" height="48" rx="11" fill="#182233"/>
   <path d="M16 40V9c8.7 0 13.6 2.9 13.6 8.6 0 5.6-4.9 8.6-13.6 8.6" stroke="url(#t)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
   <path d="M16 40h16" stroke="url(#t)" stroke-width="4" stroke-linecap="round" fill="none"/>
   <circle cx="16" cy="9" r="3.4" fill="#8B86E6"/>
