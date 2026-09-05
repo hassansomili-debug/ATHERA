@@ -162,6 +162,71 @@ deliberately not created here (see below).
 
 ---
 
+## Deployment order — migrate first, then deploy
+
+**Migrate `0029 → 0030`, then deploy this branch. Not the other way round.**
+
+Why, precisely:
+
+- **New code requires the columns.** `models/thesis.py` declares `archived_at`
+  and `archived_by`, so SQLAlchemy selects them on every read of `theses`.
+  Wave 1.1 therefore cannot serve any schema below `0030` — deploying first
+  produces `UndefinedColumnError: column theses.archived_at does not exist` on
+  the Thesis Center's first request.
+- **Old code tolerates them.** The deployed v88 `Thesis` model has no archive
+  columns at all (verified against `origin/main`; the `archived_at` hits there
+  belong to `research_projects`, a different table's pre-existing soft delete).
+  It writes `theses` with its own explicit column list, so both new columns
+  land `NULL` — which reads as "not archived", the correct state for
+  everything it writes. `0030` is additive and nullable, so nothing it does
+  breaks.
+
+So the only window is **v88 serving schema `0030`**, between the migration and
+the deploy. That window is proved in
+`apps/api/tests/test_at_rolling_deploy_compatibility.py` § 3: v88's three real
+writes to `theses` — the upload INSERT, the `processing.mark` UPDATE and the
+`claim_for_processing` UPDATE — replayed as raw SQL with v88's exact column
+list, each asserting `rowcount == 1` so RLS cannot silently filter the write to
+nothing and leave a green test on no work at all. Plus: the new
+`ck_theses_archive_is_named` constraint never refuses a v88 write (it leaves
+both columns `NULL`), and that constraint is proved live by rejecting a half
+mark.
+
+### The `0028` expand-window job was retired — replacement first
+
+Wave 1's rollout was the mirror image: migrate to `0028`, deploy Wave 1 onto
+it, then contract to `0029`. Its window was therefore "**new** code on an
+**older** schema", guarded by a dedicated job and
+`test_at_wave1_on_expand_window.py`. That rollout is complete and production
+sits at `0029`.
+
+Because Wave 1.1 is migrate-first, that property is now both unnecessary and
+permanently unachievable — a job asserting it would fail forever on a correct
+design. It was removed **only after** the replacement above was in place and
+passing, never the reverse. Removed with it: the CI steps that build, migrate
+and grant `athera_expand`, and the one rolling-deploy test that needed that
+database — a permanently skipped test reads as coverage while guarding
+nothing.
+
+Two guards were narrowed rather than weakened as a consequence:
+
+- `PINNED_BY_DESIGN` is now empty and the CI pin assertion is `== set()`, not
+  `<= {"0028"}`. The old form passed vacuously today and would have passed
+  again the day `0028` reappeared with no step to justify it.
+- `athera_expand` is gone from the permitted test-database names in
+  `db_safety.py`.
+
+And one guard was **added**, because the failure that caused this round had
+none: `test_the_rc_head_pin_says_one_number_and_it_is_the_chain_head` asserts
+the RC journey's pinned schema equals the repository's chain head and appears
+as exactly one number across the step's name, condition, log line and error
+text — so the next migration breaks a unit test on the branch instead of a
+workflow after merge. It reads that step alone, not the file, so honest prose
+elsewhere ("production is at `0029`") is not a false positive; a companion test
+proves the guard fails on a stale pin and on two disagreeing numbers.
+
+---
+
 ## Migration `0030` — what it is and why it is safe
 
 Round one shipped no migration, on the reading that a thesis with no
