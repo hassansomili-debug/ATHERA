@@ -294,6 +294,8 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
     setView(next);
     setLoaded(false);
     setTheses([]);
+    // **خبرُ فعلٍ سابق لا يُقرأ حكمًا على عرضٍ جديد.**
+    setNotice(null);
   }
 
   /** خانة فارغة تُرسل `null` لا سلسلة فارغة: العقد يميّز «غير مذكور» عن «فارغ». */
@@ -384,6 +386,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
    */
   async function confirmArchive(id: string, acknowledge: boolean) {
     patchCard(id, { busy: "archive", error: null });
+    setNotice(null);
     try {
       await apiFetch(`/api/v1/theses/${id}/archive`, {
         method: "POST", locale, body: JSON.stringify({ acknowledge }),
