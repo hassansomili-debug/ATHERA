@@ -162,6 +162,62 @@ deliberately not created here (see below).
 
 ---
 
+## Two further product defects, found because the fixtures started telling the truth
+
+Three tests failed in CI on setup, not on the product. Fixing the setup honestly
+made two of them fail again — for real reasons.
+
+### Fixture repairs
+
+- The v88 replay wrote through `system_session`, which carries no tenant GUC and
+  no RLS bypass, so the policy refused the INSERT. The irony is the point: this
+  test exists to prove v88's write still works, and RLS blocking it proved
+  nothing either way. The GUC is now set in the writing transaction and every
+  statement asserts `rowcount == 1`, so a silent filter can never read as
+  success.
+- There is no MinIO in CI; the suite now uses the in-memory store like the
+  existing upload suites.
+- `_seed` wrote a `files` row with no object behind it. That is not a state the
+  product can produce — an upload writes both — so every path that reads the
+  file failed for a reason unrelated to what was under test. The fixture now
+  stores the bytes with the row.
+- The second tenant member was seeded without a tenant context too, so the role
+  lookup was filtered to nothing and raised `NoResultFound`.
+
+### Defect A — an unreadable document returned 500
+
+`/parse` caught only `NoTextLayer` and `UnsupportedDocument`. Anything else the
+parser raised — `PdfReadError` on a truncated file, for instance — escaped as a
+500. The researcher reads "something broke on our side" about a file that is
+broken on theirs, and once the error toast closes the card carries no reason at
+all.
+
+The failure vocabulary already contained `parse_failed`, bilingual, **with no
+code path writing it** — a state the design anticipated and never wired up. It
+is wired now: named code, a safe technical detail (exception class and truncated
+message, never document text), and **422**, because it is the input that failed
+and not the service.
+
+### Defect B — the failure path destroyed newer canonical state
+
+Round two fixed `/parse`'s *success* path to evaluate its state rule at write
+time. The *failure* path still wrote unconditionally. So a legacy parse that
+failed on a thesis the modern pipeline had already carried to review dragged it
+down to "Analysis failed" — erasing the good extraction because a different,
+older path was tried and did not work.
+
+Both paths now share one condition from one vocabulary
+(`LEGACY_PARSE_MAY_SETTLE`), so they cannot drift apart. `processing.mark` gained
+an `only_from` guard that becomes a real `WHERE` clause and returns the affected
+row count, and the audit entry records explicitly when the state was left alone
+and why — a skipped write is a fact worth reading, not a silence.
+
+The regression test was strengthened accordingly: it is no longer enough that the
+state avoids `extracting`; it must still be exactly `ready_for_review` afterwards.
+Four pure AST/vocabulary guards hold both fixes without a database.
+
+---
+
 ## Deployment order — migrate first, then deploy
 
 **Migrate `0029 → 0030`, then deploy this branch. Not the other way round.**
