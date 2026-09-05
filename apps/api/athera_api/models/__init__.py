@@ -1,6 +1,11 @@
 from .audit import Approval, AuditEvent, IntegrityAlert, ProvenanceEvent
 from .base import Base
 from .brain import GuardrailCheck
+from .collaboration import (
+    ProjectInvitation,
+    ProjectMemberEvent,
+    ProjectMemberPermission,
+)
 from .golden_thread import (
     Construct,
     Instrument,
@@ -48,6 +53,17 @@ from .screening import (
     SOURCE_SCOPES,
     LiteratureMatrixCell,
     SourceAbstract,
+)
+from .project_management import (
+    MILESTONES,
+    STAGES,
+    TASK_PRIORITIES,
+    TASK_SOURCES,
+    TASK_STATUSES,
+    ProjectMilestone,
+    ProjectPlan,
+    ProjectStageEvent,
+    ProjectTask,
 )
 from .synthesis import (
     CONFLICT_KINDS,
@@ -168,10 +184,13 @@ __all__ = [
     "RULE_TYPES",
     "ResearchProgram", "ResearchProject", "ProjectMember", "ProjectDecision",
     "ProjectFile", "ProjectSource",
+    "ProjectInvitation", "ProjectMemberPermission", "ProjectMemberEvent",
     "LiteratureMatrixCell", "SourceAbstract",
     "MATRIX_FIELDS", "CELL_STATES", "SOURCE_SCOPES",
     "EXCLUSION_REASON_CODES", "EXTRACTION_METHODS",
     "ThemeCandidate", "ThemeCandidateSupport", "ContradictionCandidate",
     "ContradictionSide", "GapCandidate", "GapCandidateSource", "ResearchOpportunity",
     "SYNTHESIS_STATUSES", "THEME_BASES", "CONFLICT_KINDS", "GAP_TYPES", "GAP_STRENGTHS",
+    "ProjectPlan", "ProjectStageEvent", "ProjectTask", "ProjectMilestone",
+    "STAGES", "TASK_STATUSES", "TASK_SOURCES", "TASK_PRIORITIES", "MILESTONES",
 ]

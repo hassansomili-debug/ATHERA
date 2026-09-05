@@ -22,8 +22,33 @@ function pickLocale(request: NextRequest): string {
   return DEFAULT_LOCALE;
 }
 
+/**
+ * **الجذرُ موقعٌ عام، لا بابُ تطبيق.**
+ *
+ * كان `/` يُحوَّل إلى `‎/ar` — وهو تطبيقٌ محميّ يقذف من لا جلسة له إلى
+ * الدخول. فمن كتب اسم النطاق بلغ نموذج دخولٍ لمنتجٍ لا يعرف ما هو.
+ *
+ * فالجذرُ **يُعاد كتابته** إلى الصفحة العامّة بلغة الزائر، ولا يُحوَّل:
+ * الرابط يبقى النطاق وحده كما كتبه، والمستند يحمل `lang` و`dir` صحيحين
+ * لأن اللغة صارت في المسار الداخلي لا في استعلام لا يراه التخطيط.
+ */
+const MARKETING_ROOT = "/welcome";
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // والجذرُ و`‎/welcome` بلا لغةٍ سواء: كلاهما يُعاد كتابته إلى لغة الزائر.
+  if (pathname === "/" || pathname === MARKETING_ROOT) {
+    const url = request.nextUrl.clone();
+    url.pathname = `${MARKETING_ROOT}/${pickLocale(request)}`;
+    return NextResponse.rewrite(url);
+  }
+
+  // الموقع العام يحمل لغته في مساره، فلا يمرّ على توجيه اللغة.
+  if (pathname.startsWith(`${MARKETING_ROOT}/`)) {
+    return NextResponse.next();
+  }
+
   const hasLocale = LOCALES.some(
     (locale) => pathname === `/${locale}` || pathname.startsWith(`/${locale}/`),
   );
@@ -36,7 +61,7 @@ export function middleware(request: NextRequest) {
   }
 
   const url = request.nextUrl.clone();
-  url.pathname = `/${pickLocale(request)}${pathname === "/" ? "" : pathname}`;
+  url.pathname = `/${pickLocale(request)}${pathname}`;
   return NextResponse.redirect(url);
 }
 

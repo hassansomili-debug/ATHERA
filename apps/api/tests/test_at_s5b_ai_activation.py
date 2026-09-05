@@ -108,10 +108,36 @@ def test_system_prompt_forbids_fabrication_in_both_languages(locale):
     assert len(prompt) > 400
 
 
-def test_offline_literature_is_declared_to_the_model_not_hidden():
-    notice = ai_policy.capability_notice("ar", literature_online=False)
-    assert notice and "غير مفعّل" in notice
-    assert ai_policy.capability_notice("ar", literature_online=True) is None
+def test_the_capability_notice_declares_the_true_state_not_a_registry_flag():
+    """**كان هذا الفحص يثبّت كذبة، فصار يثبّت حقيقة.**
+
+    الصيغة القديمة كانت `capability_notice(locale, literature_online=...)`،
+    و`literature_online` مشتقّةٌ من `LITERATURE_REGISTRY` وحده. فكان النموذج
+    يُبلَّغ «البحث الخارجي غير مفعّل» في الإنتاج — حيث السجلّ `offline`
+    واكتشافُ المراجع يعمل بـCrossref وOpenAlex في كل بحث.
+
+    والفحص المُبقي على الصيغة القديمة كان يمنح خضرةً لسلوكٍ كاذب. فبقيت
+    قوّته كما هي — إعلانٌ صادق في الحالتين — وتغيّر مصدرُه: القدرة تُقرأ من
+    مزوّدي الاكتشاف لا من سجلّ الرصد المجدول.
+    """
+    from athera_api.services.ai_capabilities import Capabilities
+
+    off = Capabilities(
+        reference_discovery_available=False, reference_discovery_providers=(),
+        literature_registry_available=False, literature_registry="offline",
+        full_text_retrieval_available=False)
+    notice = ai_policy.capability_notice("ar", capabilities=off)
+    assert notice and "غير متاح" in notice
+
+    # **والسجلُّ مطفأ والاكتشافُ يعمل — وهي حالُ الإنتاج بعينها.**
+    on = Capabilities(
+        reference_discovery_available=True,
+        reference_discovery_providers=("crossref", "openalex"),
+        literature_registry_available=False, literature_registry="offline",
+        full_text_retrieval_available=False)
+    live = ai_policy.capability_notice("ar", capabilities=on)
+    assert live and "متاح" in live
+    assert "غير متاح" not in live, "الإعلان ينفي قدرةً قائمة"
 
 
 # ══════════ حدّ المعدّل ══════════
@@ -233,16 +259,45 @@ async def test_user_content_never_enters_the_system_role(clients, monkeypatch):
     assert "أثيرا AI" in system_text
 
 
-async def test_offline_literature_is_announced_not_faked(clients, monkeypatch):
+async def test_an_offline_registry_never_denies_a_reference_search_that_works(
+    clients, monkeypatch,
+):
+    """**كان هذا الفحص يحرس الكذبة نفسها التي في الموجّه.**
+
+    كان يثبّت أنّ الرد يقول «البحث الخارجي في الأدبيات غير مفعّل» ما دام
+    `LITERATURE_REGISTRY=offline` — وهو **حال الإنتاج**. واكتشافُ المراجع
+    ينادي Crossref وOpenAlex في كل بحث، بلا مفتاح ولا إعداد. فكان المنتج
+    ينفي نداءً يقع، والفحصُ يمنحه خضرة.
+
+    فبقيت قوّته — إعلانٌ صادق يصل الباحث والنموذج معًا — وانقلب مضمونه إلى
+    الحقيقة: السجلُّ مطفأ، والبحثُ يجري، ولا جملة تنفيه.
+    """
+    from athera_api.services.literature import registry_factory
+
+    from tests.discovery_boundary import stub_indexes
+
     fake = _use_fake(monkeypatch, FakeProvider())
     monkeypatch.setenv("LITERATURE_REGISTRY", "offline")
+    # المصنع يحفظ ما بناه؛ فتشغيلةٌ سابقة قد تكون ثبّتت سجلًّا آخر.
+    registry_factory.get_registry.cache_clear()
+    stub_indexes(monkeypatch)
     http, _ = clients
-    body = (await http["a"].post("/api/v1/ai/ask", json={"question": "ابحث لي في الأدبيات الحديثة."})).json()
-    assert any("البحث الخارجي" in limit for limit in body["limitations"])
-    # وأُبلغ النموذج نفسه، فلا يملأ الفراغ باختلاق.
-    # العميل يطلب العربية، فالإعلان يصل النموذج بالعربية.
-    assert any("البحث الخارجي في الأدبيات غير مفعّل" in m.content
-               for m in fake.seen[0].messages if m.role == "system")
+    body = (await http["a"].post(
+        "/api/v1/ai/ask", json={"question": "ابحث لي في الأدبيات الحديثة عن التحول الرقمي."},
+    )).json()
+
+    # ① لا جملةَ تنفي قدرةً قائمة — لا في الرد ولا في تعليمات النموذج.
+    everything = " ".join(body["limitations"]) + " " + body["answer"]
+    assert "البحث الخارجي في الأدبيات غير مفعّل" not in everything
+    system_text = " ".join(m.content for m in fake.seen[0].messages if m.role == "system")
+    assert "غير مفعّل" not in system_text and "غير متاح" not in system_text
+
+    # ② والبحثُ جرى فعلًا، ومراجعُه عادت منسوبة.
+    assert body["search_performed"] is True
+    assert body["references"], "لم تعد أي مراجع"
+    assert body["capabilities"]["reference_discovery_available"] is True
+    # ③ وسجلُّ الرصد المجدول ما زال مطفأً — وهما حالان لا حال واحدة.
+    assert body["capabilities"]["literature_registry_available"] is False
 
 
 async def test_an_unprocessed_attachment_is_never_read(clients, monkeypatch):

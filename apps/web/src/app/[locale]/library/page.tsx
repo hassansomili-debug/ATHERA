@@ -92,8 +92,8 @@ interface Source {
 }
 
 const RETRACTION_COLOR: Record<string, string> = {
-  retracted: "#b3261e",
-  expression_of_concern: "#b3261e",
+  retracted: "var(--state-conflict-ink)",
+  expression_of_concern: "var(--state-conflict-ink)",
   correction: "var(--athera-gold)",
   unknown: "var(--muted)",
   none: "var(--athera-teal)",

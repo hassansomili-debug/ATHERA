@@ -31,6 +31,14 @@ jobs:
       # تحويلها إلى «مرفوض» إتلافُ قرار بشري. فالعطب في عزل التدريب لا في
       # الحارس، وإصلاحه بإضعاف الحارس كان سيبدّد الضمان الذي وُجد لأجله.
       MIGRATION_DRILL_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera_migration
+      # ── قاعدةُ نافذة النشر: تقف عند 0028 عمدًا ──
+      #
+      # بين ترحيل الإنتاج ونشر الموجة يخدم الخادمُ القديم مخطَّط 0028.
+      # وقاعدةُ الاختبارات تُرحَّل إلى الرأس (0029) حيث العقدُ مفروض، فلا
+      # تصلح لإثبات تلك النافذة — تُثبت عكسها. فقاعدةٌ ثالثة تقف حيث تقف
+      # النافذة، ويُقاس عليها ما يكتبه الخادمُ القديم حرفيًّا.
+      ATHERA_EXPAND_SCHEMA_URL: postgresql+asyncpg://athera_app:athera_app_pw@localhost:5432/athera_expand
+      ATHERA_EXPAND_MIGRATION_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera_expand
       # دورُ اختبارٍ **يتجاوز RLS عمدًا** — في قاعدة الاختبار وحدها.
       #
       # كل الاختبارات كانت تعمل بـ`athera_app` الذي لا يتجاوز، فكانت القاعدة
@@ -81,6 +89,50 @@ jobs:
         run: cd apps/api && ruff check .
       - name: Architecture boundaries (§38.6.8 / ADR-0003)
         run: cd apps/api && lint-imports
+      # ── قاعدةُ النافذة: 0028 بلا 0029 ──
+      - name: Build the expand-window database (stops at 0028)
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          psql -h localhost -U athera_owner -d postgres \
+            -c 'DROP DATABASE IF EXISTS athera_expand' \
+            -c 'CREATE DATABASE athera_expand'
+
+      - name: Migrate the expand-window database to 0028 exactly
+        env:
+          DATABASE_MIGRATION_URL: ${{ env.ATHERA_EXPAND_MIGRATION_URL }}
+        run: |
+          cd infra/db && alembic upgrade 0028
+          head=$(alembic current 2>/dev/null | grep -oE '[0-9]{4}' | tail -1)
+          echo "expand-window head: '$head' · required: '0028'"
+          test "$head" = "0028" || { echo "::error::window database is not at 0028"; exit 1; }
+
+      - name: Grant the runtime role on the expand-window database
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          psql -h localhost -U athera_owner -d athera_expand -v ON_ERROR_STOP=1 \
+            -c "GRANT USAGE ON SCHEMA public TO athera_app" \
+            -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO athera_app" \
+            -c "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO athera_app"
+
+      # ── نافذةُ النشر: شيفرةُ الموجة على مخطَّط 0028 ────────────────
+      #
+      # الترتيبُ في الإنتاج: يُرحَّل إلى 0028، ثمّ يُنشر خادمُ الموجة **وهو
+      # عليه**، ثمّ يُطبَّق 0029. فبين النشر والعقد يخدم الجديدُ مخطَّطًا لم
+      # يُفرض عليه العقد.
+      #
+      # ولا تُثبت ذلك رحلةُ المرشَّح — تعمل على الرأس — ولا فحصُ الخادم
+      # القديم، فهو SQL خامّ لا شيفرةَ موجة. فتُشغَّل شيفرتُها هنا وحدها،
+      # و`DATABASE_URL` مُوجَّهٌ صراحةً إلى قاعدة النافذة لا إلى قاعدة
+      # الاختبارات؛ و`ATHERA_EXPECT_SCHEMA` يجعل الخطأ في التوجيه سقوطًا
+      # لا خضرةً صامتة.
+      - name: Deployment window — Wave 1 API against schema 0028
+        env:
+          DATABASE_URL: ${{ env.ATHERA_EXPAND_SCHEMA_URL }}
+          ATHERA_EXPECT_SCHEMA: "0028"
+        run: cd apps/api && pytest -v tests/test_at_wave1_on_expand_window.py
+
       - name: Acceptance tests AT-S0-*
         run: cd apps/api && pytest -v
 
@@ -201,6 +253,45 @@ jobs:
       # ولا «جارٍ التحميل» بعد أن رُدّ عليها.
       - name: Product surface (real browser, dead UI and lying states)
         run: cd apps/web && npm run test:surface
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
+      # ── العقل البحثي والخيط الذهبي ──
+      #
+      # **الرقعة كانت في الشجرة ولا خطوة تُشغّلها.** كُتبت في موجةٍ سابقة
+      # ومعها اثنتا عشرة دعوى، فما نُفِّذت واحدة: لا سكربت في `package.json`
+      # ولا خطوة هنا. وفحصٌ لا يُشغَّل أسوأ من فحصٍ غائب — الغائبُ يُطلب،
+      # والموجودُ الميّت يُحسب حراسةً قائمة.
+      #
+      # وطبقتها طبقةُ `product-surface`: بناءٌ محلّي وشبكةٌ معترَضة وبلا
+      # اعتماد، فتعمل في كل PR.
+      - name: Research Brain + Golden Thread surface (real browser)
+        run: cd apps/web && npm run test:brain
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
+      # ── إدارةُ المشاريع البحثية ──
+      #
+      # وصلت رقعتُها الفرعَ ولا خطوة تنادِيها — وهي ثاني مرّة في موجةٍ
+      # واحدة. وحارسُ `test_every_browser_spec_is_reachable_from_the_workflow`
+      # يمنع الثالثة: رقعةٌ في الشجرة لا يبلغها المشغّل تُسقط البناء.
+      - name: Project management surface (real browser)
+        run: cd apps/web && npm run test:project-management
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
+      # ── تجربةُ الهويّة: ثلاثُ قشورٍ لا واحدة ──
+      #
+      # تفحص ما لا يفحصه غيرُها: أن الجذر صفحةٌ عامّة تُقرأ بلا حساب
+      # وباللغتين، وأن صفحات الحساب بلا شريط المنتج، وأن الشريط باقٍ في
+      # مساحة العمل بعنصرٍ نشطٍ واحد، وأن الهاتف لا يمرّر أفقيًّا، وأن
+      # الحالات العلميّة تحمل أسماءها لا ألوانها وحدها.
+      #
+      # وطبقتها طبقةُ `product-surface`: بناءٌ محلّي وشبكةٌ معترَضة وبلا
+      # اعتماد — ولا تقرأ `PUBRIVA_ACCEPT_*`. فتعمل في كل PR، وقبل رفع
+      # المخرجات وقبل رحلة القبول باعتماد.
+      - name: Brand experience (real browser, three shells)
+        run: cd apps/web && npm run test:brand
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 

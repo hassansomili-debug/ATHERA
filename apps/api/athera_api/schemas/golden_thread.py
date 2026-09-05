@@ -53,11 +53,35 @@ class ConsistencyResponse(BaseModel):
 
     `findings` و`missing_elements` حقول إلزامية في العقد نفسه، فلا يستطيع
     أي عميل قراءة الرقم بمعزل عن سببه.
+
+    **و`presented_score` هي التي تُعرض، لا `score`.** الأخيرة تبقى للبوابة
+    ولقطة الاعتماد كما كانت — رقمٌ آليّ يقرؤه محرّك — والأولى `None` ما دامت
+    العناصر الأساسية ناقصة، فلا يجد العارضُ صفرًا يعرضه عن نقصٍ لم يُفحص.
+
+    **والأعداد مفصولةٌ بأسمائها.** `blocking_count` تجمع البنيويّ والمفقود
+    معًا للبوابة، وجمعُهما في شاشةٍ يُنتج «تسعة عيوب حاجبة» فوق «لا توجد
+    عيوب اتساق». فـ`missing_count` و`structural_count` و`linguistic_count`
+    تُعاد منفصلة، وكلٌّ منها يُعرض باسمه.
     """
 
     score: int
+    # `None` تعني «لا تُعرض درجة»، ولا تعني صفرًا — والفرق هو كل الفرق.
+    presented_score: int | None = None
+    is_computable: bool = True
+    not_computed_reason: str | None = None
+    not_computed_reason_ar: str | None = None
+    not_computed_reason_en: str | None = None
     findings: list[FindingResponse]
     missing_elements: list[str]
+    # عناصر مفقودة · عيوب بنيوية · تنبيهات منهجية — ثلاثة أعداد لا عدد واحد.
+    missing_count: int = 0
+    structural_count: int = 0
+    linguistic_count: int = 0
+    # لا مقارنة تُنتج تعارضًا في هذا الفحص، ويُقال لماذا بدل أن يُعرض صفرٌ صامت.
+    conflict_count: int = 0
+    conflict_note: str | None = None
+    conflict_note_ar: str | None = None
+    conflict_note_en: str | None = None
     blocking_count: int
     advisory_count: int
     can_pass_gate: bool
@@ -171,6 +195,11 @@ class GoldenThreadView(BaseModel):
 
     project_id: uuid.UUID
     title: str
+    # **العنوان البديل يُعلَن بديلًا.** بحثٌ لم يُسمَّ بعد ليس بحثًا اسمُه
+    # «مشروع بدون عنوان»، وبلا هذه الراية يُقرأ الأول الثانيَ.
+    title_is_fallback: bool = False
+    # تاريخ الإنشاء حقلٌ مستقلّ — ودمجُه في العنوان هو أصلُ العناوين المشوَّهة.
+    created_at: dt.datetime | None = None
     stages: list[ThreadStageView] = Field(default_factory=list)
     connections: list[ThreadConnectionView] = Field(default_factory=list)
     read_notes: list[ThreadReadNoteView] = Field(default_factory=list)
@@ -178,3 +207,86 @@ class GoldenThreadView(BaseModel):
     note: str
     note_ar: str
     note_en: str
+
+
+# ─────────────────── من كشفٍ إلى فعلٍ مقترح إلى معاينة ───────────────────
+
+
+class SuggestedActionView(BaseModel):
+    """فعلٌ **مقترح** على كشف — ولا شيء في هذا العقد يُنشئ التزامًا.
+
+    `creates_obligation` ثابتةٌ `False` في العقد نفسه، فالعميل الذي يقرأ
+    هذه الاستجابة يعرف من شكلها — لا من وثيقةٍ بجانبها — أنّ شيئًا لم
+    يُكتب. والمساران اللذان يُصدرانها `GET`.
+    """
+
+    key: str
+    finding_key: str
+    category: str
+    # بمفردات المستودع: known | missing | needs_review | conflicting.
+    state: str
+    action_kind: str
+    title: str
+    title_ar: str
+    title_en: str
+    detail: str
+    detail_ar: str
+    detail_en: str
+    rule_id: str | None = None
+    rule_status: str | None = None
+    rule_is_enforceable: bool = False
+    provenance: str | None = None
+    excerpt: str | None = None
+    entity_ids: list[str] = Field(default_factory=list)
+    has_evidence: bool = False
+    creates_obligation: bool = False
+
+
+class UndeterminedFieldView(BaseModel):
+    """حقلٌ في المهمّة لا يعرفه هذا المسار — يُسمَّى ولا يُملأ باختراع."""
+
+    key: str
+    label: str
+    label_ar: str
+    label_en: str
+
+
+class TaskPreviewView(BaseModel):
+    """المهمّة **لو** قَبِل الباحث — ولا صفَّ كُتب.
+
+    `created` ثابتةٌ `False` و`is_preview` ثابتةٌ `True`: معاينةٌ تستطيع أن
+    تقول «أُنشئت» ليست معاينة.
+    """
+
+    action_key: str
+    title: str
+    title_ar: str
+    title_en: str
+    detail: str
+    detail_ar: str
+    detail_en: str
+    source: str
+    source_ar: str
+    source_en: str
+    excerpt: str | None = None
+    entity_ids: list[str] = Field(default_factory=list)
+    undetermined_fields: list[UndeterminedFieldView] = Field(default_factory=list)
+    is_preview: bool = True
+    created: bool = False
+    # يُقال بنصّه في الاستجابة، لا في حاشيةٍ على الشاشة وحدها.
+    not_created_note: str
+    not_created_note_ar: str
+    not_created_note_en: str
+    pending_contract_note: str
+    pending_contract_note_ar: str
+    pending_contract_note_en: str
+
+
+class SuggestedActionsResponse(BaseModel):
+    """قائمةُ الاقتراحات ومعها ما يقول إنّها اقتراحات."""
+
+    project_id: uuid.UUID
+    actions: list[SuggestedActionView] = Field(default_factory=list)
+    advisory_note: str
+    advisory_note_ar: str
+    advisory_note_en: str

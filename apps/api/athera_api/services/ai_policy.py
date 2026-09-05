@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Final
 
 # ــ الممنوعات: ما لا يُختلق مهما بدا معقولًا ــ
@@ -35,7 +36,8 @@ SYSTEM_PROMPT_AR: Final = """أنت «أثيرا AI»، مساعد بحث ونش
 وصغ اقتراحاتك بما يميّزها عن الحقائق: «منهجيًّا يمكن النظر في…»، «قد يكون
 من المناسب فحص…»، «هذه فرضية تحتاج تحققًا من الأدبيات…».
 
-ولا تدّعِ أنك بحثت في الأدبيات. لم تبحث.
+ولا تدّعِ أنك بحثت في الأدبيات ما لم تصلك في هذا الطلب نتائجُ بحثٍ مُرسَلة
+إليك صراحةً؛ فإن لم تصلك فأنت لم تبحث.
 
 والقرارات العلمية الحسّاسة للباحث وحده: السؤال النهائي، وتغيير الفرضيات،
 وتصميم المنهج، والتأليف، والحقوق، واختيار المجلة، والتقديم. تقترح ولا تقرّر.
@@ -52,7 +54,7 @@ Never write "Smith (2026) shows that…". Unless evidence reached you from the s
 
 Frame proposals so they cannot be mistaken for facts: "methodologically, one could consider…", "it may be appropriate to examine…", "this is a hypothesis requiring verification against the literature…".
 
-Do not claim you searched the literature. You did not.
+Do not claim you searched the literature unless search results were explicitly sent to you in this request; if none reached you, you did not search.
 
 Sensitive scientific decisions belong to the researcher alone: the final question, hypothesis changes, methodological design, authorship, rights, journal choice, and submission. You propose; you never decide.
 
@@ -63,16 +65,135 @@ def system_prompt(locale: str) -> str:
     return SYSTEM_PROMPT_EN if locale == "en" else SYSTEM_PROMPT_AR
 
 
-def capability_notice(locale: str, *, literature_online: bool) -> str | None:
-    """إعلان صادق عن قدرة غير مفعّلة — يُضاف إلى سياق النموذج وإلى الرد.
+def _names(providers: Sequence[str]) -> str:
+    """أسماءُ الفهارس **كما يسمّي كلُّ مزوّدٍ نفسه** — لا جدولُ عرضٍ بجانبه.
 
-    بلا هذا يملأ النموذج الفراغ: يُسأل عن الأدبيات فيؤلّف مراجع. وإخباره أن
-    البحث الخارجي مطفأ يمنع الاختلاق عند مصدره لا بعد وقوعه.
+    ولا تُجمَّل الحروف: `openalex` مكتوبةً «Openalex» اسمٌ لا وجود له،
+    وجدولُ التسمية الصحيحة نسخةٌ ثانية للحقيقة تفترق عن الأولى بأوّل فهرسٍ
+    يُضاف. والاسمُ الخام هو نفسه ما تعرضه شاشة الإعدادات اليوم.
     """
-    if literature_online:
-        return None
+    shown = [name for name in providers if name]
+    if not shown:
+        return ""
+    if len(shown) == 1:
+        return shown[0]
+    return f"{'، '.join(shown[:-1])} و{shown[-1]}"
+
+
+def capability_notice(locale: str, *, capabilities: object) -> str | None:
+    """ما تستطيعه هذه التشغيلة **فعلًا** — يُحقن في سياق النموذج.
+
+    وكان هذا الموضع مصدر أخطر كذبةٍ في الطبقة: يُقال للنموذج «البحث
+    الخارجي غير مفعّل» ما دام سجلُّ الرصد المجدول مطفأً — بينما اكتشافُ
+    المراجع يعمل. فيمتنع النموذج عن قدرةٍ قائمة، أو يملأ الفراغ باختلاق.
+
+    فالإعلان الآن مشتقٌّ من القدرات الثلاث، كلٌّ عن مصدرها.
+    """
+    discovery = bool(getattr(capabilities, "reference_discovery_available", False))
+    if locale == "en":
+        if discovery:
+            return (
+                "A scholarly reference search is available in this deployment. "
+                "Use ONLY the references explicitly sent to you in this request; "
+                "never add a reference, DOI, author, year, or venue of your own."
+            )
+        return (
+            "Scholarly reference discovery is unavailable in this deployment; "
+            "do not present any retrieved sources."
+        )
+    if discovery:
+        return (
+            "البحثُ في الفهارس العلمية متاحٌ في هذا التشغيل. ولا تستعمل إلا "
+            "المراجع المُرسَلة إليك صراحةً في هذا الطلب؛ ولا تُضف مرجعًا ولا "
+            "DOI ولا مؤلّفًا ولا سنةً ولا وعاءَ نشرٍ من عندك."
+        )
     return (
-        "External literature search is not enabled; do not present any retrieved sources."
+        "اكتشافُ المراجع العلمية غير متاح في هذا التشغيل؛ لا تقدّم أي مصادر مسترجَعة."
+    )
+
+
+def literature_scope_notice(locale: str, providers: Sequence[str]) -> str:
+    """**تُقال مرّة واحدة بعد بحثٍ جرى فعلًا** (D5).
+
+    والتحذيرُ الواحد يُقرأ؛ والثلاثة المتراكمة تُقرأ اعتذارًا عامًّا فتُتجاهل
+    كلُّها — بما فيها التحذير الذي كان يهمّ.
+
+    وأسماءُ الفهارس تُشتقّ من المزوّدين، فلا يبقى في النصّ اسمُ فهرسٍ رُفع
+    ولا يغيب اسمُ فهرسٍ أُضيف.
+    """
+    listed = _names(providers)
+    if locale == "en":
+        return (
+            f"The current search scope covers the scholarly indexes available in "
+            f"PUBRIVA{f' such as {listed}' if listed else ''}. A study not appearing "
+            "here does not mean it does not exist in every scientific database."
+        )
+    return (
+        "نطاقُ البحث الحالي يغطّي الفهارس العلمية المتاحة في بُبريفا"
+        f"{f' مثل {listed}' if listed else ''}. وعدمُ ظهور دراسةٍ هنا لا يعني "
+        "أنها غير موجودة في كل قواعد البيانات العلمية."
+    )
+
+
+def no_search_notice(locale: str, *, discovery_available: bool) -> str:
+    """ما يُقال حين **لم يُجرَ** بحث (D6) — وهو غير «البحث معطّل».
+
+    والفرقُ ليس تجميلًا: قولُ «البحث الخارجي غير مفعّل» بينما هو مفعّل
+    دعوى عن حال الخادم كاذبة، تجعل الباحث يظنّ قدرةً مفقودةً وهي بين يديه.
+    """
+    if discovery_available:
+        return (
+            "No external reference search was performed in this answer."
+            if locale == "en" else
+            "لم يُجرَ بحثٌ خارجيّ عن المراجع في هذه الإجابة."
+        )
+    return (
+        "Scholarly reference discovery is unavailable in this deployment, so this "
+        "answer contains no retrieved sources."
         if locale == "en" else
-        "البحث الخارجي في الأدبيات غير مفعّل حاليًا؛ لا تقدّم أي مصادر مسترجَعة."
+        "اكتشافُ المراجع العلمية غير متاحٍ في هذا التشغيل، فلا مصادر مسترجَعة في هذا الرد."
+    )
+
+
+def full_text_limit_notice(locale: str) -> str:
+    """سؤالٌ لا يُجاب إلا من نصٍّ كامل، والمتاح ملخّصٌ أو بياناتٌ وصفية (D7).
+
+    **والملخّصُ ليس ورقة.** الإجابة عن حجم عينةٍ أو إجراءٍ إحصائيّ من ملخّص
+    اختلاقٌ بلغةٍ واثقة، وهو أخطر من الامتناع لأنه يُكتب في ورقةٍ تُنشر.
+    """
+    if locale == "en":
+        return (
+            "This question needs the full text of the study, and only metadata or an "
+            "abstract is available here — an abstract is not the paper, so the answer "
+            "is not derived from it."
+        )
+    return (
+        "هذا السؤال يحتاج النصّ الكامل للدراسة، والمتاح هنا بياناتٌ وصفية أو ملخّص — "
+        "والملخّصُ ليس الورقة، فلا يُستنتج منه الجواب."
+    )
+
+
+def search_results_instruction(locale: str) -> str:
+    """القيدُ على نتائج البحث — **تعليمةٌ بلا بيانات**.
+
+    والفصل مقصود: المراجع نفسها نصٌّ كتبه غيرُنا (§33.3) فتمرّ في سياق
+    `user`؛ والقيدُ عليها قولُنا نحن فيمرّ في `system`. ولو مرّا معًا لصار
+    عنوانُ ورقةٍ في فهرسٍ خارجيّ قادرًا على نقض سياسة النزاهة.
+    """
+    if locale == "en":
+        return (
+            "The context blocks in this request are the references returned by the "
+            "scholarly indexes. Ground any reference you mention in them ONLY. Do not "
+            "invent a reference, a DOI, an author, a year, or a venue that is not "
+            "listed there. Keep every citation count attributed to the index that "
+            "stated it, and never merge two indexes' counts into one number. These are "
+            "search results, not verified evidence — do not present them as read or "
+            "appraised."
+        )
+    return (
+        "كتلُ السياق في هذا الطلب هي المراجع التي أعادتها الفهارس العلمية. "
+        "لا تذكر مرجعًا إلا منها. ولا تخترع مرجعًا ولا DOI ولا مؤلّفًا ولا سنةً "
+        "ولا وعاءَ نشرٍ غير مذكورٍ فيها. وأبقِ كلَّ عدّاد استشهادٍ منسوبًا إلى "
+        "الفهرس الذي قاله، ولا تدمج عدّادَي فهرسين في رقمٍ واحد. وهذه نتائجُ "
+        "بحثٍ لا أدلّةٌ متحقَّقة — فلا تقدّمها بوصفها مقروءةً أو مُقيَّمة."
     )

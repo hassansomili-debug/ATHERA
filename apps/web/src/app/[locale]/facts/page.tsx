@@ -80,7 +80,17 @@ export default function FactsPage({ params }: { params: Promise<{ locale: string
       <div style={{ display: "grid", gap: "var(--space)" }}>
         {facts.map((fact) => (
           <article className="card" key={fact.id}>
-            <div className="metric-label">
+            {/*
+              **الحالُ كانت تُقرأ من الخادم ولا تُعرض.** فالصفحة تعرض صفًّا
+              من البطاقات بزرَّي «اعتماد» و«رفض» ولا تقول ما هذه البطاقات:
+              أهي محفوظةٌ فعلًا؟ أم اقتراحاتٌ لم تُعتمد بعد؟ والفرق هو كلُّ
+              معنى بوابة G0. فتُعلَن الحال بلونها وباسمها معًا — واللونُ
+              وحده لا يكفي لمن لا يميّزه.
+            */}
+            <span className="chip chip-candidate" data-state="candidate">
+              {t("facts.candidateState")}
+            </span>
+            <div className="metric-label" style={{ marginBlockStart: 8 }}>
               {t("facts.category")}: {fact.memory_category}
               {fact.confidence !== null ? ` · ${t("facts.confidence")}: ${fact.confidence}` : ""}
             </div>

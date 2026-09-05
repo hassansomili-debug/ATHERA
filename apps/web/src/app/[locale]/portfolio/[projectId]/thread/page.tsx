@@ -48,11 +48,20 @@ const STATE_HINT: Record<ConnectionState, string> = {
 };
 
 /** الوسم يتبع الحال: «متعارضة» لا تُعرض بلون «موصولة». */
+/**
+ * **الأصنافُ الدلاليّة الأربعة، لا ألوانٌ اختِيرت لهذه الشاشة.**
+ *
+ * وكانت «المتعارضة» كهرمانيّةً هنا و«تحتاج مراجعة» زرقاء — فيقرأ الباحث
+ * التعارضَ تحذيرًا خفيفًا، والمراجعةَ حالًا محايدة. وكلاهما خطأ في المعنى
+ * لا في الذوق: التعارضُ يمنع الإغلاق، والمراجعةُ تطلب فعلًا.
+ *
+ * ولا يحمل اللونُ المعنى وحده: اسمُ الحال مكتوبٌ داخل الشارة نفسها.
+ */
 const STATE_CHIP: Record<ConnectionState, string> = {
-  known: "chip chip-ok",
-  needs_review: "chip chip-stage",
+  known: "chip chip-verified",
+  needs_review: "chip chip-review",
   missing: "chip chip-muted",
-  conflicting: "chip chip-warn",
+  conflicting: "chip chip-conflict",
 };
 
 /** أسماء الجداول تُترجم إلى لغة الباحث — ولا يُعرض اسم جدولٍ عاريًا. */
@@ -136,6 +145,29 @@ export default function GoldenThreadPage({
         </Link>
       </p>
       <h1 style={{ marginBlockStart: 0 }}>{t("goldenThread.title")}</h1>
+      {/* **اسمُ البحث يُعرض، ولا يُترك الباحث يخمّن أيَّ خيطٍ يقرأ.**
+          والعنوان يصل من عقد العرض: فارغُه يصير «مشروع بدون عنوان» **مُعلَنًا
+          بديلًا**، وتاريخُ الإنشاء حقلٌ مستقلّ لا جزءٌ من الاسم — ودمجُهما هو
+          أصلُ العناوين المشوَّهة التي ظهرت طابعًا زمنيًّا في مكان العنوان. */}
+      {thread ? (
+        <p style={{ marginBlockEnd: 4 }} data-testid="thread-project-title">
+          <span className="metric-label">{t("goldenThread.projectTitleLabel")}: </span>
+          <strong>{thread.title}</strong>
+          {thread.created_at ? (
+            <span className="metric-label" style={{ marginInlineStart: 8 }}>
+              {t("goldenThread.createdAtLabel")}:{" "}
+              {new Date(thread.created_at).toLocaleDateString(
+                locale === "ar" ? "ar" : "en",
+              )}
+            </span>
+          ) : null}
+        </p>
+      ) : null}
+      {thread?.title_is_fallback ? (
+        <p className="metric-label" data-testid="thread-title-fallback">
+          {t("goldenThread.projectTitleFallback")}
+        </p>
+      ) : null}
       <p className="metric-label">{t("goldenThread.lead")}</p>
       <p style={{ marginBlockEnd: 12 }}>
         <Link href={`/${locale}/portfolio/${projectId}/brain`}>
@@ -169,7 +201,7 @@ export default function GoldenThreadPage({
             <p style={{ margin: "6px 0 0", display: "flex", gap: 6, flexWrap: "wrap" }}
                data-testid="thread-counts" aria-label={t("goldenThread.countsTitle")}>
               {CONNECTION_STATES.map((state) => (
-                <span key={state} className={STATE_CHIP[state]}>
+                <span key={state} className={STATE_CHIP[state]} data-state={state}>
                   {t(STATE_LABEL[state])}: {thread.counts[state] ?? 0}
                 </span>
               ))}
@@ -241,7 +273,7 @@ export default function GoldenThreadPage({
                   <section key={group.key} style={{ marginBlockEnd: 14 }}>
                     <h3 style={{ marginBlockEnd: 2 }}>
                       {stageLabel(group.from)} ← {stageLabel(group.to)}{" "}
-                      <span className={STATE_CHIP[summary]}
+                      <span className={STATE_CHIP[summary]} data-state={summary}
                             data-testid={`pair-state-${group.key}`}>
                         {t(STATE_LABEL[summary])}
                       </span>

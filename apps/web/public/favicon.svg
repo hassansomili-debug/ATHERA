@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- أيقونةُ لسان المتصفّح — أرضيّةٌ حبريّة ليبقى الخيط مقروءًا على لسانٍ فاتح وداكن معًا. والهندسةُ من `brandMarkGeometry.ts`، يحرس التطابقَ فحصٌ في مجموعة الـAPI. -->
+  <rect width="48" height="48" rx="10.5" fill="#182233"/>
+  <defs><linearGradient id="fav" x1="10" y1="38" x2="40" y2="8" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#4B46A9"/>
+    <stop offset="1" stop-color="#7867F2"/>
+  </linearGradient></defs>
+  <path d="M11.6 21.4C12.4 12.6 20.8 6.9 29.4 8.1C36.9 9.2 40.6 15.4 39.2 21.6C37.8 27.9 30.4 31.1 25.2 28.9C20.6 27 17.2 31.2 16.6 37.2" fill="none" stroke="url(#fav)" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="11.6" cy="21.4" r="3.3" fill="#7867F2"/>
+  <circle cx="25.6" cy="19.2" r="3.7" fill="#17BEBB"/>
+  <circle cx="16.6" cy="37.4" r="3.5" fill="#17BEBB"/>
+</svg>

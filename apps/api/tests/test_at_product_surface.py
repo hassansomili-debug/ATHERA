@@ -92,27 +92,69 @@ def test_no_enabled_button_is_left_without_a_handler():
         "أزرارٌ تُرسم قابلةً للنقر بلا معالج ولا إعلانِ تعطيل:\n" + "\n".join(dead))
 
 
-def test_the_literature_search_form_actually_calls_the_registry():
+def test_the_literature_search_surface_actually_calls_the_registry():
     """**النموذج كان `preventDefault` وحده**: لا نداء ولا نتيجة ولا رسالة.
 
     وكان مستورًا لأن البوابة تُعطّل الزرّ ما دام السجل «بلا شبكة» — أي
     زرٌّ ميت ينتظر أن يُفتح السجل ليُرى موته.
+
+    **وسطحُ البحث صار واحدًا.** كانت شاشتان تفعلان الشيء نفسه: `/search`
+    تنادي `/sources/search` فتتوقّف عند أوّل فهرسٍ ردّ بشيء ولا تفهم DOI
+    وتبقى معطَّلة ما دام `LITERATURE_REGISTRY=offline`؛ و`/references`
+    تنادي `/references/search` فتسأل الفهرسين معًا بلا إعداد. فأُحيلت
+    الأولى إلى الثانية.
+
+    والحارس يتبع السطح ولا يُلغى — **ويشتدّ**: كان يفحص نداءً واحدًا،
+    وصار يفحص ثلاثة أشياء لا يجوز سقوط واحدٍ منها:
+
+      ١ `/search` تحويلٌ صريح، فلا تعود صفحةً ميتة تُعرض ولا تنادي شيئًا.
+      ٢ سطحُ البحث الباقي ينادي عميل الاكتشاف، وعميلُ الاكتشاف ينادي
+        مسارًا **موجودًا في الموجِّه** — والسابقة تُقرأ منه لا تُكتب بجانبه.
+      ٣ والمسار القديم باقٍ في الخادم: الإحالة قرارُ واجهةٍ لا حذفُ عقد.
     """
-    code = dict(OWNED)["app/[locale]/search/page.tsx"]
+    owned = dict(OWNED)
+    retired = owned["app/[locale]/search/page.tsx"]
+    surface = owned["app/[locale]/references/page.tsx"]
+    client = (WEB / "src" / "lib" / "discovery.ts").read_text(encoding="utf-8")
     router = (
         pathlib.Path(__file__).resolve().parents[1]
         / "athera_api" / "routers" / "literature.py"
     ).read_text(encoding="utf-8")
 
-    # **وكان الحارس نفسه يحرس عنوانًا لا وجود له.** يُطالب الشاشة بنداء
+    # **والحارس كان يحرس عنوانًا لا وجود له.** يُطالب الشاشة بنداء
     # `/api/v1/literature/sources/search` ويُطالب الخادم بـ`"/sources/search"`،
     # ولا يجمع بينهما — فمرّ نداءٌ يعود ٤٠٤ وهو «محروس». والسابقة تُقرأ من
     # الموجِّه ويُركَّب المسار منها، فلا يُكتب العنوان مرّتين ولا يفترقان.
     prefix = re.search(r'APIRouter\(prefix="([^"]+)"', router)
     assert prefix, "لم تُعلَن سابقة الموجِّه"
+
+    # ١ — المسار المتقاعد يُحيل، ولا يُترك شاشةً بلا نداء.
+    assert "redirect(" in retired and "/references" in retired, (
+        "‎/search لم تعد تنادي شيئًا ولا تُحيل — وتلك صفحةٌ ميتة")
+
+    # ٢ — والسطح الباقي ينادي فهرسًا فعلًا، عبر عميلٍ ينادي مسارًا قائمًا.
+    assert "searchReferences(" in surface, "شاشة اكتشاف المراجع لا تنادي شيئًا"
+    assert '@router.post("/references/search"' in router, (
+        "عميل الاكتشاف ينادي مسارًا لا وجود له في الخادم")
+    assert f"{prefix.group(1)}/references/search" in client, (
+        "عميل الاكتشاف لا ينادي مسار الموجِّه")
+
+    # ٣ — والمسار القديم لم يُمَسّ في الخادم: أُحيلت الواجهة ولم يُحذف عقد.
     assert '@router.post("/sources/search"' in router, (
-        "الواجهة تنادي مسارًا لا وجود له في الخادم")
-    assert f"{prefix.group(1)}/sources/search" in code, "زرّ البحث لا ينادي شيئًا"
+        "‎/sources/search اختفى من الخادم — والإحالة كانت قرار واجهة")
+
+    # ٤ — **ولا يُعطَّل البحث برايةِ الرصد المجدول.**
+    #
+    # `literatureOnline` مشتقّةٌ من `LITERATURE_REGISTRY`، وهو يصف الرصد
+    # المجدول وحده — بينما اكتشاف المراجع ينادي Crossref وOpenAlex في كل
+    # بحث بلا مفتاحٍ ولا إعداد. وكانت الشاشة المتقاعدة تربط زرّها بها،
+    # فيبقى معطَّلًا في الإنتاج أمام قدرةٍ تعمل. وذاك «قريبًا» بصيغةٍ
+    # أخرى: منعٌ يُقرأ عجزًا، والمنصّة قادرة.
+    #
+    # ورفعه المسار د في `docs/integration/track-d-requests.md`، والحارس
+    # يمنع عودته إلى السطح الباقي مهما أُعيدت صياغة الراية.
+    assert "literatureOnline" not in surface, (
+        "بحثُ المراجع مُعطَّل برايةِ الرصد المجدول — وهي لا تصفه")
 
 
 def test_no_tab_switches_state_without_switching_content():
@@ -260,14 +302,35 @@ def test_no_field_leans_on_its_placeholder_for_a_name():
         "حقولٌ اسمها المُعلَن نائبٌ يختفي:\n" + "\n".join(nameless))
 
 
+#: القشورُ الثلاث، ولكلٍّ معلَمٌ واحد: هيكلُ العمل، وقشرةُ الحساب،
+#: والموقعُ العام. **والشرط هو الشرط نفسه** — معلَمٌ واحد لا أكثر، ولا
+#: معلَم خارج قشرة. وما تغيّر أنّ القشرة صارت ثلاثًا بعد أن كانت واحدة:
+#: صفحاتُ الحساب لا تُصيَّر في هيكل التطبيق، والموقعُ العام ليس منه أصلًا.
+SHELLS = {
+    "app/[locale]/layout.tsx": 1,
+    "app/(auth)/[locale]/layout.tsx": 1,
+    "app/(marketing)/welcome/[locale]/layout.tsx": 1,
+}
+
+
 def test_the_main_landmark_is_declared_exactly_once():
     """**كان ثلاثةً متداخلة**: الهيكل، ثم الاستوديو، ثم مساحة القسم تحته.
 
     ومن يتنقّل بالمعالم يقفز إلى «المحتوى الرئيسي» فيجد ثلاثة — أي لا معلَم.
     """
     holders = {rel: code.count("<main") for rel, code in OWNED if "<main" in code}
-    assert holders == {"app/[locale]/layout.tsx": 1}, (
-        f"معلَمُ `main` معلَنٌ في غير الهيكل العام أو أكثر من مرّة: {holders}")
+    assert holders == SHELLS, (
+        f"معلَمُ `main` معلَنٌ في غير قشرةٍ أو أكثر من مرّة: {holders}")
+
+
+def test_every_shell_named_here_actually_exists():
+    """**حارسٌ يسمّي ملفًّا لا وجود له لا يحرس شيئًا.**
+
+    لو حُذفت قشرةٌ أو نُقلت لبقي اسمُها في القائمة أعلاه، ولمرّ الفحص وهو
+    يقارن غيابًا بغياب. فيُطلب وجودُ كلٍّ منها صراحةً.
+    """
+    missing = [rel for rel in SHELLS if not (SRC / rel).exists()]
+    assert not missing, f"قشورٌ مسمّاةٌ في الحارس ولا وجود لها: {missing}"
 
 
 def test_the_add_file_button_says_which_file_it_adds():

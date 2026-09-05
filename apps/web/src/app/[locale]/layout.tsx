@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { BRAND_ICONS } from "@/lib/brand";
+import { FONT_VARIABLES } from "@/lib/fonts";
+import { BrandMark } from "@/components/BrandMark";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { AuthGate } from "@/components/AuthGate";
 import { SideNav } from "@/components/SideNav";
@@ -25,6 +28,7 @@ export async function generateMetadata(
     // ويُفهرَس اسمٌ ليس هو المنتج.
     metadataBase: new URL("https://pubriva.com"),
     title: `${t("app.name")} — ${t("app.tagline")}`,
+    icons: BRAND_ICONS,
     alternates: {
       // اللغة المُتحقَّق منها لا الخام: مسارٌ غير صالح لا يُعلن أصلًا لنفسه.
       canonical: `/${active}`,
@@ -48,12 +52,16 @@ export default async function LocaleLayout({
 
   return (
     // الاتجاه يُحسم على عنصر <html> — لا مرآة CSS لاحقة (§38.4).
-    <html lang={locale} dir={direction(locale)}>
+    <html lang={locale} dir={direction(locale)} className={FONT_VARIABLES}>
       <body>
+        {/* أوّلُ ما يبلغه Tab — ولا يظهر لغيره. */}
+        <a className="skip-link" href="#main-content">
+          {t("common.skipToContent")}
+        </a>
         <div className="shell">
           <aside className="sidebar">
             <div className="brand">
-              <span className="brand-mark" aria-hidden="true" />
+              <BrandMark idSuffix="shell" />
               {/*
                 **الوعد تحت الاسم، لا اسمٌ ثانٍ مكتوب بيده.**
 
@@ -74,7 +82,7 @@ export default async function LocaleLayout({
             <SideNav locale={locale} messages={messages} />
             <LocaleSwitcher locale={locale} messages={messages} />
           </aside>
-          <main className="content">
+          <main className="content" id="main-content" tabIndex={-1}>
             <AuthGate locale={locale}>{children}</AuthGate>
           </main>
         </div>

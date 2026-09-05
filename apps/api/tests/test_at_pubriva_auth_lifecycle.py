@@ -6,13 +6,21 @@
 فهذه الاختبارات تحرس الواجهة من مصدرها، وتعمل في كل PR — والقبول بمتصفّح
 حقيقي في `apps/web/tests` لا يُستبدل بها، بل تسبقه.
 """
+import json
 import pathlib
+import re
 
 import pytest
 
 from tests.tsscan import code_lines
 
 WEB = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web"
+
+#: صفحاتُ الحساب لها قشرةٌ خاصّة بها — مجموعةُ `(auth)` — فلا شريطَ منتجٍ
+#: فيها. والمجموعة لا تظهر في الرابط: `‎/ar/login` كما كان. فيُكتب موضعُها
+#: مرّة واحدة هنا، ولا يبحث كلُّ فحصٍ عنها بيده.
+AUTH_PAGES = WEB / "src" / "app" / "(auth)" / "[locale]"
+
 API_CLIENT = (WEB / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
 SESSION = (WEB / "src" / "lib" / "session.ts").read_text(encoding="utf-8")
 
@@ -98,7 +106,7 @@ def test_the_application_is_protected_at_the_route_boundary():
 
 
 def test_login_returns_the_researcher_to_the_page_they_wanted():
-    login = (WEB / "src" / "app" / "[locale]" / "login" / "page.tsx").read_text(encoding="utf-8")
+    login = (AUTH_PAGES / "login" / "page.tsx").read_text(encoding="utf-8")
     assert 'get("next")' in login
     # ولا يُقبل إلا مسارٌ داخلي — وجهةٌ خارجية تفتح تحويلًا مفتوحًا.
     assert 'startsWith("/")' in login and 'startsWith("//")' in login
@@ -108,7 +116,7 @@ def test_login_returns_the_researcher_to_the_page_they_wanted():
 
 def test_the_browser_has_a_working_account_creation_path():
     """`POST /auth/register` عامل في الخادم بلا بابٍ في المتصفح ليس مسارًا."""
-    page = WEB / "src" / "app" / "[locale]" / "register" / "page.tsx"
+    page = AUTH_PAGES / "register" / "page.tsx"
     assert page.exists(), "لا صفحة إنشاء حساب"
     source = page.read_text(encoding="utf-8")
     assert "/api/v1/auth/register" in source
@@ -117,7 +125,7 @@ def test_the_browser_has_a_working_account_creation_path():
     # وعرضُ الحقل يدعو إلى تخمين الأسماء — وتلك ثغرة التفويض التي أُغلقت.
     assert "tenant_slug" not in source
 
-    login = (WEB / "src" / "app" / "[locale]" / "login" / "page.tsx").read_text(encoding="utf-8")
+    login = (AUTH_PAGES / "login" / "page.tsx").read_text(encoding="utf-8")
     assert "/register" in login, "صفحة الدخول لا تدلّ على إنشاء حساب"
 
 
@@ -263,14 +271,51 @@ def test_the_project_files_pane_tells_loading_from_empty():
 
 
 def test_the_two_navigation_landmarks_have_distinct_names():
-    """معلمان بالاسم نفسه يربكان قارئ الشاشة كما يربكان الفحص."""
+    """معلمان بالاسم نفسه يربكان قارئ الشاشة كما يربكان الفحص.
+
+    **وكان الحارس يقارن مفاتيح لا نصوصًا.** يفحص أن هذا المعلَم يحمل
+    `nav.dashboard` وذاك `project.sectionsLabel` — ومفتاحان مختلفان قد
+    يُترجَمان إلى الاسم نفسه، فيقع العطبُ المحروس منه والحارسُ راضٍ.
+
+    **وكان المعلَم الجانبي يستعير اسم عنصرٍ بداخله**: «الرئيسية» اسمُ أوّل
+    رابطٍ فيه، وكان اسمَ المعلَم كلّه. وهو العطبُ الذي يمنعه السطر الأخير
+    في صفحة البحث نفسها — ولم يكن مفحوصًا في الجانب.
+
+    فيُقرأ الاسمان من كتالوج الرسائل ويُقارَن **النصّان** — وذاك ما يسمعه
+    قارئ الشاشة فعلًا.
+    """
     page = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
             / "page.tsx").read_text(encoding="utf-8")
-    nav = (WEB / "src" / "components" / "SideNav.tsx").read_text(encoding="utf-8")
-    assert 'aria-label={t("nav.dashboard")}' in nav
-    assert 'aria-label={t("project.sectionsLabel")}' in page
-    # ولا يُسمّى معلَمٌ باسم عنصرٍ بداخله.
+    side = (WEB / "src" / "components" / "SideNav.tsx").read_text(encoding="utf-8")
+    links = (WEB / "src" / "components" / "NavLinks.tsx").read_text(encoding="utf-8")
+
+    # المعلَم الجانبي: الاسم يُمرَّر من `SideNav` ويُوضع على `<nav>` في
+    # `NavLinks` — والطرفان يُفحصان، فلا يسقط أحدهما بصمت.
+    key = re.search(r'label=\{t\("([^"]+)"\)\}', side)
+    assert key, "المعلَم الجانبي بلا اسم"
+    assert "aria-label={label}" in links, "الاسم يُمرَّر ولا يُوضع على المعلَم"
+
+    project = re.search(r'aria-label=\{t\("([^"]+)"\)\}', page)
+    assert project, "معلَم أقسام البحث بلا اسم"
+
+    catalog = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
+
+    def resolve(path: str) -> str:
+        node = catalog
+        for part in path.split("."):
+            node = node[part]
+        assert isinstance(node, str) and node.strip(), f"{path}: اسمٌ فارغ"
+        return node
+
+    sidebar_name = resolve(key.group(1))
+    project_name = resolve(project.group(1))
+    assert sidebar_name != project_name, (
+        f"معلَمان يُنطقان بالاسم نفسه: «{sidebar_name}»")
+
+    # ولا يُسمّى معلَمٌ باسم عنصرٍ بداخله — لا في البحث ولا في الجانب.
     assert 'aria-label={t("project.overview")}' not in page
+    assert sidebar_name != resolve("nav.dashboard"), (
+        "المعلَم الجانبي يستعير اسم «الرئيسية» — وهي عنصرٌ بداخله")
 
 
 def test_the_acceptance_suite_records_no_artifact_that_could_hold_a_secret():
@@ -491,7 +536,7 @@ def test_the_password_change_ui_exists_for_the_researcher():
 # ══════════ ١٢. الاستعادة: واجهةٌ وآليّاتٌ بلا سرٍّ في أثر ══════════
 
 def test_the_recovery_routes_exist_and_are_public():
-    web = WEB / "src" / "app" / "[locale]"
+    web = AUTH_PAGES
     assert (web / "forgot-password" / "page.tsx").exists()
     assert (web / "reset-password" / "page.tsx").exists()
     gate = (WEB / "src" / "components" / "AuthGate.tsx").read_text(encoding="utf-8")
@@ -503,8 +548,7 @@ def test_the_recovery_routes_exist_and_are_public():
 
 def test_the_reset_page_never_shows_or_keeps_the_token():
     """**ما بعد `#` لا يُرسَل في طلب HTTP** — ويُنزع بعد قراءته."""
-    page = (WEB / "src" / "app" / "[locale]" / "reset-password"
-            / "page.tsx").read_text(encoding="utf-8")
+    page = (AUTH_PAGES / "reset-password" / "page.tsx").read_text(encoding="utf-8")
     assert "window.location.hash" in page, "الرمز لا يُقرأ من الجزء"
     assert "history.replaceState" in page, "الرمز يبقى في شريط العنوان والتاريخ"
     # **والالتقاط يسبق النزع.** واشتقاقُه من الرابط عند كل تصيير يجعله

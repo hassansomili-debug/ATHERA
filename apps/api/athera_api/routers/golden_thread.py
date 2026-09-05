@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
+from ..research_brain import BY_ID
 from ..models.analysis import (
     AnalysisOutputRow,
     AnalysisPlanRow,
@@ -47,14 +48,20 @@ from ..schemas.golden_thread import (
     ProtocolCreateRequest,
     ProtocolResponse,
     RequirementResponse,
+    SuggestedActionsResponse,
+    SuggestedActionView,
+    TaskPreviewView,
     ThreadConnectionView,
     ThreadNodeView,
     ThreadReadNoteView,
     ThreadStageView,
+    UndeterminedFieldView,
 )
 from ..services import audit
+from ..services import research_assessment
 from ..services.golden_thread import graph as thread_graph
-from ..services.golden_thread import methodology, score, weave
+from ..services.golden_thread import methodology, project_title, score, weave
+from ..services.research_assessment import suggestions
 
 router = APIRouter(prefix="/api/v1", tags=["golden-thread"])
 
@@ -137,9 +144,41 @@ async def _build_graph(session: AsyncSession, project_id: uuid.UUID) -> thread_g
     )
 
 
+# **لا تعارض يخرج من هذا الفحص، ويُقال لماذا.** الكشوفات التسعة (§15.2)
+# تقارن عنصرًا بغيابِ ما يصله، لا صفًّا بصفٍّ يناقضه — فصفرُ التعارضات هنا
+# خبرٌ عن حدود الفحص لا شهادةُ سلامة. والمقارنة صفًّا بصفّ تقع في خريطة
+# الخيط (`weave.py`)، وهناك تُعرض التعارضات بحالتها.
+NO_CONFLICT_NOTE_AR = (
+    "لا تُقارَن هنا الصفوف بعضها ببعض: كشوفات الاتساق التسعة تفحص ما ينقص "
+    "العنصر من وصلات، فلا تُنتج تعارضًا. والتعارضات تُعرض في خريطة الخيط "
+    "الذهبي حيث يُقابَل صفٌّ بصفّ."
+)
+NO_CONFLICT_NOTE_EN = (
+    "Rows are not compared against each other here: the nine consistency checks look for "
+    "links an element lacks, so they cannot yield a conflict. Conflicts are shown on the "
+    "golden-thread map, where row is set against row."
+)
+
+
 def _consistency_response(result: score.GoldenThreadScore, locale: str) -> ConsistencyResponse:
     return ConsistencyResponse(
+        # `score` تبقى للبوابة ولقطة الاعتماد، و`presented_score` هي التي تُعرض.
         score=result.score,
+        presented_score=result.presented_score,
+        is_computable=result.is_computable,
+        not_computed_reason=(
+            None if result.is_computable
+            else _pick(locale, score.NOT_COMPUTED_AR, score.NOT_COMPUTED_EN)
+        ),
+        not_computed_reason_ar=result.not_computed_reason_ar,
+        not_computed_reason_en=result.not_computed_reason_en,
+        missing_count=result.missing_count,
+        structural_count=result.structural_count,
+        linguistic_count=result.linguistic_count,
+        conflict_count=0,
+        conflict_note=_pick(locale, NO_CONFLICT_NOTE_AR, NO_CONFLICT_NOTE_EN),
+        conflict_note_ar=NO_CONFLICT_NOTE_AR,
+        conflict_note_en=NO_CONFLICT_NOTE_EN,
         findings=[
             FindingResponse(
                 check_key=f.check_key, kind=f.kind, is_blocking=f.is_blocking,
@@ -400,8 +439,16 @@ async def golden_view(
     woven = weave.weave(await _thread_snapshot(session, principal.tenant_id, project_id))
     arabic = principal.locale != "en"
 
+    # **العنوان يمرّ بعقد العرض ولا يُقرأ من العمود مباشرةً.** وعمودٌ يُعرض
+    # كما هو يجعل الشاشة تعرض ما كُتب فيه أيًّا كان — فراغًا أو طابعًا زمنيًّا
+    # كتبته تجهيزةُ اختبار. والعقد للمسار «ب»، وهذا تنفيذُه المحلّي حتى يصل.
+    shown = project_title.present(
+        project.working_title_ar, project.working_title_en,
+        locale=principal.locale, created_at=project.created_at)
+
     return GoldenThreadView(
-        project_id=project_id, title=project.working_title_ar,
+        project_id=project_id, title=shown.title,
+        title_is_fallback=shown.is_fallback, created_at=shown.created_at,
         stages=[ThreadStageView(
             key=key, label=label_ar if arabic else label_en,
             label_ar=label_ar, label_en=label_en,
@@ -422,6 +469,115 @@ async def golden_view(
         counts=woven.counts(),
         note=NO_SCORE_NOTE_AR if arabic else NO_SCORE_NOTE_EN,
         note_ar=NO_SCORE_NOTE_AR, note_en=NO_SCORE_NOTE_EN)
+
+
+# ──────────────── من كشفٍ إلى فعلٍ مقترح إلى معاينة (بلا التزام) ────────────────
+#
+# **المساران `GET` عمدًا.** الفعلُ الذي لا يملك مسارَ كتابةٍ لا يكتب، والحارس
+# الذي يقوم على نيّة كاتب المسار يسقط في أوّل تعديل. والحلقةُ الرابعة —
+# إنشاءُ المهمّة بعد قبول الباحث — ليست هنا: نموذجُ المهمّة للمسار «ب»
+# والوصلُ للمُكامِل، والطلبُ في `docs/integration/track-f-requests.md`.
+
+
+def _action_view(action: suggestions.SuggestedAction, locale: str) -> SuggestedActionView:
+    return SuggestedActionView(
+        key=action.key, finding_key=action.finding_key, category=action.category,
+        state=action.state, action_kind=action.action_kind,
+        title=_pick(locale, action.title_ar, action.title_en),
+        title_ar=action.title_ar, title_en=action.title_en,
+        detail=_pick(locale, action.detail_ar, action.detail_en),
+        detail_ar=action.detail_ar, detail_en=action.detail_en,
+        rule_id=action.rule_id, rule_status=action.rule_status,
+        rule_is_enforceable=action.rule_is_enforceable, provenance=action.provenance,
+        excerpt=action.excerpt, entity_ids=list(action.entity_ids),
+        has_evidence=action.has_evidence,
+        # يُنقل من الكائن ولا يُكتب هنا `False` يدويًّا: قيمةٌ تُكتب في
+        # العارض تنجو من أيّ تغيّرٍ في الحارس البنيوي.
+        creates_obligation=action.creates_obligation)
+
+
+async def _suggested_actions(session: AsyncSession, principal: Principal,
+                             project_id: uuid.UUID) -> list[suggestions.SuggestedAction]:
+    """يقرأ تقييم هذا البحث ويشتقّ منه الاقتراحات — قراءةٌ لا تكتب شيئًا.
+
+    و`build_project_assessment` تعيد `None` لبحثٍ ليس لهذا المستأجر أو في
+    السلّة، فيصير الجواب «غير موجود» لا قائمةً فارغة: قائمةٌ فارغة عن بحث
+    مستأجرٍ آخر تقول «فُحص فلم يوجد» عمّا لم يُفحص أصلًا.
+    """
+    snapshot = await research_assessment.build_project_assessment(
+        session, tenant_id=principal.tenant_id, project_id=project_id)
+    if snapshot is None:
+        raise NotFound("workspace.project_not_found")
+    _report, view = research_assessment.assess(snapshot)
+    return suggestions.suggest(view, dict(BY_ID))
+
+
+@router.get("/projects/{project_id}/brain/suggested-actions",
+            response_model=SuggestedActionsResponse)
+async def suggested_actions(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> SuggestedActionsResponse:
+    """الأفعال المقترحة على كشوفات العقل البحثي — **اقتراحٌ يُقرأ، لا مهمّةٌ نشأت**.
+
+    ولا سطر هنا يظهر في قائمة مهامّ الباحث: كلُّ قواعد السجل مسوّدة لم
+    يراجعها مختصّ، ومحرّكٌ يكتب في قائمة إنسانٍ بقاعدةٍ لم يوقّع عليها أحد
+    يجعل قراءةَ آلةٍ التزامًا. فالقبول فعلُ الباحث، وهو الحلقة التي لم تصل.
+    """
+    actions = await _suggested_actions(session, principal, project_id)
+    arabic = principal.locale != "en"
+    return SuggestedActionsResponse(
+        project_id=project_id,
+        actions=[_action_view(action, principal.locale) for action in actions],
+        advisory_note=(research_assessment.ADVISORY_NOTE_AR if arabic
+                       else research_assessment.ADVISORY_NOTE_EN),
+        advisory_note_ar=research_assessment.ADVISORY_NOTE_AR,
+        advisory_note_en=research_assessment.ADVISORY_NOTE_EN)
+
+
+@router.get("/projects/{project_id}/brain/suggested-actions/preview",
+            response_model=TaskPreviewView)
+async def suggested_action_preview(
+    project_id: uuid.UUID,
+    action_key: str,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> TaskPreviewView:
+    """معاينةُ المهمّة التي **ستنشأ لو** قَبِل الباحث — ولا صفَّ يُكتب.
+
+    والمفتاح يُطابَق على اقتراحاتِ هذا البحث وحدها، فمفتاحُ اقتراحٍ في بحثٍ
+    آخر لا يُعاين هنا: معاينةٌ تقبل أيّ مفتاح تسرّب كشفًا من بحثٍ إلى بحث.
+    """
+    actions = await _suggested_actions(session, principal, project_id)
+    match = next((a for a in actions if a.key == action_key), None)
+    if match is None:
+        raise NotFound("thread.suggested_action_not_found")
+
+    shown = suggestions.preview(match)
+    arabic = principal.locale != "en"
+    return TaskPreviewView(
+        action_key=shown.action_key,
+        title=_pick(principal.locale, shown.title_ar, shown.title_en),
+        title_ar=shown.title_ar, title_en=shown.title_en,
+        detail=_pick(principal.locale, shown.detail_ar, shown.detail_en),
+        detail_ar=shown.detail_ar, detail_en=shown.detail_en,
+        source=_pick(principal.locale, shown.source_ar, shown.source_en),
+        source_ar=shown.source_ar, source_en=shown.source_en,
+        excerpt=shown.excerpt, entity_ids=list(shown.entity_ids),
+        undetermined_fields=[
+            UndeterminedFieldView(
+                key=key, label=label_ar if arabic else label_en,
+                label_ar=label_ar, label_en=label_en)
+            for key, label_ar, label_en in shown.undetermined_fields],
+        not_created_note=_pick(principal.locale, suggestions.NOT_CREATED_AR,
+                               suggestions.NOT_CREATED_EN),
+        not_created_note_ar=suggestions.NOT_CREATED_AR,
+        not_created_note_en=suggestions.NOT_CREATED_EN,
+        pending_contract_note=_pick(principal.locale, suggestions.PENDING_CONTRACT_AR,
+                                    suggestions.PENDING_CONTRACT_EN),
+        pending_contract_note_ar=suggestions.PENDING_CONTRACT_AR,
+        pending_contract_note_en=suggestions.PENDING_CONTRACT_EN)
 
 
 @router.get("/methodology/requirements/{study_type}", response_model=MethodologyResponse)

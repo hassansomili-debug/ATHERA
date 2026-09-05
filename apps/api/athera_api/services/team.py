@@ -82,6 +82,121 @@ def validate_author_name(display_name: str) -> None:
             )
 
 
+# ══════════════ فرق البحث ٢ — المفردات المغلقة (الترحيل 0028) ══════════════
+#
+# **الصلاحيةُ ليست الدور.** والدورُ يقول أين يقف الشريك في الفريق؛
+# والصلاحيةُ تقول ما الذي يستطيع أن يفعله بيده. وطيُّ الثاني في الأول يعني
+# أن كلَّ «مشرف» يحرّر البيانات لأنه مشرف — وهو ما لا يقبله باحث.
+PROJECT_PERMISSIONS: Final[dict[str, tuple[str, str]]] = {
+    "view_project": ("الاطّلاع على البحث", "View project"),
+    "edit_research_content": ("تحرير المحتوى البحثي", "Edit research content"),
+    "manage_sources": ("إدارة المصادر", "Manage sources"),
+    "manage_data": ("إدارة البيانات", "Manage data"),
+    "manage_tasks": ("إدارة المهام", "Manage tasks"),
+    "review_scientific_candidates": ("مراجعة المرشَّحات العلمية",
+                                     "Review scientific candidates"),
+    "approve_scientific_candidates": ("اعتماد المرشَّحات العلمية",
+                                      "Approve scientific candidates"),
+    "manage_team": ("إدارة الفريق", "Manage team"),
+    "manage_submission": ("إدارة التقديم", "Manage submission"),
+}
+
+# **الافتراضُ اقتراحٌ عند الدعوة، لا قاعدةً تُشتقّ بعدها.** وبعد القبول
+# تُقرأ الصلاحيات من صفوفها وحدها — فتغييرُ الدور لا يوسّعها ولا يضيّقها.
+#
+# ولاحظ الحالتين اللتين توجدان في كل فريق:
+#   • `statistician` له `manage_data` ولا إدارةَ مشروعٍ له.
+#   • `supervisor` يراجع ويعتمد ولا يحرّر البيانات ولا المحتوى.
+# وأيُّ مجموعةٍ افتراضية تعطي التسعة لأحدٍ غير الباحث الرئيس عطبٌ لا اختصار.
+ROLE_DEFAULT_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
+    "principal_investigator": tuple(PROJECT_PERMISSIONS),
+    "co_author": ("view_project", "edit_research_content", "manage_sources"),
+    "supervisor": ("view_project", "review_scientific_candidates",
+                   "approve_scientific_candidates"),
+    "student": ("view_project", "edit_research_content", "manage_sources",
+                "manage_tasks"),
+    "statistician": ("view_project", "manage_data", "review_scientific_candidates"),
+    # شكرٌ وتقدير: يرى البحث ولا يمسّه. والعضويةُ وحدها لا تمنح شيئًا سواه.
+    "acknowledged": ("view_project",),
+}
+
+INVITATION_STATES: Final[tuple[str, ...]] = (
+    "invited", "accepted", "declined", "expired", "revoked")
+
+MEMBER_ACCESS_STATES: Final[tuple[str, ...]] = (
+    "invited", "active", "suspended", "removed")
+
+CONSENT_STATES: Final[tuple[str, ...]] = (
+    "not_requested", "pending", "granted", "declined")
+
+# **`legacy_unverified` لا يكتبها التطبيق أبدًا.** هي وسمُ ما سُجِّل تحت
+# المسار المعطوب قبل الترحيل 0028: موافقةٌ لا يُعرف مَن سجّلها. وترقيتُها
+# صامتةً إلى `self` هي الكذبة التي أُصلحت، لا إصلاحها.
+CONSENT_METHODS: Final[tuple[str, ...]] = (
+    "self", "administrative", "legacy_unverified")
+
+WRITABLE_CONSENT_METHODS: Final[frozenset[str]] = frozenset({"self", "administrative"})
+
+MEMBER_EVENT_KINDS: Final[tuple[str, ...]] = (
+    "invited", "accepted", "declined", "expired", "revoked",
+    "role_changed", "permissions_changed", "credit_changed",
+    "authorship_declared", "authorship_withdrawn",
+    "consent_requested", "consent_granted", "consent_declined",
+    "access_suspended", "access_restored", "removed", "left",
+)
+
+CONSENT_METHOD_LABELS: Final[dict[str, tuple[str, str]]] = {
+    "self": ("وافق بنفسه", "Consented in person"),
+    "administrative": ("موافقة إدارية موثَّقة", "Documented administrative consent"),
+    "legacy_unverified": ("موافقة قديمة مجهولة المصدر",
+                          "Legacy consent, recorder unknown"),
+}
+
+ACCESS_STATE_LABELS: Final[dict[str, tuple[str, str]]] = {
+    "invited": ("مدعو", "Invited"),
+    "active": ("نشِط", "Active"),
+    "suspended": ("موقوف", "Suspended"),
+    "removed": ("مُزال", "Removed"),
+}
+
+CONSENT_STATE_LABELS: Final[dict[str, tuple[str, str]]] = {
+    "not_requested": ("لم تُطلب", "Not requested"),
+    "pending": ("بانتظار المؤلف", "Awaiting the author"),
+    "granted": ("مُنحت", "Granted"),
+    "declined": ("رُفضت", "Declined"),
+}
+
+INVITATION_STATE_LABELS: Final[dict[str, tuple[str, str]]] = {
+    "invited": ("دعوة قائمة", "Pending"),
+    "accepted": ("قُبلت", "Accepted"),
+    "declined": ("رُفضت", "Declined"),
+    "expired": ("انتهت مهلتها", "Expired"),
+    "revoked": ("سُحبت", "Revoked"),
+}
+
+INVITATION_TTL_HOURS: Final[int] = 14 * 24
+
+
+def default_permissions(role: str) -> tuple[str, ...]:
+    """صلاحياتُ دورٍ **مقترَحة**. ودورٌ لا نعرفه يأخذ الاطّلاع وحده.
+
+    والافتراضُ الآمن ليس تفصيلًا: دورٌ يُضاف غدًا بلا مدخلٍ هنا كان
+    سيأخذ إمّا كلَّ شيء وإمّا لا شيء. والأول تسريبُ صلاحيات صامت.
+    """
+    return ROLE_DEFAULT_PERMISSIONS.get(role, ("view_project",))
+
+
+def validate_permissions(keys: list[str]) -> None:
+    unknown = [key for key in keys if key not in PROJECT_PERMISSIONS]
+    if unknown:
+        raise TeamError(f"unknown project permissions: {', '.join(sorted(unknown))}")
+
+
+def normalize_email(email: str) -> str:
+    """البريدُ يُطابَق بحروفٍ صغيرة ومقلَّمًا — وإلّا صار للشخص دعوتان."""
+    return email.strip().lower()
+
+
 def check_supersede(current_decided_at: object | None) -> None:
     """قرار محسوم لا يُعدَّل؛ يُنسَخ بقرار جديد يشير إليه.
 

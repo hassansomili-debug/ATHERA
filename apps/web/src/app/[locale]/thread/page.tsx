@@ -8,14 +8,22 @@ import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 /**
  * مختبر الخيط الذهبي (§15).
  *
- * الدرجة معروضة، لكن **البوابة لا تُقرأ منها**: العدّاد الحاجب وقائمة
- * العناصر المفقودة هما ما يفتح البوابة أو يغلقها (§15.3). ولذلك يظهران
- * بجانب الرقم دائمًا، لا خلف نقرة.
+ * **«درجة الاتساق: ٠» لا تُعرض هنا.** والحساب يخصم عن كل عنصرٍ مفقود، فخيطٌ
+ * في أوّله تنقصه العناصر التسعة يهبط إلى صفر — ويقرأ الباحث «بحثُك في أقصى
+ * درجات التناقض» والحقيقةُ «لا نملك ما يكفي للحكم». والفرق ليس فرق درجةٍ بل
+ * فرقُ نوع: الاتساق صفةُ علاقاتٍ بين عناصر موجودة، ولا علاقة تُفحص بين عنصرٍ
+ * وغياب. فالخادم يرسل `presented_score` فارغةً ما دامت العناصر ناقصة، وتُعرض
+ * مكانها جملةُ السبب بنصّها.
  *
- * والعدّاد الحاجب يضم المفقودات: `blocking_count = العيوب + المفقودات`
- * (`score.compute`). فخيط فارغ يعرض تسعة حاجبة و«لا توجد عيوب اتساق» معًا،
- * وهما متسقان لا متناقضان — ولذلك تُسمّى المفقودات بأسمائها تحتهما، فلا
- * يُترك المستخدم أمام رقم أحمر بلا اسم يفسّره.
+ * **والصفحة لا تُظهر عددين متناقضين.** «تسعة عيوب حاجبة» فوق «لا توجد عيوب
+ * اتساق» تناقضٌ في عين الباحث مهما استقام في الحساب: الأول يجمع المفقودات
+ * والعيوب، والثاني يعدّ العيوب وحدها. فالأعداد تُعرض بأسمائها الأربعة —
+ * عناصر مفقودة · عيوب بنيوية · تنبيهات منهجية · تعارضات — ولا يُجمع صنفان
+ * في رقم.
+ *
+ * **وصفرُ التعارضات يُقال لماذا.** الكشوفات التسعة تقارن عنصرًا بغيابِ ما
+ * يصله، لا صفًّا بصفٍّ يناقضه، فلا تُنتج تعارضًا — وصفرٌ صامت هنا يُقرأ
+ * شهادةَ سلامةٍ عن مقارنةٍ لم تقع.
  */
 interface Finding {
   check_key: string;
@@ -26,9 +34,19 @@ interface Finding {
 }
 
 interface Consistency {
+  /** الدرجة الآلية للبوابة — **لا تُعرض**؛ المعروضة `presented_score`. */
   score: number;
+  /** `null` تعني «لا تُعرض درجة»، ولا تعني صفرًا. */
+  presented_score: number | null;
+  is_computable: boolean;
+  not_computed_reason: string | null;
   findings: Finding[];
   missing_elements: string[];
+  missing_count: number;
+  structural_count: number;
+  linguistic_count: number;
+  conflict_count: number;
+  conflict_note: string | null;
   blocking_count: number;
   advisory_count: number;
   can_pass_gate: boolean;
@@ -172,26 +190,63 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
 
       {data ? (
         <>
+          {/* **الدرجة أو سببُ غيابها — ولا صفر.** والشرط على `is_computable`
+              لا على `presented_score !== null` وحدها: درجةٌ صفرٌ مشروعة على
+              خيطٍ مكتمل تنقصه الوصلات، وهي تُعرض. */}
+          <section className="card" style={{ marginBlockEnd: "var(--space)" }}>
+            <div className="metric-label">{t("thread.score")}</div>
+            {data.is_computable && data.presented_score !== null ? (
+              <div className="metric-value" data-testid="thread-score">
+                {data.presented_score}
+              </div>
+            ) : (
+              <p data-testid="thread-score-not-computed" style={{ margin: "4px 0 0" }}>
+                {data.not_computed_reason ?? t("thread.scoreNotComputed")}
+              </p>
+            )}
+          </section>
+
+          {/* **أربعة أصناف بأسمائها، ولا رقمٌ يجمع صنفين.** */}
           <section className="grid">
             <article className="card">
-              <div className="metric-label">{t("thread.score")}</div>
-              <div className="metric-value">{data.score}</div>
-            </article>
-            <article className="card">
-              <div className="metric-label">{t("thread.blocking")}</div>
-              <div className="metric-value" style={{ color: data.blocking_count ? "#b3261e" : undefined }}>
-                {data.blocking_count}
-              </div>
-            </article>
-            <article className="card">
-              <div className="metric-label">{t("thread.advisory")}</div>
-              <div className="metric-value" style={{ color: data.advisory_count ? "var(--athera-gold)" : undefined }}>
-                {data.advisory_count}
-              </div>
-            </article>
-            <article className="card">
               <div className="metric-label">{t("thread.missing")}</div>
-              <div className="metric-value">{data.missing_elements.length}</div>
+              <div className="metric-value" data-testid="thread-missing-count">
+                {data.missing_count}
+              </div>
+              <p className="metric-label" style={{ margin: 0 }}>{t("thread.missingHint")}</p>
+            </article>
+            <article className="card">
+              <div className="metric-label">{t("thread.countStructural")}</div>
+              <div
+                className="metric-value"
+                data-testid="thread-structural-count"
+                style={{ color: data.structural_count ? "var(--state-conflict-ink)" : undefined }}
+              >
+                {data.structural_count}
+              </div>
+              <p className="metric-label" style={{ margin: 0 }}>{t("thread.structuralHint")}</p>
+            </article>
+            <article className="card">
+              <div className="metric-label">{t("thread.countLinguistic")}</div>
+              <div
+                className="metric-value"
+                data-testid="thread-linguistic-count"
+                style={{ color: data.linguistic_count ? "var(--athera-gold)" : undefined }}
+              >
+                {data.linguistic_count}
+              </div>
+              <p className="metric-label" style={{ margin: 0 }}>{t("thread.linguisticHint")}</p>
+            </article>
+            <article className="card">
+              <div className="metric-label">{t("thread.conflicts")}</div>
+              <div className="metric-value" data-testid="thread-conflict-count">
+                {data.conflict_count}
+              </div>
+              {/* **صفرٌ صامت يُقرأ شهادةَ سلامة.** فيُقال لماذا لا تُنتج
+                  هذه الكشوفات تعارضًا أصلًا. */}
+              <p className="metric-label" style={{ margin: 0 }}>
+                {data.conflict_note ?? t("thread.conflictsHint")}
+              </p>
             </article>
           </section>
 
@@ -225,14 +280,19 @@ export default function ThreadPage({ params }: { params: Promise<{ locale: strin
             <p style={{ color: "var(--muted)" }}>{t("thread.allPresent")}</p>
           )}
 
+          {/* **«لا توجد عيوب اتساق» وحدها تُقرأ شهادةَ سلامة.** وخيطٌ تنقصه
+              ثمانيةُ عناصر لم تُفحص علاقاتُه أصلًا، فالجملة تصير حكمًا لم
+              يقع. فيُقال المدى: فُحص الموجود ولم يُفحص الغائب. */}
           {data.findings.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>{t("thread.clean")}</p>
+            <p style={{ color: "var(--muted)" }} data-testid="thread-clean">
+              {data.is_computable ? t("thread.clean") : t("thread.cleanPartial")}
+            </p>
           ) : null}
 
           <div style={{ display: "grid", gap: 8 }}>
             {data.findings.map((finding, index) => (
               <article className="card" key={`${finding.check_key}-${index}`}>
-                <div className="metric-label" style={{ color: finding.is_blocking ? "#b3261e" : "var(--athera-gold)" }}>
+                <div className="metric-label" style={{ color: finding.is_blocking ? "var(--state-conflict-ink)" : "var(--athera-gold)" }}>
                   {finding.is_blocking ? t("thread.structural") : t("thread.linguistic")}
                 </div>
                 <p style={{ marginBlock: 6, fontSize: 14 }}>{finding.detail}</p>
