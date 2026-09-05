@@ -256,8 +256,19 @@ async def upload_thesis(
     # `0cdb23a` — رفعُ كتابٍ واحد كان يُجمّد المنتج كلّه، فخرج الرفع من
     # معاملة الطلب. وبقي هذا النداء يمرّر `session=` إلى دالّةٍ لم تعد
     # تقبلها، فصار كلُّ رفع رسالةٍ `TypeError` ثمّ ٥٠٠.
+    # **وكلُّ وسيطٍ يُمرَّر صراحةً — ولا يُترك لقيمته الافتراضية.**
+    #
+    # `upload_file` نقطةُ نهايةٍ في FastAPI، وقيمُها الافتراضية شواهدُ
+    # (`Form(...)`) لا قيمٌ حقيقية. فحين تُنادى كدالّةٍ عاديّة يصل
+    # `folder_id` كائنَ `Form` لا `None`، فيمرّ من `if not folder_id`
+    # ويسقط في `uuid.UUID(...)`:
+    #
+    #     AttributeError: 'Form' object has no attribute 'replace'
+    #
+    # وهو عطبٌ ثانٍ كان مختبئًا خلف الأوّل: `session=` كانت تُسقط النداء
+    # قبل أن يبلغ هذا الموضع.
     stored = await upload_file(upload=upload, classification="C2",
-                               principal=principal)
+                               folder_id=None, principal=principal)
 
     thesis, created = await pipeline.ensure_thesis_for_file(
         session, tenant_id=principal.tenant_id, file_id=stored.id,

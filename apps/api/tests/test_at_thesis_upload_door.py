@@ -138,6 +138,23 @@ def test_the_call_site_matches_the_signature_it_calls():
     assert not unknown, (
         f"نداءُ رفع الرسالة يمرّر ما لا تقبله `upload_file`: {sorted(unknown)}")
 
+    # **وما لم يُمرَّر يصل شاهدًا لا قيمة.**
+    #
+    # قيمُ FastAPI الافتراضية (`Form(...)`، `Depends(...)`) شواهدُ يحلّها
+    # الإطار عند الطلب. ومن نادى النقطةَ كدالّةٍ عاديّة وترك وسيطًا لقيمته
+    # الافتراضية تسلّم كائنَ `Form` بدل `None` — فمرّ من `if not folder_id`
+    # وسقط في `uuid.UUID(...)`. وهو عطبٌ كان مختبئًا خلف الأوّل تمامًا.
+    sentinels = {
+        name for name, parameter
+        in inspect.signature(files.upload_file).parameters.items()
+        if parameter.default is not inspect.Parameter.empty
+        and type(parameter.default).__name__ in {"Form", "File", "Depends", "Query"}
+    }
+    missed = sentinels - passed
+    assert not missed, (
+        "وسائطُ نقطةِ نهايةٍ تُركت لشواهدها بدل أن تُمرَّر صراحةً: "
+        f"{sorted(missed)}")
+
 
 def test_the_signature_guard_would_notice_a_stale_argument():
     """حارسٌ لا يسقط أبدًا ليس حارسًا."""
