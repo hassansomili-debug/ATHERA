@@ -17,7 +17,6 @@
 """
 from __future__ import annotations
 
-import os
 import pathlib
 import re
 import uuid
@@ -106,9 +105,13 @@ def test_legacy_rows_are_never_called_self_consent():
 # ولا تُستعمل نماذجُ الموجة هنا عمدًا: هي تحمل أعمدةً لم يكن الخادمُ
 # القديم يعرفها، فالكتابةُ بها ليست كتابته.
 
-EXPAND_URL = os.environ.get("ATHERA_EXPAND_SCHEMA_URL", "")
-requires_expand_db = pytest.mark.skipif(
-    not EXPAND_URL, reason="قاعدةُ نافذة النشر (0028) غير مهيّأة")
+# **وقاعدةُ نافذة 0028 لم تعد تُبنى، فذهب فحصُها معها.**
+#
+# كان هنا فحصٌ يشغّل كتابةَ v88 على قاعدةٍ عند 0028 بعينها. وقد أُغلقت تلك
+# النافذة: الإنتاج عند 0029، والموجةُ 1.1 تُرحَّل قبل أن تُنشر — فلا طورَ
+# يخدم فيه جديدٌ مخطَّطًا أقدم. **وفحصٌ لا يُشغَّل أسوأ من فحصٍ غائب**:
+# الغائبُ يُطلب، والموجودُ المتخطَّى يُحسب حراسةً قائمة. فحُذف، وحلّ محلَّه
+# برهانُ النافذة الباقية في القسم الثالث: v88 على مخطَّط 0030.
 
 OLD_MEMBER_CONSENT = (
     "UPDATE project_members SET consent_recorded_at = now(), updated_at = now() "
@@ -167,43 +170,6 @@ async def _one_member_and_agreement(engine):
             "VALUES (:i, :t, :o, :y, 1, 'pending')"),
             {"i": agreement, "t": tenant, "o": opportunity, "y": party})
     return tenant, member, agreement
-
-
-@requires_expand_db
-@pytest.mark.asyncio
-async def test_the_old_api_can_still_write_consent_on_the_expanded_schema():
-    """**الخاصّيّةُ التي وُجدت التوسعةُ لأجلها — OLD API + 0028.**
-
-    لو سقطت هذه، لسقط كلُّ تسجيل موافقةٍ بين ترحيل الإنتاج ونشر الموجة.
-    """
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    engine = create_async_engine(EXPAND_URL, poolclass=None)
-    try:
-        tenant, member, agreement = await _one_member_and_agreement(engine)
-        async with engine.begin() as conn:
-            await conn.execute(text(
-                "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
-            touched = await conn.execute(text(OLD_MEMBER_CONSENT),
-                                         {"member_id": member})
-            # **والصفرُ الصامت يسقط هنا.** لو رشّحت RLS الصفَّ لمرّ التحديث
-            # بلا أثرٍ ولا خطأ، ولخضرّ الفحصُ وهو لم يكتب شيئًا.
-            assert touched.rowcount == 1, "لم يُصب التحديثُ صفًّا — سياقٌ مفقود"
-            agreed = await conn.execute(text(OLD_AGREEMENT_CONSENT),
-                                        {"agreement_id": agreement})
-            assert agreed.rowcount == 1, "لم يُصب تحديثُ الاتفاق صفًّا"
-
-        async with engine.begin() as conn:
-            await conn.execute(text(
-                "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
-            row = (await conn.execute(text(
-                "SELECT consent_method, consent_recorded_at FROM project_members "
-                "WHERE id = :i"), {"i": member})).one()
-        assert row.consent_recorded_at is not None, "الوقتُ لم يُكتب"
-        assert row.consent_method is None, "الخادمُ القديم لا يكتب طريقة"
-    finally:
-        await engine.dispose()
 
 
 @requires_db
@@ -294,3 +260,185 @@ def test_the_contract_sits_directly_on_the_expand_migration():
         encoding="utf-8")
     assert re.search(r'^revision = "0029"', contract, re.M)
     assert re.search(r'^down_revision = "0028"', contract, re.M)
+
+
+# ═════════════════ ٣. النافذةُ الجديدة: OLD API + 0030 ═════════════════
+#
+# **ترتيبُ هذه الموجة معكوسٌ عن سابقتها، فالخاصّيّةُ المطلوبة غيرُها.**
+#
+# الموجةُ الأولى نُشرت على مخطَّطٍ مُوسَّع ثمّ عُوقد عليه: تُرحَّل إلى 0028،
+# ثمّ يُنشر الخادمُ الجديد وهو عليها، ثمّ 0029. فكانت النافذةُ **خادمٌ جديد
+# على مخطَّطٍ أقدم**، وذاك ما أثبته `test_at_wave1_on_expand_window`.
+#
+# والموجةُ 1.1 لا تحتمل ذلك: `models/thesis.py` يُعلن `archived_at` و
+# `archived_by`، فـSQLAlchemy تختارهما في كلّ قراءةٍ للرسائل. **فشيفرتُها
+# لا تخدم مخطَّطًا دون 0030 إطلاقًا**، ولا يُصلح ذلك تأجيلُ قيد. فالترتيبُ
+# **ترحيلٌ أوّلًا ثمّ نشر**: 0029 → 0030، ثمّ تُنشر.
+#
+# فالنافذةُ الباقية — وهي الحقيقيّة — بين الترحيل والنشر: **الخادمُ القديم
+# (v88) على مخطَّط 0030**. وهي التي تُثبَت هنا.
+#
+# ولا تُستعمل نماذجُ الموجة 1.1 عمدًا — القاعدةُ نفسها المكتوبة في القسم
+# الثاني: هي تحمل عمودين لم يكن v88 يعرفهما، فالكتابةُ بها ليست كتابته.
+# والقائمةُ أدناه هي أعمدةُ `Thesis` في `origin/main` حرفًا بحرف.
+
+#: أعمدةُ `theses` كما يعرفها خادمُ الموجة الأولى (v88) — لا أكثر.
+V88_THESIS_COLUMNS = (
+    "id", "tenant_id", "title_ar", "title_en", "degree", "defended_on",
+    "data_collected_on", "institution_ar", "file_id", "rights_basis", "parsed_at",
+    "existing_publications", "processing_state", "processing_state_changed_at",
+    "processing_attempts", "failure_code", "failure_detail", "text_layer_state",
+    "ocr_state", "opportunities_mined_at",
+)
+
+#: عبارةُ الرفع كما يُصدرها v88: قائمةُ أعمدةٍ صريحة يولّدها SQLAlchemy من
+#: نموذجه — **ولا ذكرَ فيها للعمودين الجديدين**.
+V88_INSERT_THESIS = (
+    "INSERT INTO theses (id, tenant_id, title_ar, title_en, degree, file_id, "
+    "rights_basis, processing_state, processing_attempts, text_layer_state, "
+    "ocr_state, created_at, updated_at) "
+    "VALUES (:id, :tenant, :title, NULL, 'masters', NULL, NULL, 'uploaded', 0, "
+    "'not_checked', 'unavailable', now(), now())")
+
+#: عبارةُ `processing.mark` كما يُصدرها v88.
+V88_MARK_STATE = (
+    "UPDATE theses SET processing_state = :state, processing_state_changed_at = now(), "
+    "failure_code = :code, failure_detail = :detail, text_layer_state = :layer "
+    "WHERE theses.tenant_id = :tenant AND theses.id = :id")
+
+#: عبارةُ `claim_for_processing` كما يُصدرها v88 — الحجزُ شرطٌ في الكتابة.
+V88_CLAIM = (
+    "UPDATE theses SET processing_state = 'queued', processing_state_changed_at = now(), "
+    "processing_attempts = theses.processing_attempts + 1, failure_code = NULL, "
+    "failure_detail = NULL "
+    "WHERE theses.id = :id AND theses.tenant_id = :tenant "
+    "AND theses.processing_state IN ('uploaded', 'awaiting_consent', "
+    "'ready_for_review', 'completed', 'failed')")
+
+
+def test_the_v88_replay_uses_only_columns_that_v88_knows():
+    """**حارسُ الحارس.** عبارةٌ تُعيد تشغيل كتابةَ v88 وتذكر عمودًا لا يعرفه
+    ليست كتابته — وتخضرّ على شيءٍ لم يقع في الإنتاج قطّ.
+    """
+    for statement in (V88_INSERT_THESIS, V88_MARK_STATE, V88_CLAIM):
+        assert "archived_at" not in statement, statement
+        assert "archived_by" not in statement, statement
+    # وقائمةُ الأعمدة هي قائمةُ `origin/main` — لا قائمةُ هذا الفرع.
+    assert "archived_at" not in V88_THESIS_COLUMNS
+    assert "archived_by" not in V88_THESIS_COLUMNS
+    assert len(V88_THESIS_COLUMNS) == 20  # ١٩ عمودًا + `tenant_id` من الأساس
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_old_api_can_still_write_a_thesis_on_the_archive_schema(db_ready):
+    """**الخاصّيّةُ التي وُجد الترحيل 0030 محتاجًا إليها — OLD API + 0030.**
+
+    بين ترحيل الإنتاج ونشر الموجة 1.1 يخدم خادمُ v88 مخطَّطًا يحمل عمودين
+    لا يعرفهما. ولو كان أحدُهما إلزاميًّا أو ذا افتراضٍ كاتب، لسقط **كلُّ
+    رفعِ رسالةٍ** في تلك النافذة بخمسمئة.
+
+    **و`rowcount` هو الشاهد، لا غيابُ الاستثناء.** سياقُ المستأجر محلّيٌّ
+    بالمعاملة؛ فمن نسيه رشّحت RLS كتابته إلى صفر صفوف **بلا خطأ** — فيخضرّ
+    الفحصُ على لا شيء. وهو العطبُ الذي أسقط عشرة فحوصٍ في المسار «هـ»،
+    ومكتوبٌ في القسم الثاني من هذا الملفّ.
+    """
+    from sqlalchemy import text
+
+    from athera_api.db import SessionFactory, system_session
+
+    async with system_session() as session:
+        head = (await session.execute(
+            text("SELECT version_num FROM alembic_version"))).scalar_one()
+    if head < "0030":
+        pytest.skip(f"قاعدةُ الاختبارات عند {head}، والعمودان يُضافان في 0030")
+
+    tenant, thesis = uuid.uuid4(), uuid.uuid4()
+
+    async with SessionFactory() as session, session.begin():
+        await session.execute(text(
+            "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+        await session.execute(text(
+            "INSERT INTO tenants (id, slug, name_ar, name_en) "
+            "VALUES (:i, :s, 'نافذةُ الأرشفة', 'Archive window')"),
+            {"i": tenant, "s": f"arch-{tenant.hex[:8]}"})
+
+        # ١ — الرفع، بعبارة v88 حرفيًّا.
+        inserted = await session.execute(
+            text(V88_INSERT_THESIS),
+            {"id": thesis, "tenant": tenant, "title": "رسالةٌ كتبها الخادمُ القديم"})
+        assert inserted.rowcount == 1, "رفعُ v88 كُتب صفرَ صفوف — RLS رشّحته بصمت"
+
+    # ٢ — تثبيتُ الحال، بعبارة v88 حرفيًّا. ومعاملةٌ جديدة: السياقُ يُضبط
+    #     فيها من جديد، وهو بيتُ الدرس.
+    async with SessionFactory() as session, session.begin():
+        await session.execute(text(
+            "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+        marked = await session.execute(text(V88_MARK_STATE), {
+            "state": "failed", "code": "parse_failed", "detail": "TimeoutError",
+            "layer": "not_checked", "tenant": tenant, "id": thesis})
+        assert marked.rowcount == 1, "تثبيتُ حالِ v88 كُتب صفرَ صفوف"
+
+    # ٣ — والحجزُ للمعالجة، وهو الكتابةُ الثالثة التي يُصدرها v88.
+    async with SessionFactory() as session, session.begin():
+        await session.execute(text(
+            "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+        claimed = await session.execute(text(V88_CLAIM), {"id": thesis, "tenant": tenant})
+        assert claimed.rowcount == 1, "حجزُ v88 كُتب صفرَ صفوف"
+
+    # **والعمودان الجديدان بقيا فارغين** — ومعناهما «غير مؤرشَفة»، وهي
+    # الحالُ الصحيحة لكلّ ما يكتبه خادمٌ لا يعرفهما.
+    async with SessionFactory() as session, session.begin():
+        await session.execute(text(
+            "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+        row = (await session.execute(text(
+            "SELECT archived_at, archived_by, processing_state, processing_attempts "
+            "FROM theses WHERE id = :i"), {"i": thesis})).one()
+
+    assert row.archived_at is None, "عمودٌ جديد كُتب فيه ما لم يطلبه الخادمُ القديم"
+    assert row.archived_by is None
+    assert row.processing_state == "queued", "الحجزُ لم يقع فعلًا"
+    assert row.processing_attempts == 1
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_archive_constraint_never_refuses_an_old_api_write(db_ready):
+    """**والقيدُ الجديد لا يقف في وجه كتابةٍ قديمة.**
+
+    `ck_theses_archive_is_named` يقرن الوقتَ بالفاعل. وكتابةُ v88 لا تذكر
+    أيًّا منهما، فيبقيان `NULL` معًا — ويتحقّق القيد. ولو كُتب أحدُهما
+    وحده لسقطت الكتابة؛ وهذا يُثبت أنّ ذلك لا يقع من طريق v88.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from athera_api.db import SessionFactory, system_session
+
+    async with system_session() as session:
+        head = (await session.execute(
+            text("SELECT version_num FROM alembic_version"))).scalar_one()
+    if head < "0030":
+        pytest.skip(f"قاعدةُ الاختبارات عند {head}، والقيدُ يُضاف في 0030")
+
+    tenant, thesis = uuid.uuid4(), uuid.uuid4()
+    async with SessionFactory() as session, session.begin():
+        await session.execute(text(
+            "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+        await session.execute(text(
+            "INSERT INTO tenants (id, slug, name_ar, name_en) "
+            "VALUES (:i, :s, 'قيدُ الأرشفة', 'Archive constraint')"),
+            {"i": tenant, "s": f"ack-{tenant.hex[:8]}"})
+        await session.execute(text(V88_INSERT_THESIS), {
+            "id": thesis, "tenant": tenant, "title": "رسالةٌ للقيد"})
+
+    # **والحارسُ يبين بطرفيه**: نصفُ وسمٍ يُرفض، فالقيد قائمٌ فعلًا وليس
+    # الفحصُ يمرّ لأنّ لا قيدَ هناك.
+    with pytest.raises(IntegrityError) as caught:
+        async with SessionFactory() as session, session.begin():
+            await session.execute(text(
+                "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+            await session.execute(text(
+                "UPDATE theses SET archived_at = now() WHERE id = :i"), {"i": thesis})
+    assert "ck_theses_archive_is_named" in str(caught.value), (
+        f"رُفض نصفُ الوسم لسببٍ آخر: {str(caught.value)[:160]}")
