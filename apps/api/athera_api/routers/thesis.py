@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import delete, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import Principal, get_principal, get_session
@@ -43,12 +44,25 @@ from ..schemas.thesis import (
     OverlapPairResponse,
     ParseResponse,
     PublicationMapResponse,
+    RemovalDependency,
+    RemovalPreviewResponse,
+    RemovalResponse,
+    ThesisCardActions,
     ThesisCreateRequest,
     ThesisResponse,
 )
 from ..services import audit
 from ..services.parsing import NoTextLayer, UnsupportedDocument, parse
-from ..services.thesis import aging, miner, overlap, processing, rights, vocab
+from ..services.thesis import (
+    aging,
+    card_actions,
+    miner,
+    overlap,
+    processing,
+    removal,
+    rights,
+    vocab,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["thesis"])
 
@@ -177,7 +191,118 @@ async def create_thesis(
                 File.id == payload.file_id, File.tenant_id == principal.tenant_id)
         )).scalar_one_or_none()
     return _card(thesis, principal.locale, source_filename=filename,
-                 sections=0, opportunities=0)
+                 sections=0, opportunities=0, results=0)
+
+
+async def _thesis_or_404(
+    session: AsyncSession, principal: Principal, thesis_id: uuid.UUID, *,
+    lock: bool = False,
+) -> Thesis:
+    statement = select(Thesis).where(
+        Thesis.id == thesis_id, Thesis.tenant_id == principal.tenant_id)
+    if lock:
+        statement = statement.with_for_update()
+    thesis = (await session.execute(statement)).scalar_one_or_none()
+    if thesis is None:
+        # **رسالةُ مستأجرٍ آخر غير موجودة، لا «ممنوعة»** — و٤٠٤ لا تُفشي
+        # أنّ المعرّف قائمٌ عند غيرك.
+        raise NotFound("thesis.not_found")
+    return thesis
+
+
+def _preview_response(
+    view: removal.RemovalPreview, locale: str, *, source_file_id: uuid.UUID | None,
+) -> RemovalPreviewResponse:
+    def _row(dep: removal.Dependency) -> RemovalDependency:
+        return RemovalDependency(key=dep.key, label=removal.label(dep.key, locale),
+                                 count=dep.count, blocking=dep.blocking)
+
+    return RemovalPreviewResponse(
+        thesis_id=view.thesis_id,
+        removable=view.removable,
+        dependencies=[_row(dep) for dep in view.dependencies],
+        blocking=[_row(dep) for dep in view.blocking],
+        explanation=view.explanation(locale),
+        source_file_id=source_file_id,
+    )
+
+
+@router.get("/theses/{thesis_id}/removal-preview", response_model=RemovalPreviewResponse)
+async def removal_preview(
+    thesis_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> RemovalPreviewResponse:
+    """**ما يقوم على هذه الرسالة — قبل أن يُسأل «أمتأكّد؟»، لا بعده.**
+
+    سؤالُ التأكيد بلا هذا الجواب زينةٌ: الباحث يُقرّ بما لا يعرفه. فيُحسب
+    الأثرُ أوّلًا ويُعرض بأسمائه وأعداده، ثمّ يُسأل.
+    """
+    thesis = await _thesis_or_404(session, principal, thesis_id)
+    view = await removal.preview(
+        session, tenant_id=principal.tenant_id, thesis_id=thesis_id,
+        file_id=thesis.file_id)
+    return _preview_response(view, principal.locale, source_file_id=thesis.file_id)
+
+
+@router.delete("/theses/{thesis_id}", response_model=RemovalResponse)
+async def remove_thesis(
+    thesis_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> RemovalResponse:
+    """يُزيل سجلَّ الرسالة من مركز الرسائل — **أو يرفض ويقول لماذا**.
+
+    **ولا حذفٌ متسلسلٌ صامت.** `ON DELETE CASCADE` قائمٌ في القاعدة على
+    خمسة جداول، وفيها فرصُ النشر — ومنها تتدلّى اتفاقاتُ التأليف واعتماداتُ
+    الحقوق والمشاريع المحوَّلة. فإسقاطُ صفٍّ واحد هنا يمحو سلسلةَ قراراتٍ
+    بشريّة بلا أن يراها أحد. فتُحسب التبعات أوّلًا:
+
+      • **ما تُعيده قراءةٌ ثانية لا يمنع** — أقسامٌ ونتائجُ كتبتها آلة.
+      • **وما فيه حكمُ إنسانٍ يمنع** — ويُردّ الطلب بـ409 ومعه المعاينة.
+
+    **والقفلُ ليس زخرفًا**: بين حساب التبعات وإسقاط الصفّ نافذةٌ قد تُكتب
+    فيها فرصةٌ جديدة، فيقع الحذفُ على حالٍ لم تُفحص. فيُقفل صفُّ الرسالة
+    قبل الحساب، وهو الصفُّ نفسه الذي يقفله التنقيب.
+
+    **ولا يُمسّ ملفُّ المكتبة، ولا يُمحى كائنُ تخزينٍ نهائيًّا.** نقلُ
+    الملفّ إلى السلّة فعلٌ آخر بنقطةٍ أخرى (`POST /files/{id}/trash`)،
+    يطلبه الباحث وحده. **وسجلُّ التدقيق يبقى**: `audit_log.object_id` بلا
+    مفتاحٍ أجنبيّ إلى `theses` قصدًا، فتاريخُ ما جرى يبقى مقروءًا بعد
+    إسقاط الصفّ.
+    """
+    thesis = await _thesis_or_404(session, principal, thesis_id, lock=True)
+    file_id = thesis.file_id
+    view = await removal.preview(
+        session, tenant_id=principal.tenant_id, thesis_id=thesis_id, file_id=file_id)
+
+    if not view.removable:
+        await audit.record(
+            session, tenant_id=principal.tenant_id, action="thesis.removal_refused",
+            object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
+            state_after={"blocking": view.blocking_counts()},
+            reason="removal refused: scientific work decided by a human rests on this "
+                   "thesis; nothing is cascade-deleted silently",
+        )
+        raise AtheraError("thesis.removal_blocked", status_code=409,
+                          **{k: v for k, v in view.blocking_counts().items()})
+
+    dropped = {key: count for key, count in view.counts().items() if count}
+    await audit.record(
+        session, tenant_id=principal.tenant_id, action="thesis.removed",
+        object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
+        state_before={"processing_state": thesis.processing_state,
+                      "file_id": str(file_id) if file_id else None},
+        state_after={"dropped": dropped, "library_file_touched": False},
+        reason="the thesis carried no human decision; its record and the machine output "
+               "under it are dropped, the library file is untouched and the audit stays",
+    )
+    # الشرطان معًا: المعرّف **والمستأجر**. و`tenant_session` تختم المعاملة —
+    # ولا يختم الموجّه معاملةً لا يملكها.
+    await session.execute(
+        delete(Thesis).where(Thesis.id == thesis_id,
+                             Thesis.tenant_id == principal.tenant_id))
+    return RemovalResponse(thesis_id=thesis_id, removed=True, dropped=dropped)
 
 
 async def _remember_failure(
@@ -318,10 +443,35 @@ async def mine_opportunities(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> MineResponse:
-    """§23.4 + §23.8 — التنقيب يسبقه حساب الأعمار وإعلانها."""
+    """§23.4 + §23.8 — التنقيب يسبقه حساب الأعمار وإعلانها.
+
+    ## **والعطب الذي يُصلَح هنا: تنقيبٌ يُضاعف نفسه بكل ضغطة**
+
+    كانت الحلقة `for draft in drafts: session.add(PublicationOpportunity(…))`
+    بلا فحصِ وجود، ولا قيدَ تفرّدٍ في القاعدة يحرسها. والمنقّب حتميّ: يُعطى
+    المدخلات نفسها فيُخرج المقترحات نفسها حرفًا بحرف. فضغطتان على الزرّ
+    تكتبان الفرصة مرّتين، وثلاثٌ ثلاثًا — ثمّ تُقارَن الفرصةُ بنفسها في
+    مصفوفة التداخل (§23.7) فيرتفع **تنبيهُ تجزئةٍ كاذب** على ورقةٍ واحدة
+    مكرّرة، ويُطلب من الباحث حسمٌ بشريّ في تعارضٍ صنعته ضغطةٌ مكرّرة.
+
+    **فالتنقيب صار مُعادًا بلا أثر (idempotent):**
+
+      ١ صفُّ الرسالة يُقفل بـ`FOR UPDATE` **في القراءة نفسها** — بلا رحلةٍ
+        إضافية. فطلبان متزامنان يتسلسلان: الثاني ينتظر ختمَ الأوّل، ثمّ
+        يقرأ الفرص بلقطةٍ جديدة تشمل ما كتبه الأوّل فيتخطّاه. ولولا القفل
+        لقرأ الاثنان «لا شيء» معًا وكتبا معًا.
+      ٢ ومفتاحُ الهويّة `(opportunity_kind, paper_kind, working_title_ar)` —
+        وهو ما يُنتجه المنقّب حتميًّا من عناصر الرسالة.
+      ٣ والمقترحاتُ المكرّرة **داخل التشغيلة الواحدة** تُطوى أيضًا: سؤالان
+        متطابقان في الرسالة كانا يُنتجان صفّين متطابقين.
+
+    **ولا قيدَ تفرّدٍ في القاعدة يُضاف هنا** — الترقيم `0030` مملوكٌ لموجةٍ
+    أخرى، وإضافةُ ترحيلٍ منافس تكسر الترتيب. والقفلُ يحرس ما كان القيدُ
+    سيحرسه على هذا المسار؛ ويبقى القيد عملًا مؤجَّلًا مذكورًا في نصّ الطلب.
+    """
     thesis = (await session.execute(select(Thesis).where(
         Thesis.id == thesis_id, Thesis.tenant_id == principal.tenant_id
-    ))).scalar_one_or_none()
+    ).with_for_update())).scalar_one_or_none()
     if thesis is None:
         raise NotFound("thesis.not_found")
 
@@ -348,8 +498,27 @@ async def mine_opportunities(
         literature_update_threshold_years=3, data_age_review_threshold_years=5,
     )
 
+    # **ما هو قائمٌ الآن على هذه الرسالة** — والعزل مكتوبٌ في الشرط: RLS
+    # تحمي بين المستأجرين ولا تحمي بين رسالتين في المستأجر الواحد.
+    present = {
+        (kind, paper, title)
+        for kind, paper, title in (await session.execute(
+            select(PublicationOpportunity.opportunity_kind,
+                   PublicationOpportunity.paper_kind,
+                   PublicationOpportunity.working_title_ar)
+            .where(PublicationOpportunity.tenant_id == principal.tenant_id,
+                   PublicationOpportunity.thesis_id == thesis_id)
+        )).all()
+    }
+
     created = 0
+    already = 0
     for draft in drafts:
+        key = (draft.opportunity_kind, draft.paper_kind, draft.working_title_ar)
+        if key in present:
+            already += 1
+            continue
+        present.add(key)
         session.add(PublicationOpportunity(
             tenant_id=principal.tenant_id, thesis_id=thesis_id,
             opportunity_kind=draft.opportunity_kind, paper_kind=draft.paper_kind,
@@ -374,14 +543,17 @@ async def mine_opportunities(
         session, tenant_id=principal.tenant_id, action="thesis.opportunities_mined",
         object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
         state_after={
-            "created": created, "kinds": sorted({d.opportunity_kind for d in drafts}),
+            "created": created, "already_present": already,
+            "kinds": sorted({d.opportunity_kind for d in drafts}),
             "data_age_years": report.data_age_years,
             "literature_age_years": report.literature_age_years,
         },
-        reason="opportunities proposed from extracted thesis elements only (§23.4)",
+        reason="opportunities proposed from extracted thesis elements only (§23.4); "
+               "a proposal that already exists is not written twice",
     )
     return MineResponse(
         thesis_id=thesis_id, opportunities_created=created,
+        opportunities_already_present=already,
         kinds=sorted({d.opportunity_kind for d in drafts}),
         aging=AgingResponse(
             data_age_years=report.data_age_years,
@@ -768,7 +940,7 @@ _UNSET = object()
 
 
 def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
-          opportunities=_UNSET) -> ThesisResponse:
+          opportunities=_UNSET, results=_UNSET) -> ThesisResponse:
     """بطاقةٌ واحدة — **والرقمُ فيها لا يخرج بلا سببه**.
 
     ولا نسبةٌ مئوية ولا «٧٣٪ اكتمالًا»: خطُّ الأنابيب لا يقيس تقدّمًا، ورقمٌ
@@ -783,6 +955,10 @@ def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
         (row.sections_extracted if sections is _UNSET else sections) or 0)
     found = int(
         (row.opportunities_found if opportunities is _UNSET else opportunities) or 0)
+    # **العدُّ الثاني الذي يقرؤه المنقّب.** بدونه تُقاس إتاحةُ التنقيب
+    # بـ`parsed_at` — ختمِ مسارٍ قديم — لا بوجود دليلٍ يقرؤه المنقّب فعلًا.
+    result_rows = int(
+        (row.results_extracted if results is _UNSET else results) or 0)
     filename = row.source_filename if source_filename is _UNSET else source_filename
 
     shown, extracted = processing.display_title(
@@ -840,6 +1016,13 @@ def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
         opportunities_outcome_label=_pick(
             locale, *processing.OPPORTUNITY_OUTCOME_LABELS[opportunities_why]),
         opportunities_mined_at=row.opportunities_mined_at,
+        results_extracted=result_rows,
+        source_file_id=row.file_id,
+        # **آلةُ الحال في موضعٍ واحد** — والشاشة تعرض ما يقوله الخادم، ولا
+        # تعيد بناء الشروط في JSX فتفترق عنه.
+        actions=ThesisCardActions(**asdict(card_actions.compute(
+            processing_state=state, file_id=row.file_id,
+            sections=sections, results=result_rows, locale=locale))),
     )
 
 
@@ -924,11 +1107,21 @@ async def list_theses(
                PublicationOpportunity.thesis_id == window.c.id)
         .scalar_subquery()
     )
+    # **العدُّ الثاني الذي يقرؤه المنقّب** — عمودٌ في العبارة نفسها، لا رحلةٌ
+    # ثانية إلى مومباي: كلفةُ الصفحة تبقى كما هي، وتُصبح إتاحةُ التنقيب
+    # مقيسةً بوجود دليلٍ لا بختمِ مسارٍ قديم.
+    results = (
+        select(func.count(ThesisResult.id))
+        .where(ThesisResult.tenant_id == principal.tenant_id,
+               ThesisResult.thesis_id == window.c.id)
+        .scalar_subquery()
+    )
 
     rows = (await session.execute(
         select(window, filename.label("source_filename"),
                sections.label("sections_extracted"),
-               opportunities.label("opportunities_found"))
+               opportunities.label("opportunities_found"),
+               results.label("results_extracted"))
         .order_by(window.c.created_at.desc(), window.c.id.desc())
     )).all()
     return [_card(row, principal.locale) for row in rows]

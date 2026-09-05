@@ -22,6 +22,38 @@ class ThesisCreateRequest(BaseModel):
     supervisor_name: str | None = None
 
 
+class ThesisCardActions(BaseModel):
+    """ما تعرضه البطاقة — **والشاشة لا تجتهد، بل تعرض ما يقوله الخادم**.
+
+    كان كلُّ شرطٍ منها مكتوبًا في JSX على حدة، فافترقت الشاشة عن الخادم:
+    زرُّ «تفكيك الرسالة» يُعرض دائمًا وإن ردّت النقطة `thesis.no_file`، وزرُّ
+    «استخراج الفرص» مشروطٌ بـ`parsed_at` الذي لا يضعه إلّا مسارٌ قديم.
+    """
+
+    #: الفعل الأول على البطاقة: review · process · reprocess · attach_file · None
+    primary: str | None = None
+    #: عملٌ يجري الآن — فلا فعلَ يُعرض، ويُعرض ما يجري.
+    in_progress: bool = False
+
+    can_review: bool = False
+    can_process: bool = False
+    can_reprocess: bool = False
+    #: **المسار القديم باقٍ في الواجهة البرمجية ومسحوبٌ من البطاقة.**
+    can_parse: bool = False
+    can_attach_file: bool = False
+    can_mine: bool = False
+    can_remove: bool = True
+    can_trash_file: bool = False
+
+    #: available · in_flight · no_evidence
+    mining_state: str
+    #: لماذا التنقيب متاحٌ أو غير متاح — **بنصٍّ يصف الواقع لا وعدًا**.
+    mining_reason: str
+    parse_withdrawn_reason: str
+    #: سببُ خلوّ البطاقة من فعلٍ الآن، إن خلت.
+    blocked_reason: str | None = None
+
+
 class ThesisResponse(BaseModel):
     """`None` تعني «لم يُستخرَج بعد»، لا «فارغ» ولا قيمة نائبة.
 
@@ -95,6 +127,59 @@ class ThesisResponse(BaseModel):
     # والراية تُرسَل مع كل صفّ فلا تُقرأ البطاقة وعدًا بالنشر.
     opportunities_are_candidates: bool = True
 
+    # ── نتائجُ الرسالة: العدّ الثاني الذي يقرؤه المنقّب ──
+    #
+    # ولم يكن يُرسَل، فكانت الشاشة تحكم على إتاحة التنقيب من `parsed_at`
+    # وحده — وهو ختمُ المسار القديم لا شاهدُ وجود دليل.
+    results_extracted: int = 0
+
+    # **معرّفُ ملفّ المصدر** — لتُفرَّق «أزل السجلّ» عن «انقل الملفّ إلى
+    # السلّة»؛ فعلان لصاحبين، ولا يُنفَّذ أحدهما بأثرٍ جانبيّ للآخر.
+    source_file_id: uuid.UUID | None = None
+
+    # ── الأفعال: قرارٌ واحد يُحسب في الخادم ──
+    actions: ThesisCardActions
+
+
+# ── إزالةُ الرسالة: معاينةُ التبعات ثم القرار ──
+
+class RemovalDependency(BaseModel):
+    key: str
+    label: str
+    count: int
+    #: هل تمنع هذه التبعة الإزالة — أثرُ حكمٍ بشريٍّ يمنع، ومخرجُ آلةٍ لا يمنع.
+    blocking: bool
+
+
+class RemovalPreviewResponse(BaseModel):
+    """**ما يقوم على الرسالة، قبل الإزالة لا بعدها.**"""
+
+    thesis_id: uuid.UUID
+    removable: bool
+    dependencies: list[RemovalDependency]
+    blocking: list[RemovalDependency]
+    explanation: str
+    #: نقلُ ملفّ المكتبة إلى السلّة فعلٌ آخر — ومعرّفُه هنا ليُطلب صراحةً.
+    source_file_id: uuid.UUID | None = None
+    note_ar: str = (
+        "الإزالة تُسقط سجلّ مركز الرسائل ولا تمسّ ملفّ المكتبة، "
+        "ولا يُمحى كائنُ التخزين نهائيًّا في أيّ حال."
+    )
+    note_en: str = (
+        "Removal drops the Thesis Center record and does not touch the library file; "
+        "no stored object is ever permanently deleted."
+    )
+
+
+class RemovalResponse(BaseModel):
+    thesis_id: uuid.UUID
+    removed: bool
+    #: ما أُسقط معها من مخرجات الآلة — يُقال بالعدد لا يُترك يُخمَّن.
+    dropped: dict[str, int]
+    audit_preserved: bool = True
+    note_ar: str = "سجلّ التدقيق يبقى كاملًا بعد الإزالة."
+    note_en: str = "The audit history stays complete after removal."
+
 
 class ParseResponse(BaseModel):
     thesis_id: uuid.UUID
@@ -120,6 +205,10 @@ class MineResponse(BaseModel):
     opportunities_created: int
     kinds: list[str]
     aging: AgingResponse
+    #: **ما اقترحه المنقّب ووُجد مثلُه قائمًا فلم يُكتب ثانيةً.** بدونه تُقرأ
+    #: التشغيلة الثانية «٠ فرص» فيُظنّ أنّ المنقّب لم يجد شيئًا — وهو وجد
+    #: ما كان موجودًا. والتنقيب مُعادٌ بلا أثر، لا مُلغًى.
+    opportunities_already_present: int = 0
     note_ar: str = "الفرص مقترحات مؤصَّلة في عناصر الرسالة، ولا تتقدم بلا اعتماد الحقوق."
     note_en: str = "Opportunities are grounded proposals; none advances without rights approval."
 

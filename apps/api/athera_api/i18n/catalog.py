@@ -516,6 +516,15 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     "thesis.unknown_view": {
         "ar": "خيار العرض غير معروف.", "en": "Unknown listing view.",
     },
+    # **الرفض يُقال بسببه، ولا يُستبدل بحذفٍ متسلسلٍ صامت.** ما بُني على
+    # الرسالة قرارُ إنسان — فرصةُ نشر، اتفاقُ تأليف، اعتمادُ حقوق، مشروعٌ
+    # محوَّل — وإسقاطُ أصله يمحوه أو يقطع صلتَه به، وكلاهما لا يُستعاد.
+    "thesis.removal_blocked": {
+        "ar": "لا تُزال هذه الرسالة: يقوم عليها عملٌ علميٌّ حسمتَه بنفسك. "
+              "المعاينة تذكر ما بُني عليها بالاسم والعدد.",
+        "en": "This thesis cannot be removed: scientific work you decided on rests on it. "
+              "The preview names and counts what was built on it.",
+    },
     "publishing.manuscript_not_found": {
         "ar": "المخطوطة غير موجودة.", "en": "Manuscript not found.",
     },
