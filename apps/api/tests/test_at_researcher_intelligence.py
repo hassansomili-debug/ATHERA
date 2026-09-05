@@ -461,6 +461,30 @@ def test_every_new_table_enables_and_forces_row_level_security():
         f"{set(NEW_TABLES).symmetric_difference(guarded)}")
 
 
+def test_no_constraint_name_is_long_enough_to_be_truncated():
+    """**اسمٌ يُقصّ يصير اسمًا لا يعرفه أحد.**
+
+    وPostgreSQL يقف عند ٦٣ محرفًا، وSQLAlchemy يقصّ ما جاوزها ويُلحق بصمةً
+    مُجزَّأة: `..._confirmed_state_is_a_c_1a58`. فالاسمُ الذي يُكتب في
+    القاعدة ليس الاسمَ الذي في الشيفرة، وأوّلُ `DROP CONSTRAINT` بالاسم
+    يسقط على اسمٍ لا وجود له — وهو العطبُ الذي وقع في 0017 من قبل.
+
+    وقد وقع فعلًا في أوّل صياغةٍ لهذه الموجة، فكُتب هذا الحارس.
+    """
+    from athera_api.models.base import Base
+
+    limit = 63
+    offenders: list[str] = []
+    for table_name in NEW_TABLES:
+        table = Base.metadata.tables[table_name]
+        for constraint in (*table.constraints, *table.indexes):
+            name = str(constraint.name)
+            if len(name) > limit:
+                offenders.append(f"{name} ({len(name)} > {limit})")
+
+    assert not offenders, "اسمُ قيدٍ يُقصّ صامتًا: " + " · ".join(offenders)
+
+
 def test_the_downgrade_refuses_to_erase_a_human_decision():
     """التنازلُ يرفض ولا يمحو قرارًا نسبه الباحثُ إلى نفسه."""
     downgrade = _migration_text().split("def downgrade()", 1)[1]

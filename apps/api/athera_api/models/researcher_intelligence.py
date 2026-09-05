@@ -123,7 +123,7 @@ class ResearcherProfileCandidate(Base, TenantScoped, Timestamped):
         # فلا يصير صفٌّ «مؤكَّدًا» في عمودٍ ومقترحًا في الآخر.
         CheckConstraint(
             "(profile_state = 'confirmed') = (status = 'confirmed')",
-            name="confirmed_state_is_a_confirmed_decision",
+            name="state_matches_status",
         ),
     )
 
@@ -229,7 +229,7 @@ class ResearchStrategy(Base, TenantScoped, Timestamped):
         # اتُّخذ ولم يُتَّخذ.
         CheckConstraint(
             "approved_at IS NULL OR status IN ('approved', 'superseded')",
-            name="only_a_decided_strategy_carries_an_approval",
+            name="approval_only_when_decided",
         ),
         CheckConstraint(
             "(status = 'superseded') = (superseded_by IS NOT NULL)",

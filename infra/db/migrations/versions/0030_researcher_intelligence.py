@@ -188,7 +188,7 @@ def upgrade() -> None:
         sa.CheckConstraint("(decided_by IS NULL) = (decided_at IS NULL)",
                            name="decision_has_a_time"),
         sa.CheckConstraint("(profile_state = 'confirmed') = (status = 'confirmed')",
-                           name="confirmed_state_is_a_confirmed_decision"),
+                           name="state_matches_status"),
     )
     op.create_index("ix_researcher_profile_candidates_tenant_id",
                     "researcher_profile_candidates", ["tenant_id"])
@@ -269,7 +269,7 @@ def upgrade() -> None:
         sa.CheckConstraint("status <> 'approved' OR approved_at IS NOT NULL",
                            name="approved_carries_its_time"),
         sa.CheckConstraint("approved_at IS NULL OR status IN ('approved', 'superseded')",
-                           name="only_a_decided_strategy_carries_an_approval"),
+                           name="approval_only_when_decided"),
         sa.CheckConstraint("(status = 'superseded') = (superseded_by IS NOT NULL)",
                            name="superseded_names_its_successor"),
     )
