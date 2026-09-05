@@ -149,11 +149,18 @@ async def _one_member_and_agreement(engine):
             "VALUES (:i, :t, :p, 'independent_question', 'extraction', "
             "'فرصةُ النافذة')"),
             {"i": opportunity, "t": tenant, "p": project})
+        # وطرفُ التأليف صفٌّ قائم كذلك — و`party_kind` من مفرداته
+        # المسجَّلة (`person`/`organization`) لا من عندي.
+        party = uuid.uuid4()
+        await conn.execute(text(
+            "INSERT INTO authorship_parties (id, tenant_id, party_kind, "
+            "display_name) VALUES (:i, :t, 'person', 'د. فلان')"),
+            {"i": party, "t": tenant})
         await conn.execute(text(
             "INSERT INTO authorship_agreements (id, tenant_id, opportunity_id, "
             "party_id, author_position, consent_status) "
             "VALUES (:i, :t, :o, :y, 1, 'pending')"),
-            {"i": agreement, "t": tenant, "o": opportunity, "y": uuid.uuid4()})
+            {"i": agreement, "t": tenant, "o": opportunity, "y": party})
     return member, agreement
 
 
