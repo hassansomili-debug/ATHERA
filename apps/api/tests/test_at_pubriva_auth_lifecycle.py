@@ -245,12 +245,33 @@ def test_no_acceptance_step_can_be_silently_skipped():
 
 
 def test_navigation_links_are_scoped_to_their_landmark():
-    """«اضغط الرابط» ليست تعليمة كافية حين يوجد رابطان بالاسم نفسه."""
+    """«اضغط الرابط» ليست تعليمة كافية حين يوجد رابطان بالاسم نفسه.
+
+    **والاسمُ يُقرأ من الكتالوج لا يُكتب هنا.** كان هذا الحارس يثبّت
+    «الرئيسية» اسمًا للمَعْلَم، وتلك نصُّ رابط الصفحة الأولى؛ واسمُ
+    المَعْلَم `nav.primaryLabel` أي «التنقّل الرئيسي». فحرس الحارسُ الخطأ
+    نفسه: بقي المُحدِّد لا يطابق شيئًا، وانتظر رحلةُ القبول ربعَ ساعةٍ
+    عند كل ضغطة، ثمّ اتُّهم بها الإنتاج.
+
+    فيُشتقّ الاسمُ الآن من مصدره. ولو أُعيد النصُّ القديم لسقط هذا الفحص.
+    """
+    import json as _json
+
     spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
     for ambiguous in ('page.getByRole("link", { name: "مكتبتي" })',
                       'page.getByRole("link", { name: "أبحاثي" })'):
         assert ambiguous not in spec, f"رابط تنقّل بلا موضع: {ambiguous}"
-    assert 'getByRole("navigation", { name: "الرئيسية", exact: true })' in spec
+
+    catalogue = _json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
+    landmark = catalogue["nav"]["primaryLabel"]
+    assert 'getByRole("navigation", { name: PRIMARY_NAV, exact: true })' in spec, (
+        "روابطُ التنقّل لا تُطلب داخل مَعْلَمها")
+    assert f'"{landmark}"' in spec, (
+        f"اسمُ المَعْلَم في الرحلة يخالف الكتالوج ({landmark!r})")
+
+    # **وضابطُ الجلسة خارج المَعْلَم بنيويًّا** — فلا يُطلب داخله.
+    assert 'getByRole("navigation"' not in spec.split("SIGN_OUT", 1)[-1].split(
+        "click(", 1)[0], "زرُّ الخروج يُطلب داخل التنقّل وهو خارجه"
 
 
 # ══════════ ٨. التحميل ليس فراغًا ولا عطبًا ══════════
