@@ -818,8 +818,14 @@ h2.nav-label { line-height: 1.6; }
  * وزرَّه شيئًا واحدًا — ويبقى الزرُّ في ترتيب الجدولة بعد الحقل مباشرة.
  */
 .field-reveal { display: flex; align-items: stretch; gap: 0; max-inline-size: 100%; }
+/*
+ * **`flex-basis: 0` لا `auto`.** الحقلُ النصّي يحمل عرضًا ذاتيًّا (نحو
+ * مئتي بكسل من `size=20`)، و`auto` تجعل ذلك العرضَ أساسَ التوزيع — فيأخذ
+ * الحقلُ الصفَّ كلَّه ويُدفع الزرُّ خارج الحافة. والأساسُ صفرًا يجعل
+ * الحقلَ يأخذ ما يبقى بعد الزرّ لا قبله، فلا يتجاوز الصفُّ حاويَه مهما ضاق.
+ */
 .field-reveal input {
-  flex: 1 1 auto; min-inline-size: 0;
+  flex: 1 1 0; min-inline-size: 0; inline-size: auto;
   border-start-end-radius: 0; border-end-end-radius: 0;
   border-inline-end: none;
 }

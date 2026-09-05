@@ -105,11 +105,34 @@ async function stubApi(page: Page) {
   });
 }
 
-/** تمريرٌ أفقيّ للمستند — واحدُ بكسلٍ يُغتفر للتقريب. */
-async function sidewaysOverflow(page: Page): Promise<number> {
-  return page.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-  );
+/**
+ * تمريرٌ أفقيّ للمستند — واحدُ بكسلٍ يُغتفر للتقريب.
+ *
+ * **ويُسمّى الجاني.** أوّلُ صياغةٍ ردّت رقمًا وحده، فسقط الفحصُ يقول «مئةٌ
+ * وسبعةٌ وثلاثون بكسلًا» ولا يقول ممّ — فطُورد السببُ بالتخمين دورتين.
+ * والرقمُ يقيس، والاسمُ يشخّص؛ ولا يكلّف الثاني شيئًا حين يكون الأول
+ * محسوبًا أصلًا. **والحدُّ لم يتغيّر**: ما تغيّر أنّ الفشل صار مقروءًا.
+ */
+async function sidewaysOverflow(
+  page: Page,
+): Promise<{ overflow: number; culprits: string[] }> {
+  return page.evaluate(() => {
+    const root = document.documentElement;
+    const overflow = root.scrollWidth - root.clientWidth;
+    const limit = root.clientWidth;
+    const culprits = [...document.querySelectorAll<HTMLElement>("body *")]
+      .map((node) => ({ node, box: node.getBoundingClientRect() }))
+      .filter(({ box }) => box.width > 0 && (box.right > limit + 1 || box.left < -1))
+      .slice(0, 6)
+      .map(({ node, box }) => {
+        const name = node.tagName.toLowerCase();
+        const cls = node.className && typeof node.className === "string"
+          ? `.${node.className.trim().split(/\s+/).join(".")}`
+          : "";
+        return `${name}${cls} [${Math.round(box.left)}…${Math.round(box.right)}]`;
+      });
+    return { overflow, culprits };
+  });
 }
 
 // ══════════════ ١. الموقع العام: يُقرأ بلا حساب، وباللغتين ══════════════
@@ -272,7 +295,7 @@ test.describe("the auth pages carry no product sidebar", () => {
 
     const step = page.getByTestId("login-mfa-step");
     await expect(step).toHaveCount(0);
-    await expect(page.getByLabel("رمز التحقق بخطوتين")).toHaveCount(0);
+    await expect(page.getByLabel("رمز التحقق بخطوتين", { exact: true })).toHaveCount(0);
 
     // الخادمُ يقول: لهذا الحساب عاملٌ ثانٍ، وما وصل لا يكفي.
     await page.route("**/api/v1/auth/login", (route: Route) =>
@@ -299,13 +322,19 @@ test.describe("the auth pages carry no product sidebar", () => {
       }),
     );
 
-    await page.getByLabel("البريد الإلكتروني").fill("brand-spec@example.test");
-    await page.getByLabel("كلمة المرور").fill("not-a-real-password");
+    /**
+     * **`getByLabel` يطابق جزءًا من الاسم لا كلَّه.** ولمّا صار اسمُ زرّ
+     * الكشف «أظهِر كلمة المرور» صار يطابق «كلمة المرور» أيضًا، فسقط الفحص
+     * بـstrict mode — **وهو محقّ**: «املأ الحقل» ليست تعليمةً كافية حين
+     * يوجد عنصران بالاسم. فيُطلب التطابقُ التامّ.
+     */
+    await page.getByLabel("البريد الإلكتروني", { exact: true }).fill("brand-spec@example.test");
+    await page.getByLabel("كلمة المرور", { exact: true }).fill("not-a-real-password");
     await page.getByRole("button", { name: "دخول", exact: true }).click();
 
     // ثمّ — وعندها وحدها — تُفتح الخطوة.
     await expect(step).toBeVisible();
-    await expect(page.getByLabel("رمز التحقق بخطوتين")).toBeVisible();
+    await expect(page.getByLabel("رمز التحقق بخطوتين", { exact: true })).toBeVisible();
   });
 });
 
@@ -581,9 +610,12 @@ test.describe("390px: no shell scrolls the document sideways", () => {
       await page.setViewportSize(PHONE);
       await page.goto(path);
       await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+      const { overflow, culprits } = await sidewaysOverflow(page);
       expect(
-        await sidewaysOverflow(page),
-        `the document scrolls sideways on a phone at ${path}`,
+        overflow,
+        `the document scrolls sideways on a phone at ${path} — widest offenders: ${
+          culprits.join(" | ") || "none identified"
+        }`,
       ).toBeLessThanOrEqual(1);
     });
   }
@@ -594,7 +626,8 @@ test.describe("390px: no shell scrolls the document sideways", () => {
     await page.setViewportSize(PHONE);
     await page.goto(`/${AR}`);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-    expect(await sidewaysOverflow(page)).toBeLessThanOrEqual(1);
+    const { overflow, culprits } = await sidewaysOverflow(page);
+    expect(overflow, `widest offenders: ${culprits.join(" | ")}`).toBeLessThanOrEqual(1);
   });
 });
 
