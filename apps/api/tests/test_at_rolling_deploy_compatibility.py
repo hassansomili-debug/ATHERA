@@ -17,7 +17,7 @@
 """
 from __future__ import annotations
 
-import datetime as dt
+import os
 import pathlib
 import re
 import uuid
@@ -92,98 +92,114 @@ def test_legacy_rows_are_never_called_self_consent():
     assert "consent_evidence" not in repair, "الترميم يختلق سندًا"
 
 
-# ═════════════════ ٢. النافذةُ نفسها، على قاعدةٍ حقيقية ═════════════════
+# ═════════════════ ٢. النافذةُ نفسها، على قاعدتين ═════════════════
+#
+# **ولا تُقاس النافذةُ على رأس السلسلة.** قاعدةُ الاختبارات تُرحَّل إلى
+# `0029` حيث العقدُ مفروض، فالكتابةُ القديمة تُرفض فيها — وذاك صوابٌ لا
+# عطب. فتُبنى قاعدةٌ ثالثة تقف عند `0028` بعينها، وتُقاس عليها.
+#
+# والعبارةُ المستعملة هي عبارةُ الخادم القديم حرفيًّا كما التقطها المشغّل:
+#
+#     UPDATE project_members SET consent_recorded_at=$1, updated_at=now()
+#      WHERE project_members.id = $2
+#
+# ولا تُستعمل نماذجُ الموجة هنا عمدًا: هي تحمل أعمدةً لم يكن الخادمُ
+# القديم يعرفها، فالكتابةُ بها ليست كتابته.
 
-def _old_api_member_consent(member) -> None:
-    """كتابةُ الخادم القديم حرفيًّا — `routers/team.py:156` وحده."""
-    member.consent_recorded_at = dt.datetime.now(dt.UTC)
+EXPAND_URL = os.environ.get("ATHERA_EXPAND_SCHEMA_URL", "")
+requires_expand_db = pytest.mark.skipif(
+    not EXPAND_URL, reason="قاعدةُ نافذة النشر (0028) غير مهيّأة")
 
-
-@requires_db
-@pytest.mark.asyncio
-async def test_the_old_api_can_still_record_member_consent_on_the_expanded_schema(
-    two_tenants,
-):
-    """**الخاصّيّةُ التي وُجدت التوسعةُ لأجلها.**
-
-    خادمٌ قديم، مخطَّطٌ جديد، وموافقةٌ تُسجَّل بوقتٍ بلا طريقة. لو رفضتها
-    القاعدةُ لسقطت كلُّ موافقةٍ بين الترحيل والنشر.
-    """
-    from sqlalchemy import select
-
-    from athera_api.db import tenant_session
-    from athera_api.models.portfolio import ProjectMember, ResearchProject
-
-    a = two_tenants["a"]
-    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
-        project = ResearchProject(
-            tenant_id=a["tenant_id"], working_title_ar="مشروعُ نافذةِ النشر",
-            status="planned", current_gate="G1")
-        session.add(project)
-        await session.flush()
-
-        member = ProjectMember(
-            tenant_id=a["tenant_id"], project_id=project.id,
-            display_name="د. فلان", role="co_author")
-        session.add(member)
-        await session.flush()
-
-        _old_api_member_consent(member)
-        await session.flush()          # لو فُرض العقد هنا لسقط هذا السطر
-
-        stored = (await session.execute(
-            select(ProjectMember).where(ProjectMember.id == member.id)
-        )).scalar_one()
-        assert stored.consent_recorded_at is not None
-        assert stored.consent_method is None, (
-            "الخادمُ القديم لا يكتب طريقةً — والعمودُ يجب أن يبقى فارغًا")
+OLD_MEMBER_CONSENT = (
+    "UPDATE project_members SET consent_recorded_at = now(), updated_at = now() "
+    "WHERE id = :member_id")
+OLD_AGREEMENT_CONSENT = (
+    "UPDATE authorship_agreements SET consent_status = 'granted', "
+    "consent_recorded_at = now(), updated_at = now() WHERE id = :agreement_id")
 
 
-@requires_db
-@pytest.mark.asyncio
-async def test_the_old_api_can_still_record_authorship_consent_on_the_expanded_schema(
-    two_tenants,
-):
-    """والمسارُ الثاني: `services/thesis/rights.py:190` — الوقتُ والحال."""
-    from athera_api.db import tenant_session
-    from athera_api.models.thesis import AuthorshipAgreement
-
-    a = two_tenants["a"]
-    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
-        agreement = AuthorshipAgreement(
-            tenant_id=a["tenant_id"], opportunity_id=uuid.uuid4(),
-            party_id=uuid.uuid4(), author_position=1,
-            consent_status="granted",
-            consent_recorded_at=dt.datetime.now(dt.UTC))
-        session.add(agreement)
-        try:
-            await session.flush()
-        except Exception as exc:                       # pragma: no cover
-            if "consent_has_a_method" in str(exc):
-                pytest.fail("العقدُ مفروضٌ في التوسعة — النافذةُ قاتلة")
-            pytest.skip(f"سياقٌ ناقص لا علاقة له بالعقد: {type(exc).__name__}")
-        assert agreement.consent_method is None
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_the_contract_expression_would_reject_the_window_row(two_tenants):
-    """**وحارسٌ لا يسقط أبدًا ليس حارسًا.**
-
-    يُقاس التعبيرُ نفسه على صفّ النافذة: يجب أن يرفضه — وإلّا فالتأجيلُ
-    كلُّه بلا موجب، والفحصُ أعلاه يمرّ على لا شيء.
-    """
+async def _one_member_and_agreement(engine):
+    """يزرع صفَّين بالحدّ الأدنى، بـSQL خام — لا نموذجَ موجةٍ في الطريق."""
     from sqlalchemy import text
 
-    from athera_api.db import tenant_session
+    tenant, project = uuid.uuid4(), uuid.uuid4()
+    member, agreement = uuid.uuid4(), uuid.uuid4()
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+        await conn.execute(text(
+            "INSERT INTO tenants (id, slug, name_ar, name_en) "
+            "VALUES (:i, :s, 'نافذة', 'Window')"),
+            {"i": tenant, "s": f"window-{tenant.hex[:8]}"})
+        await conn.execute(text(
+            "INSERT INTO research_projects (id, tenant_id, working_title_ar, "
+            "status, current_gate) VALUES (:i, :t, 'مشروع النافذة', 'planned', 'G1')"),
+            {"i": project, "t": tenant})
+        await conn.execute(text(
+            "INSERT INTO project_members (id, tenant_id, project_id, display_name, role) "
+            "VALUES (:i, :t, :p, 'د. فلان', 'co_author')"),
+            {"i": member, "t": tenant, "p": project})
+        await conn.execute(text(
+            "INSERT INTO authorship_agreements (id, tenant_id, opportunity_id, "
+            "party_id, author_position, consent_status) "
+            "VALUES (:i, :t, :o, :y, 1, 'pending')"),
+            {"i": agreement, "t": tenant, "o": uuid.uuid4(), "y": uuid.uuid4()})
+    return member, agreement
 
-    a = two_tenants["a"]
-    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
-        verdict = (await session.execute(text(
-            "SELECT (now() IS NULL) = (NULL IS NULL) AS holds"
-        ))).scalar_one()
-        assert verdict is False, (
-            "تعبيرُ العقد يقبل صفَّ النافذة — فلا معنى لتأجيله")
+
+@requires_expand_db
+@pytest.mark.asyncio
+async def test_the_old_api_can_still_write_consent_on_the_expanded_schema():
+    """**الخاصّيّةُ التي وُجدت التوسعةُ لأجلها — OLD API + 0028.**
+
+    لو سقطت هذه، لسقط كلُّ تسجيل موافقةٍ بين ترحيل الإنتاج ونشر الموجة.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(EXPAND_URL, poolclass=None)
+    try:
+        member, agreement = await _one_member_and_agreement(engine)
+        async with engine.begin() as conn:
+            await conn.execute(text(OLD_MEMBER_CONSENT), {"member_id": member})
+            await conn.execute(text(OLD_AGREEMENT_CONSENT),
+                               {"agreement_id": agreement})
+        async with engine.connect() as conn:
+            method = (await conn.execute(text(
+                "SELECT consent_method FROM project_members WHERE id = :i"),
+                {"i": member})).scalar_one()
+            assert method is None, "الخادمُ القديم لا يكتب طريقة"
+    finally:
+        await engine.dispose()
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_same_write_is_refused_once_the_contract_lands(db_ready):
+    """**والحارسُ يبين بطرفيه.** ما يُقبل على 0028 يُرفض على 0029.
+
+    ولولا هذا الطرف لكان الفحصُ أعلاه يمرّ على قاعدةٍ بلا عقدٍ أصلًا، ولا
+    يثبت أنّ التأجيل كان له موجب.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from athera_api.db import SessionFactory, system_session
+
+    async with system_session() as session:
+        head = (await session.execute(text(
+            "SELECT version_num FROM alembic_version"))).scalar_one()
+    if head != "0029":
+        pytest.skip(f"قاعدةُ الاختبارات عند {head}، والعقدُ يُفرض في 0029")
+
+    async with SessionFactory() as session:
+        member, _ = await _one_member_and_agreement(session.bind)
+
+    with pytest.raises(IntegrityError) as caught:
+        async with SessionFactory() as session, session.begin():
+            await session.execute(text(OLD_MEMBER_CONSENT), {"member_id": member})
+    assert "consent_has_a_method" in str(caught.value), (
+        "رُفضت الكتابةُ لسببٍ آخر — فالفحصُ لا يثبت العقد")
 
 
 def test_the_migration_chain_ends_at_the_contract():

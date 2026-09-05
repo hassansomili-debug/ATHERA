@@ -31,6 +31,14 @@ jobs:
       # تحويلها إلى «مرفوض» إتلافُ قرار بشري. فالعطب في عزل التدريب لا في
       # الحارس، وإصلاحه بإضعاف الحارس كان سيبدّد الضمان الذي وُجد لأجله.
       MIGRATION_DRILL_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera_migration
+      # ── قاعدةُ نافذة النشر: تقف عند 0028 عمدًا ──
+      #
+      # بين ترحيل الإنتاج ونشر الموجة يخدم الخادمُ القديم مخطَّط 0028.
+      # وقاعدةُ الاختبارات تُرحَّل إلى الرأس (0029) حيث العقدُ مفروض، فلا
+      # تصلح لإثبات تلك النافذة — تُثبت عكسها. فقاعدةٌ ثالثة تقف حيث تقف
+      # النافذة، ويُقاس عليها ما يكتبه الخادمُ القديم حرفيًّا.
+      ATHERA_EXPAND_SCHEMA_URL: postgresql+asyncpg://athera_app:athera_app_pw@localhost:5432/athera_expand
+      ATHERA_EXPAND_MIGRATION_URL: postgresql+psycopg://athera_owner:athera_owner_pw@localhost:5432/athera_expand
       # دورُ اختبارٍ **يتجاوز RLS عمدًا** — في قاعدة الاختبار وحدها.
       #
       # كل الاختبارات كانت تعمل بـ`athera_app` الذي لا يتجاوز، فكانت القاعدة
@@ -104,6 +112,33 @@ jobs:
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
           echo "public tables in athera_migration: $tables"
           test "$tables" = "0" || { echo "::error::drill database is not clean"; exit 1; }
+
+      # ── قاعدةُ النافذة: 0028 بلا 0029 ──
+      - name: Build the expand-window database (stops at 0028)
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          psql -h localhost -U athera_owner -d postgres \
+            -c 'DROP DATABASE IF EXISTS athera_expand' \
+            -c 'CREATE DATABASE athera_expand'
+
+      - name: Migrate the expand-window database to 0028 exactly
+        env:
+          DATABASE_MIGRATION_URL: ${{ env.ATHERA_EXPAND_MIGRATION_URL }}
+        run: |
+          cd infra/db && alembic upgrade 0028
+          head=$(alembic current 2>/dev/null | grep -oE '[0-9]{4}' | tail -1)
+          echo "expand-window head: '$head' · required: '0028'"
+          test "$head" = "0028" || { echo "::error::window database is not at 0028"; exit 1; }
+
+      - name: Grant the runtime role on the expand-window database
+        env:
+          PGPASSWORD: athera_owner_pw
+        run: |
+          psql -h localhost -U athera_owner -d athera_expand -v ON_ERROR_STOP=1 \
+            -c "GRANT USAGE ON SCHEMA public TO athera_app" \
+            -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO athera_app" \
+            -c "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO athera_app"
 
       - name: Migration roundtrip drill (AT-S0-13) — head → base → head
         env:
