@@ -181,3 +181,46 @@ def test_the_pinned_exception_is_only_the_window():
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     pinned = {m for m in re.findall(r'=\s*"(0\d{3})"', workflow)}
     assert pinned <= {"0028"}, f"أرقامٌ مثبَّتة خارج النافذة: {sorted(pinned)}"
+
+
+def test_the_rc_head_pin_says_one_number_and_it_is_the_chain_head():
+    """**ودليلٌ يناقض شرطَه أسوأ من غياب الدليل.**
+
+    خطوةُ RC تُثبّت رأسَ السلسلة نصًّا **عن قصد** (السؤال: أهذه بيئةُ
+    الموجة المتوقَّعة؟ وجوابُه رقمٌ مُعلَن لا «أيًّا كان رأسُ اليوم»). لكنّ
+    الرقم مكتوبٌ أربع مرّات: في اسم الخطوة، وفي الشرط، وفي سطر السجلّ، وفي
+    نصّ الخطأ. ومن حدّث بعضَها ونسي بعضًا أنتج مخرَجًا يقول «required: 0029»
+    بينما الشرطُ يقيس غيرَه — وقد وقع هذا مرّتين: عند 0028←0029، ثمّ عند
+    0029←0030.
+
+    فيُطلب أمران: أن يقول الموضعُ رقمًا **واحدًا**، وأن يكون ذلك الرقمُ رأسَ
+    السلسلة فعلًا — إذ الخطوةُ تلي `alembic upgrade head`، فرقمٌ يخالف الرأسَ
+    يجعلها ترفض كلَّ تشغيلةٍ إلى الأبد.
+
+    **ولا يُشتقّ الرقمُ في المشغّل** — يبقى مكتوبًا هناك صريحًا كما قُصد،
+    وهذا الحارسُ وحده يسأل: أهو الرقمُ الصحيح، وأهو واحد.
+    """
+    import re
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "rc-e2e.yml").read_text(
+        encoding="utf-8")
+    marker = "Assert the schema head is exactly"
+    assert marker in workflow, "خطوةُ تثبيت الرأس في RC اختفت — والحارسُ بلا هدف"
+
+    step = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0]
+    stated = set(re.findall(r"\b0\d{3}\b", step))
+    assert len(stated) == 1, (
+        f"الخطوةُ تذكر أكثر من رقم — الدليلُ يناقض الشرط: {sorted(stated)}")
+
+    versions = REPO_ROOT / "infra" / "db" / "migrations" / "versions"
+    revisions, downs = set(), set()
+    for path in versions.glob("0*.py"):
+        source = path.read_text(encoding="utf-8")
+        revisions.add(re.search(r'^revision = "([^"]+)"', source, re.M).group(1))
+        downs.add(
+            re.search(r'^down_revision = "?([^"\n]+)"?', source, re.M).group(1))
+    heads = revisions - downs
+
+    assert heads == stated, (
+        f"RC يُثبّت {sorted(stated)} ورأسُ السلسلة {sorted(heads)} — "
+        "الخطوةُ سترفض كلَّ تشغيلة")

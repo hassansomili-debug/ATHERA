@@ -87,7 +87,8 @@ function groups(t: (key: string) => string): NavGroup[] {
           label: t("nav.settings"),
           segment: "settings",
           // ما تُفتح من الإعدادات يبقى منسوبًا إليها — بما فيه حالُ التشغيل.
-          owns: ["profile", "facts", "memory", "agents", "traces", "audit"],
+          owns: ["researcher-profile", "research-goals", "profile", "facts",
+                 "memory", "agents", "traces", "audit"],
         },
       ],
     },

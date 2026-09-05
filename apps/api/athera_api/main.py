@@ -33,6 +33,7 @@ from .routers import planning as planning_router
 from .routers import portfolio as portfolio_router
 from .routers import profile as profile_router
 from .routers import project_management as project_management_router
+from .routers import researcher as researcher_router
 from .routers import publishing as publishing_router
 from .routers import settings as settings_router
 from .routers import team as team_router
@@ -175,3 +176,4 @@ app.include_router(trends_router.router)
 app.include_router(synthesis_router.router)
 app.include_router(workspace_router.router)
 app.include_router(project_management_router.router)
+app.include_router(researcher_router.router)

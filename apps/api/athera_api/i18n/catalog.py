@@ -228,6 +228,46 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "مسار المصدر لا يسمح بترقية هذه المعلومة إلى ذاكرة موثقة.",
         "en": "This source path does not permit promotion to verified memory.",
     },
+    # ── ذكاءُ الباحث، الموجة الثانية ──
+    #
+    # ورسالةُ ORCID تقول ما وقع بالضبط: **صيغةٌ** لم تصحّ. ولا تقول
+    # «لم يُوثَّق»، لأنّ التوثيق لم يُطلب أصلًا ولم يُدَّعَ (§6).
+    "researcher.orcid_malformed": {
+        "ar": "صيغة معرّف ORCID غير صحيحة — يُتوقّع ١٦ رقمًا على هيئة 0000-0000-0000-0000.",
+        "en": "The ORCID identifier is malformed — 16 digits are expected, as 0000-0000-0000-0000.",
+    },
+    "researcher.orcid_checksum_failed": {
+        "ar": "خانة التدقيق في معرّف ORCID لا تطابق أرقامه. وهذا فحصُ صيغةٍ لا توثيقَ ملكية.",
+        "en": "The ORCID check digit does not match. This is a format check, not proof of ownership.",
+    },
+    "researcher.candidate_not_found": {
+        "ar": "لا مرشّح بهذا المعرّف في ملفّك.",
+        "en": "No candidate with this identifier exists in your profile.",
+    },
+    "researcher.candidate_already_decided": {
+        "ar": "هذا المرشّح قُرّر من قبل، ولا يُقرّر مرتين.",
+        "en": "This candidate was already decided, and is not decided twice.",
+    },
+    "researcher.candidate_field_unknown": {
+        "ar": "هذا الحقل ليس من حقول الملفّ التي يجوز تأكيدها.",
+        "en": "This field is not one of the profile fields that may be confirmed.",
+    },
+    "researcher.goal_not_found": {
+        "ar": "لا هدف بهذا المعرّف في ملفّك.",
+        "en": "No goal with this identifier exists in your profile.",
+    },
+    "researcher.constraint_not_found": {
+        "ar": "لا قيد بهذا المعرّف في ملفّك.",
+        "en": "No constraint with this identifier exists in your profile.",
+    },
+    "researcher.strategy_not_found": {
+        "ar": "لا استراتيجية بهذا المعرّف في ملفّك.",
+        "en": "No strategy with this identifier exists in your profile.",
+    },
+    "researcher.strategy_not_approvable": {
+        "ar": "لا تُعتمد إلا مسوّدة أو استراتيجية قيد المراجعة. والمعتمَدة لا تُعدَّل — التغيير يُنشئ إصدارًا تاليًا.",
+        "en": "Only a draft or a strategy under review can be approved. An approved strategy is immutable — a change creates the next version.",
+    },
     "memory.promotion_denied": {
         "ar": "تعذّرت ترقية المعلومة إلى ذاكرة موثقة.",
         "en": "The information could not be promoted to verified memory.",

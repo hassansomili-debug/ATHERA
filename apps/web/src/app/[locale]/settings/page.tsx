@@ -43,6 +43,8 @@ interface Notification {
 
 /** الحساب: ما يخص هوية الباحث وذاكرته الموثقة. */
 const ACCOUNT_LINKS = [
+  { key: "nav.researcherProfile", path: "researcher-profile", hint: "settings.researcherProfileHint" },
+  { key: "nav.researchGoals", path: "research-goals", hint: "settings.researchGoalsHint" },
   { key: "nav.profile", path: "profile", hint: "settings.profileHint" },
   { key: "nav.facts", path: "facts", hint: "settings.factsHint" },
   { key: "nav.memory", path: "memory", hint: "settings.memoryHint" },

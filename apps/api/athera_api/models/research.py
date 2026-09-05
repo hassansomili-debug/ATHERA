@@ -80,6 +80,33 @@ class ResearcherProfile(Base, TenantScoped, Timestamped):
     excluded_topics: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     future_interests: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
+    # ── الموجة الثانية (§4) — إضافاتٌ لا تُنشئ ملفًّا ثانيًا ──
+    #
+    # كلُّها إمّا قابلةٌ للعدم وإمّا ذاتُ قيمةٍ افتراضية في الخادم، فالخادمُ
+    # القديم يكتب صفوفَه بلا علمٍ بها ولا يسقط. وهذا شرطُ النشر المتدحرج.
+    country: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # §8 — أربعةُ مفاهيمَ لا مفهومٌ واحد. أعمدةٌ منفصلة لأنّ دمجَها في عمودٍ
+    # واحد هو بعينه العطبُ الذي تحرسه الوثيقة: من بدّل لغةَ الشاشة بدّل
+    # هدفَ نشره بغير قصده.
+    preferred_research_languages: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    preferred_working_language: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    preferred_manuscript_language: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    ai_response_language: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
+    # §6 — الصيغةُ الصحيحة ليست توثيقًا. رقمٌ سليمُ البنية يبقى
+    # `user_declared` حتى يقول مصدرٌ خارجيّ غيرَ ذلك.
+    orcid_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="unverified", default="unverified"
+    )
+    orcid_verified_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    orcid_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # كيف صار كلُّ حقلٍ إلى ما هو عليه: {field: {state, candidate_id, decided_at,
+    # decided_by}}. ليس حقلًا مُستنتَجًا يصير مرجعًا بذاته — بل أثرُ القرار
+    # الذي أدخل القيمة، وبه يُعرف المُصرَّحُ به من المؤكَّد من الموثَّق خارجيًّا.
+    field_provenance: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # بوابة G0 (§9) — الملف لا يُعتمد بمجرد اكتماله.
     g0_approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     g0_approved_by: Mapped[uuid.UUID | None] = mapped_column(
