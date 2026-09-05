@@ -1,19 +1,29 @@
+import {
+  GRADIENT,
+  NODES,
+  STROKE_WIDTH,
+  THREAD_PATH,
+  TONE_HEX,
+  VIEW_BOX,
+} from "@/lib/brandMarkGeometry";
+
 /**
  * علامةُ المنتج | The product mark — **خيطُ البحث**.
  *
  * الفكرةُ التي ترسمها العلامة هي دعوى المنتج نفسها: البحث خطٌّ واحد
- * متّصل، من المشكلة إلى النشر، تمرّ عليه عقدٌ يقف عندها الباحث ويقرّر.
- * فالرسم خطٌّ **واحد** لا ينقطع، يصعد ثمّ يلتفّ فيقرأ حرفَ الاسم الأول،
- * ثمّ يمضي إلى عقدةٍ أخيرة — هي النشر.
+ * متّصل، من السؤال إلى النشر، تمرّ عليه عقدٌ يقف عندها الباحث ويقرّر.
+ *
+ * **والهندسةُ ليست هنا.** كلُّ إحداثيّ يأتي من `@/lib/brandMarkGeometry`،
+ * وهو المصدرُ الذي تُشتقّ منه الصيغُ الأربع أيضًا. ومن كتب المسار هنا
+ * وكرّره في الملفّات افترق موضعان لا يلتقيان بعد أوّل تعديل.
  *
  * **ولا اسم مكتوبٌ في الرسم.** الاسم يُقرأ من كتالوج الرسائل ويُمرَّر
- * `label`؛ ومن كتبه في الشيفرة افترق موضعان لا يلتقيان بعد إعادة تسمية.
- * وحيث تُذكر العلامةُ بجانب الاسم مكتوبًا تُمرَّر بلا `label` — فتُخفى
- * عن قارئ الشاشة بدل أن تُقال مرّتين.
+ * `label`؛ وحيث تُذكر العلامةُ بجانب الاسم مكتوبًا تُمرَّر بلا `label` —
+ * فتُخفى عن قارئ الشاشة بدل أن تُقال مرّتين.
  *
- * والمعرّفات مُوسَّمة بـ`id` فريد: العلامةُ تظهر مرّتين في صفحةٍ واحدة
- * (الرأس والتذييل)، ومعرّفان متطابقان يجعلان الرسم الثاني يستعير تدرّج
- * الأول — وقد يختفي إن أُزيل الأول من الشجرة.
+ * والمعرّفات مُوسَّمة بـ`idSuffix` فريد: العلامةُ تظهر مرّتين في صفحةٍ
+ * واحدة (الرأس والتذييل)، ومعرّفان متطابقان يجعلان الرسم الثاني يستعير
+ * تدرّج الأول — وقد يختفي إن أُزيل الأول من الشجرة.
  */
 export function BrandMark({
   label,
@@ -33,7 +43,7 @@ export function BrandMark({
       className={className}
       width={size}
       height={size}
-      viewBox="0 0 48 48"
+      viewBox={VIEW_BOX}
       fill="none"
       role={label ? "img" : undefined}
       aria-hidden={label ? undefined : true}
@@ -41,35 +51,46 @@ export function BrandMark({
     >
       {label ? <title>{label}</title> : null}
       <defs>
-        <linearGradient id={gradient} x1="8" y1="44" x2="40" y2="6" gradientUnits="userSpaceOnUse">
-          <stop offset="0" style={{ stopColor: "var(--brand-indigo, #4B46A9)" }} />
-          <stop offset=".58" style={{ stopColor: "var(--brand-violet, #7867F2)" }} />
-          <stop offset="1" style={{ stopColor: "var(--brand-teal, #17BEBB)" }} />
+        <linearGradient
+          id={gradient}
+          x1={GRADIENT.x1}
+          y1={GRADIENT.y1}
+          x2={GRADIENT.x2}
+          y2={GRADIENT.y2}
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop
+            offset="0"
+            style={{ stopColor: `var(${GRADIENT.from}, ${GRADIENT.fromHex})` }}
+          />
+          <stop
+            offset="1"
+            style={{ stopColor: `var(${GRADIENT.to}, ${GRADIENT.toHex})` }}
+          />
         </linearGradient>
       </defs>
       {/*
-        الخيط: قدمٌ ثمّ صعودٌ ثمّ التفافٌ يقرأ الحرف، ثمّ امتدادٌ إلى النشر.
-        وهو مسارٌ واحد `stroke` لا شكلٌ ممتلئ — فيبقى مقروءًا عند ٱثني عشر
-        بكسلًا (الأيقونة) كما هو عند مئة.
+        الخيطُ مسارٌ `stroke` لا شكلٌ ممتلئ — فيبقى مقروءًا عند ستّة عشر
+        بكسلًا كما هو عند مئةٍ وستّين، ولا تنطبق حوافّه على بعضها.
       */}
       <path
-        d="M16 40V9c8.7 0 13.6 2.9 13.6 8.6 0 5.6-4.9 8.6-13.6 8.6"
+        d={THREAD_PATH}
         stroke={`url(#${gradient})`}
-        strokeWidth="4"
+        strokeWidth={STROKE_WIDTH}
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <path
-        d="M16 40h16"
-        stroke={`url(#${gradient})`}
-        strokeWidth="4"
-        strokeLinecap="round"
-      />
-      {/* العقد: مواضعُ القرار على الخيط. */}
-      <circle cx="16" cy="9" r="3.4" style={{ fill: "var(--brand-indigo, #4B46A9)" }} />
-      <circle cx="29.6" cy="17.6" r="3.1" style={{ fill: "var(--brand-violet, #7867F2)" }} />
-      <circle cx="16" cy="26.2" r="2.8" style={{ fill: "var(--brand-violet, #7867F2)" }} />
-      <circle cx="32" cy="40" r="3.6" style={{ fill: "var(--brand-teal, #17BEBB)" }} />
+      {NODES.map((node) => (
+        <circle
+          key={`${node.cx}-${node.cy}`}
+          cx={node.cx}
+          cy={node.cy}
+          r={node.r}
+          style={{
+            fill: `var(--brand-${node.tone}, ${TONE_HEX[node.tone]})`,
+          }}
+        />
+      ))}
     </svg>
   );
 }
