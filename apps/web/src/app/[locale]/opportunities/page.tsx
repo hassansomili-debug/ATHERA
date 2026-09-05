@@ -177,7 +177,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
                 <p
                   style={{
                     marginBlockStart: 8, paddingInlineStart: 12,
-                    borderInlineStart: "3px solid #b3261e", fontSize: 13, color: "#b3261e",
+                    borderInlineStart: "3px solid var(--state-conflict-ink)", fontSize: 13, color: "var(--state-conflict-ink)",
                   }}
                 >
                   {t("opportunities.salami")}
@@ -230,7 +230,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
                   >
                     <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
                       {pair.salami_alert ? (
-                        <span style={{ color: "#b3261e", fontWeight: 600 }}>
+                        <span style={{ color: "var(--state-conflict-ink)", fontWeight: 600 }}>
                           {t("opportunities.salami")}
                         </span>
                       ) : (
@@ -242,7 +242,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
                         key={dimension.dimension}
                         style={{
                           padding: "8px 12px",
-                          color: dimension.exceeds_threshold ? "#b3261e" : "var(--muted)",
+                          color: dimension.exceeds_threshold ? "var(--state-conflict-ink)" : "var(--muted)",
                           fontVariantNumeric: "tabular-nums",
                         }}
                       >

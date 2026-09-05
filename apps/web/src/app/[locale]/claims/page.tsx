@@ -33,8 +33,8 @@ interface ClaimRow {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  evidence_gap: "#b3261e",
-  contradicted: "#b3261e",
+  evidence_gap: "var(--state-conflict-ink)",
+  contradicted: "var(--state-conflict-ink)",
   supported: "var(--athera-teal)",
   final: "var(--athera-teal)",
   draft: "var(--muted)",
@@ -90,7 +90,7 @@ export default function ClaimsPage({ params }: { params: Promise<{ locale: strin
               {t("claims.support")}: {t("claims.level.direct")} {claim.evidence.direct} ·{" "}
               {t("claims.level.partial")} {claim.evidence.partial} ·{" "}
               {t("claims.level.contextual")} {claim.evidence.contextual} ·{" "}
-              <span style={{ color: claim.evidence.contradictory ? "#b3261e" : undefined }}>
+              <span style={{ color: claim.evidence.contradictory ? "var(--state-conflict-ink)" : undefined }}>
                 {t("claims.level.contradictory")} {claim.evidence.contradictory}
               </span>
             </div>
@@ -99,7 +99,7 @@ export default function ClaimsPage({ params }: { params: Promise<{ locale: strin
                 style={{
                   marginBlockStart: 8,
                   paddingInlineStart: 12,
-                  borderInlineStart: "3px solid #b3261e",
+                  borderInlineStart: "3px solid var(--state-conflict-ink)",
                   fontSize: 13,
                 }}
               >
