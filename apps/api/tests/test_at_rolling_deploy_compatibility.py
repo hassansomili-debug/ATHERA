@@ -124,7 +124,7 @@ async def test_the_old_api_can_still_record_member_consent_on_the_expanded_schem
 
         member = ProjectMember(
             tenant_id=a["tenant_id"], project_id=project.id,
-            display_name="د. فلان", member_role="collaborator")
+            display_name="د. فلان", role="co_author")
         session.add(member)
         await session.flush()
 
@@ -152,7 +152,7 @@ async def test_the_old_api_can_still_record_authorship_consent_on_the_expanded_s
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
         agreement = AuthorshipAgreement(
             tenant_id=a["tenant_id"], opportunity_id=uuid.uuid4(),
-            author_name="د. فلان", author_order=1,
+            party_id=uuid.uuid4(), author_position=1,
             consent_status="granted",
             consent_recorded_at=dt.datetime.now(dt.UTC))
         session.add(agreement)
