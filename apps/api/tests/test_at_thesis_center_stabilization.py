@@ -25,6 +25,33 @@ import pytest
 
 from tests.conftest import requires_db
 
+
+@pytest.fixture(autouse=True)
+def memory_store(monkeypatch):
+    """**لا MinIO في CI، ولا يُدَّعى وجودُه.**
+
+    مسارُ التفكيك يجلب الملفّ من المخزن؛ وبلا مزوّدٍ مضبوط يسقط الطلب
+    بـ`EndpointConnectionError` — خمسمئة تُقرأ عطبَ منتج وهي عطبُ تجهيزة.
+    والمزوّدُ الذاكريّ هو ما تستعمله حزمُ الرفع القائمة، فيُستعمل هنا كما
+    هو (`test_at_thesis_upload_door.py`).
+    """
+    from athera_api.config import get_settings
+    from athera_api.services import storage
+
+    monkeypatch.setattr(get_settings(), "storage_provider", "memory", raising=False)
+    storage.reset_store_cache()
+    yield
+    storage.reset_store_cache()
+
+
+def _tiny_pdf() -> bytes:
+    """مستندٌ صغيرٌ صالحُ البنية بطبقة نصّ — يُولَّد ولا يُخزَّن في المستودع."""
+    return (b"%PDF-1.4\n"
+            b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+            b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n"
+            b"trailer<</Root 1 0 R>>\n%%EOF\n")
+
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 API = ROOT / "apps" / "api" / "athera_api"
 WEB = ROOT / "apps" / "web"
@@ -141,6 +168,73 @@ def test_no_card_state_in_the_product_offers_the_legacy_parse_action():
         if _actions(state, has_file=has_file).can_parse
     ]
     assert not offered, f"«تفكيك الرسالة» معروضٌ فعلًا عاديًّا على: {offered}"
+
+
+def test_a_document_that_cannot_be_read_is_named_not_a_server_error():
+    """**مستندٌ معطوبٌ ليس عطبًا في الخادم.**
+
+    كان المفكِّك يرفع ما ليس من الصنفين المعروفين — `PdfReadError` على ملفٍّ
+    مبتور — فيخرج خمسمئة: الباحث يقرأ «عطبٌ عندنا» عن ملفٍّ لا يُقرأ عنده،
+    ولا يبقى على البطاقة سببٌ بعد إغلاق الرسالة.
+
+    والمفردةُ كانت تحمل `parse_failed` بترجمتيه **ولا مسارَ يكتبه** — حالٌ
+    توقّعها التصميم ولم تُوصَل. فيُطلب هنا وصلُها.
+    """
+    tree = ast.parse((API / "routers" / "thesis.py").read_text(encoding="utf-8"))
+    handler = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "parse_thesis")
+
+    caught = [h for h in ast.walk(handler) if isinstance(h, ast.ExceptHandler)]
+    names = {ast.unparse(h.type) for h in caught if h.type is not None}
+    assert "Exception" in names, (
+        "سقوطٌ غيرُ مصنَّف يخرج من التفكيك خمسمئة — ولا يُسمّى")
+    assert "parse_failed" in ast.unparse(handler), (
+        "السقوطُ غيرُ المصنَّف لا يُسجَّل برمزٍ من المفردة")
+
+    from athera_api.i18n.catalog import CATALOG
+    from athera_api.services.thesis import processing
+
+    assert "parse_failed" in processing.FAILURE_CODES
+    entry = CATALOG["thesis.parse_failed"]
+    assert entry["ar"].strip() and entry["en"].strip()
+
+
+def test_a_failed_legacy_parse_never_overwrites_a_newer_canonical_state():
+    """**والوجهُ الثاني للعطب: مسارُ الفشل كان يهدم ما بناه غيرُه.**
+
+    عولج النجاح بـ`settle_after_legacy_parse` — شرطٌ يُقيَّم وقت الكتابة.
+    وبقي الفشل يكتب حالَه بلا شرط: تفكيكٌ قديم يسقط على رسالةٍ بلغت
+    المراجعة يُنزلها إلى «تعذّر التحليل»، فيُمحى ما أنتجه الخطُّ الحديث
+    لأنّ مسارًا آخر جُرِّب وفشل.
+
+    فيُطلب الشرطُ نفسه في الموضعين — **ومن المفردة الواحدة**، فلا تفترق
+    قائمتان بأوّل تعديل.
+    """
+    tree = ast.parse((API / "routers" / "thesis.py").read_text(encoding="utf-8"))
+    remember = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_remember_failure")
+    body = ast.unparse(remember)
+    assert "only_from=processing.LEGACY_PARSE_MAY_SETTLE" in body, (
+        "مسارُ الفشل يكتب حالَه بلا شرط، فيهدم حالًا قانونيةً أحدث")
+
+
+def test_the_conditional_write_is_a_real_condition_not_a_named_argument():
+    """**والشرطُ يقع في القاعدة، لا في اسمِ وسيط.**
+
+    فيُقرأ من `processing.mark` أنّه يُترجَم إلى `WHERE`، وأنّ الدالّة
+    تُرجع عددَ الصفوف — فمن ناداها يعرف أوقعت الكتابةُ أم لا.
+    """
+    tree = ast.parse(
+        (API / "services" / "thesis" / "processing.py").read_text(encoding="utf-8"))
+    mark = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "mark")
+    body = ast.unparse(mark)
+    assert "only_from is not None" in body and "processing_state.in_(only_from)" in body, (
+        "`only_from` وسيطٌ لا شرط — فلا يحرس شيئًا")
+    assert "rowcount" in body, "الدالّة لا تقول أوقعت الكتابةُ أم لا"
 
 
 def test_the_parse_endpoint_itself_is_not_deleted():
@@ -660,6 +754,11 @@ async def _seed(tenant_id, user_id, *, filename="رسالة.pdf", with_file=True
                 tenant_id=tenant_id, object_type="file", object_id=record.id,
                 user_id=user_id, grant_level="owner", granted_by=user_id))
             file_id = record.id
+            # **وصفُّ ملفٍّ بلا كائنٍ خلفه ليس ما يُنتجه المنتج.** الرفعُ
+            # يكتب الاثنين معًا؛ وتجهيزةٌ تكتب الصفَّ وحده تجعل كلَّ مسارٍ
+            # يقرأ الملفَّ يسقط لسببٍ لا علاقة له بما يُفحص.
+            from athera_api.services import storage
+            storage.get_store().put(record.storage_key, _tiny_pdf(), "application/pdf")
         # الافتراضاتُ تُدمَج لا تُكرَّر: `Thesis(title_ar=None, **{"title_ar": …})`
         # يسقط بـ«multiple values for keyword argument» قبل أن يفحص شيئًا.
         thesis = Thesis(**{"tenant_id": tenant_id, "file_id": file_id,
@@ -677,11 +776,16 @@ async def _second_member(tenant_id):
     """
     from sqlalchemy import select
 
-    from athera_api.db import system_session
+    from athera_api.db import tenant_session
     from athera_api.models.identity import Membership, Role, User
     from athera_api.security import hash_password
 
-    async with system_session() as session:
+    # **وسياقُ المستأجر يُضبط في المعاملة التي تكتب.** `system_session` بلا
+    # سياق، و`roles` و`memberships` جدولان محكومان بـRLS: فقراءةُ الدور
+    # تُرشَّح إلى لا شيء و`scalar_one()` تسقط بـ`NoResultFound` — عطبُ
+    # تجهيزةٍ يُقرأ عطبَ منتج. (وهو الدرسُ نفسه المكتوب في
+    # `test_at_rolling_deploy_compatibility.py`.)
+    async with tenant_session(tenant_id, None) as session:
         user = User(
             email=f"second-{uuid.uuid4().hex[:10]}@example.test",
             password_hash=hash_password("correct-horse-battery-staple"),
@@ -1142,11 +1246,22 @@ async def test_over_http_legacy_parse_never_drags_the_state_back_to_extracting(t
         await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
                               state=processing.READY_FOR_REVIEW)
 
-    # ٢ — ثمّ يُشغَّل التفكيك القديم بعده. والملفّ في التجهيزة بلا محتوًى
-    #     صالح، فيُردّ الطلب بـ٤٢٢ — **والحال هي المفحوصة لا رمزُ الردّ**.
+    # ٢ — ثمّ يُشغَّل التفكيك القديم بعده.
+    #
+    # **ومستندُ التجهيزة لا يُقرأ**، فالمفكِّك يسقط. وذاك مقصود: مسارُ
+    # الفشل هو الوجهُ الثاني للعطب، وكان يكتب حالَه فوق حالٍ قانونيةٍ
+    # أحدث تمامًا كما كان يفعل مسارُ النجاح.
     async with _client(tid, uid) as client:
         parsed = await client.post(f"/api/v1/theses/{thesis_id}/parse")
-    assert parsed.status_code < 500, f"خمسمئة من التفكيك: {parsed.text}"
+
+    # **ولا خمسمئة على مستندٍ معطوب**: العطبُ في المدخل لا في الخدمة،
+    # فيُسمّى ويُردّ ٤٢٢.
+    assert parsed.status_code < 500, f"خمسمئة على مستندٍ معطوب: {parsed.text}"
+    assert parsed.status_code == 422, parsed.text
+    assert parsed.json()["error"]["code"] in (
+        "thesis.parse_failed", "thesis.retry_needs_ocr",
+        "ingestion.unsupported_document"), parsed.text
+    assert parsed.json()["error"]["message"], "سقوطٌ بلا سببٍ يُقرأ"
 
     async with tenant_session(tid, uid) as session:
         state = (await session.execute(
@@ -1155,7 +1270,13 @@ async def test_over_http_legacy_parse_never_drags_the_state_back_to_extracting(t
     assert state != processing.EXTRACTING, "التفكيك أعاد الحال إلى «جارٍ الاستخراج»"
     assert state not in processing.IN_FLIGHT, (
         f"التفكيك ترك حالًا جاريةً بلا مهمّةٍ ترفعها: {state}")
-    assert state in processing.PROCESSING_STATES
+    # **والحالُ القانونية محفوظةٌ كما هي، لا «غيرَ جارية» وحسب.**
+    #
+    # وهذا أشدُّ ممّا طُلب أوّلًا: لا يكفي ألّا تعود إلى `extracting`؛ ما
+    # أنتجه الخطُّ الحديث يجب أن يبقى. فتفكيكٌ قديم جُرِّب وفشل لا يُنزل
+    # رسالةً بلغت المراجعة إلى «تعذّر التحليل».
+    assert state == processing.READY_FOR_REVIEW, (
+        f"سقوطُ التفكيك القديم هدم حالًا قانونيةً أحدث: صارت {state}")
 
 
 @requires_db
@@ -1341,7 +1462,7 @@ async def test_the_old_server_can_still_write_a_thesis_on_the_new_schema(two_ten
     """
     from sqlalchemy import text
 
-    from athera_api.db import system_session
+    from athera_api.db import system_session, tenant_session
 
     a = two_tenants["a"]
     tid = a["tenant_id"]
@@ -1350,17 +1471,29 @@ async def test_the_old_server_can_still_write_a_thesis_on_the_new_schema(two_ten
     async with system_session() as session:
         head = (await session.execute(
             text("SELECT version_num FROM alembic_version"))).scalar_one()
-        if head < "0030":
-            pytest.skip(f"قاعدةُ الاختبارات عند {head}، والعمودان يُضافان في 0030")
+    if head < "0030":
+        pytest.skip(f"قاعدةُ الاختبارات عند {head}، والعمودان يُضافان في 0030")
 
+    # **وسياقُ المستأجر يُضبط في المعاملة التي تكتب.**
+    #
+    # `system_session` جلسةٌ بلا مستأجر ولا تتجاوز RLS — ودورُ التطبيق ليس
+    # `BYPASSRLS`. فكتابةٌ في `theses` منها تُردّ بـ
+    # `new row violates row-level security policy`. **والمفارقةُ أنّ هذا
+    # الفحص وُجد ليُثبت أنّ كتابةَ v88 تمرّ**: فلو حجبتها RLS لما أثبت
+    # شيئًا في أيّ اتجاه. فتُكتب بسياقٍ مضبوط، كما يكتب الخادمُ الحقيقيّ.
+    async with tenant_session(tid, None) as session:
         # **بأعمدة 0029 وحدها** — لا ذكرَ للعمودين الجديدين، كخادمِ v88.
-        await session.execute(
+        written = await session.execute(
             text("INSERT INTO theses (id, tenant_id, title_ar, degree, "
                  "processing_state, processing_attempts, text_layer_state, ocr_state) "
                  "VALUES (:id, :tenant, :title, 'masters', 'uploaded', 0, "
                  "'not_checked', 'unavailable')"),
             {"id": thesis_id, "tenant": tid, "title": "رسالةٌ كتبها الخادمُ القديم"})
+        # **والصفرُ الصامت يسقط هنا**: لو رشّحت RLS الكتابةَ لمرّت بلا أثرٍ
+        # ولا خطأ، ولخضرّ الفحصُ وهو لم يكتب شيئًا.
+        assert written.rowcount == 1, "كتابةُ v88 لم تُصب صفًّا — سياقٌ مفقود"
 
+    async with tenant_session(tid, None) as session:
         row = (await session.execute(
             text("SELECT archived_at, archived_by FROM theses WHERE id = :id"),
             {"id": thesis_id})).one()

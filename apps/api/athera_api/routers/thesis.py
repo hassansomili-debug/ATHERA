@@ -415,16 +415,30 @@ async def _remember_failure(
     from ..db import tenant_session  # noqa: PLC0415 — يتجنّب استيرادًا دائريًا
 
     async with tenant_session(principal.tenant_id, principal.user_id) as failure:
-        await processing.mark(
+        # **وسقوطُ المسار القديم لا يهدم حالًا قانونيةً أحدث.**
+        #
+        # كانت الكتابة بلا شرط، فتفكيكٌ قديم يسقط على رسالةٍ بلغت المراجعة
+        # يُنزلها إلى «تعذّر التحليل» — ويُمحى بذلك ما أنتجه الخطُّ الحديث،
+        # ويرى الباحث عملَه يتراجع لأنّ مسارًا آخر جُرِّب عليه وفشل.
+        #
+        # وهو العطبُ نفسه الذي عولج في النجاح (`settle_after_legacy_parse`)،
+        # فيُعالَج في الفشل بالشرط نفسه: لا يكتب المسارُ القديم إلا حيث
+        # يجوز له أن يكتب. والسببُ يُسجَّل في التدقيق على أيّ حال.
+        touched = await processing.mark(
             failure, tenant_id=principal.tenant_id, thesis_id=thesis_id,
             state=state, failure_code=code, failure_detail=detail[:500],
-            text_layer=text_layer)
+            text_layer=text_layer,
+            only_from=processing.LEGACY_PARSE_MAY_SETTLE)
         await audit.record(
             failure, tenant_id=principal.tenant_id, action=action,
             object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
-            state_after={"processing_state": state, "failure_code": code,
+            state_after={"processing_state": state if touched else "unchanged",
+                         "failure_code": code,
+                         "state_write_skipped": not touched,
                          "ocr_state": processing.OCR_UNAVAILABLE},
-            reason=reason,
+            reason=reason if touched else (
+                f"{reason}; the state itself was left untouched because the thesis "
+                "had already moved past what the legacy path may write"),
         )
 
 
@@ -486,6 +500,24 @@ async def parse_thesis(
             reason="the parser cannot read this file type; the reason is recorded, not swallowed")
         raise AtheraError("ingestion.unsupported_document", status_code=422,
                           detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — يُصنَّف ويُسمّى، ولا يُبتلع
+        # **مستندٌ معطوبٌ ليس عطبًا في الخادم.**
+        #
+        # كان المفكِّك يرفع ما ليس من الصنفين أعلاه — `PdfReadError` مثلًا
+        # على ملفٍّ مبتور — فيخرج خمسمئة. والباحث يقرأ «عطبٌ عندنا» عن ملفٍّ
+        # لا يُقرأ عنده، ولا يبقى في البطاقة سببٌ يُقرأ بعد إغلاق الرسالة.
+        #
+        # والمفردةُ كانت تحمل `parse_failed` مُعرَّفًا بترجمتيه ولا مسارَ
+        # يكتبه — أي أنّ الحالَ كانت متوقَّعةً ولم تُوصَل. فتُوصَل هنا:
+        # سببٌ مسمّى، ورمزٌ تقنيٌّ آمن (صنفُ الاستثناء ورسالتُه مقصوصة)،
+        # و٤٢٢ لأنّ المدخل هو الذي تعذّر لا الخدمة.
+        await _remember_failure(
+            principal, thesis_id, state=processing.FAILED,
+            code="parse_failed", detail=f"{type(exc).__name__}: {exc}",
+            action="thesis.parse_failed",
+            reason="the document could not be read; the failure is named and recorded "
+                   "rather than surfacing as a server error")
+        raise AtheraError("thesis.parse_failed", status_code=422) from exc
 
     # قسم بلا موضع لا يُخزَّن: نفس قاعدة §29.2.
     sections = 0

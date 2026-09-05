@@ -289,7 +289,8 @@ async def mark(
     failure_code: str | None = None,
     failure_detail: str | None = None,
     text_layer: str | None = None,
-) -> None:
+    only_from: tuple[str, ...] | None = None,
+) -> int:
     """يثبّت حالَ رسالةٍ — **بعبارةٍ واحدة، وبلا قراءةٍ قبلها**.
 
     والرسالة تُبلَغ بمعرّفها أو بمعرّف ملفّها: خطُّ الأنابيب يعرف الملفّ
@@ -297,6 +298,14 @@ async def mark(
 
     **والفشل يحمل سببه أو لا يُكتب.** القاعدة تفرض ذلك بقيد
     `failure_is_named`؛ والفحص هنا يجعل الرسالة مفهومةً قبل أن تصل إليه.
+
+    **و`only_from` شرطٌ على الحال الراهنة، يُقيَّم في القاعدة وقت الكتابة.**
+    بدونه تكتب كلُّ عمليةٍ حالَها فوق ما تجده — ومن قرأ الحال ثمّ عمل عملًا
+    طويلًا ثمّ كتب، كتب قيمةً بائتة. ومَن مرّره كتب **أو لم يكتب**، ويعرف
+    أيَّهما وقع من العدد المُعاد: صفرٌ يعني أنّ الحال الراهنة ليست ممّا
+    يجوز لهذا المسار أن يغيّره، فتُترك كما هي.
+
+    ويعيد عددَ الصفوف المتأثّرة.
     """
     if state not in PROCESSING_STATES:
         raise ValueError(f"unknown processing state: {state}")
@@ -332,7 +341,9 @@ async def mark(
         statement = statement.where(Thesis.file_id == file_id)
     else:  # pragma: no cover — خطأ برمجيّ لا حالُ تشغيل
         raise ValueError("mark() needs either thesis_id or file_id")
-    await session.execute(statement)
+    if only_from is not None:
+        statement = statement.where(Thesis.processing_state.in_(only_from))
+    return (await session.execute(statement)).rowcount
 
 
 async def claim_for_processing(
