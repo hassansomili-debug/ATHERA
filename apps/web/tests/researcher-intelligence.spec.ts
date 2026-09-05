@@ -105,6 +105,23 @@ const BODIES = new Map<string, unknown>([
     pending_approvals: 0, open_alerts: 0,
     blocking_alerts: 0, unread_notifications: 0,
   }],
+  [
+    // **وضعُ التشغيل شكلٌ لا قائمة.** والردُّ الفارغ الافتراضي (`[]`) يخالف
+    // العقد، فتقرأ الشاشةُ `posture.roles.join(...)` على مصفوفةٍ لا تملكه —
+    // فيسقط التصيير باستثناء، **وتُنتزع من الصفحة روابطُ كانت ظاهرة**.
+    //
+    // وهو ما وقع فعلًا: مرّ `toBeVisible` على الرابط، ثمّ اختفى الرابطُ قبل
+    // `toContainText`. فالعيبُ كان في التجهيزة لا في المنتج — والدرسُ نفسه
+    // مكتوبٌ في `product-surface.spec.ts` منذ قبل.
+    "/api/v1/settings/posture",
+    {
+      tenant_name: "فحص ذكاء الباحث",
+      locale: AR,
+      supported_locales: ["ar", "en"],
+      roles: [],
+      items: [],
+    },
+  ],
 ]);
 
 interface Seen {
@@ -258,6 +275,12 @@ test.describe("ذكاءُ الباحث — الملفّ والأهداف وال�
     // على عيبِ منتج.
     const toProfile = page.locator('a[href="/ar/researcher-profile"]').first();
     const toGoals = page.locator('a[href="/ar/research-goals"]').first();
+
+    // **وسقوطُ الصفحة يُقال سقوطًا، لا «رابطًا مفقودًا».** استثناءٌ في
+    // التصيير ينتزع الشجرةَ المعروضة، فيصير العَرَضُ «العنصر غير موجود»
+    // ويُقرأ العيبُ في غير موضعه — وهو ما كلّف دورةً كاملة هنا.
+    expect(seen.errors).toEqual([]);
+
     await expect(toProfile).toBeVisible();
     await expect(toProfile).toContainText("ملفي البحثي");
     await expect(toGoals).toBeVisible();
