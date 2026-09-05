@@ -432,8 +432,13 @@ function stateLine(page: Page, needle: string) {
  * إحداهما «Ready for review · Processing attempts: 2» حالًا قائمةً بذاتها.
  */
 async function stateLabel(page: Page, needle: string): Promise<string> {
-  const line = (await stateLine(page, needle).textContent()) ?? "";
-  return line.replace(/^Status:\s*/, "").split(" · ")[0].trim();
+  // **والانتظارُ شرطٌ لا زخرف.** `textContent()` تقرأ مرّةً بلا انتظار،
+  // فتُرجع فراغًا إن سُئلت قبل أن تُصيَّر البطاقة — والدعوى تسقط حينها على
+  // سباقٍ لا على المنتج. والتوكيدُ الذي حلّت محلّه كان ينتظر من تلقائه.
+  const line = stateLine(page, needle);
+  await expect(line, `لا سطرَ حالٍ على بطاقة ${needle}`).toBeVisible();
+  const text = (await line.textContent()) ?? "";
+  return text.replace(/^Status:\s*/, "").split(" · ")[0].trim();
 }
 
 /** ينتظر أن تستقرّ حالُ البطاقة — بإعادة تحميلٍ لا باستطلاعٍ في الذاكرة. */
