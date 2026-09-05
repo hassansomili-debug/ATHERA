@@ -170,7 +170,9 @@ a { color: var(--teal); }
  * المنتج: خطٌّ واحد متّصل يمرّ بأربع عقد، من المشكلة إلى النشر.
  */
 .brand { display: flex; align-items: center; gap: 10px; padding-inline: 8px; margin-block-end: 8px; }
-.brand-mark { inline-size: 34px; block-size: 34px; flex: 0 0 34px; display: block; }
+/* المقاس يأتي من الوسم نفسه (`width`/`height`)، فلا تُثبّته الورقة في
+   موضعٍ واحد وتكسره في الآخر: العلامة ٣٤ في الرأس و٢٨ في التذييل. */
+.brand-mark { flex: 0 0 auto; display: block; }
 /* والاتجاه ينعكس مع الكتابة: الخيط يبدأ من حيث تبدأ القراءة. */
 html[dir="rtl"] .brand-mark { transform: scaleX(-1); }
 .brand strong { font-size: 17px; font-weight: 640; letter-spacing: -.02em; }
@@ -576,7 +578,12 @@ h2.nav-label { line-height: 1.6; }
 }
 .hero-body { margin-block: 0 24px; font-size: clamp(15px, 1.6vw, 17.5px); color: var(--fg-soft); max-inline-size: 56ch; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
-.hero-thread { inline-size: 100%; block-size: auto; max-inline-size: 420px; justify-self: center; }
+/* النسبةُ مُعلَنة صراحةً: `block-size: auto` على SVG يعتمد على استنتاج
+   النسبة من `viewBox`، وإعلانُها يجعل الارتفاع محسومًا لا مستنتَجًا. */
+.hero-thread {
+  inline-size: 100%; block-size: auto; aspect-ratio: 320 / 180;
+  max-inline-size: 420px; justify-self: center;
+}
 
 .btn-primary {
   display: inline-block;
