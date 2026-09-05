@@ -252,8 +252,12 @@ async def upload_thesis(
     والملف يُحفظ أولًا ثم يُنشأ السجل ثم تبدأ القراءة — وفشل القراءة لاحقًا
     **لا يحذف الملف ولا السجل**: القراءة قابلة للإعادة، والرفع ليس كذلك.
     """
+    # **ولا تُمرَّر جلسة.** `files.upload_file` صار يفتح جلسته بنفسه في
+    # `0cdb23a` — رفعُ كتابٍ واحد كان يُجمّد المنتج كلّه، فخرج الرفع من
+    # معاملة الطلب. وبقي هذا النداء يمرّر `session=` إلى دالّةٍ لم تعد
+    # تقبلها، فصار كلُّ رفع رسالةٍ `TypeError` ثمّ ٥٠٠.
     stored = await upload_file(upload=upload, classification="C2",
-                               principal=principal, session=session)
+                               principal=principal)
 
     thesis, created = await pipeline.ensure_thesis_for_file(
         session, tenant_id=principal.tenant_id, file_id=stored.id,
