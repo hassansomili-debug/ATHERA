@@ -139,13 +139,16 @@ async def _one_member_and_agreement(engine):
             "INSERT INTO project_members (id, tenant_id, project_id, display_name, role) "
             "VALUES (:i, :t, :p, 'د. فلان', 'co_author')"),
             {"i": member, "t": tenant, "p": project})
-        # فرصةٌ حقيقيّة: المفتاحُ الأجنبيّ يطلب صفًّا قائمًا لا معرّفًا عشوائيًّا.
+        # فرصةٌ حقيقيّة: المفتاحُ الأجنبيّ يطلب صفًّا قائمًا، و**لا فرصةَ بلا
+        # مصدر** (`ck_publication_opportunities_has_source`) — فتُنسب إلى
+        # المشروع المزروع أعلاه لا إلى العدم.
         opportunity = uuid.uuid4()
         await conn.execute(text(
-            "INSERT INTO publication_opportunities (id, tenant_id, "
+            "INSERT INTO publication_opportunities (id, tenant_id, project_id, "
             "opportunity_kind, paper_kind, working_title_ar) "
-            "VALUES (:i, :t, 'independent_question', 'extraction', 'فرصةُ النافذة')"),
-            {"i": opportunity, "t": tenant})
+            "VALUES (:i, :t, :p, 'independent_question', 'extraction', "
+            "'فرصةُ النافذة')"),
+            {"i": opportunity, "t": tenant, "p": project})
         await conn.execute(text(
             "INSERT INTO authorship_agreements (id, tenant_id, opportunity_id, "
             "party_id, author_position, consent_status) "
