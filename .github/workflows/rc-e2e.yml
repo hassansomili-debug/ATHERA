@@ -11,7 +11,7 @@
 # `/en/theses` جملةَ «Could not load the data.» وفي الشريط «Sign in» في
 # اللحظة نفسها — ولا فحصَ أخضرَ واحد كان يكذب: كلُّ طبقةٍ سليمةٌ وحدها،
 # والوصلةُ بينهما هي المعطوبة. وهذه المهمّة هي المِسبار: واجهةُ الموجة
-# الأولى تُبنى وتُشغَّل أمام **API الموجة الأولى** و**قاعدةٍ عند رأس السلسلة (0029)**،
+# الأولى تُبنى وتُشغَّل أمام **API هذا الفرع** و**قاعدةٍ عند رأس السلسلة (0030)**،
 # وتُقاد بمتصفّحٍ حقيقي بلا اعتراضِ شبكةٍ البتّة.
 #
 # ── العزل ──────────────────────────────────────────────────────────────
@@ -91,8 +91,8 @@ jobs:
 
       # ── الرأسُ المطلوب: رأسُ السلسلة بعينه ──────────────────────────
       #
-      # صار `0029` بعد فصل العقد عن التوسعة. والموجةُ الأولى تخدم
-      # الرأس، وتوافقُها مع `0028` وحده يحرسه
+      # صار `0030` بأرشفة الرسائل (الموجة 1.1). والموجةُ تخدم
+      # الرأس، وتوافقُ الخادم القديم معه يحرسه
       # `test_at_rolling_deploy_compatibility.py`.
       #
       # **وهذه هي الخطوة التي تفصل «عطبَ منتج» عن «انحراف نسخ».** الإنتاج
@@ -105,20 +105,20 @@ jobs:
       # فيُشتقّ الرأس. وهنا السؤال «أهذه بيئةُ الموجة الأولى؟» — وجوابه
       # رقمٌ بعينه اتُّفق عليه، لا «أيًّا كان رأسُ اليوم». ولو أُشتقّ لقال
       # الفحصُ «موافق» على أيّ رأسٍ كان، فلا يحرس شيئًا.
-      - name: Assert the schema head is exactly 0029
+      - name: Assert the schema head is exactly 0030
         env:
           PGPASSWORD: athera_owner_pw
         run: |
           head=$(psql -h localhost -U athera_owner -d athera -tAc \
             "SELECT version_num FROM alembic_version")
-          echo "database head: '$head' · required: '0029'"
-          if [ "$head" != "0029" ]; then
-            echo "::error::the RC database is at schema '$head', not 0029 —"
+          echo "database head: '$head' · required: '0030'"
+          if [ "$head" != "0030" ]; then
+            echo "::error::the RC database is at schema '$head', not 0030 —"
             echo "::error::this is NOT a Wave 1 environment, and any result from it"
             echo "::error::would describe version skew, not the product. Refusing to run."
             exit 1
           fi
-          echo "schema head verified: 0029"
+          echo "schema head verified: 0030"
 
       # ── الـAPI: شيفرةُ هذا الفرع، بلا نموذج وبلا سرّ ────────────────
       - name: Start the Wave 1 API (uvicorn, 127.0.0.1:8000)

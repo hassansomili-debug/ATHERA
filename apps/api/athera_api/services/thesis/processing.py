@@ -33,7 +33,7 @@ import datetime as dt
 import uuid
 from typing import Final
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.thesis import Thesis
@@ -374,3 +374,65 @@ async def claim_for_processing(
         # سبقنا إليها طلبٌ آخر بين القراءة والكتابة — والقاعدة حسمت.
         raise ProcessingConflict("thesis.processing_in_flight", state=current)
     return current
+
+
+#: الحالاتُ التي يجوز للمسار القديم أن يرفعها إلى «جاهزة لمراجعتك».
+#:
+#: **وما عداها لا يُمسّ.** `awaiting_consent` بوابةُ إذنٍ مستقلّة لا تُقفز
+#: بأثرٍ جانبيّ لعمليةٍ أخرى (DIC2)، و`ready_for_review` و`completed` أبعدُ
+#: من التفكيك فلا يُرجَعان إليه، والحالاتُ الجارية ليست له أصلًا.
+LEGACY_PARSE_MAY_SETTLE: Final[tuple[str, ...]] = (
+    UPLOADED, FAILED, TEXT_LAYER_MISSING,
+)
+
+
+async def settle_after_legacy_parse(
+    session: AsyncSession, *, tenant_id: uuid.UUID, thesis_id: uuid.UUID,
+) -> None:
+    """يثبّت حالَ رسالةٍ بعد تفكيكٍ قديمٍ نجح — **بعبارةٍ شرطيّةٍ واحدة**.
+
+    ## العطب: المسار القديم كان يكتب حالًا بائتة فوق حالٍ أحدث
+
+    `POST /theses/{id}/parse` يقرأ `processing_state` في أوّل الطلب، ثمّ
+    يجلب الملفّ من المخزن ويفكّكه — وذاك عملٌ طويل — ثمّ يكتب:
+
+        settled = READY_FOR_REVIEW if <القيمة المقروءة> in (…) else <القيمة المقروءة>
+        mark(state=settled)                    # UPDATE بلا شرطٍ على الحال
+
+    فإن تقدّم الخطُّ الحديث في تلك النافذة — من `extracting` إلى
+    `ready_for_review` — كتب التفكيكُ فوقه `extracting` مرّةً أخرى.
+    **والبطاقة تتراجع من المراجعة إلى «جارٍ الاستخراج» بلا أن يقع شيء**،
+    وتبقى كذلك: لا مهمّة تعمل لترفعها، فتُعرض حالٌ جاريةٌ إلى الأبد.
+
+    ## والعلاج: القاعدة هي التي تقرأ الحال، وقت الكتابة
+
+    عبارةٌ واحدة بـ`CASE`، فلا فجوةَ بين القراءة والقرار:
+
+      • الحالُ ترتفع إلى `ready_for_review` **إن كانت وقتئذٍ** من
+        `LEGACY_PARSE_MAY_SETTLE` — وما عداها يبقى كما هو حرفيًّا.
+      • و`text_layer_state` تصير `present` دائمًا: تفكيكٌ نجح **واقعةٌ
+        أثبتها هذا الطلب** مهما تكن حالُ الرسالة.
+      • ورمزُ الفشل يُمحى: صفٌّ يقول «تعذّرت القراءة» وقد قُرئ للتوّ يُقرأ
+        كذبًا، وقيدُ `failure_is_named` يرفضه أصلًا.
+
+    **والعبارةُ واحدةٌ لا اثنتان لسببٍ يخصّ القاعدة**: قيد
+    `missing_text_layer_says_so` يشترط أن تلازم `text_layer_missing`
+    قيمةَ `text_layer_state='absent'`. فكتابةُ `present` في عبارةٍ ثمّ رفعُ
+    الحال في أخرى تمرّ بلحظةٍ يرفضها القيد. وهنا يقعان معًا على الصفّ نفسه.
+    """
+    advances = ", ".join(f"'{state}'" for state in LEGACY_PARSE_MAY_SETTLE)
+    await session.execute(
+        text(
+            f"UPDATE theses SET "
+            f"  processing_state = CASE WHEN processing_state IN ({advances}) "
+            f"                          THEN :settled ELSE processing_state END, "
+            f"  processing_state_changed_at = CASE WHEN processing_state IN ({advances}) "
+            f"                          THEN :now ELSE processing_state_changed_at END, "
+            f"  failure_code = NULL, "
+            f"  failure_detail = NULL, "
+            f"  text_layer_state = :present "
+            f"WHERE id = :thesis_id AND tenant_id = :tenant_id"
+        ),
+        {"settled": READY_FOR_REVIEW, "now": _now(), "present": TEXT_LAYER_PRESENT,
+         "thesis_id": thesis_id, "tenant_id": tenant_id},
+    )
