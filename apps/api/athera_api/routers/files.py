@@ -31,7 +31,9 @@ from ..schemas.files import (
     LibraryFile,
 )
 from ..schemas.library import FileMoveRequest, FileTrashView, TrashRequest
+from ..models.thesis import Thesis
 from ..services import audit, library, rbac, storage, workspace
+from ..services.thesis import processing as thesis_processing
 from .folders import router as folders_router
 from .library_bulk import router as bulk_router
 
@@ -760,8 +762,41 @@ async def trash_file(
     **ويُقال ما يترتّب قبل أن يقع، لا بعده.** ملفٌّ مرتبط ببحوث يختفي من
     مكتبة صاحبه، فيُردّ 409 بعدد البحوث التي تستعمله، ولا يمضي إلا بإقرارٍ
     صريح. والتحذير الصامت — أو الذي لا يُذكر فيه عدد — ليس تحذيرًا.
+
+    **وحدٌّ ثانٍ لا يُقايَض**: ملفٌّ تقرؤه مهمّةٌ جاريةٌ الآن لا يُنقل، ولا
+    يتجاوز ذلك إقرار. انظر التعليق في الجسم.
     """
     record = await _owned_file(session, principal, file_id, "delete")
+
+    # ── حدٌّ لا يُقايَض: ملفٌّ تقرؤه مهمّةٌ جاريةٌ الآن لا يُنقل ──
+    #
+    # **والشاشةُ وحدها لم تكن تكفي.** مركزُ الرسائل يُخفي «انقل إلى السلّة»
+    # ما دامت المعالجة جارية، وهذه النقطةُ كانت تقبل الطلب على أيّ حال: من
+    # نادى الواجهة مباشرةً سحب الملفَّ من تحت مهمّةٍ تقرؤه. **وشاشةٌ تُخفي
+    # زرًّا وخادمٌ يقبل الطلبَ حارسٌ واحدٌ لا اثنان.**
+    #
+    # **ولا عقدَ إلغاءٍ في هذا المنتج** — لا سبيل إلى إيقاف المهمّة ولا إلى
+    # تسلسلها مع النقل. فيُردّ الطلب صراحةً بسببه، ولا يُدَّعى إلغاءٌ لا
+    # وجود له، ولا يُمسّ صفُّ الرسالة.
+    #
+    # والمفردةُ `IN_FLIGHT` تُستورَد من موضعها الواحد
+    # (`services/thesis/processing.py`): نسختان تفترقان بأوّل تعديل، وأوّلُ
+    # موضعٍ ينسى التعديلَ يصير ثغرة.
+    #
+    # **والشرطُ يسبق فحصَ الارتباط بالبحوث** لأنّه غير قابلٍ للإقرار:
+    # `confirm` يتجاوز التحذير، ولا يتجاوز هذا. ولو أُخِّر لمرّ طلبٌ يحمل
+    # `confirm: true` إلى الكتابة قبل أن يُسأل عن المعالجة.
+    busy = (await session.execute(
+        select(Thesis.id).where(
+            Thesis.tenant_id == principal.tenant_id,
+            Thesis.file_id == file_id,
+            Thesis.processing_state.in_(thesis_processing.IN_FLIGHT),
+        ).limit(1)
+    )).scalar_one_or_none()
+    if busy is not None:
+        raise AtheraError("library.file_busy_processing", status_code=409,
+                          thesis_id=busy)
+
     links = await _active_project_links(session, principal, file_id)
     if links and not payload.confirm:
         raise AtheraError("library.file_linked_to_projects", status_code=409,

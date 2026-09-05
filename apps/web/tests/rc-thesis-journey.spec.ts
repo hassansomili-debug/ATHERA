@@ -2,7 +2,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { expect, test, type APIRequestContext, type APIResponse, type Page } from "@playwright/test";
+import {
+  expect, test,
+  type APIRequestContext, type APIResponse, type Locator, type Page,
+} from "@playwright/test";
 
 /**
  * رحلةُ المرشَّح للإصدار | The release-candidate journey (Wave 1).
@@ -92,6 +95,59 @@ const TERMINAL_STATE_LABELS_EN = [
 const IN_FLIGHT_STATE_LABELS_EN = [
   "Queued", "Reading the document", "Extracting the thesis structure",
 ];
+
+// ── فعلُ القراءة الذي **توجبه** الحال ──────────────────────────────────
+//
+// **وثلاثةُ أفعالٍ لا واحد**، ولكلٍّ حالُه (Wave 1.1، §A):
+//
+//   • «Read the thesis» — رُفع الملفّ ولم تبدأ قراءتُه بعد. وأوّلُ قراءةٍ
+//     ليست إعادةً؛ وتسميتُها «أعد المحاولة» تجعل الباحث يظنّ أنّه أضاع شيئًا.
+//   • «Read it again» — قُرئ المستند وانتهى بلا فشل، فالقراءةُ الثانية
+//     إعادةُ قراءةٍ لا إصلاحُ عطب.
+//   • «Try again» — **سقطت القراءة وللسقوط سبب مسمّى**، فيُعرض إصلاحُها.
+//
+// وكانت هذه الدعوى تطلب «Try again» على المستند النصّي أيًّا كانت حاله —
+// فمرّت حين كان الزرّ واحدًا لكلّ الحالات، وسقطت حين صار لكلّ حالٍ فعلُها.
+// **ولا تُصلَح بتبديل السلسلة ولا بتعبيرٍ يقبل الاثنين**: كلاهما يُبطل ما
+// جاءت تفحصه. فتُسأل الحالُ أوّلًا، ثمّ يُطلب الفعلُ الذي توجبه هي.
+const FIRST_READ_EN = "Read the thesis";
+const REREAD_EN = "Read it again";
+const RETRY_EN = "Try again";
+const READ_ACTIONS_EN = [FIRST_READ_EN, REREAD_EN, RETRY_EN] as const;
+
+/** `null` = **لا فعلَ قراءةٍ على هذه الحال**، ويقوم مقامَه سببٌ مكتوب. */
+const READ_ACTION_FOR_STATE_EN: Record<string, string | null> = {
+  "File uploaded": FIRST_READ_EN,
+  "Awaiting your approval": REREAD_EN,
+  "Ready for review": REREAD_EN,
+  "Analysis complete": REREAD_EN,
+  "Analysis failed": RETRY_EN,
+  // لا OCR بعد، وإعادةُ القراءة تُنتج النتيجة نفسها حرفًا بحرف.
+  "The document has no text layer": null,
+};
+
+/**
+ * يفحص أنّ البطاقة تعرض **الفعل الذي توجبه حالُها وحده**.
+ *
+ * والنصفُ الثاني هو الذي يحمل الوزن: الفعلان الآخران **غائبان**. فحصٌ يطلب
+ * الحاضرَ ولا ينفي غيره يمرّ على بطاقةٍ تعرض الثلاثة معًا.
+ */
+async function expectReadAction(card: Locator, state: string): Promise<string | null> {
+  expect(Object.keys(READ_ACTION_FOR_STATE_EN),
+         `حالٌ لا يعرفها جدولُ الأفعال — الدعوى تفحص شيئًا لم يُقصد: ${state}`)
+    .toContain(state);
+  const expected = READ_ACTION_FOR_STATE_EN[state]!;
+  for (const label of READ_ACTIONS_EN) {
+    const control = card.getByRole("button", { name: label, exact: true });
+    if (label === expected) {
+      await expect(control, `الحال «${state}» توجب «${label}» ولا زرَّ به`).toBeVisible();
+    } else {
+      await expect(control, `الحال «${state}» تعرض «${label}» وهو ليس فعلَها`)
+        .toHaveCount(0);
+    }
+  }
+  return expected;
+}
 
 // ── الحسابان الاصطناعيّان ─────────────────────────────────────────────
 //
@@ -369,16 +425,31 @@ function stateLine(page: Page, needle: string) {
   return cardWith(page, needle).locator(".metric-label", { hasText: "Status:" });
 }
 
+/**
+ * اسمُ الحال المكتوب على البطاقة الآن — **مقروءًا من موضعٍ واحد**.
+ *
+ * وصياغتان لقصّ «Status:» ولاحقةِ المحاولات تفترقان بأول تعديل، فتقرأ
+ * إحداهما «Ready for review · Processing attempts: 2» حالًا قائمةً بذاتها.
+ */
+async function stateLabel(page: Page, needle: string): Promise<string> {
+  // **والانتظارُ شرطٌ لا زخرف.** `textContent()` تقرأ مرّةً بلا انتظار،
+  // فتُرجع فراغًا إن سُئلت قبل أن تُصيَّر البطاقة — والدعوى تسقط حينها على
+  // سباقٍ لا على المنتج. والتوكيدُ الذي حلّت محلّه كان ينتظر من تلقائه.
+  const line = stateLine(page, needle);
+  await expect(line, `لا سطرَ حالٍ على بطاقة ${needle}`).toBeVisible();
+  const text = (await line.textContent()) ?? "";
+  return text.replace(/^Status:\s*/, "").split(" · ")[0].trim();
+}
+
 /** ينتظر أن تستقرّ حالُ البطاقة — بإعادة تحميلٍ لا باستطلاعٍ في الذاكرة. */
 async function waitForTerminalState(page: Page, needle: string): Promise<string> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await page.reload();
     const card = cardWith(page, needle);
     await expect(card).toHaveCount(1);
-    const line = (await stateLine(page, needle).textContent()) ?? "";
-    const label = line.replace(/^Status:\s*/, "").split(" · ")[0].trim();
+    const label = await stateLabel(page, needle);
     if (TERMINAL_STATE_LABELS_EN.includes(label)) return label;
-    expect(IN_FLIGHT_STATE_LABELS_EN, `حالٌ غير معروفة على البطاقة: ${line}`)
+    expect(IN_FLIGHT_STATE_LABELS_EN, `حالٌ غير معروفة على البطاقة: ${label}`)
       .toContain(label);
     await page.waitForTimeout(1000);
   }
@@ -668,16 +739,29 @@ test("٨ · إعادةُ المحاولة تُعرض وتُردّ ٤٠٩ | retry
     expect(theses[TEXT_PDF_NAME], "لم تُعرف رسالةُ المستند النصّي").toBeTruthy();
     expect(theses[SCANNED_PDF_NAME], "لم تُعرف رسالةُ المستند الممسوح").toBeTruthy();
 
-    // ــ حيث تجوز: الزرّ معروض على المستند الذي قُرئ ــ
+    // ــ حيث تجوز: **الفعلُ الذي توجبه الحال، لا أيُّ فعل** ــ
+    //
+    // والحالُ تُقرأ من البطاقة أوّلًا ثمّ يُطلب فعلُها من الجدول. ولو ثُبِّتت
+    // سلسلةٌ بعينها هنا لصار الفحص هشًّا في الاتجاه الآخر: مستندٌ نصّيّ
+    // سقطت قراءتُه في بيئةٍ ما ينتهي إلى «Analysis failed» بحقّ، وفعلُه
+    // حينها «Try again» لا «Read it again» — والدعوى تُسائل الحال، لا الحظّ.
     const withText = cardWith(page, TEXT_PDF_NAME);
-    await expect(withText.getByRole("button", { name: "Try again" })).toBeVisible();
+    const textState = await stateLabel(page, TEXT_PDF_NAME);
+    const offered = await expectReadAction(withText, textState);
+    expect(offered, `مستندٌ نصّيّ في حال «${textState}» ولا فعلَ قراءةٍ عليه`)
+      .not.toBeNull();
 
-    // ــ وحيث لا تجوز: لا زرَّ، **وسببٌ مكتوب مكانه** ــ
+    // ــ وحيث لا تجوز: لا زرَّ **من الثلاثة**، وسببٌ مكتوب مكانه ــ
     //
     // وزرٌّ مُطفأ بلا تفسير كان سيمرّ على فحصٍ يسأل «أغائبٌ هو؟» وحده،
     // فيُسأل الأمران: غيابُ الوعد، وحضورُ سببه.
     const scanned = cardWith(page, SCANNED_PDF_NAME);
-    await expect(scanned.getByRole("button", { name: "Try again" })).toHaveCount(0);
+    const scannedState = await stateLabel(page, SCANNED_PDF_NAME);
+    expect(scannedState, "المستندُ بلا نصّ لم يعد «لا طبقة نصّ» — الدعوى تفحص غيرَ ما قُصد")
+      .toBe("The document has no text layer");
+    expect(await expectReadAction(scanned, scannedState),
+           "مستندٌ ممسوح ضوئيًّا عُرض عليه فعلُ قراءةٍ يُعيد النتيجة نفسها")
+      .toBeNull();
     await expect(scanned.getByText("The document has no text layer", { exact: false }).first())
       .toBeVisible();
 

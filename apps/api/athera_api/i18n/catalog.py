@@ -516,6 +516,52 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     "thesis.unknown_view": {
         "ar": "خيار العرض غير معروف.", "en": "Unknown listing view.",
     },
+    # **الرفض يُقال بسببه، ولا يُستبدل بحذفٍ متسلسلٍ صامت.** ما بُني على
+    # الرسالة قرارُ إنسان — فرصةُ نشر، اتفاقُ تأليف، اعتمادُ حقوق، مشروعٌ
+    # محوَّل — وإسقاطُ أصله يمحوه أو يقطع صلتَه به، وكلاهما لا يُستعاد.
+    # **مستندٌ معطوبٌ ليس عطبًا في الخادم.** المفردةُ كانت تحمل
+    # `parse_failed` ولا مسارَ يكتبه، فكان السقوطُ غيرُ المصنَّف يخرج ٥٠٠.
+    # **حدٌّ لا يُقايَض، ونصُّه لا يَعِد بإلغاء.** الملفُّ تقرؤه مهمّةٌ الآن،
+    # ولا سبيل إلى إيقافها في هذه المرحلة — فيُقال ذلك ولا يُتظاهَر بغيره.
+    "library.file_busy_processing": {
+        "ar": "هذا الملفّ تقرؤه معالجةٌ جاريةٌ الآن على رسالةٍ مرتبطة به، فلا يُنقل "
+              "إلى السلّة قبل انتهائها. **ولا يوجد في هذه المرحلة سبيلٌ إلى إلغاء "
+              "المعالجة** — انتظر انتهاءها ثمّ أعد المحاولة. ولم يُنقل شيء، ولم "
+              "تتغيّر الرسالة.",
+        "en": "This file is being read right now by processing running on a thesis "
+              "linked to it, so it cannot be moved to the trash until that finishes. "
+              "There is no way to cancel processing at this stage — wait for it to "
+              "finish, then try again. Nothing was moved and the thesis is unchanged.",
+    },
+    "thesis.parse_failed": {
+        "ar": "تعذّرت قراءة هذا المستند — قد يكون مبتورًا أو تالفًا. "
+              "السبب مسجَّل على البطاقة، ويمكنك رفع نسخةٍ سليمة.",
+        "en": "This document could not be read; it may be truncated or damaged. "
+              "The reason is recorded on the card, and you can upload a sound copy.",
+    },
+    "thesis.archive_needs_acknowledgement": {
+        "ar": "تقوم على هذه الرسالة نتائجُ عملٍ حسمتَه بنفسك. الأرشفة لا تحذف شيئًا "
+              "ويعيدها الاسترجاع كما كانت، لكنّ إخفاءها يحتاج إقرارك صراحةً. "
+              "المعاينة تذكر ما سيُخفى معها بالاسم والعدد.",
+        "en": "Work you decided on yourself rests on this thesis. Archiving deletes "
+              "nothing and restoring brings it back unchanged, but hiding it needs your "
+              "explicit acknowledgement. The preview names and counts what is hidden "
+              "with it.",
+    },
+    "thesis.archived": {
+        "ar": "هذه الرسالة مؤرشَفة. استرجِعها أوّلًا ثمّ أعد المحاولة.",
+        "en": "This thesis is archived. Restore it first, then try again.",
+    },
+    "thesis.not_archived": {
+        "ar": "هذه الرسالة ليست مؤرشَفة، فلا شيء يُسترجَع.",
+        "en": "This thesis is not archived, so there is nothing to restore.",
+    },
+    "thesis.removal_blocked": {
+        "ar": "لا تُزال هذه الرسالة: يقوم عليها عملٌ علميٌّ حسمتَه بنفسك. "
+              "المعاينة تذكر ما بُني عليها بالاسم والعدد.",
+        "en": "This thesis cannot be removed: scientific work you decided on rests on it. "
+              "The preview names and counts what was built on it.",
+    },
     "publishing.manuscript_not_found": {
         "ar": "المخطوطة غير موجودة.", "en": "Manuscript not found.",
     },

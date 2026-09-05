@@ -141,13 +141,16 @@ def test_ci_derives_the_expected_migration_head_instead_of_hardcoding_it():
     assert not re.search(r'test "\$head" = "0\d{3}"', drill), "رقم مثبَّت عاد"
 
 
-#: الخطواتُ المسموح لها بتثبيت رقمِ ترحيل — **بسببٍ مكتوب، لا بالتسامح**.
+#: الخطواتُ المسموح لها بتثبيت رقمِ ترحيل في `ci.yml` — **وهي اليوم لا شيء**.
 #:
-#: قاعدةُ نافذة النشر تقف عند `0028` عمدًا: بين ترحيل الإنتاج ونشر الموجة
-#: يخدم الخادمُ القديم ذلك المخطَّط بعينه، والرقمُ هنا **هو الخاصّيّة
-#: المفحوصة** لا قيمةً تتقادم. ولو اشتُقّ من الرأس لصار الفحصُ يقيس الرأس
-#: مرّتين ولا يقيس النافذة أصلًا.
-PINNED_BY_DESIGN = ("athera_expand", "expand-window", "upgrade 0028")
+#: كانت خطواتُ نافذة 0028 مستثناةً بسببٍ مكتوب: الرقمُ فيها هو الخاصّيّةُ
+#: المفحوصة لا قيمةٌ تتقادم. وقد أُغلقت تلك النافذة وذهبت خطواتُها، فذهب
+#: موجبُ الاستثناء معها.
+#:
+#: **واستثناءٌ يبقى بعد زوال موجبه يصير بابًا.** فالقائمةُ تُفرَّغ ولا
+#: تُترك مفتوحةً على «ما قد يُستثنى يومًا»: من أراد تثبيتًا جديدًا كتب
+#: سببَه هنا، ورآه المراجع.
+PINNED_BY_DESIGN: tuple[str, ...] = ()
 
 
 def test_no_ci_step_pins_a_migration_revision_number():
@@ -170,14 +173,115 @@ def test_no_ci_step_pins_a_migration_revision_number():
         assert not re.search(r'=\s*"0\d{3}"', line), f"رقم ترحيل مثبَّت: {stripped}"
 
 
-def test_the_pinned_exception_is_only_the_window():
-    """**واستثناءٌ بلا حدٍّ يصير قاعدة.**
+def test_no_migration_number_is_pinned_in_ci_at_all():
+    """**واستثناءٌ بلا حدٍّ يصير قاعدة — واستثناءٌ زال موجبُه يصير بابًا.**
 
-    فيُطلب أن يبقى الرقم المثبَّت `0028` وحده: لو ثُبّت رأسُ السلسلة يومًا
-    لعاد العطبُ الذي وُضع الحارسُ لأجله، متسلّلًا من باب الاستثناء.
+    كان يُسمح بـ`0028` وحده، لأنّ خطوةَ النافذة كانت تقيس ذلك الرقم بعينه.
+    وقد ذهبت الخطوة، فالمسموحُ اليوم **لا شيء**: كلُّ رقمٍ في `ci.yml`
+    يُشتقّ من الرأس، وأيُّ تثبيتٍ جديد يمرّ على المراجعة بسببه المكتوب.
+
+    **والشرطُ يضيق ولا يُترك مفتوحًا**: `<= {"0028"}` كان يمرّ اليوم على
+    الفراغ ويمرّ غدًا على عودةِ `0028` بلا خطوةٍ تبرّرها. فيُطلب الفراغُ
+    صراحةً.
     """
     import re
 
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     pinned = {m for m in re.findall(r'=\s*"(0\d{3})"', workflow)}
-    assert pinned <= {"0028"}, f"أرقامٌ مثبَّتة خارج النافذة: {sorted(pinned)}"
+    assert pinned == set(), f"رقمُ ترحيلٍ مثبَّت في المشغّل: {sorted(pinned)}"
+    # وقائمةُ الاستثناءات فارغةٌ فعلًا — فلا يمرّ تثبيتٌ من بابها بصمت.
+    assert PINNED_BY_DESIGN == (), (
+        f"استثناءٌ قائمٌ بلا خطوةٍ تبرّره: {PINNED_BY_DESIGN}")
+
+
+def _rc_head_pin_step() -> str:
+    """كتلةُ خطوةِ تثبيت الرأس وحدها — **لا الملفّ كلّه**.
+
+    والفرقُ جوهريّ: الملفّ يذكر أرقام ترحيلٍ أخرى في شرحه — «الإنتاج عند
+    `0029`» مثلًا — وهي **وصفُ واقعٍ لا تثبيتُ شرط**. فحارسٌ يمسح الملفّ
+    كلّه يسقط على نثرٍ صحيح، ويُدفع من يقرؤه إلى حذف الشرح ليخضرّ الفحص.
+    فيُقرأ ما يُفحَص وحده: اسمُ الخطوة وجسمُها.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "rc-e2e.yml").read_text(
+        encoding="utf-8")
+    lines = workflow.splitlines()
+    opener = next(
+        (i for i, line in enumerate(lines)
+         if line.strip().startswith("- name: Assert the schema head")), None)
+    assert opener is not None, (
+        "لا خطوةَ تثبّت رأسَ المخطَّط في رحلة المرشَّح — "
+        "فلا شيء يفصل عطبَ المنتج عن انحراف النسخ")
+    block = [lines[opener]]
+    for line in lines[opener + 1:]:
+        stripped = line.strip()
+        if stripped.startswith(("- name:", "- uses:", "- run:")):
+            break
+        block.append(line)
+    return "\n".join(block)
+
+
+def test_the_rc_head_pin_says_one_number_and_it_is_the_chain_head():
+    """**رحلةُ المرشَّح تثبّت رقمًا، فيجب أن يكون رقمَ الرأس — ورقمًا واحدًا.**
+
+    والتثبيتُ هناك مقصود، خلافًا لـ`ci.yml`: السؤال «أهذه بيئةُ هذه الموجة؟»
+    وجوابه رقمٌ بعينه اتُّفق عليه، لا «أيًّا كان رأسُ اليوم». ولو اشتُقّ
+    لقال الفحصُ «موافق» على أيّ رأسٍ كان فلا يحرس شيئًا.
+
+    **لكنّ تثبيتًا يتقادم أخطرُ من اشتقاق.** والعطبُ وقع فعلًا: أُضيف
+    الترحيل `0030` وبقيت الرحلةُ تشترط `0029`، فسقطت المهمّةُ على تصميمٍ
+    صحيح. فيُطلب هنا أمران:
+
+      ١ **أنّ الرقم المثبَّت هو رأسُ السلسلة في هذا المستودع** — فأوّلُ
+        ترحيلٍ جديد يُسقط هذا الفحص في المكان الذي يُصلَح فيه العطب، لا في
+        مهمّةٍ تُشغَّل بعد الدمج.
+      ٢ **وأنّه رقمٌ واحد في الخطوة كلّها** — الاسمُ والشرطُ والسجلُّ ونصُّ
+        الخطأ. ورقمان مختلفان يعنيان بيّنةً تُناقض الشرطَ الذي تشهد له:
+        يُقال «required: 0029» ويُفحص `!= "0030"`، فيُقرأ سببُ السقوط
+        خاطئًا ويُبحث عن العلّة حيث ليست.
+    """
+    import re
+
+    versions = REPO_ROOT / "infra" / "db" / "migrations" / "versions"
+    head = sorted(path.name.split("_", 1)[0] for path in versions.glob("0*.py"))[-1]
+
+    step = _rc_head_pin_step()
+    mentioned = set(re.findall(r"\b(0\d{3})\b", step))
+
+    assert mentioned, "خطوةُ التثبيت لا تذكر رقمًا أصلًا — فهي لا تحرس شيئًا"
+    assert mentioned == {head}, (
+        f"خطوةُ رحلة المرشَّح تذكر {sorted(mentioned)} ورأسُ السلسلة {head} — "
+        "بيّنةٌ تُناقض الشرط، أو تثبيتٌ تقادم")
+    # **وتُفحص المواضع الأربعة بأعيانها**: اسمٌ وشرطٌ وسجلٌّ ونصُّ خطأ.
+    assert step.count(head) >= 4, (
+        f"الرأس `{head}` مذكورٌ {step.count(head)} مرّةً في الخطوة — "
+        "يُنتظر أربعةٌ على الأقل: الاسم والشرط والسجلّ ونصّ الخطأ")
+
+
+def test_the_rc_head_guard_would_notice_a_stale_pin():
+    """**حارسٌ لا يسقط أبدًا ليس حارسًا.**
+
+    يُحاكى الحسابُ نفسه على نصٍّ تقادم رقمُه، وعلى آخر يذكر رقمين — فيجب
+    أن يُرى الاثنان مخالفَين، وأن يُقبل السليمُ وحده.
+    """
+    import re
+
+    def mentioned(text: str) -> set[str]:
+        return set(re.findall(r"\b(0\d{3})\b", text))
+
+    assert mentioned("required: '0029'") != {"0030"}, "تثبيتٌ تقادم يمرّ"
+    assert mentioned("name: head is 0029\nif [ x != 0030 ]") != {"0030"}, "رقمان يمرّان"
+    assert mentioned("required: '0030'\nverified: 0030") == {"0030"}, "السليمُ يُردّ"
+
+
+def test_the_rc_pin_guard_reads_the_step_and_not_the_prose_around_it():
+    """**والحارسُ لا يُسقطه شرحٌ صحيح.**
+
+    الملفّ يذكر `0029` وصفًا لحال الإنتاج، وهو نثرٌ صادق لا تثبيتُ شرط.
+    فتُقرأ الخطوةُ وحدها، ويُثبَت أنّ ما حولها بقي خارج القراءة.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "rc-e2e.yml").read_text(
+        encoding="utf-8")
+    step = _rc_head_pin_step()
+    assert len(step) < len(workflow), "الحارس يقرأ الملفّ كلّه لا الخطوة"
+    assert "- name: Assert the schema head" in step
+    assert "version_num FROM alembic_version" in step, "جسمُ الخطوة لم يُقرأ"

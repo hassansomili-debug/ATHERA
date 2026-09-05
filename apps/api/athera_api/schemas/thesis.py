@@ -22,6 +22,42 @@ class ThesisCreateRequest(BaseModel):
     supervisor_name: str | None = None
 
 
+class ThesisCardActions(BaseModel):
+    """ما تعرضه البطاقة — **والشاشة لا تجتهد، بل تعرض ما يقوله الخادم**.
+
+    كان كلُّ شرطٍ منها مكتوبًا في JSX على حدة، فافترقت الشاشة عن الخادم:
+    زرُّ «تفكيك الرسالة» يُعرض دائمًا وإن ردّت النقطة `thesis.no_file`، وزرُّ
+    «استخراج الفرص» مشروطٌ بـ`parsed_at` الذي لا يضعه إلّا مسارٌ قديم.
+    """
+
+    #: الفعل الأول على البطاقة: review · process · reprocess · attach_file · None
+    primary: str | None = None
+    #: عملٌ يجري الآن — فلا فعلَ يُعرض، ويُعرض ما يجري.
+    is_running: bool = False
+
+    can_review: bool = False
+    can_process: bool = False
+    can_reprocess: bool = False
+    #: **المسار القديم باقٍ في الواجهة البرمجية ومسحوبٌ من البطاقة.**
+    can_parse: bool = False
+    can_attach_file: bool = False
+    can_mine: bool = False
+    can_archive: bool = False
+    can_restore: bool = False
+    can_trash_file: bool = False
+    is_archived: bool = False
+    #: سببُ منعِ الأرشفة والسلّة أثناء عملٍ جارٍ — **والخادم يفرضه أيضًا**.
+    lifecycle_blocked_reason: str | None = None
+
+    #: available · in_flight · no_evidence
+    mining_state: str
+    #: لماذا التنقيب متاحٌ أو غير متاح — **بنصٍّ يصف الواقع لا وعدًا**.
+    mining_reason: str
+    parse_withdrawn_reason: str
+    #: سببُ خلوّ البطاقة من فعلٍ الآن، إن خلت.
+    blocked_reason: str | None = None
+
+
 class ThesisResponse(BaseModel):
     """`None` تعني «لم يُستخرَج بعد»، لا «فارغ» ولا قيمة نائبة.
 
@@ -95,6 +131,84 @@ class ThesisResponse(BaseModel):
     # والراية تُرسَل مع كل صفّ فلا تُقرأ البطاقة وعدًا بالنشر.
     opportunities_are_candidates: bool = True
 
+    # ── نتائجُ الرسالة: العدّ الثاني الذي يقرؤه المنقّب ──
+    #
+    # ولم يكن يُرسَل، فكانت الشاشة تحكم على إتاحة التنقيب من `parsed_at`
+    # وحده — وهو ختمُ المسار القديم لا شاهدُ وجود دليل.
+    results_extracted: int = 0
+
+    # **معرّفُ ملفّ المصدر** — لتُفرَّق «أزل السجلّ» عن «انقل الملفّ إلى
+    # السلّة»؛ فعلان لصاحبين، ولا يُنفَّذ أحدهما بأثرٍ جانبيّ للآخر.
+    source_file_id: uuid.UUID | None = None
+
+    #: **مؤرشَفة = مُخفاة لا محذوفة** (ترحيل 0030). و`None` تعني «في القائمة».
+    archived_at: dt.datetime | None = None
+
+    # ── الأفعال: قرارٌ واحد يُحسب في الخادم ──
+    actions: ThesisCardActions
+
+
+# ── إزالةُ الرسالة: معاينةُ التبعات ثم القرار ──
+
+class RemovalDependency(BaseModel):
+    key: str
+    label: str
+    count: int
+    #: هل تمنع هذه التبعة الإزالة — أثرُ حكمٍ بشريٍّ يمنع، ومخرجُ آلةٍ لا يمنع.
+    blocking: bool
+
+
+class RemovalPreviewResponse(BaseModel):
+    """**ما سيُخفى مع الرسالة، قبل الأرشفة لا بعدها.**
+
+    وكان هذا العقد يقول «removable» — أي «أيجوز حذفُها؟». والحذفُ ذهب من
+    المنتج، فذهب السؤال معه: الأرشفة تُخفي ولا تحذف، والاسترجاع يعيد. وما
+    بقي سؤالٌ آخر — **«أيستوجب إخفاؤها إقرارًا صريحًا؟»** — ويستوجبه حين
+    يتدلّى منها عملٌ حسمه إنسان.
+    """
+
+    thesis_id: uuid.UUID
+    #: هل يتدلّى منها عملٌ حسمه إنسان، فيُطلب إقرارٌ صريح قبل الإخفاء.
+    needs_acknowledgement: bool
+    dependencies: list[RemovalDependency]
+    #: ما يستوجب الإقرار بعينه، بأسمائه وأعداده.
+    blocking: list[RemovalDependency]
+    explanation: str
+    #: نقلُ ملفّ المكتبة إلى السلّة فعلٌ آخر — ومعرّفُه هنا ليُطلب صراحةً.
+    source_file_id: uuid.UUID | None = None
+    archived: bool = False
+    note_ar: str = (
+        "الأرشفة تُخفي سجلّ مركز الرسائل ولا تحذف صفًّا واحدًا، ولا تمسّ ملفّ "
+        "المكتبة، ولا يُمحى كائنُ التخزين نهائيًّا في أيّ حال."
+    )
+    note_en: str = (
+        "Archiving hides the Thesis Center record and deletes not one row; it does not "
+        "touch the library file, and no stored object is ever permanently deleted."
+    )
+
+
+class ArchiveRequest(BaseModel):
+    """الإقرارُ بعد أن يُقال ما يترتّب — لا قبله.
+
+    والافتراضُ `False`: إقرارٌ صامتٌ افتراضيّ يجعل السؤال زينة. (وهي القاعدة
+    نفسها في `library.TrashRequest`.)
+    """
+
+    acknowledge: bool = False
+
+
+class ArchiveResponse(BaseModel):
+    thesis_id: uuid.UUID
+    archived: bool
+    archived_at: dt.datetime | None = None
+    #: ما خرج من القائمة معها — **باقيًا كما هو**، لا محذوفًا.
+    hidden: dict[str, int] = Field(default_factory=dict)
+    acknowledged: bool = False
+    #: **صفرٌ يُصرَّح به**: لا صفَّ يُحذف في هذا المسار، ولا كائنَ تخزين.
+    rows_deleted: int = 0
+    note_ar: str = "لم يُحذف شيء؛ الاسترجاع يعيد السجلّ كما كان."
+    note_en: str = "Nothing was deleted; restoring returns the record exactly as it was."
+
 
 class ParseResponse(BaseModel):
     thesis_id: uuid.UUID
@@ -120,6 +234,14 @@ class MineResponse(BaseModel):
     opportunities_created: int
     kinds: list[str]
     aging: AgingResponse
+    #: **مقترحاتٌ عُلِّقت لأنّ عنوان الرسالة لم يُستخرَج بعد** — ولا يُخترع
+    #: لها عنوان. و«لم يُقترح» ليست «لا يوجد»، فيُقال العدد ومعه سببه.
+    withheld_for_missing_title: int = 0
+    title_note: str | None = None
+    #: **ما اقترحه المنقّب ووُجد مثلُه قائمًا فلم يُكتب ثانيةً.** بدونه تُقرأ
+    #: التشغيلة الثانية «٠ فرص» فيُظنّ أنّ المنقّب لم يجد شيئًا — وهو وجد
+    #: ما كان موجودًا. والتنقيب مُعادٌ بلا أثر، لا مُلغًى.
+    opportunities_already_present: int = 0
     note_ar: str = "الفرص مقترحات مؤصَّلة في عناصر الرسالة، ولا تتقدم بلا اعتماد الحقوق."
     note_en: str = "Opportunities are grounded proposals; none advances without rights approval."
 
