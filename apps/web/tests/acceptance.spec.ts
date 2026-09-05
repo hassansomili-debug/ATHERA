@@ -48,8 +48,30 @@ const DOC_TEXT = [
  * الفحص بـstrict mode — وهو محقّ: «اضغط الرابط» ليست تعليمة كافية حين
  * يوجد رابطان.
  */
-const sidebar = (page: Page) =>
-  page.getByRole("navigation", { name: "الرئيسية", exact: true });
+/**
+ * **اسمُ المَعْلَم لا اسمُ أوّل رابطٍ فيه.**
+ *
+ * كان هذا المُحدِّد يطلب `navigation` باسم «الرئيسية» — وتلك نصُّ رابط
+ * الصفحة الأولى، لا اسمُ المَعْلَم. والمنتجُ يرسم
+ * `<nav aria-label={t("nav.primaryLabel")}>` أي «التنقّل الرئيسي».
+ *
+ * فلم يطابق المُحدِّدُ شيئًا، ولم يسقط بخطأٍ مفهوم: انتظر ظهورَ ما لا
+ * يوجد حتى استُنفدت مهلةُ الفحص كاملةً (خمس عشرة دقيقة)، فقُرئ العطبُ
+ * «بطءَ إنتاج» وهو خطأُ مُحدِّدٍ في السطر نفسه.
+ */
+const PRIMARY_NAV = LOCALE === "ar" ? "التنقّل الرئيسي" : "Primary navigation";
+
+const primaryNav = (page: Page) =>
+  page.getByRole("navigation", { name: PRIMARY_NAV, exact: true });
+
+/**
+ * **وضابطُ الجلسة ليس داخل التنقّل.**
+ *
+ * `SessionControl` شقيقٌ يُرسم بعد `NavLinks` في `SideNav`، خارج `<nav>`.
+ * فطلبُه داخل المَعْلَم خطأٌ بنيويّ لا يُصلحه انتظار. ولا يُنقل المكوّن
+ * إلى داخل التنقّل لإرضاء فحص — الشاشةُ ليست خادمةَ الفحص.
+ */
+const SIGN_OUT = LOCALE === "ar" ? "تسجيل الخروج" : "Sign out";
 
 /**
  * **لا أثر يحمل سرًّا.**
@@ -162,7 +184,9 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
   // ── ٤: أبحاثي ──
   await test.step("My Research loads", async () => {
-    await sidebar(page).getByRole("link", { name: "أبحاثي", exact: true }).click();
+    await primaryNav(page)
+      .getByRole("link", { name: "أبحاثي", exact: true })
+      .click({ timeout: 15_000 });
     await page.waitForURL(/\/portfolio/);
     await expect(page.getByText("ابدأ بحثًا جديدًا")).toBeVisible();
   });
@@ -193,7 +217,9 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   // الحساب يمرّ اليوم ويسقط غدًا بلا أن يتغيّر سطر — ونجاحُه لا يقول شيئًا.
   // فالملف يُرفع من الواجهة نفسها، باسمٍ فريد لكل تشغيلة.
   await test.step("upload a file into My Library through the UI", async () => {
-    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
+    await primaryNav(page)
+      .getByRole("link", { name: "مكتبتي", exact: true })
+      .click({ timeout: 15_000 });
     await page.waitForURL(/\/library/);
 
     // مدخل الملف مخفيّ خلف زرّ — و`setInputFiles` يكتب فيه مباشرةً كما
@@ -268,7 +294,9 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
 
   await test.step("the asset survives in My Library", async () => {
     // ل + م — الإزالة من بحثٍ ليست حذفًا من المكتبة.
-    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
+    await primaryNav(page)
+      .getByRole("link", { name: "مكتبتي", exact: true })
+      .click({ timeout: 15_000 });
     await page.waitForURL(/\/library/);
     await expect(page.getByText(FILENAME).first()).toBeVisible({ timeout: 30_000 });
   });
@@ -279,7 +307,9 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   // **ولا يُقبل «النصّ ظاهر» بديلًا عن «الفعل وقع».** الخطوة السابقة كانت
   // تثبت أن القسم يقول قاعدته — وتلك جملةٌ في الشاشة لا رحلةُ باحث.
   await test.step("import a reference into My Library through the UI", async () => {
-    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
+    await primaryNav(page)
+      .getByRole("link", { name: "مكتبتي", exact: true })
+      .click({ timeout: 15_000 });
     await page.waitForURL(/\/library/);
 
     // DOI ثابت ومعروف — والاستيراد يقع من الشاشة لا من الـAPI.
@@ -381,7 +411,9 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
   // البادئة صراحةً — لا تُفكّ المطابقة التامّة عن بقيّة المُحدِّدات.
   // ── ١٤–١٦: مستندٌ يُرفع ثم يُعالَج ثم تُراجَع معرفته ──
   await test.step("upload a parseable synthetic document", async () => {
-    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
+    await primaryNav(page)
+      .getByRole("link", { name: "مكتبتي", exact: true })
+      .click({ timeout: 15_000 });
     await page.waitForURL(/\/library/);
     await page.locator('input[type="file"]').setInputFiles({
       name: DOC_NAME,
@@ -481,7 +513,9 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     await expect(page.getByTestId("dic2-grant")).toBeHidden();
 
     // وبعد الإذن تمضي المعالجة إلى حالٍ يراجعها الباحث.
-    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
+    await primaryNav(page)
+      .getByRole("link", { name: "مكتبتي", exact: true })
+      .click({ timeout: 15_000 });
     await page.waitForURL(/\/library/);
     const back = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
     await expect
@@ -567,7 +601,9 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     // **طريق الباحث نفسه.** وكان السؤال يُطرح بلا مرفق، فلا يبلغ المعرفةَ
     // التي اعتمدها للتوّ ولا يمسّ حدَّ المحادثة أصلًا — فيمرّ الفحص وهو
     // لم يفحص شيئًا من الاثنين.
-    await sidebar(page).getByRole("link", { name: "مكتبتي", exact: true }).click();
+    await primaryNav(page)
+      .getByRole("link", { name: "مكتبتي", exact: true })
+      .click({ timeout: 15_000 });
     await page.waitForURL(/\/library/);
     const card = page.locator("article.card").filter({ hasText: DOC_NAME }).first();
     await card.getByRole("link", { name: /^اسأل بُبريفا AI عن هذا المستند:/ }).click();
@@ -693,7 +729,9 @@ test("a new researcher can create an account from the browser", async ({ page })
   expect(await page.evaluate(() => localStorage.getItem("athera_access_token"))).toBeTruthy();
 
   // ثم يخرج، ويُثبَت أن العنوان صار مأخوذًا — رسالةٌ مفهومة لا صمت.
-  await sidebar(page).getByRole("button", { name: /خروج|sign out/i }).click();
+  await page
+    .getByRole("button", { name: SIGN_OUT, exact: true })
+    .click({ timeout: 15_000 });
   await page.waitForURL(/\/login/, { timeout: 30_000 });
 
   await page.goto(`/${LOCALE}/register`);
