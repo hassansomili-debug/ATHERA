@@ -99,7 +99,6 @@ async def test_wave_one_records_self_consent_over_http_on_the_window(two_tenants
 
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ProjectMember, ResearchProject
-    from athera_api.services import collaboration
 
     a = two_tenants["a"]
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
@@ -110,16 +109,15 @@ async def test_wave_one_records_self_consent_over_http_on_the_window(two_tenants
         await session.flush()
         project_id = project.id
 
-        # **العضويةُ من جسر المسار «هـ» لا من صفٍّ بيدي.** الصلاحياتُ
-        # تُمنح هناك كما يمنحها الترحيل، فلا يُختلق مسارٌ ثانٍ للعضوية.
-        member = await collaboration.ensure_owner_membership(
-            session, tenant_id=a["tenant_id"], project_id=project_id,
-            actor_user_id=a["user_id"])
-        assert member is not None, "الجسرُ لم يُنشئ عضويةَ المالك"
-
-        # **وعضويةُ الفريق ليست تأليفًا** (§24): الموافقةُ تلزم من أُعلن
-        # مؤلفًا، ورفضُ المنصّة لغير ذلك صوابٌ لا عائق. فيُعلَن هنا صراحةً.
-        member.is_author = True
+        # **عضويةُ الفريق ليست تأليفًا** (§24). فالبذرةُ تُعلن التأليف
+        # صراحةً — ولا تُزوّر موافقة: تبقى `not_requested` حتى تكتبها
+        # النقطةُ نفسها.
+        session.add(ProjectMember(
+            tenant_id=a["tenant_id"], project_id=project_id,
+            user_id=a["user_id"], display_name="الباحثُ نفسه",
+            role="co_author", access_state="active",
+            is_author=True, author_position=1,
+            consent_state="not_requested"))
         await session.flush()
 
     async with _client(a["tenant_id"], a["user_id"]) as client:
@@ -146,8 +144,8 @@ async def test_wave_one_records_self_consent_over_http_on_the_window(two_tenants
 async def test_wave_one_reads_the_member_back_over_http_on_the_window(two_tenants):
     """**وتُقرأ بعد الكتابة**: دورةٌ كاملة على مخطَّط النافذة."""
     from athera_api.db import tenant_session
-    from athera_api.models.portfolio import ResearchProject
-    from athera_api.services import collaboration
+    from athera_api.models.collaboration import ProjectMemberPermission
+    from athera_api.models.portfolio import ProjectMember, ResearchProject
 
     a = two_tenants["a"]
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
@@ -157,10 +155,21 @@ async def test_wave_one_reads_the_member_back_over_http_on_the_window(two_tenant
         session.add(project)
         await session.flush()
         project_id = project.id
-        # والصلاحيةُ لا تأتي بالعضوية وحدها — تُمنح من الجسر نفسه.
-        assert await collaboration.ensure_owner_membership(
-            session, tenant_id=a["tenant_id"], project_id=project_id,
-            actor_user_id=a["user_id"]) is not None
+
+        member = ProjectMember(
+            tenant_id=a["tenant_id"], project_id=project_id,
+            user_id=a["user_id"], display_name="عضوٌ يُقرأ",
+            role="co_author", access_state="active")
+        session.add(member)
+        await session.flush()
+
+        # **والعضويةُ لا تمنح صلاحية.** فتُمنح واحدةٌ بعينها — وهي التي
+        # تطلبها النقطة — لا حزمةٌ تُرضي الفحص وتُخفي العقد.
+        session.add(ProjectMemberPermission(
+            tenant_id=a["tenant_id"], project_id=project_id,
+            member_id=member.id, permission_key="view_project",
+            granted_by=a["user_id"]))
+        await session.flush()
 
     async with _client(a["tenant_id"], a["user_id"]) as client:
         listing = await client.get(f"/api/v1/projects/{project_id}/members")
