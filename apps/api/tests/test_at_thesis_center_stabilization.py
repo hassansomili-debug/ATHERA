@@ -495,8 +495,10 @@ async def _seed(tenant_id, user_id, *, filename="رسالة.pdf", with_file=True
                 tenant_id=tenant_id, object_type="file", object_id=record.id,
                 user_id=user_id, grant_level="owner", granted_by=user_id))
             file_id = record.id
-        thesis = Thesis(tenant_id=tenant_id, file_id=file_id, title_ar=None,
-                        degree=None, **columns)
+        # الافتراضاتُ تُدمَج لا تُكرَّر: `Thesis(title_ar=None, **{"title_ar": …})`
+        # يسقط بـ«multiple values for keyword argument» قبل أن يفحص شيئًا.
+        thesis = Thesis(**{"tenant_id": tenant_id, "file_id": file_id,
+                           "title_ar": None, "degree": None, **columns})
         session.add(thesis)
         await session.flush()
         return thesis.id, file_id
@@ -642,7 +644,7 @@ async def test_over_http_a_disposable_thesis_is_removed_and_its_history_survives
     from sqlalchemy import func, select
 
     from athera_api.db import tenant_session
-    from athera_api.models.audit import AuditLog
+    from athera_api.models.audit import AuditEvent
     from athera_api.models.files import File
     from athera_api.models.thesis import Thesis
 
@@ -669,8 +671,8 @@ async def test_over_http_a_disposable_thesis_is_removed_and_its_history_survives
             select(Thesis).where(Thesis.id == thesis_id))).scalar_one_or_none() is None
         # **التاريخ يبقى** — والسجلُّ يذكر ما جرى على معرّفٍ لم يعد له صفّ.
         trail = (await session.execute(
-            select(func.count(AuditLog.id))
-            .where(AuditLog.object_id == thesis_id))).scalar_one()
+            select(func.count(AuditEvent.id))
+            .where(AuditEvent.object_id == thesis_id))).scalar_one()
         assert trail > 0, "سجلُّ التدقيق مُحي مع الرسالة"
         # **وملفُّ المكتبة لم يُمسّ** — نقلُه إلى السلّة فعلٌ آخر.
         record = (await session.execute(
