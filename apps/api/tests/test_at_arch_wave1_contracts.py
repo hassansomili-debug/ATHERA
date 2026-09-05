@@ -208,7 +208,11 @@ def test_the_transaction_guard_reads_the_tree_not_the_text():
 # هذا الطريق لا يبلغها أحد.
 
 WEB = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web"
-CI = pathlib.Path(__file__).resolve().parents[3] / ".github" / "workflows" / "ci.yml"
+#: **كلُّ المشغّلات لا `ci.yml` وحده.** كان الحارس يقرأ ملفًّا واحدًا
+#: باسمه، فرقعةٌ يشغّلها مشغّلٌ آخر (rc-e2e) كانت تُعدّ يتيمة — وهو حارسٌ
+#: يسقط على الصواب. والفحصُ الأصلي يبقى: رقعةٌ لا يشغّلها **أيُّ** مشغّل
+#: تُسقط البناء كما كانت.
+WORKFLOWS = pathlib.Path(__file__).resolve().parents[3] / ".github" / "workflows"
 
 #: رقعاتٌ لا يُشغّلها المشغّل عمدًا — بسببٍ مكتوب، لا بالسكوت.
 UNRUN_BY_DESIGN: dict[str, str] = {}
@@ -222,11 +226,15 @@ def _scripts() -> dict[str, str]:
 
 def test_every_browser_spec_is_reachable_from_the_workflow():
     """**كلُّ رقعةٍ في الشجرة يبلغها المشغّل** — وإلّا فهي حبرٌ على ورق."""
-    if not (WEB / "tests").exists() or not CI.exists():   # pragma: no cover
-        pytest.skip("شجرةُ الوِب أو المشغّل غير موجودَين هنا")
+    files = sorted(WORKFLOWS.glob("*.yml")) + sorted(WORKFLOWS.glob("*.yaml"))
+    if not (WEB / "tests").exists() or not files:         # pragma: no cover
+        pytest.skip("شجرةُ الوِب أو المشغّلات غير موجودة هنا")
 
     scripts = _scripts()
-    invoked = set(re.findall(r"npm run ([A-Za-z0-9:_-]+)", CI.read_text(encoding="utf-8")))
+    invoked: set[str] = set()
+    for workflow in files:
+        invoked |= set(re.findall(r"npm run ([A-Za-z0-9:_-]+)",
+                                  workflow.read_text(encoding="utf-8")))
 
     covered: set[str] = set()
     for name in invoked:

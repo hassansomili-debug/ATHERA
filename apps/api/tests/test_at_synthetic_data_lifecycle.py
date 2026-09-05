@@ -95,18 +95,23 @@ def test_the_browser_journey_uses_the_registered_marker():
     رحلةُ القبول تُنشئ الحساب على الإنتاج، فلو كتبت بادئةً من عندها لافترقت
     عن السجلّ يومًا، ونجا صفٌّ من كل تنظيفٍ لأنّ أداته تبحث عن بادئةٍ لم تعد
     تُكتب. فيُطلب أن يبقى ما تكتبه موافقًا لما هنا.
+    **وكلُّ رقعةٍ تُسجّل حسابًا، لا رحلةُ القبول وحدها.** كان الفحص يقرأ
+    ملفًّا واحدًا باسمه، فرقعةٌ ثانية تبني بريدًا من عندها تمرّ بلا سؤال —
+    وهي بعينها الحال التي وُجد الفحص لأجلها. فتُقرأ الرقعات كلُّها.
     """
-    spec = WEB / "tests" / "acceptance.spec.ts"
-    if not spec.exists():                       # pragma: no cover
-        pytest.skip("ملفُّ رحلة القبول غير موجود في هذه الشجرة")
+    specs = sorted((WEB / "tests").glob("*.spec.ts")) if (WEB / "tests").exists() else []
+    if not specs:                               # pragma: no cover
+        pytest.skip("رقعاتُ المتصفّح غير موجودة في هذه الشجرة")
 
-    text = spec.read_text(encoding="utf-8")
-    emails = re.findall(r"`([a-z-]+)-\$\{[^}]+\}@([a-z.]+)`", text)
-    assert emails, "لم يُعثر على بريدٍ مُركَّب في رحلة القبول — تغيّرت الصيغة"
+    found_any = False
+    for spec in specs:
+        text = spec.read_text(encoding="utf-8")
+        for prefix, domain in re.findall(r"`([a-z-]+)-\$\{[^}]+\}@([a-z.]+)`", text):
+            found_any = True
+            assert prefix in SYNTHETIC_PREFIXES, (
+                f"{spec.name} تكتب بادئة {prefix!r} غير مسجّلة في "
+                "athera_api.synthetic — فلن يتعرّف عليها أيُّ تقرير تنظيف")
+            assert domain == SYNTHETIC_EMAIL_DOMAIN, (
+                f"{spec.name} تسجّل على {domain!r} لا {SYNTHETIC_EMAIL_DOMAIN!r}")
 
-    for prefix, domain in emails:
-        assert prefix in SYNTHETIC_PREFIXES, (
-            f"رحلةُ القبول تكتب بادئة {prefix!r} غير مسجّلة في "
-            "athera_api.synthetic — فلن يتعرّف عليها أيُّ تقرير تنظيف")
-        assert domain == SYNTHETIC_EMAIL_DOMAIN, (
-            f"رحلةُ القبول تسجّل على {domain!r} لا {SYNTHETIC_EMAIL_DOMAIN!r}")
+    assert found_any, "لم يُعثر على بريدٍ مُركَّب في أيّ رقعة — تغيّرت الصيغة"
