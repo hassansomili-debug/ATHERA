@@ -1,0 +1,438 @@
+# إصدارُ الإنتاج بحرّاسه | Guarded production release (Wave 1.1 and after).
+#
+# **يُشغَّل بيدٍ وحدها.** لا `push` ولا `schedule`: ترحيلُ الإنتاج ونشرُه
+# قرارٌ يُتّخذ، لا أثرٌ جانبيّ لدمجٍ في `main`.
+#
+# **والترتيبُ هو العقد**: تُرحَّل القاعدة أوّلًا، ثمّ يُنشر الخادم، ثمّ
+# الوِب. شيفرةُ الموجة 1.1 تُعلن `theses.archived_at`/`archived_by`، فلا
+# تخدم مخطَّطًا دون `0030` إطلاقًا؛ وخادمُ v88 القائم لا يعرف العمودين
+# ويحتملهما لأنّهما يقبلان الفراغ. فالنافذةُ الوحيدة «قديمٌ على 0030»،
+# وتُفحص هنا قبل أن يُنشر الجديد.
+#
+# **ولا تراجعَ آليًّا عن الترحيل.** `0030` توسعةٌ محضة يحتملها الخادمُ
+# القديم؛ فإن سقطت مهمّةٌ بعده تبقى القاعدة عند `0030` ويسقط التشغيل
+# صراحةً. التنازلُ عمليةٌ يأذن بها إنسان، لا استردادٌ تلقائيّ يقع في لحظة
+# ارتباك.
+#
+# **ولا سرَّ يُطبع.** لا `set -x`، ولا `env`، ولا صدى لرابط اتصال. وأسماء
+# الأسرار وحدها مذكورة، وقيمُها تأتي من بيئة `production` في المستودع.
+name: Production release — guarded
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_main_sha:
+        description: >-
+          The exact commit on main to release. Wave 1.1 =
+          9195850dc6ff87f726801a05e02b6fd814846c13
+        required: true
+        type: string
+      deploy_web:
+        description: >-
+          Deploy Web from this workflow. Leave false if Vercel Git integration
+          already auto-deploys main (see docs/runbooks/production-release.md).
+        required: true
+        default: false
+        type: boolean
+
+# **تشغيلةٌ واحدة في كلّ وقت، ولا إلغاءَ لما بدأ.** إلغاءُ تشغيلةٍ في
+# منتصف ترحيلٍ يترك القاعدة بحالٍ لا يصفها أحد.
+concurrency:
+  group: pubriva-production-release
+  cancel-in-progress: false
+
+# أقلُّ صلاحيةٍ تكفي: قراءةُ الشيفرة. ولا `id-token` ولا `packages` ولا
+# `deployments` ما دام لا شيء هنا يطلبها.
+permissions:
+  contents: read
+
+jobs:
+  # ═════════ ١ — فحصُ المصدر: قراءةٌ محضة، ولا اعتمادَ إنتاجٍ بعد ═════════
+  #
+  # **يسقط قبل أن يلمس شيءٌ الإنتاج.** كلُّ ما هنا يُقرأ من المستودع
+  # وGitHub، ولا سرَّ من بيئة الإنتاج يدخل هذه المهمّة أصلًا.
+  source-preflight:
+    name: 1 · Source preflight (read-only)
+    runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.pin.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_main_sha }}
+          fetch-depth: 0
+
+      - name: Pin and verify the release commit
+        id: pin
+        env:
+          EXPECTED: ${{ inputs.expected_main_sha }}
+        run: |
+          set -euo pipefail
+          checked_out="$(git rev-parse HEAD)"
+          echo "checked out : ${checked_out}"
+          echo "requested   : ${EXPECTED}"
+          if [ "${checked_out}" != "${EXPECTED}" ]; then
+            echo "::error::checkout ${checked_out} does not equal the requested SHA"
+            exit 1
+          fi
+          # **والمطلوبُ أن يكون رأسَ `main` بعينه** — لا فرعًا ولا سلفًا.
+          git fetch origin main --quiet
+          main_sha="$(git rev-parse origin/main)"
+          echo "origin/main : ${main_sha}"
+          if [ "${main_sha}" != "${EXPECTED}" ]; then
+            echo "::error::origin/main is ${main_sha}, not the requested ${EXPECTED}."
+            echo "::error::Refusing: main moved, so this is not the reviewed release."
+            exit 1
+          fi
+          echo "sha=${checked_out}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the migration chain in the source tree
+        run: |
+          set -euo pipefail
+          file="infra/db/migrations/versions/0030_thesis_archive.py"
+          test -f "${file}" || { echo "::error::${file} is missing"; exit 1; }
+          grep -qE '^revision = "0030"' "${file}" \
+            || { echo "::error::${file} does not declare revision 0030"; exit 1; }
+          grep -qE '^down_revision = "0029"' "${file}" \
+            || { echo "::error::${file} does not descend from 0029"; exit 1; }
+          echo "0030_thesis_archive.py: revision 0030, down_revision 0029"
+
+      - name: Assert exactly one Alembic head, and that it is 0030
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re, sys
+          versions = pathlib.Path("infra/db/migrations/versions")
+          revisions = {}
+          for path in sorted(versions.glob("0*.py")):
+              body = path.read_text(encoding="utf-8")
+              rev = re.search(r'^revision = "(\w+)"', body, re.M)
+              down = re.search(r'^down_revision = (?:"(\w+)"|None)', body, re.M)
+              if rev:
+                  revisions[rev.group(1)] = down.group(1) if down else None
+          parents = {d for d in revisions.values() if d}
+          heads = sorted(r for r in revisions if r not in parents)
+          print(f"revisions: {len(revisions)}  heads: {heads}")
+          if heads != ["0030"]:
+              print(f"::error::expected exactly one head 0030, found {heads}")
+              sys.exit(1)
+          PY
+
+      - name: Assert the release tooling this workflow calls actually exists
+        run: |
+          set -euo pipefail
+          # **ولا تُنادى أداةٌ غير موجودة.** الدليلُ التشغيليّ القديم كان
+          # يوصي بـ`scripts/verify_audit_chain.py` وهو غير موجود في
+          # المستودع؛ فيُفحص وجودُ كلّ ما يناديه هذا المشغّل.
+          for tool in \
+            scripts/migrate_production.py \
+            scripts/verify_db_constraints.py \
+            scripts/release/verify_release_schema.py \
+            fly.toml \
+            apps/web/vercel.json
+          do
+            test -e "${tool}" || { echo "::error::missing ${tool}"; exit 1; }
+            echo "present: ${tool}"
+          done
+          grep -q '^migrate-prod:' Makefile \
+            || { echo "::error::Makefile has no migrate-prod target"; exit 1; }
+          # **ولا `release_command` في fly.toml**: نشرُ الخادم لا يُرحِّل.
+          if grep -qE '^\s*release_command' fly.toml; then
+            echo "::error::fly.toml declares release_command — deploy would migrate."
+            exit 1
+          fi
+          echo "fly.toml carries no release_command"
+
+  # ═════════ ٢ — القاعدة: حارسٌ قبل الكتابة، ثمّ ترحيل، ثمّ برهان ═════════
+  db-migrate:
+    name: 2 · Database preflight and migration
+    needs: source-preflight
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      APP_ENV: production
+      # المنفذُ المباشر. **لا 6543**: مُجمِّع المعاملات لا يضمن جلسةً واحدة
+      # بين العبارات، والترحيلُ وقفلُه يفترضان ذلك.
+      PGPORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source-preflight.outputs.release_sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install migration dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -e "apps/api[dev]"
+          python -m pip install --quiet alembic "psycopg[binary]"
+
+      - name: Materialise the migration credential into a runner-local file
+        # **`scripts/migrate_production.py` يقرأ من ملفّ لا من البيئة** —
+        # وذاك مقصود: الاعتمادُ المميَّز لا يُحمَّل ضمنًا مع كلّ أمر من جذر
+        # المستودع، وهو الحدُّ الذي وُضع بعد أن بلغت تشغيلةُ `pytest` قاعدةَ
+        # الإنتاج. فيُكتب هنا في ملفٍّ مؤقّت بأذونٍ ضيّقة، ويُمحى دائمًا.
+        env:
+          DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
+        run: |
+          set -euo pipefail
+          umask 077
+          env_file="${RUNNER_TEMP}/.env.production.migration"
+          : > "${env_file}"
+          chmod 600 "${env_file}"
+          printf 'DATABASE_MIGRATION_URL=%s\n' "${DATABASE_MIGRATION_URL}" > "${env_file}"
+          echo "MIGRATION_ENV_FILE=${env_file}" >> "$GITHUB_ENV"
+          echo "wrote migration env file (mode 600); value not printed"
+
+      - name: Gate — refuse to migrate unless production is exactly at 0029
+        # **الحارسُ يسبق الكتابة.** قاعدةٌ ليست عند `0029` إمّا رُحّلت
+        # سلفًا، أو ليست القاعدةَ المقصودة — وكلاهما سببٌ للتوقّف لا للمضيّ.
+        env:
+          DATABASE_VERIFY_URL: ${{ secrets.DATABASE_VERIFY_URL }}
+          PGHOST: ${{ secrets.PRODUCTION_DB_HOST }}
+          PGUSER: ${{ secrets.ATHERA_DB_APP_USER }}
+          PGPASSWORD: ${{ secrets.ATHERA_DB_APP_PASSWORD }}
+          PGDATABASE: postgres
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_release_schema.py --expect-version 0029
+
+      - name: Apply migration 0029 → 0030
+        # **المدخلُ القانونيّ وحده.** `make migrate` محلّيّ (`alembic upgrade
+        # head` من `infra/db`) ولا يعرف هذه الحدود. و`--confirm` يطابق مرجعَ
+        # المشروع المستخرَج من الرابط نفسه: حارسٌ ضدّ الخطأ المطبعيّ، وبدونه
+        # يرفض السكربت المضيّ.
+        env:
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          python scripts/migrate_production.py \
+            --confirm "${SUPABASE_PROJECT_REF}" \
+            --env-file "${MIGRATION_ENV_FILE}"
+
+      - name: Prove the schema after migration
+        env:
+          DATABASE_VERIFY_URL: ${{ secrets.DATABASE_VERIFY_URL }}
+          PGHOST: ${{ secrets.PRODUCTION_DB_HOST }}
+          PGUSER: ${{ secrets.ATHERA_DB_APP_USER }}
+          PGPASSWORD: ${{ secrets.ATHERA_DB_APP_PASSWORD }}
+          PGDATABASE: postgres
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_release_schema.py \
+            --expect-version 0030 --after-migration
+
+      - name: Verify database constraints hold
+        # `scripts/verify_db_constraints.py` يحاول ارتكاب كلّ ممنوع ويفشل إن
+        # نجح أيٌّ منها. وهو موجودٌ في المستودع — بخلاف `verify_audit_chain.py`
+        # الذي يوصي به الدليل القديم ولا وجود له.
+        env:
+          DATABASE_VERIFY_URL: ${{ secrets.DATABASE_VERIFY_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_VERIFY_URL:-}" ]; then
+            echo "::error::DATABASE_VERIFY_URL is required for constraint verification"
+            exit 1
+          fi
+          python scripts/verify_db_constraints.py
+
+      - name: Remove the migration credential file
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "${RUNNER_TEMP}/.env.production.migration" || true
+          echo "migration env file removed"
+
+  # ═════════ ٣ — النافذة: خادمُ v88 القائم على مخطَّط 0030 ═════════
+  #
+  # **قبل أن يُنشر الجديد.** إن سقط القديمُ على المخطَّط الجديد فالنشرُ
+  # يزيد الطين بلّة، والقرارُ حينها بشريّ.
+  legacy-compatibility:
+    name: 3 · Old API healthy on schema 0030
+    needs: db-migrate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe the currently deployed API against the migrated schema
+        run: |
+          set -euo pipefail
+          base="https://athera-api.fly.dev"
+          # `/readyz` هي المعنيّة: تردّ 503 ما لم يكن دورُ التشغيل بلا
+          # تفوّقٍ وبلا تجاوزٍ لـRLS. و`/healthz` تقول إنّ العملية حيّة.
+          for attempt in 1 2 3 4 5 6; do
+            health="$(curl -sS -o /dev/null -w '%{http_code}' "${base}/healthz" || echo 000)"
+            ready="$(curl -sS -o /dev/null -w '%{http_code}' "${base}/readyz" || echo 000)"
+            echo "attempt ${attempt}: /healthz=${health} /readyz=${ready}"
+            if [ "${health}" = "200" ] && [ "${ready}" = "200" ]; then
+              echo "the deployed (v88) API serves schema 0030 correctly"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::the already-deployed API is not healthy on schema 0030."
+          echo "::error::Schema stays at 0030 by design. Do not deploy on top of this;"
+          echo "::error::investigate first — this is a human decision, not a retry."
+          exit 1
+
+  # ═════════ ٤ — الخادم: نشرُ الهيئة بعينها، ولا ترحيلَ من هنا ═════════
+  deploy-api:
+    name: 4 · Deploy API to Fly
+    needs: [source-preflight, db-migrate, legacy-compatibility]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source-preflight.outputs.release_sha }}
+
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: Deploy the release commit
+        # **ولا ترحيلَ من هذه المهمّة.** `fly.toml` بلا `release_command`،
+        # وفحصُ المصدر يمنع إضافته — فالترحيلُ يقع في مهمّته وحدها.
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          RELEASE_SHA: ${{ needs.source-preflight.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          flyctl deploy --config fly.toml --remote-only \
+            --build-arg "RELEASE_SHA=${RELEASE_SHA}" \
+            --label "release-sha=${RELEASE_SHA}"
+
+      - name: Verify the API is healthy after deploy
+        run: |
+          set -euo pipefail
+          base="https://athera-api.fly.dev"
+          for attempt in $(seq 1 12); do
+            health="$(curl -sS -o /dev/null -w '%{http_code}' "${base}/healthz" || echo 000)"
+            ready="$(curl -sS -o /dev/null -w '%{http_code}' "${base}/readyz" || echo 000)"
+            echo "attempt ${attempt}: /healthz=${health} /readyz=${ready}"
+            if [ "${health}" = "200" ] && [ "${ready}" = "200" ]; then
+              echo "API healthy after deploy"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::API did not become healthy after deploy."
+          echo "::error::The schema stays at 0030; do not auto-downgrade."
+          exit 1
+
+      - name: Record what is running
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          flyctl status --app athera-api || true
+          flyctl releases --app athera-api | head -5 || true
+
+  # ═════════ ٥ — الوِب: بعد صحّة الخادم، وبمسارٍ واحدٍ لا اثنين ═════════
+  #
+  # **خطرُ النشر المزدوج معلَن.** `apps/web/vercel.json` يحمل
+  # `"github": { "silent": true }` — و`silent` تكتم التعليقات ولا تُعطّل
+  # النشر. فإن كان تكاملُ Git مفعَّلًا فالوِب يُنشر عند الدمج، **وذاك يكسر
+  # قاعدةَ الترتيب**: وِبٌّ جديد يأخذ حركةً قبل أن تقدر القاعدة والخادم على
+  # خدمته. فتُختار طريقٌ واحدة ويُطفأ الأخرى — والإطفاء إعدادُ مالكٍ في
+  # Vercel، لا شيءٌ يغيّره هذا المشغّل. انظر الدليل التشغيليّ.
+  deploy-web:
+    name: 5 · Deploy Web to Vercel (opt-in)
+    needs: [source-preflight, deploy-api]
+    if: ${{ inputs.deploy_web }}
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source-preflight.outputs.release_sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Deploy the release commit to production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          npx --yes vercel@latest pull --yes --environment=production \
+            --token="${VERCEL_TOKEN}"
+          npx --yes vercel@latest build --prod --token="${VERCEL_TOKEN}"
+          npx --yes vercel@latest deploy --prebuilt --prod \
+            --token="${VERCEL_TOKEN}"
+
+      - name: Verify the site responds
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 10); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' https://pubriva.com || echo 000)"
+            echo "attempt ${attempt}: https://pubriva.com -> ${code}"
+            if [ "${code}" = "200" ] || [ "${code}" = "307" ] || [ "${code}" = "308" ]; then
+              echo "web responds"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::https://pubriva.com did not respond acceptably"
+          exit 1
+
+  # ═════════ ٦ — فحصُ دخانٍ عامّ، ولا ادّعاءَ قبولٍ ═════════
+  smoke:
+    name: 6 · Public smoke (non-destructive)
+    needs: [source-preflight, deploy-api]
+    if: ${{ always() && needs.deploy-api.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe public surfaces only
+        run: |
+          set -euo pipefail
+          fail=0
+          probe() {
+            code="$(curl -sS -o /dev/null -w '%{http_code}' "$1" || echo 000)"
+            echo "  $1 -> ${code}"
+            case "${code}" in
+              200|301|302|307|308) ;;
+              *) fail=1 ;;
+            esac
+          }
+          echo "API:"
+          probe "https://athera-api.fly.dev/healthz"
+          probe "https://athera-api.fly.dev/readyz"
+          echo "Web:"
+          probe "https://pubriva.com"
+          probe "https://pubriva.com/ar/login"
+          test "${fail}" -eq 0 || { echo "::error::a public surface did not respond"; exit 1; }
+
+      - name: Summary
+        env:
+          RELEASE_SHA: ${{ needs.source-preflight.outputs.release_sha }}
+          WEB_RESULT: ${{ needs.deploy-web.result }}
+        run: |
+          set -euo pipefail
+          {
+            echo "# Production release summary"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Release SHA | \`${RELEASE_SHA}\` |"
+            echo "| Repository head at release | \`${RELEASE_SHA}\` (verified == origin/main) |"
+            echo "| Schema before | 0029 (gated: refused to migrate otherwise) |"
+            echo "| Schema after | 0030 (verified, single head) |"
+            echo "| DB verification | archive columns, paired-null constraint, live-page index, FORCE RLS, runtime role without BYPASSRLS, forbidden-operation suite |"
+            echo "| Old API on 0030 | verified healthy before the new deploy |"
+            echo "| API deploy | Fly \`athera-api\`, no release_command, health verified |"
+            echo "| Web deploy | ${WEB_RESULT:-skipped (Git integration path)} |"
+            echo "| Public smoke | /healthz, /readyz, /, /ar/login |"
+            echo
+            echo "**INFRA RELEASE GREEN — PRODUCT ACCEPTANCE REQUIRED.**"
+            echo
+            echo "This workflow proves infrastructure only. It performs no authenticated"
+            echo "journey and makes no claim about product correctness. Nobody may declare"
+            echo "WAVE 1.1 PRODUCTION GREEN until product acceptance passes separately."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "INFRA RELEASE GREEN — PRODUCT ACCEPTANCE REQUIRED"
