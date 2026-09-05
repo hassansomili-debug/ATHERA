@@ -27,7 +27,9 @@ name: RC E2E — طبقاتٌ مجتمعة | the whole stack, together
 # وحده، فلا يُشغَّل على PRات المسارات التي تقصد فرع الموجة.
 on:
   pull_request:
-    branches: [main]
+    # **وبوّابةُ المرشَّح تُشغَّل على فرع الموجة أيضًا.** كانت محصورةً في
+    # الطلبات إلى `main`، وفرعُ التكامل هو موضعُ الفحص قبل أن يبلغها.
+    branches: [main, "sprint/**"]
   workflow_dispatch: {}
 
 jobs:
