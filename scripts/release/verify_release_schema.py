@@ -31,6 +31,53 @@ RUNTIME_ROLE = "athera_app"
 #: العبارات، و`SET LOCAL` وقفلُ الاستشارة والترحيلُ نفسه تفترض ذلك.
 DIRECT_PORT = 5432
 
+#: **السائقُ المتزامن الوحيد المثبَّت في مسار الإصدار** — psycopg 3.
+#: والمشغّل يثبّت `psycopg[binary]`، ولا يثبّت `psycopg2`.
+SYNC_DRIVER = "psycopg"
+
+
+def normalize_sync_pg_url(url: str, *, label: str) -> str:
+    """يوحّد رابطَ اتصالٍ على psycopg 3 — **أو يرفضه بصراحة**.
+
+    ## العطب الذي أسقط تشغيلة الإصدار الأولى
+
+    `postgresql://` بلا سائقٍ مذكور تختار SQLAlchemy له **psycopg2** سائقًا
+    افتراضيًّا؛ ومسارُ الإصدار يثبّت psycopg 3 وحده. فسقط الفحصُ بـ
+    `ModuleNotFoundError: No module named 'psycopg2'` **قبل أن يتصل**، أي
+    قبل أن يقرأ `alembic_version` أصلًا. والسرُّ كان مضبوطًا سليمًا؛ الذي
+    انكسر هو أنّ الرابط الوارد يُمرَّر كما هو بينما الرابطُ المبنيّ داخليًّا
+    يُكتب `postgresql+psycopg://` — **توحيدٌ لما نبنيه وتركٌ لما نُعطاه**،
+    وتلك اللاتماثلية هي العطب.
+
+    القواعد:
+
+      • `postgresql://`         ← يُوحَّد إلى `postgresql+psycopg://`
+      • `postgres://`           ← يُوحَّد كذلك
+      • `postgresql+psycopg://` ← يبقى كما هو
+      • أيُّ سائقٍ آخر — و`asyncpg` قبل غيره — **يُرفض ولا يُصحَّح بصمت**:
+        `create_engine` متزامن، وتسليمُه سائقًا لا متزامنًا خطأٌ في النيّة
+        لا في الإملاء، فيُقال لصاحبه بدل أن يُخمَّن مراده.
+
+    **ولا يُطبع الرابط ولا كلمةُ المرور في أيّ رسالة خطأ** — يُذكر اسمُ
+    المتغيّر واسمُ السائق وحدهما.
+    """
+    scheme, separator, remainder = url.partition("://")
+    if not separator:
+        raise SystemExit(f"refusing: {label} is not a database URL")
+    base, _, driver = scheme.partition("+")
+    if base not in ("postgresql", "postgres"):
+        raise SystemExit(
+            f"refusing: {label} is not a PostgreSQL URL (scheme {base!r})")
+    if driver and driver != SYNC_DRIVER:
+        raise SystemExit(
+            f"refusing: {label} names the {driver!r} driver. These checks run on a "
+            f"synchronous SQLAlchemy engine, which needs {SYNC_DRIVER!r} (psycopg 3); "
+            "a bare postgresql:// URL is normalised to it. An async driver such as "
+            "asyncpg cannot drive create_engine, and is never substituted silently."
+        )
+    return f"postgresql+{SYNC_DRIVER}://{remainder}"
+
+
 
 def build_verify_url() -> str:
     """يبني رابطَ التحقّق بدور زمن التشغيل — **من عنوانٍ يصل مبنيًّا، أو من
@@ -39,14 +86,23 @@ def build_verify_url() -> str:
     """
     explicit = os.environ.get("DATABASE_VERIFY_URL", "").strip()
     if explicit:
-        parsed = urlparse(explicit)
-        if parsed.port and parsed.port != DIRECT_PORT:
+        # **التوحيدُ أوّلًا، ثمّ حارسُ المنفذ — والحارسُ باقٍ كما كان.**
+        # التوحيدُ لا يمسّ إلا مقطعَ السائق، فالمضيفُ والمنفذ يصلان الحارسَ
+        # كما وردا؛ ولا يُتخطّى ولا يُعاد ترتيبه.
+        normalized = normalize_sync_pg_url(explicit, label="DATABASE_VERIFY_URL")
+        try:
+            port = urlparse(normalized).port
+        except ValueError:
+            # منفذٌ لا يُقرأ رقمًا: يُرفض ولا يُفترض 5432 — والفشلُ مغلق.
             raise SystemExit(
-                f"refusing: DATABASE_VERIFY_URL targets port {parsed.port}. "
+                "refusing: DATABASE_VERIFY_URL carries an unreadable port") from None
+        if port and port != DIRECT_PORT:
+            raise SystemExit(
+                f"refusing: DATABASE_VERIFY_URL targets port {port}. "
                 f"Release verification uses the direct port {DIRECT_PORT}; the "
                 "transaction pooler does not guarantee one session across statements."
             )
-        return explicit
+        return normalized
 
     host = os.environ.get("PGHOST", "").strip()
     user = os.environ.get("PGUSER", "").strip()
