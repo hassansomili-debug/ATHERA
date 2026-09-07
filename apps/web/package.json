@@ -18,7 +18,7 @@
     "test:brand": "playwright test tests/brand-experience.spec.ts",
     "test:thesis-center": "playwright test tests/thesis-center.spec.ts",
     "test:stale-load": "playwright test tests/stale-deferred-load.spec.ts --retries=0 --workers=1",
-    "test:w11-acceptance": "playwright test tests/wave11-production-acceptance.spec.ts",
+    "test:w11-acceptance": "playwright test tests/wave11-production-acceptance.spec.ts --retries=0 --workers=1",
     "test:rc": "playwright test tests/rc-thesis-journey.spec.ts"
   },
   "dependencies": {
