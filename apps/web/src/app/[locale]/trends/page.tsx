@@ -3,7 +3,7 @@
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -75,22 +75,26 @@ export default function TrendsPage({ params }: { params: Promise<{ locale: strin
   // تقول «لم أجد شيئًا» وهي لم تسأل بعد تُفهَم حكمًا على الرصد نفسه.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
       const [cardRows, trendRows] = await Promise.all([
         apiFetch<Card[]>("/api/v1/opportunity-cards", { locale }),
         apiFetch<TrendStrength[]>("/api/v1/trends", { locale }),
       ]);
-      setCards(cardRows);
-      setTrends(trendRows);
+      commit(() => {
+        setCards(cardRows);
+        setTrends(trendRows);
+      });
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function loadPipeline(cardId: string) {
     setBusyId(cardId);
@@ -112,7 +116,7 @@ export default function TrendsPage({ params }: { params: Promise<{ locale: strin
     setError(null);
     try {
       await apiFetch(`/api/v1/opportunity-cards/${cardId}/approve`, { method: "POST", locale });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

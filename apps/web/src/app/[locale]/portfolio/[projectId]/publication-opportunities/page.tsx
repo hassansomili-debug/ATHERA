@@ -4,7 +4,7 @@ import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 
 /**
  * فرص النشر (S5D).
@@ -132,28 +132,34 @@ export default function PublicationOpportunitiesPage({
   const [openEvidence, setOpenEvidence] = useState<string | null>(null);
   const [tab, setTab] = useState<"thread" | "outline">("thread");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
       const state = await apiFetch<ContextState>(
         `/api/v1/projects/${projectId}/publication-context`, { locale },
       );
-      setContext(state);
+      commit(() => setContext(state));
       const listing = await apiFetch<OpportunityList>(
         `/api/v1/projects/${projectId}/publication-opportunities`, { locale },
       );
-      setList(listing);
-      // الترتيب مقصود: نقص الأدلة يسبق طلب الإذن — لا معنى لإذنٍ على لا شيء.
-      if (!state.sufficient) setPhase("insufficient");
-      else if (state.consent_state !== "granted") setPhase("consent");
-      else setPhase("ready");
+      commit(() => {
+        setList(listing);
+        // الترتيب مقصود: نقص الأدلة يسبق طلب الإذن — لا معنى لإذنٍ على لا شيء.
+        if (!state.sufficient) setPhase("insufficient");
+        else if (state.consent_state !== "granted") setPhase("consent");
+        else setPhase("ready");
+      });
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
-      setPhase("failed");
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => {
+        setError(message);
+        setPhase("failed");
+      });
     }
   }, [projectId, locale, t]);
 
   // الدورة الصغرى تمنع التصيير المتتالي — نفس المُساعد الذي تستعمله بقية الشاشات.
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function grantConsent() {
     if (!context || busy) return;
@@ -165,7 +171,7 @@ export default function PublicationOpportunitiesPage({
         // البصمة تُرسل مع القرار: الباحث يوافق على اللقطة التي رآها لا على غيرها.
         body: JSON.stringify({ decision: "grant", context_fingerprint: context.fingerprint }),
       });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -206,7 +212,7 @@ export default function PublicationOpportunitiesPage({
       );
       setThread(null);
       setOutline(null);
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

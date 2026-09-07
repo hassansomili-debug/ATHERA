@@ -3,7 +3,7 @@
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -49,21 +49,25 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
   // يعود الجواب. وكانت تُقال، فيبدو السجل المحمي فارغًا لحظةَ فتح الشاشة.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
+    // قبل أوّل `await`: لجيله بالبناء، إذ لم يبدأ جيلٌ بعده.
     setError(null);
     try {
       const query = objectType.trim()
         ? `?object_type=${encodeURIComponent(objectType.trim())}`
         : "";
-      setEvents(await apiFetch<AuditEvent[]>(`/api/v1/audit/events${query}`, { locale }));
+      const rows = await apiFetch<AuditEvent[]>(`/api/v1/audit/events${query}`, { locale });
+      commit(() => setEvents(rows));
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, objectType, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function verify() {
     setBusy(true);
@@ -98,7 +102,7 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
           value={objectType}
           onChange={(event) => setObjectType(event.target.value)}
         />
-        <button type="button" onClick={() => void load()}>
+        <button type="button" onClick={() => void refresh()}>
           {t("audit.filter")}
         </button>
         <button type="button" disabled={busy} onClick={() => void verify()}>

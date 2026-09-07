@@ -4,7 +4,7 @@ import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { ChangePassword } from "@/components/ChangePassword";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { ContextLinks } from "@/components/ContextLinks";
 
@@ -81,28 +81,32 @@ export default function SettingsPage({ params }: { params: Promise<{ locale: str
   // وخلوّ.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
       const [state, notes] = await Promise.all([
         apiFetch<Posture>("/api/v1/settings/posture", { locale }),
         apiFetch<Notification[]>("/api/v1/notifications", { locale }),
       ]);
-      setPosture(state);
-      setNotifications(notes);
+      commit(() => {
+        setPosture(state);
+        setNotifications(notes);
+      });
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function markRead(id: string) {
     setBusyId(id);
     try {
       await apiFetch(`/api/v1/notifications/${id}/read`, { method: "POST", locale });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { getMessages, translator, type Locale } from "@/lib/i18n";
 
 /**
@@ -125,23 +125,28 @@ export function SectionWorkspace({
 
   const base = `/api/v1/manuscripts/${manuscriptId}/sections/${sectionKey}`;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
-      setContext(await apiFetch<ContextState>(`${base}/drafting-context`, { locale }));
+      const drafting = await apiFetch<ContextState>(`${base}/drafting-context`, { locale });
+      commit(() => setContext(drafting));
+      // **والفرعُ الداخلي يُبوَّب كغيره** — وهو من أكثر ما يُنسى.
       try {
-        setSection(await apiFetch<SectionView>(base, { locale }));
+        const draft = await apiFetch<SectionView>(base, { locale });
+        commit(() => setSection(draft));
       } catch {
         // لا مسودة بعد — حالة طبيعية لا خطأ.
-        setSection(null);
+        commit(() => setSection(null));
       }
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [base, locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   const act = useCallback(
     async (path: string, body: Record<string, unknown> | null) => {
@@ -153,7 +158,7 @@ export function SectionWorkspace({
           locale,
           ...(body ? { body: JSON.stringify(body) } : {}),
         });
-        await load();
+        await refresh();
         // ونظرة المخطوطة تتبع القسم: حالٌ تغيّرت هنا تغيّر عدّ المعتمَد
         // وعوائق الورقة هناك، وشاشةٌ تعرض حالين متناقضين أسوأ من واحدة.
         await onChanged?.();
@@ -163,7 +168,7 @@ export function SectionWorkspace({
         setBusy(false);
       }
     },
-    [load, locale, onChanged, t],
+    [refresh, locale, onChanged, t],
   );
 
   const consent = context?.consent_state ?? "absent";
@@ -180,14 +185,14 @@ export function SectionWorkspace({
         body: JSON.stringify({ text_ar: draftText }),
       });
       setEditing(false);
-      await load();
+      await refresh();
       await onChanged?.();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
       setBusy(false);
     }
-  }, [base, draftText, load, locale, onChanged, t]);
+  }, [base, draftText, refresh, locale, onChanged, t]);
 
   return (
     // **معلَمُ `main` كان مُعشَّشًا مرّتين.** الهيكل العام يضع المحتوى كلّه

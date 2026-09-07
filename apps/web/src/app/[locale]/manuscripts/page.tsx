@@ -3,7 +3,7 @@
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -53,17 +53,20 @@ export default function ManuscriptsPage({ params }: { params: Promise<{ locale: 
   // و«لا مخطوطة لك» هو الفرق بين انتظارٍ وبدايةٍ من الصفر.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
-      setItems(await apiFetch<Manuscript[]>("/api/v1/manuscripts", { locale }));
+      const rows = await apiFetch<Manuscript[]>("/api/v1/manuscripts", { locale });
+      commit(() => setItems(rows));
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function check(id: string) {
     setBusyId(id);
@@ -83,7 +86,7 @@ export default function ManuscriptsPage({ params }: { params: Promise<{ locale: 
     setError(null);
     try {
       await apiFetch(`/api/v1/manuscripts/${id}/approve-g9`, { method: "POST", locale });
-      await load();
+      await refresh();
       await check(id);
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));

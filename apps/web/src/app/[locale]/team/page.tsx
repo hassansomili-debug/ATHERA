@@ -3,7 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -142,8 +142,9 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
       .finally(() => setProjectsLoaded(true));
   }, [locale, t]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     if (!projectId) return;
+    // قبل أوّل `await`: لجيله بالبناء، إذ لم يبدأ جيلٌ بعده.
     setError(null);
     try {
       const [people, log, pending] = await Promise.all([
@@ -153,27 +154,31 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
           locale,
         }),
       ]);
-      setMembers(people);
-      setDecisions(log);
-      setInbox(pending);
+      commit(() => {
+        setMembers(people);
+        setDecisions(log);
+        setInbox(pending);
+      });
       // الدعواتُ تلزمها إدارةُ فريق؛ وغيابها ليس فشلًا يُعرض بحمرة.
+      // **والفرعُ الداخلي يُبوَّب كغيره** — وهو من أكثر ما يُنسى.
       try {
-        setInvitations(
-          await apiFetch<Invitation[]>(`/api/v1/projects/${projectId}/invitations`, {
-            locale,
-          }),
+        const invited = await apiFetch<Invitation[]>(
+          `/api/v1/projects/${projectId}/invitations`, { locale },
         );
+        commit(() => setInvitations(invited));
       } catch {
-        setInvitations([]);
+        commit(() => setInvitations([]));
       }
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, projectId, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function addMember() {
     setBusy(true);
@@ -186,7 +191,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
       });
       setName("");
       setCredit([]);
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -210,7 +215,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
       setIssuedToken(created.token ?? null);
       setEmail("");
       setName("");
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -225,7 +230,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
         method: "DELETE",
         locale,
       });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -243,7 +248,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
         body: JSON.stringify({ token: joinToken.trim() }),
       });
       setJoinToken("");
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -261,7 +266,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
         locale,
         body: JSON.stringify({ granted }),
       });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

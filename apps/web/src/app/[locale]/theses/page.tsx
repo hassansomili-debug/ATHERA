@@ -4,7 +4,7 @@ import Link from "next/link";
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { ThesisIntake } from "@/components/ThesisIntake";
 
@@ -260,23 +260,29 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
     [locale],
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
       const rows = await fetchPage(null, view, applied);
-      setTheses(rows);
-      // صفحةٌ ممتلئة تعني أنّ بعدها المزيد **احتمالًا** — ولا يُدّعى عددٌ
-      // كلّيّ لم يُحسب: عدُّ كلّ الرسائل عبارةٌ ثانية ورحلةٌ ثانية إلى
-      // مومباي في كلّ فتحةِ شاشة، ثمنُها لا يشتري شيئًا يقرؤه الباحث.
-      setHasMore(rows.length === PAGE);
-      setError(null);
+      // **هنا كان العطب**: ردُّ «الكلّ» المتأخّر كان يكتب صفوفَه فوق صفوف
+      // «المؤرشفة»، فتقول القائمةُ المنسدلة عرضًا وتقول الصفوفُ غيرَه.
+      commit(() => {
+        setTheses(rows);
+        // صفحةٌ ممتلئة تعني أنّ بعدها المزيد **احتمالًا** — ولا يُدّعى عددٌ
+        // كلّيّ لم يُحسب: عدُّ كلّ الرسائل عبارةٌ ثانية ورحلةٌ ثانية إلى
+        // مومباي في كلّ فتحةِ شاشة، ثمنُها لا يشتري شيئًا يقرؤه الباحث.
+        setHasMore(rows.length === PAGE);
+        setError(null);
+      });
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [fetchPage, locale, t, view, applied]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function more() {
     const last = theses[theses.length - 1];
@@ -332,7 +338,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       setRightsBasis("");
       setOwnerName("");
       setSupervisorName("");
-      await load();
+      await refresh();
     } catch (err) {
       setFormError(
         err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"),
@@ -359,7 +365,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
     try {
       await apiFetch(`/api/v1/theses/${id}/${action}`, { method: "POST", locale });
       patchCard(id, { busy: null, notice: t(successKey) });
-      await load();
+      await refresh();
     } catch (err) {
       patchCard(id, { busy: null, error: say(err) });
     }
@@ -399,7 +405,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       });
       setError(null);
       setNotice(t("theses.archived"));
-      await load();
+      await refresh();
     } catch (err) {
       // **والرفضُ يُقرأ في بطاقته** ومعه المعاينة التي تشرحه.
       patchCard(id, { busy: null, error: say(err) });
@@ -420,7 +426,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       });
       patchCard(id, { busy: null, notice: t("theses.fileTrashed"),
                       trashNeedsConfirm: false });
-      await load();
+      await refresh();
     } catch (err) {
       patchCard(id, {
         busy: null, error: say(err),

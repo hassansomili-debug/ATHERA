@@ -6,7 +6,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { Dic2Consent } from "@/components/Dic2Consent";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 
 /**
  * «راجع ما استخرجته أثيرا» (§17، §19).
@@ -85,27 +85,30 @@ export default function ReviewPage({
   // ليراجع، فالصمت أوّل ما يقرؤه ولا يعرف أينتظر أم لا شيء هناك.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
-      setReview(await apiFetch<Review>(`/api/v1/theses/${thesisId}/review`, { locale }));
+      const view = await apiFetch<Review>(`/api/v1/theses/${thesisId}/review`, { locale });
+      commit(() => setReview(view));
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, t, thesisId]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   useEffect(() => {
     // ويتوقّف فور وصول أول مقترح — لا يُكمل عدَّه بلا سبب.
     if (awaiting === 0 || (review?.total ?? 0) > 0) return;
     const timer = window.setTimeout(() => {
       setAwaiting((left) => left - 1);
-      void load();
+      void refresh();
     }, 2500);
     return () => window.clearTimeout(timer);
-  }, [awaiting, review, load]);
+  }, [awaiting, review, refresh]);
 
   async function decide(
     candidate: Candidate,
@@ -127,7 +130,7 @@ export default function ReviewPage({
       setEditing(null);
       setDraft("");
       setReason("");
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -165,7 +168,7 @@ export default function ReviewPage({
         thesisId={thesisId}
         onDecision={(decision) => {
           if (decision !== "grant") return;
-          void load();
+          void refresh();
           // أربعٌ وعشرون محاولة على مدى دقيقة — حدٌّ معلن لا انتظارٌ مفتوح.
           setAwaiting(24);
         }}
