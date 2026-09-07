@@ -81,13 +81,13 @@ export default function BriefsPage({ params }: { params: Promise<{ locale: strin
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function acknowledge(id: string) {
     setBusyId(id);
     try {
       await apiFetch(`/api/v1/briefs/${id}/acknowledge`, { method: "POST", locale });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

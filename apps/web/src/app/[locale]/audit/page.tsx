@@ -67,7 +67,7 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
     }
   }, [locale, objectType, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function verify() {
     setBusy(true);
@@ -102,7 +102,7 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
           value={objectType}
           onChange={(event) => setObjectType(event.target.value)}
         />
-        <button type="button" onClick={() => void load()}>
+        <button type="button" onClick={() => void refresh()}>
           {t("audit.filter")}
         </button>
         <button type="button" disabled={busy} onClick={() => void verify()}>

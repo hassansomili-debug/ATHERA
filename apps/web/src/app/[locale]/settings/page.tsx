@@ -100,13 +100,13 @@ export default function SettingsPage({ params }: { params: Promise<{ locale: str
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function markRead(id: string) {
     setBusyId(id);
     try {
       await apiFetch(`/api/v1/notifications/${id}/read`, { method: "POST", locale });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

@@ -178,7 +178,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
     }
   }, [locale, projectId, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function addMember() {
     setBusy(true);
@@ -191,7 +191,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
       });
       setName("");
       setCredit([]);
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -215,7 +215,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
       setIssuedToken(created.token ?? null);
       setEmail("");
       setName("");
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -230,7 +230,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
         method: "DELETE",
         locale,
       });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -248,7 +248,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
         body: JSON.stringify({ token: joinToken.trim() }),
       });
       setJoinToken("");
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -266,7 +266,7 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
         locale,
         body: JSON.stringify({ granted }),
       });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

@@ -48,7 +48,7 @@ export default function FactsPage({ params }: { params: Promise<{ locale: string
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function decide(id: string, decision: "approve" | "reject") {
     setBusyId(id);
@@ -59,7 +59,7 @@ export default function FactsPage({ params }: { params: Promise<{ locale: string
         locale,
         body: JSON.stringify({ reason: reasons[id] ?? null }),
       });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

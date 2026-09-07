@@ -94,7 +94,7 @@ export default function TrendsPage({ params }: { params: Promise<{ locale: strin
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function loadPipeline(cardId: string) {
     setBusyId(cardId);
@@ -116,7 +116,7 @@ export default function TrendsPage({ params }: { params: Promise<{ locale: strin
     setError(null);
     try {
       await apiFetch(`/api/v1/opportunity-cards/${cardId}/approve`, { method: "POST", locale });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

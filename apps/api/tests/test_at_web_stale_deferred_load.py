@@ -204,6 +204,32 @@ def test_no_state_write_after_an_await_escapes_the_commit_gate() -> None:
     assert not offenders, "كتاباتٌ متأخّرة بلا بوّابة:\n" + "\n".join(offenders)
 
 
+def test_the_hook_hands_back_a_guarded_refresh() -> None:
+    """الإعادةُ اليدويّة تمرّ من المدخل نفسه."""
+    source = HOOK.read_text(encoding="utf-8")
+    assert "): () => Promise<void> {" in source
+    assert "const refresh = useCallback(" in source
+    assert "return refresh;" in source
+
+
+def test_no_consumer_calls_load_directly() -> None:
+    """**استدعاءُ `load()` رأسًا يكسر الشاشة — ولا يُترك للمصادفة.**
+
+    البوّابةُ وسيطٌ مطلوب. و`load()` بلا وسيطٍ يُمرّر `undefined`، فتنكسر
+    الشاشةُ عند أوّل `commit(...)`. والمترجمُ يمسك هذا، غير أنّ الفحصَ يقوله
+    بلغةِ العطب لا بلغةِ الأنواع: المدخلُ الوحيد إلى `load` هو `refresh`.
+    """
+    offenders = []
+    for path in _consumers():
+        bare = _strip_strings(path.read_text(encoding="utf-8"))
+        for hit in re.finditer(r"\bload\s*\(\s*\)", bare):
+            line = bare[: hit.start()].count("\n") + 1
+            offenders.append(f"{path.relative_to(REPO)}:{line}")
+    assert not offenders, (
+        "استدعاءٌ مباشر لـ`load()` بلا بوّابة:\n" + "\n".join(offenders)
+    )
+
+
 @pytest.mark.parametrize(
     "screen",
     [

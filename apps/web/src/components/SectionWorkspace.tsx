@@ -146,7 +146,7 @@ export function SectionWorkspace({
     }
   }, [base, locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   const act = useCallback(
     async (path: string, body: Record<string, unknown> | null) => {
@@ -158,7 +158,7 @@ export function SectionWorkspace({
           locale,
           ...(body ? { body: JSON.stringify(body) } : {}),
         });
-        await load();
+        await refresh();
         // ونظرة المخطوطة تتبع القسم: حالٌ تغيّرت هنا تغيّر عدّ المعتمَد
         // وعوائق الورقة هناك، وشاشةٌ تعرض حالين متناقضين أسوأ من واحدة.
         await onChanged?.();
@@ -185,7 +185,7 @@ export function SectionWorkspace({
         body: JSON.stringify({ text_ar: draftText }),
       });
       setEditing(false);
-      await load();
+      await refresh();
       await onChanged?.();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));

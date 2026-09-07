@@ -282,7 +282,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
     }
   }, [fetchPage, locale, t, view, applied]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function more() {
     const last = theses[theses.length - 1];
@@ -338,7 +338,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       setRightsBasis("");
       setOwnerName("");
       setSupervisorName("");
-      await load();
+      await refresh();
     } catch (err) {
       setFormError(
         err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"),
@@ -365,7 +365,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
     try {
       await apiFetch(`/api/v1/theses/${id}/${action}`, { method: "POST", locale });
       patchCard(id, { busy: null, notice: t(successKey) });
-      await load();
+      await refresh();
     } catch (err) {
       patchCard(id, { busy: null, error: say(err) });
     }
@@ -405,7 +405,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       });
       setError(null);
       setNotice(t("theses.archived"));
-      await load();
+      await refresh();
     } catch (err) {
       // **والرفضُ يُقرأ في بطاقته** ومعه المعاينة التي تشرحه.
       patchCard(id, { busy: null, error: say(err) });
@@ -426,7 +426,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       });
       patchCard(id, { busy: null, notice: t("theses.fileTrashed"),
                       trashNeedsConfirm: false });
-      await load();
+      await refresh();
     } catch (err) {
       patchCard(id, {
         busy: null, error: say(err),

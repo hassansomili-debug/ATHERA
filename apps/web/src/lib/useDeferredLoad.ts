@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 /**
  * بوّابةُ الكتابة: تُنفَّذ `write` **إن كان جيلُها ما يزال هو الحاضر**،
@@ -50,17 +50,41 @@ export type Commit = (write: () => void) => void;
  * `catch` كلِّ شاشة ويُعرض للباحث فشلًا لم يقع، و`finally` تعمل بعده على
  * كلّ حال فتبقى الحاجةُ إلى `commit` قائمة، ويمسّ ذلك مسارَ تجديد الرمز في
  * `api.ts`. فالبوّابةُ وحدها تفي بالعقد، ولا تقترب من المصادقة.
+ *
+ * ## والإعادةُ اليدويّة تُحرَس كالتلقائية
+ *
+ * ثلاثَ عشرةَ شاشةً تُعيد التحميلَ بيدها بعد فعلٍ ناجح — أرشفةٍ أو دعوةٍ أو
+ * موافقة. ولو استُدعي `load()` رأسًا لوصلت البوّابةُ `undefined`، ولانكسرت
+ * الشاشةُ عند أوّل `commit`. ولو أُعطيت البوّابةُ قيمةً افتراضية تكتب بلا
+ * شرط لعاد العطبُ من هذا الباب: إعادةٌ يدويّة تصل متأخّرةً فتكتب فوق عرضٍ
+ * بُدِّل بعدها.
+ *
+ * فيُعيد الخطّافُ `refresh`: تبدأ جيلًا جديدًا — فتُبطل ما قبلها — وتُشغّل
+ * `load` ببوّابةِ ذلك الجيل. **فما مِن مدخلٍ إلى `load` بلا بوّابة.**
  */
-export function useDeferredLoad(load: (commit: Commit) => Promise<void>): void {
+export function useDeferredLoad(
+  load: (commit: Commit) => Promise<void>,
+): () => Promise<void> {
   // عدّادٌ لا رايةٌ منطقية: الرايةُ تقول «أُلغي» ولا تقول «أُلغي لصالح مَن»،
   // والمطلوب أن يعرف كلُّ جيلٍ أنّه هو الحاضرُ بعينه لا مجرّد أنّه لم يُلغَ.
   const generation = useRef(0);
 
-  useEffect(() => {
+  /** يفتح جيلًا جديدًا ويُسلّم بوّابتَه — مدخلًا واحدًا لا مدخلين. */
+  const open = useCallback(() => {
     const mine = (generation.current += 1);
     const commit: Commit = (write) => {
       if (generation.current === mine) write();
     };
+    return { mine, commit };
+  }, []);
+
+  const refresh = useCallback(() => {
+    const { commit } = open();
+    return load(commit);
+  }, [load, open]);
+
+  useEffect(() => {
+    const { mine, commit } = open();
 
     void Promise.resolve().then(() => {
       if (generation.current === mine) return load(commit);
@@ -71,5 +95,7 @@ export function useDeferredLoad(load: (commit: Commit) => Promise<void>): void {
     return () => {
       generation.current += 1;
     };
-  }, [load]);
+  }, [load, open]);
+
+  return refresh;
 }

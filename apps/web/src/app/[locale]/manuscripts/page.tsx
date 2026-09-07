@@ -66,7 +66,7 @@ export default function ManuscriptsPage({ params }: { params: Promise<{ locale: 
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function check(id: string) {
     setBusyId(id);
@@ -86,7 +86,7 @@ export default function ManuscriptsPage({ params }: { params: Promise<{ locale: 
     setError(null);
     try {
       await apiFetch(`/api/v1/manuscripts/${id}/approve-g9`, { method: "POST", locale });
-      await load();
+      await refresh();
       await check(id);
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));

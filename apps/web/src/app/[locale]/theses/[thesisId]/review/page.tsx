@@ -98,14 +98,14 @@ export default function ReviewPage({
     }
   }, [locale, t, thesisId]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   useEffect(() => {
     // ويتوقّف فور وصول أول مقترح — لا يُكمل عدَّه بلا سبب.
     if (awaiting === 0 || (review?.total ?? 0) > 0) return;
     const timer = window.setTimeout(() => {
       setAwaiting((left) => left - 1);
-      void load();
+      void refresh();
     }, 2500);
     return () => window.clearTimeout(timer);
   }, [awaiting, review, load]);
@@ -130,7 +130,7 @@ export default function ReviewPage({
       setEditing(null);
       setDraft("");
       setReason("");
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -168,7 +168,7 @@ export default function ReviewPage({
         thesisId={thesisId}
         onDecision={(decision) => {
           if (decision !== "grant") return;
-          void load();
+          void refresh();
           // أربعٌ وعشرون محاولة على مدى دقيقة — حدٌّ معلن لا انتظارٌ مفتوح.
           setAwaiting(24);
         }}

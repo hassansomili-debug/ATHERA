@@ -81,7 +81,7 @@ export default function ApprovalsPage({ params }: { params: Promise<{ locale: st
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function decide(id: string, approved: boolean) {
     const reason = (reasons[id] ?? "").trim();
@@ -97,7 +97,7 @@ export default function ApprovalsPage({ params }: { params: Promise<{ locale: st
         locale,
         body: JSON.stringify({ approved, reason }),
       });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -119,7 +119,7 @@ export default function ApprovalsPage({ params }: { params: Promise<{ locale: st
         locale,
         body: JSON.stringify({ resolution_ar: resolution }),
       });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

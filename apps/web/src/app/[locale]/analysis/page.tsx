@@ -84,14 +84,14 @@ export default function AnalysisPage({ params }: { params: Promise<{ locale: str
     }
   }, [locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function act(id: string, path: string) {
     setBusyId(id);
     setError(null);
     try {
       await apiFetch(path, { method: "POST", locale });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {

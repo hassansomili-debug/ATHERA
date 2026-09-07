@@ -159,7 +159,7 @@ export default function PublicationOpportunitiesPage({
   }, [projectId, locale, t]);
 
   // الدورة الصغرى تمنع التصيير المتتالي — نفس المُساعد الذي تستعمله بقية الشاشات.
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   async function grantConsent() {
     if (!context || busy) return;
@@ -171,7 +171,7 @@ export default function PublicationOpportunitiesPage({
         // البصمة تُرسل مع القرار: الباحث يوافق على اللقطة التي رآها لا على غيرها.
         body: JSON.stringify({ decision: "grant", context_fingerprint: context.fingerprint }),
       });
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
@@ -212,7 +212,7 @@ export default function PublicationOpportunitiesPage({
       );
       setThread(null);
       setOutline(null);
-      await load();
+      await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
     } finally {
