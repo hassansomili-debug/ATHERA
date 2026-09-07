@@ -168,7 +168,7 @@ export function SectionWorkspace({
         setBusy(false);
       }
     },
-    [load, locale, onChanged, t],
+    [refresh, locale, onChanged, t],
   );
 
   const consent = context?.consent_state ?? "absent";
@@ -192,7 +192,7 @@ export function SectionWorkspace({
     } finally {
       setBusy(false);
     }
-  }, [base, draftText, load, locale, onChanged, t]);
+  }, [base, draftText, refresh, locale, onChanged, t]);
 
   return (
     // **معلَمُ `main` كان مُعشَّشًا مرّتين.** الهيكل العام يضع المحتوى كلّه

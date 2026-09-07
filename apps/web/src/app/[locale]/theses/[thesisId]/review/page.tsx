@@ -108,7 +108,7 @@ export default function ReviewPage({
       void refresh();
     }, 2500);
     return () => window.clearTimeout(timer);
-  }, [awaiting, review, load]);
+  }, [awaiting, review, refresh]);
 
   async function decide(
     candidate: Candidate,

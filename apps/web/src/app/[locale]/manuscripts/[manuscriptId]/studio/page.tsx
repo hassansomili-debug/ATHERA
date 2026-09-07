@@ -99,7 +99,7 @@ export default function StudioPage({
     }
   }, [manuscriptId, locale, t]);
 
-  useDeferredLoad(load);
+  const refresh = useDeferredLoad(load);
 
   const enabled = (overview?.sections ?? []).filter((s) => s.enabled);
   const pending = (overview?.sections ?? []).filter((s) => !s.enabled);
@@ -171,7 +171,7 @@ export default function StudioPage({
               sectionKey={active}
               copy={active === "results" ? "results" : "methods"}
               strict={active === "results"}
-              onChanged={load}
+              onChanged={refresh}
             />
           ) : (
             <p>{t("studio.selectSection")}</p>

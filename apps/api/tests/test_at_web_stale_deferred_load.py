@@ -212,21 +212,39 @@ def test_the_hook_hands_back_a_guarded_refresh() -> None:
     assert "return refresh;" in source
 
 
-def test_no_consumer_calls_load_directly() -> None:
-    """**استدعاءُ `load()` رأسًا يكسر الشاشة — ولا يُترك للمصادفة.**
+#: `load` وحدها — لا `loaded` ولا `reload` ولا `useDeferredLoad`.
+LOAD_TOKEN = re.compile(r"(?<![A-Za-z0-9_])load(?![A-Za-z0-9_])")
 
-    البوّابةُ وسيطٌ مطلوب. و`load()` بلا وسيطٍ يُمرّر `undefined`، فتنكسر
-    الشاشةُ عند أوّل `commit(...)`. والمترجمُ يمسك هذا، غير أنّ الفحصَ يقوله
-    بلغةِ العطب لا بلغةِ الأنواع: المدخلُ الوحيد إلى `load` هو `refresh`.
+
+def test_load_is_never_handed_out_except_to_the_hook() -> None:
+    """**`load` لا تُستدعى ولا تُمرَّر — تُسلَّم للخطّاف وحده.**
+
+    البوّابةُ وسيطٌ مطلوب، فكلُّ نداءٍ لا يُمرّرها يكسر الشاشة عند أوّل
+    `commit`. وللتسريب وجهان: `load()` رأسًا، و**تمريرُها قيمةً** إلى مكوّنٍ
+    ابن يناديها بلا وسائط — `onChanged={load}`. والوجهُ الثاني هو الذي أفلت
+    من أوّل صياغةٍ لهذه الفحوص، وأمسكه المترجمُ في CI: مكوّنُ الأقسام كان
+    يتسلّم `load` ويناديها عند كلّ تغيير.
+
+    فالقاعدةُ تُكتب على الاسم لا على شكل النداء: لا يظهر `load` إلّا في
+    تعريفها وفي تسليمها إلى `useDeferredLoad`.
     """
     offenders = []
     for path in _consumers():
         bare = _strip_strings(path.read_text(encoding="utf-8"))
-        for hit in re.finditer(r"\bload\s*\(\s*\)", bare):
+        allowed = set()
+        for ok in re.finditer(r"const\s+load\s*=\s*useCallback", bare):
+            allowed.add(ok.start() + ok.group().index("load"))
+        for ok in re.finditer(r"useDeferredLoad\(\s*load\s*\)", bare):
+            allowed.add(ok.start() + ok.group().index("load", len("useDeferredLoa")))
+        for hit in LOAD_TOKEN.finditer(bare):
+            if hit.start() in allowed:
+                continue
             line = bare[: hit.start()].count("\n") + 1
-            offenders.append(f"{path.relative_to(REPO)}:{line}")
+            snippet = bare.splitlines()[line - 1].strip()[:70]
+            offenders.append(f"{path.relative_to(REPO)}:{line}: {snippet}")
     assert not offenders, (
-        "استدعاءٌ مباشر لـ`load()` بلا بوّابة:\n" + "\n".join(offenders)
+        "`load` خرجت من يد الخطّاف — تُستعمل `refresh` بدلها:\n"
+        + "\n".join(offenders)
     )
 
 
