@@ -3,7 +3,7 @@
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -68,13 +68,16 @@ export default function BriefsPage({ params }: { params: Promise<{ locale: strin
   // نشرات» قبل أن يعود الطلب، فتصنع الغموض الذي أُنشئت لتمنعه.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
-      setBriefs(await apiFetch<Brief[]>("/api/v1/briefs", { locale }));
+      const rows = await apiFetch<Brief[]>("/api/v1/briefs", { locale });
+      commit(() => setBriefs(rows));
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, t]);
 

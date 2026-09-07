@@ -3,7 +3,7 @@
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { FileUpload } from "@/components/FileUpload";
 
@@ -65,18 +65,22 @@ export default function AnalysisPage({ params }: { params: Promise<{ locale: str
   // بياناته قبل دقيقة يقرأ أنها ليست هناك.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
       const [ds, pl] = await Promise.all([
         apiFetch<Dataset[]>("/api/v1/analysis/datasets", { locale }),
         apiFetch<AnalysisPlan[]>("/api/v1/analysis/plans", { locale }),
       ]);
-      setDatasets(ds);
-      setPlans(pl);
+      commit(() => {
+        setDatasets(ds);
+        setPlans(pl);
+      });
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, t]);
 

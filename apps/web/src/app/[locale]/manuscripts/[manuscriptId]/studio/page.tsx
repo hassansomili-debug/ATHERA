@@ -4,7 +4,7 @@ import { use, useCallback, useState } from "react";
 
 import { SectionWorkspace } from "@/components/SectionWorkspace";
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -81,18 +81,21 @@ export default function StudioPage({
   // وأخطرها إن قيلت بلا فحص. والشاشة كلّها كانت صامتة أثناء الانتظار.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
-      setOverview(
-        await apiFetch<Overview>(`/api/v1/manuscripts/${manuscriptId}/overview`, {
-          locale,
-        }),
+      const view = await apiFetch<Overview>(
+        `/api/v1/manuscripts/${manuscriptId}/overview`, { locale },
       );
-      setError(null);
+      commit(() => {
+        setOverview(view);
+        setError(null);
+      });
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [manuscriptId, locale, t]);
 

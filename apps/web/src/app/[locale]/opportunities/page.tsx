@@ -3,7 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -88,14 +88,14 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
       .finally(() => setThesesLoaded(true));
   }, [locale]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     if (!thesisId) return;
     try {
       const map = await apiFetch<MapResponse>(
         `/api/v1/theses/${thesisId}/publication-map`,
         { locale },
       );
-      setData(map);
+      commit(() => setData(map));
       const entries = await Promise.all(
         map.opportunities.map(async (opportunity) => {
           const gate = await apiFetch<Gate>(
@@ -105,9 +105,11 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
           return [opportunity.id, gate] as const;
         }),
       );
-      setGates(Object.fromEntries(entries));
+      commit(() => setGates(Object.fromEntries(entries)));
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     }
   }, [locale, thesisId, t]);
 

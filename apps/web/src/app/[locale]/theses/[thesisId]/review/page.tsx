@@ -6,7 +6,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { Dic2Consent } from "@/components/Dic2Consent";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 
 /**
  * «راجع ما استخرجته أثيرا» (§17، §19).
@@ -85,13 +85,16 @@ export default function ReviewPage({
   // ليراجع، فالصمت أوّل ما يقرؤه ولا يعرف أينتظر أم لا شيء هناك.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
-      setReview(await apiFetch<Review>(`/api/v1/theses/${thesisId}/review`, { locale }));
+      const view = await apiFetch<Review>(`/api/v1/theses/${thesisId}/review`, { locale });
+      commit(() => setReview(view));
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, t, thesisId]);
 

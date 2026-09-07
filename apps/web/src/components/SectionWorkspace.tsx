@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { getMessages, translator, type Locale } from "@/lib/i18n";
 
 /**
@@ -125,19 +125,24 @@ export function SectionWorkspace({
 
   const base = `/api/v1/manuscripts/${manuscriptId}/sections/${sectionKey}`;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
-      setContext(await apiFetch<ContextState>(`${base}/drafting-context`, { locale }));
+      const drafting = await apiFetch<ContextState>(`${base}/drafting-context`, { locale });
+      commit(() => setContext(drafting));
+      // **والفرعُ الداخلي يُبوَّب كغيره** — وهو من أكثر ما يُنسى.
       try {
-        setSection(await apiFetch<SectionView>(base, { locale }));
+        const draft = await apiFetch<SectionView>(base, { locale });
+        commit(() => setSection(draft));
       } catch {
         // لا مسودة بعد — حالة طبيعية لا خطأ.
-        setSection(null);
+        commit(() => setSection(null));
       }
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [base, locale, t]);
 

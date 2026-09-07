@@ -3,7 +3,7 @@
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
-import { useDeferredLoad } from "@/lib/useDeferredLoad";
+import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 
 /**
@@ -60,20 +60,24 @@ export default function ApprovalsPage({ params }: { params: Promise<{ locale: st
   // عمله. والراية واحدة للنداءات الثلاثة: تُقرأ معًا فتُعلَن معًا.
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (commit: Commit) => {
     try {
       const [pending, open, counts] = await Promise.all([
         apiFetch<Approval[]>("/api/v1/approvals?status=pending", { locale }),
         apiFetch<Alert[]>("/api/v1/integrity-alerts?open_only=true", { locale }),
         apiFetch<Summary>("/api/v1/inbox/summary", { locale }),
       ]);
-      setApprovals(pending);
-      setAlerts(open);
-      setSummary(counts);
+      commit(() => {
+        setApprovals(pending);
+        setAlerts(open);
+        setSummary(counts);
+      });
     } catch (err) {
-      setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"));
+      const message = err instanceof AtheraApiError
+        ? err.localized(locale) : t("common.loadFailed");
+      commit(() => setError(message));
     } finally {
-      setLoaded(true);
+      commit(() => setLoaded(true));
     }
   }, [locale, t]);
 
