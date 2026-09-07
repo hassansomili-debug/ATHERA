@@ -66,11 +66,18 @@ READ_KEYS: Final[frozenset[str]] = frozenset(
 # **الغيابُ ليس نفيًا.** نتيجةٌ لا تذكر دلالةً ليست نتيجةً غيرَ دالّة؛ وقد
 # تكون دالّةً ولم يُذكر ذلك في هذه العبارة. فلا يُعدّ شيءٌ نتيجةً سالبة
 # إلّا بعبارةٍ **تُصرّح** بذلك في الحقيقة التي اعتمدها الباحث.
+#
+# **والفجوةُ محدودةٌ بستّ كلمات عمدًا.** «لم تكن الفروقُ … دالة» نفيٌ صريح
+# تفصله كلماتٌ عن موضعه؛ ونفيٌ في أول الفقرة و«دال» في آخرها ليسا عبارةً
+# واحدة. فالحدُّ يقرأ الجملة ولا يجمع ما تفرّق.
 _NULL_RESULT_MARKERS: Final[re.Pattern[str]] = re.compile(
-    r"(غير\s+دال|غيرُ\s+دال|لم\s+تكن\s+دال|لم\s+يكن\s+دال|"
-    r"عدم\s+وجود\s+فروق|لا\s+توجد\s+فروق|لا\s+توجد\s+علاقة|"
-    r"not\s+statistically\s+significant|not\s+significant|"
-    r"no\s+significant\s+(difference|effect|relationship)|null\s+result)",
+    r"(?:غيرُ?\s+دال"
+    r"|(?:لم\s+تكن|لم\s+يكن|ليست|ليس)(?:\s+\S+){0,6}?\s+دال"
+    r"|عدم\s+وجود\s+(?:فروق|علاقة|أثر|تأثير)"
+    r"|لا\s+(?:توجد|يوجد)\s+(?:فروق|علاقة|أثر|تأثير|فرق)"
+    r"|not\s+(?:statistically\s+)?significant"
+    r"|no\s+significant\s+(?:difference|effect|relationship)"
+    r"|null\s+result)",
     re.IGNORECASE,
 )
 
