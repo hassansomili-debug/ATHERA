@@ -32,6 +32,24 @@ REJECTED_TEXT = "استنتاجٌ رفضه الباحث ولا يجوز أن ي�
 UNVERIFIED_TEXT = "استخراجٌ لم يعرضه أحدٌ على الباحث بعد"
 
 
+@pytest.fixture(autouse=True)
+def memory_store(monkeypatch):
+    """**لا MinIO في CI، ولا يُدَّعى وجودُه.**
+
+    وهذه الحزمة سقطت بها ثمانيَ مرّات: المزوّدُ الافتراضي `s3` يقصد
+    `localhost:9000`، فتُرفض الوصلة ويُقرأ `EndpointConnectionError` عطبَ
+    منتج — وهو عطبُ تجهيزة. والمزوّدُ الذاكريّ هو ما تستعمله الحزمُ القائمة
+    (`test_at_thesis_center_stabilization.py`)، فيُستعمل هنا كما هو.
+    """
+    from athera_api.config import get_settings
+    from athera_api.services import storage
+
+    monkeypatch.setattr(get_settings(), "storage_provider", "memory", raising=False)
+    storage.reset_store_cache()
+    yield
+    storage.reset_store_cache()
+
+
 def _client(tenant_id, user_id, locale="ar"):
     import httpx
 
