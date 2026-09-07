@@ -349,3 +349,67 @@ jobs:
         with: { python-version: "3.12" }
       - name: Dependency audit
         run: pip install pip-audit && pip-audit -r <(pip install -e apps/api --dry-run --report - 2>/dev/null || echo "") || true
+
+  # ═════════ قبولُ الموجة 1.1 على الإنتاج — فرعُ هذا الطلب وحده ═════════
+  #
+  # **لماذا يُشغَّل من طلبٍ لا من `main`، خلافًا لخطوة القبول أعلاه.**
+  #
+  # تلك مقيَّدةٌ بـ`main` لسببٍ وجيه: تشغيلُها من طلبٍ يفحص إنتاجًا **لا
+  # يحمل شيفرةَ الطلب**، فتُقرأ النتيجةُ حكمًا على تغييرٍ لم يُنشر — وهي
+  # نتيجةٌ مضلِّلة.
+  #
+  # **وذلك الاعتراض لا يقع هنا.** الإنتاج يحمل بالفعل هيئةَ إصدار الموجة
+  # 1.1، وهذا الفرع لا يحمل شيفرةَ منتجٍ إطلاقًا — رقعةَ قبولٍ فقط. فما
+  # يُفحص هو الإنتاج القائم كما هو، والفرعُ وسيلةُ تشغيلٍ لا موضوعُ فحص.
+  # فالقاعدةُ لم تُكسر، بل لم تنطبق. ويُقال ذلك صراحةً كي لا يُقرأ خرقًا.
+  #
+  # **ويُقيَّد بفرعٍ واحد بالاسم**: لا يغيّر دلالةَ القبول لأيّ فرعٍ آخر،
+  # ولا يعمل على طلبٍ من مستودعٍ متشعّب (الأسرارُ لا تُمنح لها أصلًا).
+  wave11-production-acceptance:
+    name: Wave 1.1 acceptance — real production, real account
+    if: >-
+      github.event_name == 'pull_request'
+      && github.head_ref == 'ops/wave11-production-acceptance'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      PUBRIVA_ACCEPT_EMAIL: ${{ secrets.PUBRIVA_ACCEPT_EMAIL }}
+      PUBRIVA_ACCEPT_PASSWORD: ${{ secrets.PUBRIVA_ACCEPT_PASSWORD }}
+      PUBRIVA_WEB_URL: https://pubriva.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: cd apps/web && npm ci
+      - run: cd apps/web && npm install --no-save @playwright/test@^1.51.1
+      - run: cd apps/web && npx playwright install --with-deps chromium
+
+      # **والبوّابةُ تسقط مغلقة — خلافًا للخطوة القائمة أعلاه.**
+      #
+      # تلك تُحذّر وتتخطّى، وهذه تسقط. قبولٌ يُتخطّى بصمتٍ يُقرأ خضرةً، وخضرةٌ
+      # عن رحلةٍ لم تقع أسوأ من حمرة: يُعلَن المنتجُ مقبولًا ولم يُجرَّب.
+      - name: Gate — refuse to report green without credentials
+        run: |
+          set -euo pipefail
+          ready='${{ vars.PUBRIVA_ACCEPT_READY }}'
+          if [ "${ready}" != "true" ]; then
+            echo "::error::PUBRIVA_ACCEPT_READY is '${ready:-unset}', not 'true'."
+            echo "::error::Production acceptance fails closed rather than skipping."
+            exit 1
+          fi
+          if [ -z "${PUBRIVA_ACCEPT_EMAIL}" ] || [ -z "${PUBRIVA_ACCEPT_PASSWORD}" ]; then
+            echo "::error::acceptance credentials are missing — failing closed."
+            exit 1
+          fi
+          echo "gate open: variable set and both credentials present (values not printed)"
+
+      - name: Wave 1.1 acceptance journey against https://pubriva.com
+        run: cd apps/web && npm run test:w11-acceptance
+
+      # **ولا يُرفع أثرٌ من رحلة القبول إطلاقًا — ولو فشلت.**
+      # المسجّلات مُطفأة، لكنّ `error-context.md` يُكتب على أيّ حال ويحمل
+      # لقطةَ DOM لصفحةٍ فيها حقولُ اعتماد. فتُمحى المخرجاتُ قبل أيّ رفع،
+      # ويبقى سجلُّ الطرفية وحده — وهو يكفي لمعرفة أين سقطت.
+      - name: Destroy acceptance artifacts before any upload
+        if: always()
+        run: rm -rf apps/web/playwright-report apps/web/test-results
