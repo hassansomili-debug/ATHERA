@@ -53,9 +53,8 @@ they are unavailable to workflows that do not declare the environment.
 
 | Secret name | Where the value comes from |
 |---|---|
-| `DATABASE_MIGRATION_URL` | The privileged migration connection string — the value that lives locally in `.env.production.migration`. Supabase → Project Settings → Database → connection string, using the **migration/owner** role, **port 5432**. Never the runtime role. |
-| `SUPABASE_PROJECT_REF` | The Supabase project reference (the identifier after `postgres.` in the pooler username, or the project ref in the dashboard URL). See §4 for why this is required. |
-| `DATABASE_VERIFY_URL` | A connection string for the **runtime** role `athera_app`, **port 5432**, used only by the read-only verification scripts. Compose it from the same host with the runtime role and its password. |
+| `DATABASE_MIGRATION_URL` | The privileged migration connection string — the value that lives locally in `.env.production.migration`. Supabase → Project Settings → Database → **Session pooler** connection string (`aws-<n>-<region>.pooler.supabase.com`), **port 5432**, using the **migration/owner** role (`postgres.<project-ref>`). Never the runtime role. See §4 for why the pooler and not the direct host. |
+| `DATABASE_VERIFY_URL` | A connection string for the **runtime** role (`athera_app.<project-ref>`) on the **same session-pooler host, port 5432**, used only by the read-only verification scripts. |
 | `ATHERA_DB_APP_PASSWORD` | The runtime role's password. Only needed if you prefer not to store a full URL: the verification script also accepts `PGHOST` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` instead of `DATABASE_VERIFY_URL`. Set one path or the other. |
 | `PRODUCTION_DB_HOST` | Database host, for that same alternative composition path. Optional if `DATABASE_VERIFY_URL` is set. |
 | `ATHERA_DB_APP_USER` | Runtime role username, for that same alternative path. Optional if `DATABASE_VERIFY_URL` is set. |
@@ -145,20 +144,45 @@ run consequently reached the production database. So the script:
 - refuses if the URL uses the runtime role `athera_app`, keeping a BYPASSRLS
   role out of `DATABASE_URL`;
 - **requires `--confirm <project-ref>` to match the project reference parsed out
-  of the URL itself.** This is the anti-typo guard, and it is why
-  `SUPABASE_PROJECT_REF` is a required secret beyond the connection string:
-  without it the script refuses to run at all.
+  of the URL itself.** This is the anti-typo guard: a production migration is
+  never a typo.
+
+  The workflow supplies that value from a **reviewed constant** in
+  `production-release.yml` (`PRODUCTION_SUPABASE_PROJECT_REF`), **not from a
+  secret**. A project reference is an identifier, not a credential — it opens
+  nothing and authenticates nobody, and it appears in every Supabase dashboard
+  URL. It was previously a second secret, which meant one identity written in
+  two hand-edited places; the two drifted, and eight release runs were refused
+  at this guard. **The guard itself is unchanged** — it still compares the
+  constant against the reference inside the URL, and still refuses if they
+  differ. What changed is that the comparison now has one reviewed source
+  instead of two.
 
 In GitHub Actions the secret arrives as an environment variable, not a file. The
 workflow therefore writes it to `${RUNNER_TEMP}/.env.production.migration` under
 `umask 077` with `chmod 600`, passes `--env-file`, never echoes it, and removes
 it in an `if: always()` step.
 
-**Why port 5432 and not 6543.** 6543 is Supabase's transaction pooler: it does
-not guarantee that consecutive statements land on the same session. Alembic's
-version lock, `SET LOCAL` tenant context, and the migration itself all assume one
-session. Use the direct port. The verification script refuses a
-`DATABASE_VERIFY_URL` that names any other port.
+**Why port 5432 and not 6543 — and why the pooler host, not the direct host.**
+
+6543 is Supabase's **transaction** pooler: it does not guarantee that
+consecutive statements land on the same session. Alembic's version lock,
+`SET LOCAL` tenant context, and the migration itself all assume one session.
+**Port 6543 is forbidden for both migration and verification**, and the
+verification script refuses any `DATABASE_VERIFY_URL` naming another port.
+
+Port 5432 on `aws-<n>-<region>.pooler.supabase.com` is the **session** pooler:
+one session per connection, which is exactly what those mechanisms need.
+
+**Use that host, not the direct one.** An earlier version of this runbook called
+port 5432 "the direct port", which led to `db.<ref>.supabase.co` — and that host
+is **IPv6-only**, while GitHub-hosted runners are IPv4-only. A release run failed
+with `connection to server at "2406:da1a:..." failed: Network is unreachable`.
+The session pooler resolves to IPv4 and is reachable from Actions. It is also
+what makes the `--confirm` guard work as documented: the pooler username is
+`postgres.<project-ref>`, so the reference the script parses **is** the project
+ref; on the direct host the username is bare `postgres`, and the script falls
+back to comparing the whole hostname instead.
 
 ---
 

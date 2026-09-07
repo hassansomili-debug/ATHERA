@@ -23,8 +23,9 @@ on:
     inputs:
       expected_main_sha:
         description: >-
-          The exact commit on main to release. Wave 1.1 =
-          9195850dc6ff87f726801a05e02b6fd814846c13
+          The exact 40-character commit SHA on main to release. Read it from
+          origin/main at release time — never carry one over from a runbook or a
+          previous release; the workflow refuses anything that is not main's head.
         required: true
         type: string
       deploy_web:
@@ -45,6 +46,26 @@ concurrency:
 # `deployments` ما دام لا شيء هنا يطلبها.
 permissions:
   contents: read
+
+# ═════════ هويّةُ مشروع الإنتاج — ثابتٌ مُراجَع، لا سرّ ═════════
+#
+# **العطب الذي يعالجه هذا الثابت: هويّةٌ واحدة مكتوبةٌ في موضعين.**
+#
+# `scripts/migrate_production.py` يقارن `--confirm` بمرجعِ المشروع المستخرَج
+# من `DATABASE_MIGRATION_URL` نفسه. وكان المرجعُ يصل من سرٍّ ثانٍ
+# (`SUPABASE_PROJECT_REF`)، فصار للهويّة الواحدة مصدران يُحرَّران يدويًّا
+# ولا شيء يقرن أحدهما بالآخر. وانحرفا: ثمانِ تشغيلاتٍ رُفضت عند الحارس.
+#
+# **والعلاجُ ليس تصحيحَ السرّ — بل ألّا يكون سرًّا مكرَّرًا.** فمرجعُ
+# المشروع مُعرِّفٌ لا اعتماد: لا يفتح شيئًا، ولا يُصادِق أحدًا، ويظهر في
+# أيّ رابطٍ إلى لوحة Supabase. فيُكتب هنا صريحًا **ليُراجَع في الطلب**،
+# ويبقى السرُّ للاعتماد وحده.
+#
+# **ولا يُضعِف ذلك الحارس.** الحارسُ يقارن هذا الثابتَ بما في الرابط؛ فإن
+# اختلفا رُفض الترحيل كما كان. الذي تغيّر أنّ للمقارنة طرفًا واحدًا
+# مُراجَعًا بدل طرفين يُحرَّران في الظلام.
+env:
+  PRODUCTION_SUPABASE_PROJECT_REF: ofyabufybofbxwkfalgs
 
 jobs:
   # ═════════ ١ — فحصُ المصدر: قراءةٌ محضة، ولا اعتمادَ إنتاجٍ بعد ═════════
@@ -205,12 +226,14 @@ jobs:
         # head` من `infra/db`) ولا يعرف هذه الحدود. و`--confirm` يطابق مرجعَ
         # المشروع المستخرَج من الرابط نفسه: حارسٌ ضدّ الخطأ المطبعيّ، وبدونه
         # يرفض السكربت المضيّ.
-        env:
-          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        #
+        # و`--confirm` يأخذ الثابتَ المُراجَع في رأس هذا الملفّ، لا سرًّا
+        # ثانيًا يحمل الهويّة نفسها. **والمقارنة قائمةٌ كما كانت**: إن خالف
+        # مرجعُ الرابط هذا الثابتَ رُفض الترحيل ولم يُكتب شيء.
         run: |
           set -euo pipefail
           python scripts/migrate_production.py \
-            --confirm "${SUPABASE_PROJECT_REF}" \
+            --confirm "${PRODUCTION_SUPABASE_PROJECT_REF}" \
             --env-file "${MIGRATION_ENV_FILE}"
 
       - name: Prove the schema after migration
