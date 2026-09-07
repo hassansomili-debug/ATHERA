@@ -251,6 +251,9 @@ class MineResponse(BaseModel):
     #: **حصيلةٌ تُقرأ، لا صفرٌ يُؤوَّل.** و`no_reviewed_canonical_evidence`
     #: تقول «لم تُعتمد معرفةٌ بعد»، و`reviewed_evidence_but_no_opportunity`
     #: تقول «اعتُمدت، وفُحصت، ولم تنشأ فرصة» — وكانتا رقمًا واحدًا.
+    #:
+    #: و`legacy_evidence_but_no_opportunity` ثالثةٌ لا تُخلط بهما: المادةُ
+    #: القديمة استخراجٌ آليّ **لم يراجعه أحد**، فلا تُوصف بالمراجعة.
     outcome: str = "reviewed_evidence_but_no_opportunity"
     note_ar: str = "الفرص مقترحات مؤصَّلة في عناصر الرسالة، ولا تتقدم بلا اعتماد الحقوق."
     note_en: str = "Opportunities are grounded proposals; none advances without rights approval."

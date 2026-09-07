@@ -28,6 +28,9 @@ NULL_FINDING = "لم تكن الفروق في الرضا الوظيفي تبعً
 CONSTRUCT_ONE = "القيادة التحويلية"
 CONSTRUCT_TWO = "الرضا الوظيفي"
 POPULATION = "معلمو المرحلة الثانوية بمدينة الرياض"
+#: عنوانٌ **لا يطابق أيَّ علامةٍ في المنقّب** — لا محددات ولا آثار ولا مقارنة.
+#: فتُفحص حالُ «دليلٌ قائم ولا فرصة» بلا أن يصنعها العنوانُ من نفسه.
+NEUTRAL_TITLE = "واقع ممارسات التدريس في المرحلة الابتدائية"
 REJECTED_TEXT = "استنتاجٌ رفضه الباحث ولا يجوز أن يصل المنقّب"
 UNVERIFIED_TEXT = "استخراجٌ لم يعرضه أحدٌ على الباحث بعد"
 
@@ -145,6 +148,25 @@ async def _reject(session, tenant_id, user_id, candidate_id):
     return await memory.reject_candidate(
         session, tenant_id=tenant_id, candidate_id=candidate_id,
         actor_user_id=user_id, reason="rejected in the acceptance test")
+
+
+async def _card(tenant_id, user_id, thesis_id, locale="ar"):
+    """صفُّ البطاقة كما تقرؤه الشاشة — **هناك تظهر الكذبة إن ظهرت**."""
+    async with _client(tenant_id, user_id, locale=locale) as client:
+        rows = (await client.get("/api/v1/theses")).json()
+    return next(row for row in rows if row["id"] == str(thesis_id))
+
+
+async def _mined_at(tenant_id, user_id, thesis_id):
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+
+    async with tenant_session(tenant_id, user_id) as session:
+        return (await session.execute(
+            select(Thesis.opportunities_mined_at)
+            .where(Thesis.id == thesis_id))).scalar_one()
 
 
 async def _counts(tenant_id, user_id, thesis_id):
@@ -414,6 +436,20 @@ async def test_extracted_but_unreviewed_candidates_do_not_mine_and_say_so(two_te
     assert body["outcome"] == "no_reviewed_canonical_evidence"
     assert body["approved_facts_used"] == 0
 
+    # ── والحالُ المحفوظة تقول ما قاله الردّ ──
+    #
+    # **وهنا كان العطبُ يعود بعد إعادة التحميل.** الختمُ كان يُكتب بلا شرط،
+    # و`processing.opportunity_outcome` تقرأ أيَّ ختمٍ غير فارغ فتقول
+    # «اكتمل الفحص ولم يُعثر على فرصة» — لباحثٍ لم يعتمد حقيقةً واحدة.
+    assert await _mined_at(tid, uid, thesis_id) is None, "خُتمت رسالةٌ لم تُفحص"
+
+    for locale, forbidden in (("ar", "اكتمل الفحص"), ("en", "scan completed")):
+        card = await _card(tid, uid, thesis_id, locale=locale)
+        assert card["opportunities_outcome"] != "completed_empty"
+        assert forbidden not in (card["opportunities_outcome_label"] or ""), (
+            "البطاقةُ تدّعي فحصًا لم يقع"
+        )
+
 
 # ═════════ ٦ · المسارُ القديم كما كان ═════════
 
@@ -483,3 +519,82 @@ def test_a_null_result_is_only_counted_when_the_fact_says_so():
     assert canonical_facts._NULL_RESULT_MARKERS.search("no significant difference")
     assert not canonical_facts._NULL_RESULT_MARKERS.search(FINDING)
     assert not canonical_facts._NULL_RESULT_MARKERS.search("نتيجةٌ لم تُذكر دلالتها")
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_legacy_evidence_that_yields_nothing_is_never_called_reviewed(two_tenants):
+    """**المادةُ القديمة ليست معرفةً راجعها الباحث** — فلا تُوصف بذلك.
+
+    صفوفُ `ThesisSection`/`ThesisResult` استخراجٌ آليّ، و`verification_status`
+    فيها لا يُنقل عن `unverified` في أيّ مسار. فحصيلةٌ تقول
+    «اعتُمدت المعرفةُ وفُحصت ولم تنشأ فرصة» ادّعاءُ مراجعةٍ لم تقع.
+
+    والختمُ هنا **يُكتب**: دليلٌ قائمٌ فُحص فعلًا، وإن لم يُنتج شيئًا.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import ThesisResult
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _file_id, _run = await _seed(tid, uid, title_ar=NEUTRAL_TITLE)
+
+    async with tenant_session(tid, uid) as session:
+        # نتيجةٌ واحدة وبناءان اثنان: دليلٌ قائم، ولا سؤالَ ولا أداةَ ولا
+        # ثلاثةُ متغيّرات — فلا يجد المنقّبُ ما يقترحه.
+        session.add(ThesisResult(
+            tenant_id=tid, thesis_id=thesis_id, label_ar=FINDING,
+            variables=[CONSTRUCT_ONE, CONSTRUCT_TWO], is_published=False))
+
+    async with _client(tid, uid) as client:
+        body = (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).json()
+
+    assert body["opportunities_created"] == 0
+    assert body["evidence_basis"] == "legacy"
+    assert body["outcome"] == "legacy_evidence_but_no_opportunity"
+    assert body["outcome"] != "reviewed_evidence_but_no_opportunity", (
+        "وُصفت مادةٌ قديمة بأنّها معرفةٌ راجعها الباحث"
+    )
+    assert body["approved_facts_used"] == 0
+    assert await _mined_at(tid, uid, thesis_id) is not None, "فحصٌ وقع ولم يُختم"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_reviewed_evidence_that_yields_nothing_says_so_and_is_stamped(two_tenants):
+    """اعتُمدت معرفةٌ، وفُحصت، ولم تنشأ فرصة — **خبرٌ ثالثٌ قائمٌ بذاته**.
+
+    ويُختم: الفحصُ وقع على دليلٍ حقيقيّ. والبطاقةُ تقول «اكتمل الفحص ولم
+    يُعثر على فرصة» — وهي هنا **صادقة**، بخلاف حال «لا دليل».
+    """
+    from athera_api.db import tenant_session
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, run_id = await _seed(tid, uid, title_ar=None)
+
+    async with tenant_session(tid, uid) as session:
+        chunk = await _chunk(session, tid, file_id,
+                             " ".join([NEUTRAL_TITLE, POPULATION]))
+        for key, value, category in (
+            ("title_ar", NEUTRAL_TITLE, "researcher_fact"),
+            ("population", POPULATION, "project_decision"),
+        ):
+            candidate = await _candidate(
+                session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+                field_key=key, value=value, category=category)
+            await _approve(session, tid, uid, candidate.id)
+
+    async with _client(tid, uid) as client:
+        body = (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).json()
+
+    assert body["opportunities_created"] == 0
+    assert body["evidence_basis"] == "canonical"
+    assert body["approved_facts_used"] > 0
+    assert body["outcome"] == "reviewed_evidence_but_no_opportunity"
+    assert await _mined_at(tid, uid, thesis_id) is not None, "فحصٌ حقيقيّ لم يُختم"
+
+    card = await _card(tid, uid, thesis_id)
+    assert card["opportunities_outcome"] == "completed_empty"
