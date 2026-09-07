@@ -45,6 +45,66 @@ def _triggers(workflow: dict) -> dict:
     return workflow[True] if True in workflow else workflow["on"]
 
 
+# ═════════ تشغيلُ شيفرةِ المشغّل نفسها، لا نسخةٍ منها ═════════
+#
+# **ونسختان تتباعدان.** فحصٌ يُعيد كتابة منطق القرار يبقى أخضر بعد أن
+# يتغيّر المشغّل — فيُستخرج النصُّ من الملفّ ويُنفَّذ كما هو.
+
+
+def _step(workflow: dict, job: str, *, step_id: str) -> dict:
+    return next(s for s in workflow["jobs"][job]["steps"] if s.get("id") == step_id)
+
+
+@pytest.fixture(scope="module")
+def head_script(workflow: dict) -> str:
+    """كتلةُ بايثون التي تشتقّ الرأس، منزوعةَ إزاحةِ المستند المضمَّن."""
+    import re
+    import textwrap
+
+    body = _step(workflow, "source-preflight", step_id="head")["run"]
+    match = re.search(r"python3 - <<'PY'[^\n]*\n(.*?)\n\s*PY\b", body, re.S)
+    assert match, "تعذّر استخراج كتلة اشتقاق الرأس"
+    return textwrap.dedent(match.group(1))
+
+
+@pytest.fixture(scope="module")
+def mode_script(workflow: dict) -> str:
+    return _step(workflow, "db-release-gate", step_id="mode")["run"]
+
+
+def _run_head(script: str, root: pathlib.Path) -> tuple[int, str, str]:
+    import subprocess
+    import sys
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+        handle.write(script)
+        path = handle.name
+    proc = subprocess.run([sys.executable, path], capture_output=True, text=True,
+                          cwd=root)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _run_mode(script: str, mode: str, before: str, source: str,
+              out_file: pathlib.Path) -> tuple[int, str, str]:
+    import os
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as handle:
+        handle.write(script)
+        path = handle.name
+    env = {
+        **os.environ,
+        "RELEASE_MODE": mode,
+        "EXPECTED_SCHEMA_BEFORE": before,
+        "SOURCE_SCHEMA_HEAD": source,
+        "GITHUB_OUTPUT": str(out_file),
+    }
+    proc = subprocess.run(["bash", path], capture_output=True, text=True, env=env)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
 # ═════════ ١. التكرار ذهب، والمصدرُ واحدٌ مُراجَع ═════════
 
 def test_the_workflow_no_longer_depends_on_a_project_ref_secret(workflow_text):
@@ -63,8 +123,8 @@ def test_the_project_reference_is_a_reviewed_constant_with_the_agreed_value(work
 def test_the_migration_step_confirms_with_that_constant(workflow):
     """**والحارسُ يُنادى فعلًا** — لا يُحذف مع السرّ الذي كان يغذّيه."""
     step = next(
-        s for s in workflow["jobs"]["db-migrate"]["steps"]
-        if "Apply migration" in (s.get("name") or ""))
+        s for s in workflow["jobs"]["db-release-gate"]["steps"]
+        if "Apply the migration" in (s.get("name") or ""))
     script = step["run"]
     assert "scripts/migrate_production.py" in script
     assert "--confirm" in script, "الترحيل بلا حارسِ التطابق"
@@ -189,18 +249,210 @@ def test_the_release_sha_description_carries_no_stale_example(workflow):
     assert not re.search(r"\b[0-9a-f]{12,}\b", description)
 
 
-def test_the_pre_migration_gate_still_demands_exactly_0029(workflow):
-    """**ولا يُمرَّر `0030` من بوابة ما قبل الترحيل**، ولا تُجعل مُعادةً."""
-    steps = workflow["jobs"]["db-migrate"]["steps"]
-    gate = next(s for s in steps if "Gate" in (s.get("name") or ""))
-    assert "--expect-version 0029" in gate["run"]
+# ═════════ ٣أ. المشغّلُ لا تنتهي صلاحيتُه برقم ═════════
+#
+# **الفحصُ السابق هنا كان يطلب `--expect-version 0029` حرفيًّا.** وكان
+# صحيحًا يومَه، وصار هو نفسُه حارسَ العطب: يُثبِّت المشغّلَ على ترحيلٍ
+# بعينه. فأُبطل عمدًا، ومكانَه تُفحص **الآليّة** لا الرقم.
+
+
+def test_no_operative_step_pins_a_literal_revision(workflow):
+    """**ولا رقمَ محفورٌ في خطوةٍ تعمل.** الأرقام في التعليقات تاريخٌ يُشرح."""
+    import re
+
+    for job_name, job in workflow["jobs"].items():
+        for step in job.get("steps", []):
+            script = step.get("run") or ""
+            for line in script.splitlines():
+                bare = line.strip()
+                if bare.startswith("#"):
+                    continue
+                assert not re.search(r"--expect-version\s+\d{4}\b", bare), (
+                    f"{job_name}/{step.get('name')}: revision pinned literally")
+
+
+def test_the_schema_head_is_derived_from_the_revision_graph(head_script, tmp_path):
+    """**النسبُ لا ترتيبُ الأسماء.** وترقيمٌ منتظم اليوم لا يبقى منتظمًا.
+
+    والبرهانُ سلوكيّ لا نصّيّ: يُبنى نسبٌ يكون فيه الرأسُ في الملفّ الذي
+    يسبق أبجديًّا، وأبوه في الملفّ الذي يليه. فلو قُرئ الترتيبُ حكمًا
+    لأخطأ. (والفرزُ في الشيفرة لتكرارٍ مستقرّ في التشخيص، لا لاختيار رأس.)
+    """
+    root = tmp_path / "graph"
+    versions = root / "infra/db/migrations/versions"
+    versions.mkdir(parents=True)
+    # الرأسُ 0002 في `a.py`، وأبوه 0001 في `z.py` — والترتيبُ معاكسٌ عمدًا.
+    (versions / "a.py").write_text(
+        'revision = "0002"\ndown_revision = "0001"\n', encoding="utf-8")
+    (versions / "z.py").write_text(
+        'revision = "0001"\ndown_revision = None\n', encoding="utf-8")
+
+    code, out, err = _run_head(head_script, root)
+    assert code == 0, err
+    assert "source_schema_head=0002" in out, out
+
+
+def test_the_head_derivation_fails_closed(head_script, tmp_path):
+    """صفرُ رؤوس، ورأسان، وأبٌ مفقود، ومعرّفٌ مكرَّر — **كلُّها سقوط**."""
+    def build(files: dict[str, tuple[str, str | None]]) -> pathlib.Path:
+        root = tmp_path / f"case{len(list(tmp_path.iterdir()))}"
+        versions = root / "infra/db/migrations/versions"
+        versions.mkdir(parents=True)
+        for name, (rev, down) in files.items():
+            down_line = "None" if down is None else f'"{down}"'
+            (versions / name).write_text(
+                f'revision = "{rev}"\ndown_revision = {down_line}\n', encoding="utf-8")
+        return root
+
+    healthy = build({"a.py": ("0001", None), "b.py": ("0002", "0001")})
+    code, out, err = _run_head(head_script, healthy)
+    assert code == 0, err
+    assert "source_schema_head=0002" in out
+
+    two_heads = build({"a.py": ("0001", None), "b.py": ("0002", "0001"),
+                       "c.py": ("0003", "0001")})
+    code, _out, err = _run_head(head_script, two_heads)
+    assert code != 0 and "exactly one head" in err
+
+    missing_parent = build({"a.py": ("0001", None), "b.py": ("0002", "0099")})
+    code, _out, err = _run_head(head_script, missing_parent)
+    assert code != 0 and "missing parent" in err
+
+    duplicate = build({"a.py": ("0001", None), "b.py": ("0001", None)})
+    code, _out, err = _run_head(head_script, duplicate)
+    assert code != 0 and "duplicate revision" in err
+
+    empty = build({})
+    code, _out, err = _run_head(head_script, empty)
+    assert code != 0, "قائمةٌ فارغة مرّت"
+
+
+# ═════════ ٣ب. الحالاتُ الأربع، بلا قاعدة إنتاج ═════════
+#
+# **وتُشغَّل الشيفرةُ نفسها التي في المشغّل**، لا نسخةٌ منها في الفحص:
+# نسختان تتباعدان، ويبقى الفحصُ أخضر على منطقٍ لم يعد قائمًا.
+
+
+@pytest.mark.parametrize(
+    ("mode", "before", "source", "expect_ok", "must_say"),
+    [
+        ("code_only", "0030", "0030", True, "nothing is written"),
+        ("code_only", "0030", "0031", False, "release_mode=schema_and_code"),
+        ("schema_and_code", "0030", "0031", True, "0030 -> 0031"),
+        ("schema_and_code", "0030", "0030", False, "release_mode=code_only"),
+    ],
+)
+def test_the_four_structural_release_cases(mode_script, tmp_path, mode, before,
+                                           source, expect_ok, must_say):
+    out_file = tmp_path / f"out-{mode}-{before}-{source}"
+    out_file.write_text("", encoding="utf-8")
+    code, stdout, stderr = _run_mode(mode_script, mode, before, source, out_file)
+    blob = stdout + stderr
+    if expect_ok:
+        assert code == 0, blob
+        emitted = out_file.read_text(encoding="utf-8")
+        expected_migration = "yes" if mode == "schema_and_code" else "no"
+        assert f"migration_executed={expected_migration}" in emitted
+        expected_after = source if mode == "schema_and_code" else before
+        assert f"schema_after={expected_after}" in emitted
+        assert f"schema_before={before}" in emitted
+    else:
+        assert code != 0, "حالةٌ يجب أن تُرفض مرّت"
+    assert must_say in blob, blob
+
+
+def test_code_only_never_invokes_the_migration_machinery(workflow):
+    """**ولا تُلمس آلةُ الترحيل في نمطٍ لا يُرحِّل.**"""
+    steps = workflow["jobs"]["db-release-gate"]["steps"]
+    guarded = ("Materialise", "Apply the migration", "Prove the schema",
+               "Verify database constraints")
+    for step in steps:
+        name = step.get("name") or ""
+        if any(marker in name for marker in guarded):
+            assert step.get("if") == "${{ inputs.release_mode == 'schema_and_code' }}", (
+                f"خطوةٌ كاتبة بلا شرط النمط: {name}")
+
+    for step in steps:
+        script = step.get("run") or ""
+        env = str(step.get("env") or {})
+        touches = ("migrate_production.py" in script
+                   or "verify_db_constraints.py" in script
+                   or "DATABASE_MIGRATION_URL" in env)
+        if touches:
+            assert step.get("if"), f"خطوةٌ تمسّ الترحيل بلا شرط: {step.get('name')}"
+
+
+def test_the_read_only_preflight_runs_in_both_modes(workflow):
+    """**حارسُ `code_only` هو هويّةُ المخطَّط** — فلا يكون مشروطًا."""
+    steps = workflow["jobs"]["db-release-gate"]["steps"]
+    preflight = next(s for s in steps if "Read-only schema preflight" in (s.get("name") or ""))
+    assert preflight.get("if") is None, "الفحصُ القرائيّ صار مشروطًا"
+    assert "--after-migration" not in preflight["run"], (
+        "الفحصُ القرائيّ يستدعي بوّابات ما بعد الترحيل")
+    assert "${EXPECTED_SCHEMA_BEFORE}" in preflight["run"]
+
+
+def test_the_gate_job_is_never_skipped_as_a_whole(workflow):
+    """**ولا تُبنى بوّابةٌ تُتخطّى بكاملها.** التخطّي ينتشر عبر `needs`.
+
+    وهو شكلُ العطب الذي نُصلحه: `deploy-api` معلّقٌ خلف مهمّةٍ تُتخطّى،
+    فيُتخطّى النشرُ صامتًا ويُقرأ ذلك نجاحًا.
+    """
+    for name in ("db-release-gate", "legacy-compatibility", "deploy-api"):
+        assert workflow["jobs"][name].get("if") is None, (
+            f"{name} محكومةٌ بشرطٍ على مستوى المهمّة — التخطّي سينتشر")
+    assert "db-release-gate" in workflow["jobs"]["deploy-api"]["needs"]
+
+
+def test_the_release_mode_input_is_least_privilege_by_default(workflow):
+    inputs = _triggers(workflow)["workflow_dispatch"]["inputs"]
+    mode = inputs["release_mode"]
+    assert mode["type"] == "choice"
+    assert sorted(mode["options"]) == ["code_only", "schema_and_code"]
+    assert mode["default"] == "code_only", "الافتراضُ ليس الأقلَّ صلاحية"
+
+
+def test_expected_schema_before_is_required_with_no_stale_default(workflow):
+    """**قيمةٌ افتراضية هنا تُعيد العطبَ بعينه**، ومثالٌ في الوصف يُنسخ."""
+    import re
+
+    inputs = _triggers(workflow)["workflow_dispatch"]["inputs"]
+    field = inputs["expected_schema_before"]
+    assert field["required"] is True
+    assert "default" not in field, "مدخلُ المخطَّط يحمل قيمةً افتراضية تتقادم"
+    assert not re.search(r"\b\d{4}\b", field["description"]), (
+        "وصفُ المدخل يحمل رقمَ مراجعةٍ — والمثالُ يُنسخ كما هو")
+
+
+def test_the_post_migration_proof_targets_the_derived_head(workflow):
+    steps = workflow["jobs"]["db-release-gate"]["steps"]
     after = next(s for s in steps if "Prove the schema" in (s.get("name") or ""))
-    assert "--expect-version 0030" in after["run"]
+    assert "${SOURCE_SCHEMA_HEAD}" in after["run"]
     assert "--after-migration" in after["run"]
 
 
+def test_the_summary_never_reports_a_migration_that_did_not_happen(workflow):
+    step = next(s for s in workflow["jobs"]["smoke"]["steps"]
+                if (s.get("name") or "") == "Summary")
+    script = step["run"]
+    assert "${MIGRATION_EXECUTED}" in script
+    assert "Migration executed" in script
+    assert "no migration credential was materialised" in script
+    env = str(step.get("env") or {})
+    assert "db-release-gate" in env, "الملخّصُ لا يقرأ مخرجاتِ البوّابة"
+
+
+def test_the_legacy_window_no_longer_names_a_deployed_version(workflow):
+    """«خادم v88» صارت «الخادمُ المنشورُ حاليًّا» — والاسمُ يتقادم."""
+    job = workflow["jobs"]["legacy-compatibility"]
+    assert "v88" not in job["name"]
+    scripts = "\n".join(s.get("run", "") for s in job["steps"])
+    assert "v88" not in scripts
+    assert "${SCHEMA_AFTER}" in scripts
+
+
 def test_the_migration_credential_stays_runner_local_and_is_always_removed(workflow):
-    steps = workflow["jobs"]["db-migrate"]["steps"]
+    steps = workflow["jobs"]["db-release-gate"]["steps"]
     write = next(s for s in steps if "Materialise" in (s.get("name") or ""))
     assert "RUNNER_TEMP" in write["run"], "الاعتماد يُكتب خارج مجلّد المشغّل"
     assert "chmod 600" in write["run"] and "umask 077" in write["run"]
@@ -212,7 +464,7 @@ def test_the_migration_credential_stays_runner_local_and_is_always_removed(workf
 
 
 def test_the_write_capable_jobs_still_carry_the_production_environment(workflow):
-    for name in ("db-migrate", "deploy-api", "deploy-web"):
+    for name in ("db-release-gate", "deploy-api", "deploy-web"):
         assert workflow["jobs"][name].get("environment") == "production", name
 
 
