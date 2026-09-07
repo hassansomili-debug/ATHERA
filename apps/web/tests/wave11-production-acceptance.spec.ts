@@ -5,7 +5,7 @@ import { signIn } from "./journey";
 /**
  * قبولُ الموجة 1.1 على الإنتاج | Wave 1.1 production acceptance.
  *
- * ## ثلاثةُ أخطاءِ حزمةٍ سبقت هذه الصياغة — ولا يُعاد أيٌّ منها
+ * ## أربعةُ أخطاءِ حزمةٍ سبقت هذه الصياغة — ولا يُعاد أيٌّ منها
  *
  * **١ — خطوةٌ أُعلنت ناجحة لأنّ الزرّ ضُغط.** أثبتت القاعدةُ أنّ
  * `process-file` لم يقع أصلًا، والحزمةُ مضت. فصار الطلبُ يُرصد ويُعدّ
@@ -16,9 +16,13 @@ import { signIn } from "./journey";
  *
  * **٣ — `page.reload()` داخل حلقة الاكتشاف.** والشاشةُ تحمّل قائمتها بـ
  * `useDeferredLoad`: إعادةُ تحميلٍ متكرّرة تهدم الصفحة قبل أن يستقرّ
- * الطلبُ المؤجَّل وتصييرُه، فيُقاس غيابٌ صنعه القياسُ نفسه. **فلا إعادةَ
- * تحميلٍ في الاكتشاف** — تنقّلٌ واحد ثمّ انتظار. وتبقى إعادةُ التحميل بعد
- * التغيير وحدها، حيث تُقصد: هناك تفصل الحفظَ عن تفاؤل الواجهة.
+ * الطلبُ المؤجَّل وتصييرُه، فيُقاس غيابٌ صنعه القياسُ نفسه. **فتنقّلٌ واحد
+ * ثمّ انتظار**، في الاكتشاف وبعد التغيير سواء: `openThesisCentre` تنقّلٌ
+ * كامل إلى مستندٍ جديد، وهو وحده ما يفصل الحفظَ عن تفاؤل الواجهة.
+ *
+ * **٤ — انتظارُ عدّادٍ بدل انتظار الحدث.** كان تبديلُ العرض ينام ألفَين
+ * ونصفًا؛ فمرّةً كفى ومرّةً لم يكفِ، وسقطت «ز» على بطاقةٍ في الطريق.
+ * فصار يُنتظر **ردُّ العرض المقصود بمعامله** `view=`، ولا يُقبل ردٌّ بائت.
  *
  * ## حدودٌ لا تُتجاوز
  *
@@ -68,13 +72,15 @@ interface Watch {
   consoleErrors: string[];
   pageErrors: string[];
   requestFailures: string[];
+  /** `view:status` لكلّ ردّ قائمة، **بترتيب الوصول**. */
+  listViews: string[];
   apiOrigin: string | null;
 }
 
 function watch(page: Page): Watch {
   const w: Watch = {
     thesisCalls: [], serverErrors: [], consoleErrors: [],
-    pageErrors: [], requestFailures: [], apiOrigin: null,
+    pageErrors: [], requestFailures: [], listViews: [], apiOrigin: null,
   };
   page.on("response", (r) => {
     const url = new URL(r.url());
@@ -84,6 +90,12 @@ function watch(page: Page): Watch {
       w.thesisCalls.push({
         method: r.request().method(), path: url.pathname, status: r.status(),
       });
+      // **ترتيبُ ردود القائمة وعروضُها** — به وحده يُفصل عطبُ الحزمة عن
+      // عطب المنتج: إن استقرّ `view=all` بعد اختيار «المؤرشفة»، فالردُّ
+      // البائت كتب فوق الجديد، وذلك عطبٌ في الشاشة لا في القياس.
+      if (url.pathname === LIST_PATH && r.request().method() === "GET") {
+        w.listViews.push(`${url.searchParams.get("view") ?? "all"}:${r.status()}`);
+      }
     }
     if (r.status() >= 500) {
       w.serverErrors.push(`${r.request().method()} ${url.pathname} -> ${r.status()}`);
@@ -119,18 +131,56 @@ function noise(w: Watch): Record<string, unknown> {
 
 const evidence: Record<string, string> = {};
 
+/** الراصدُ الحيّ — ليقرأه التشخيصُ عند السقوط. */
+let w0: Watch | null = null;
+
 function targetCard(page: Page) {
   return page.locator(`article.card[data-testid="thesis-card-${THESIS_ID}"]`);
 }
 
-/** **لا يُلمس صفٌّ حتى يُثبت أنّه الأثرُ التركيبيّ** — بثلاثة شروط معًا. */
-async function assertOwnership(page: Page, stage: string) {
+/**
+ * حضورُ البطاقة — **بانتظارٍ يعيد المحاولة، لا بعدٍّ لحظيّ**.
+ *
+ * و`count()` لا يعيد المحاولة: يُقرأ في اللحظة ويُجاب. وقد استقرّ ردُّ
+ * القائمة ولمّا يُصيَّر بعد، فيُقرأ صفرٌ ويُبنى عليه فرعٌ كامل. وأخطرُ ما
+ * فيه في «ي»: صفرٌ كاذب يتخطّى الأرشفة ثمّ يجد القائمةَ خاليةً فيُعلن
+ * النجاح — **خضرةٌ على عملٍ لم يقع**. فيُنتظر الظهور، ويُسمّى الغيابُ
+ * غيابًا بعد انقضاء المهلة وحدها.
+ */
+function cardPresent(page: Page, timeout = 15_000): Promise<boolean> {
+  return targetCard(page).first()
+    .waitFor({ state: "visible", timeout })
+    .then(() => true, () => false);
+}
+
+/**
+ * **لا يُلمس صفٌّ حتى يُثبت أنّه الأثرُ التركيبيّ.**
+ *
+ * والهويّةُ ثلاثةُ شروط: المعرّفُ في `data-testid` — وهو معرّفُ ردّ 202
+ * بعينه — والبادئةُ الحارسة واسمُ الملفّ في نصّ البطاقة.
+ *
+ * و`withFileId` يُطفأ في خطوة التسوية وحدها: `source_file_id` لا يُعرف قبل
+ * أن تقرأ «ب» ردَّ القائمة، والاشتراطُ عليه هناك يشترط على معلومةٍ لم
+ * تُقرأ بعد — لا يزيد أمانًا ويسقط دائمًا. والشروطُ الثلاثةُ الباقية
+ * تكفي: معرّفٌ كامل، وبادئةٌ حارسة، واسمُ ملفٍّ مطابق.
+ */
+async function assertOwnership(page: Page, stage: string, withFileId = true) {
   const card = targetCard(page).first();
-  await expect(card, `${stage}: the target card is not on screen`)
-    .toBeVisible({ timeout: 30_000 });
+  try {
+    await expect(card).toBeVisible({ timeout: 30_000 });
+  } catch {
+    // **يُحسم الانقسام هنا** — لا في قراءةِ أثرٍ بعد انتهاء التشغيلة.
+    shout(`${stage}/not-on-screen`, {
+      "#thesis-view value": await page.locator("#thesis-view").inputValue(),
+      "cards rendered": await page.locator("article.card").count(),
+      "list responses (view:status, in order)": w0?.listViews.join(" → ") || "none",
+      VERDICT: "if a view=all response settled last, a stale response overwrote the view",
+    });
+    throw new Error(`${stage}: the target card is not on screen`);
+  }
   const text = await card.innerText();
   const ok = text.includes(MARKER) && text.includes(EXPECTED_FILE)
-    && evidence.targetFileId === EXPECTED_FILE_ID;
+    && (!withFileId || evidence.targetFileId === EXPECTED_FILE_ID);
   if (!ok) {
     shout(`${stage}/ownership`, {
       "REFUSING TO MUTATE": "identity could not be proven",
@@ -142,25 +192,93 @@ async function assertOwnership(page: Page, stage: string) {
 }
 
 async function openThesisCentre(page: Page, locale = "ar") {
+  const settled = listResponseFor(page, "all");
   await page.goto(`/${locale}/theses`);
   await expect(page.locator("#thesis-view")).toBeVisible({ timeout: 60_000 });
+  // **تُترك الشاشةُ ساكنة**: ظهورُ عنصر الاختيار يسبق استقرارَ التحميل
+  // المؤجَّل، وتبديلُ العرض وطلبٌ في الطريق يفتح سباقًا لا يخصّ ما نقيس.
+  await settled;
 }
 
+/**
+ * ينتظر **ردَّ العرض المقصود بعينه**، لا أيَّ ردِّ قائمة.
+ *
+ * والشاشةُ تُرسل `view=archived` وتُسقط المعامل حين «الكلّ» — ففي المعامل
+ * تمييزٌ قاطع. وانتظارُ «أيّ ردّ» كان يستقرّ على ردٍّ بائتٍ للعرض السابق
+ * ويمضي والعرضُ المطلوب في الطريق.
+ */
+function listResponseFor(page: Page, view: string) {
+  return page.waitForResponse((r) => {
+    const u = new URL(r.url());
+    return u.pathname === LIST_PATH && r.request().method() === "GET"
+           && (u.searchParams.get("view") ?? "all") === view;
+  }, { timeout: 60_000 }).catch(() => null);
+}
+
+/**
+ * تبديلُ العرض — **وينتظر ردَّ ذلك العرض، لا عدّادًا**.
+ *
+ * وكان ينام ألفَين ونصفًا ثمّ يمضي. والقاعدةُ في مومباي والخادمُ في
+ * سنغافورة، فالردُّ قد يتأخّر عن أيّ رقمٍ يُكتب بيد. والنومُ الثابت يخدع
+ * مرّتين: يُبطئ حين يكفي أقلُّ منه، ويكذب حين يلزم أكثر. فيُنتظر الحدث.
+ */
 async function chooseView(page: Page, value: string) {
+  const settled = listResponseFor(page, value);
   await page.locator("#thesis-view").selectOption(value);
-  await page.waitForTimeout(2500);
+  await settled;
 }
 
 // ═════════ الرحلة ═════════
 
 test("Wave 1.1 thesis lifecycle on production", async ({ page }) => {
   const w = watch(page);
+  w0 = w;
 
   // ── أ — الدخول من الشاشة ──
   await test.step("A · sign in through the real UI", async () => {
     await page.goto("/ar/login");
     await signIn(page, EMAIL!, PASSWORD!);
     evidence.auth = "signed in via the login form";
+  });
+
+  // ── أ٢ — التسوية: تبدأ الرحلةُ من حالٍ معلومة ──
+  //
+  // **التشغيلةُ السابقة أرشفت ثمّ انقطعت قبل الاسترجاع**، فالأثرُ التركيبيّ
+  // مؤرشَفٌ الآن، و«ي» تتركه مؤرشَفًا في كلّ مرّة عمدًا. ولو مضت «ب» على
+  // ذلك لغاب الهدفُ عن القائمة الحيّة فأعلنت **عطبَ إدراجٍ في الخادم** —
+  // تهمةً لبريء، وهي بعينها الغلطةُ الثانية في الترويسة: عطبٌ يظهر في
+  // موضعٍ لا يخصّه. فتُسوّى الحالُ أوّلًا، ويُقال في التقرير إنّها سُوّيت.
+  //
+  // وهذه الخطوةُ **لا تُثبت شيئًا** من عقد الموجة 1.1؛ الإثباتُ في «هـ»
+  // و«ز» بعدها. وهي لا تلمس إلّا ما تثبت هويّتُه.
+  await test.step("A2 · normalize: begin from a known active state", async () => {
+    await openThesisCentre(page);
+    if (await cardPresent(page)) {
+      evidence.startState = "already active — nothing to normalize";
+      shout("A2/normalize", { "starting state": "active", restored: false });
+      return;
+    }
+
+    await chooseView(page, "archived");
+    if (!(await cardPresent(page))) {
+      // لا يُفتعل شيء: «ب» تملك التشخيصَ الكامل وتُسمّي الانقسام.
+      evidence.startState = "in neither view — B will diagnose";
+      shout("A2/normalize", { "starting state": "absent from active and archived",
+                              restored: false, note: "left to B to diagnose" });
+      return;
+    }
+
+    await assertOwnership(page, "A2", false);
+    const waiting = page.waitForResponse(
+      (r) => r.url().includes(`/theses/${THESIS_ID}/restore`)
+             && r.request().method() === "POST", { timeout: 60_000 });
+    await targetCard(page).first().getByTestId("card-restore").click();
+    const response = await waiting;
+    if (response.status() !== 200) shout("A2/normalize", { status: response.status(), ...noise(w) });
+    expect(response.status(), "could not restore the synthetic thesis to a known start state")
+      .toBe(200);
+    evidence.startState = "was left archived by an earlier interrupted run — restored to active";
+    shout("A2/normalize", { "starting state": "archived", restored: true, status: 200 });
   });
 
   // ── ب — الانقسامُ الحاسم: هل خرج طلبُ القائمة، وماذا حمل؟ ──
@@ -240,8 +358,9 @@ test("Wave 1.1 thesis lifecycle on production", async ({ page }) => {
     if (!target) {
       shout("B/verdict", {
         VERDICT: "BACKEND LISTING / AUTHORIZATION DEFECT",
-        why: "the database proves this thesis is active rank #1 for the same tenant, "
-             + "yet the list response does not contain it",
+        why: "step A2 left this thesis active for this same tenant, yet the list "
+             + "response does not contain it",
+        "A2 said": evidence.startState ?? "(A2 did not run)",
         rowCount: rows.length,
       });
       throw new Error("BACKEND LISTING / AUTHORIZATION DEFECT — target absent from a 200 list");
@@ -335,8 +454,10 @@ test("Wave 1.1 thesis lifecycle on production", async ({ page }) => {
     shout("E/archive", { status: 200, lifecyclePosts: posted.length });
 
     await expect(targetCard(page)).toHaveCount(0, { timeout: 30_000 });
-    // **هنا تُقصد إعادةُ التحميل** — تفصل الحفظَ عن تفاؤل الواجهة.
-    await page.reload();
+    // **هنا يُقصد التنقّلُ من جديد** — يفصل الحفظَ عن تفاؤل الواجهة:
+    // مستندٌ جديد، وحالةٌ صفرية، وقائمةٌ تُقرأ من الخادم لا من الذاكرة.
+    // وتنقّلٌ واحد لا تنقّلان: `reload()` ثمّ `goto()` يترك طلبَ الأولى
+    // في الطريق، فيستقرّ انتظارُنا عليه ونمضي والثانيةُ لم تصل بعد.
     await openThesisCentre(page);
     await expect(targetCard(page), "still active after reload").toHaveCount(0, { timeout: 30_000 });
     await chooseView(page, "archived");
@@ -369,7 +490,6 @@ test("Wave 1.1 thesis lifecycle on production", async ({ page }) => {
     evidence.restore = "200";
     shout("G/restore", { status: 200 });
 
-    await page.reload();
     await openThesisCentre(page);
     await expect(targetCard(page).first(), "not back in the active list")
       .toBeVisible({ timeout: 30_000 });
@@ -416,7 +536,7 @@ test("Wave 1.1 thesis lifecycle on production", async ({ page }) => {
   // ── ي — الحالُ النهائية: مؤرشَفة ──
   await test.step("J · leave the synthetic thesis archived", async () => {
     await openThesisCentre(page);
-    if (await targetCard(page).count() > 0) {
+    if (await cardPresent(page)) {
       await assertOwnership(page, "J");
       const card = targetCard(page).first();
       await card.getByTestId("card-menu").click();
@@ -428,17 +548,25 @@ test("Wave 1.1 thesis lifecycle on production", async ({ page }) => {
       await card.getByTestId("archive-confirm").click();
       expect((await waiting).status()).toBe(200);
     }
-    await page.reload();
     await openThesisCentre(page);
     await expect(targetCard(page)).toHaveCount(0, { timeout: 30_000 });
-    evidence.finalThesisState = "archived (hidden, not deleted)";
+    // **والغيابُ وحده لا يُثبت الأرشفة**: بطاقةٌ تغيب لأنّ القائمة لم
+    // تُصيَّر تغيب أيضًا. فيُطلب حضورٌ في «المؤرشفة» — إثباتٌ موجب.
+    await chooseView(page, "archived");
+    expect(await cardPresent(page), "not in the Archived view at the end of the journey")
+      .toBe(true);
+    evidence.finalThesisState = "archived — absent from active, present in Archived";
   });
 
   // ── ك — اليتيم: بعد اخضرار دورة الحياة وحده، وبشروطه ──
   await test.step("K · soft-trash the orphan file, only if provably safe", async () => {
     await page.goto("/ar/library");
     const orphan = page.locator("article.card").filter({ hasText: ORPHAN_FILE }).first();
-    if (await orphan.count() === 0) {
+    // انتظارٌ يعيد المحاولة: عدٌّ لحظيّ على مكتبةٍ لم تُصيَّر يقول «غير
+    // موجود» عن ملفٍّ موجود، فيُترك اليتيمُ ويُقال إنّه لم يوجد.
+    const orphanHere = await orphan.waitFor({ state: "visible", timeout: 20_000 })
+      .then(() => true, () => false);
+    if (!orphanHere) {
       evidence.orphanCleanup = `${ORPHAN_FILE} not found — nothing done`;
       return;
     }
