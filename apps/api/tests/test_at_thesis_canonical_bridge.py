@@ -138,6 +138,15 @@ async def _approve(session, tenant_id, user_id, candidate_id):
         actor_user_id=user_id, reason="reviewed in the acceptance test")
 
 
+async def _reject(session, tenant_id, user_id, candidate_id):
+    """**والرفضُ بمساره أيضًا** — لا بكتابة عمودٍ بيد."""
+    from athera_api.services import memory
+
+    return await memory.reject_candidate(
+        session, tenant_id=tenant_id, candidate_id=candidate_id,
+        actor_user_id=user_id, reason="rejected in the acceptance test")
+
+
 async def _counts(tenant_id, user_id, thesis_id):
     """صفوفُ المعماريّة القديمة — **يجب أن تبقى صفرًا**."""
     from sqlalchemy import func, select
@@ -287,7 +296,10 @@ async def test_only_approved_facts_reach_the_miner(two_tenants):
         rejected = await _candidate(session, tid, run_id=run_id, file_id=file_id,
                                     chunk=chunk, field_key="questions",
                                     value=[REJECTED_TEXT])
-        rejected.status = "rejected"
+        # **الرفضُ قرارٌ له فاعل** — والقاعدة تفرض ذلك
+        # (`ck_fact_candidates_ck_candidate_decided_requires_actor`). فيُرفض
+        # بالمسار الحقيقيّ لا بكتابة العمود، وإلّا وُصف حالٌ لا يقع في المنتج.
+        await _reject(session, tid, uid, rejected.id)
         await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
                          field_key="questions", value=[UNVERIFIED_TEXT])
 
