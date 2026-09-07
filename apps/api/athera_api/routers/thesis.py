@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func, or_, select, tuple_
@@ -56,6 +56,7 @@ from ..services import audit, rbac
 from ..services.parsing import NoTextLayer, UnsupportedDocument, parse
 from ..services.thesis import (
     aging,
+    canonical_facts,
     card_actions,
     miner,
     overlap,
@@ -604,21 +605,52 @@ async def mine_opportunities(
                                   action="write", lock=True)
     _refuse_if_in_flight(thesis, principal.locale)
 
-    sections = (
-        await session.execute(select(ThesisSection).where(ThesisSection.thesis_id == thesis_id))
-    ).scalars().all()
-    results = (
-        await session.execute(select(ThesisResult).where(ThesisResult.thesis_id == thesis_id))
-    ).scalars().all()
-
-    facts = miner.ThesisFacts(
-        thesis_id=str(thesis_id), title=thesis.title_ar,
-        questions=tuple(s.content_ar or "" for s in sections if s.section_key == "questions"),
-        results=tuple((str(r.id), r.label_ar) for r in results),
-        variables=tuple({v for r in results for v in (r.variables or [])}),
-        sample_ids=tuple({str(thesis_id)}),
-        published_result_ids=tuple(str(r.id) for r in results if r.is_published),
+    # ── مصدرٌ واحد، ولا يُخلط المصدران ──
+    #
+    # **والخلطُ يُنتج ازدواجًا وأصلَ حقيقةٍ ثانيًا.** لو جُمعت الحقائقُ
+    # المعتمَدة إلى صفوف `ThesisSection` القديمة لظهر المقترحُ مرّتين بنصّين
+    # مختلفين قليلًا، ولما عرف أحدٌ أيُّهما الأصل. فالأولويّةُ للمعرفة التي
+    # راجعها الباحثُ واعتمدها؛ فإن لم يعتمد شيئًا بعدُ، يبقى المسارُ القديم
+    # كما كان بلا تغيير؛ فإن لم يكن هذا ولا ذاك، يُقال ذلك صراحةً.
+    canonical = await canonical_facts.load(
+        session, tenant_id=principal.tenant_id, thesis_id=thesis_id,
+        file_id=thesis.file_id,
     )
+
+    title_conflict = False
+    if canonical.has_evidence:
+        # ── الكتابةُ الخلفية للعنوان: عند الفراغ وحده ──
+        #
+        # **وما كتبه الباحثُ بيده لا يُستبدل باستخراجٍ لأنّه اعتُمد.** اعتمادُ
+        # حقيقةٍ يقول «هذه قراءةٌ صحيحة للمستند»، ولا يقول «اهدم ما أدخلتُه».
+        # فيُملأ الفراغ، ويُصان المكتوب، ويُسجَّل الاختلافُ ليُرى.
+        if canonical.approved_title:
+            if thesis.title_ar is None:
+                thesis.title_ar = canonical.approved_title
+            elif thesis.title_ar.strip() != canonical.approved_title.strip():
+                title_conflict = True
+        facts = replace(canonical.facts, title=thesis.title_ar)
+        evidence_basis = "canonical"
+    else:
+        sections = (
+            await session.execute(
+                select(ThesisSection).where(ThesisSection.thesis_id == thesis_id))
+        ).scalars().all()
+        results = (
+            await session.execute(
+                select(ThesisResult).where(ThesisResult.thesis_id == thesis_id))
+        ).scalars().all()
+        facts = miner.ThesisFacts(
+            thesis_id=str(thesis_id), title=thesis.title_ar,
+            questions=tuple(s.content_ar or "" for s in sections
+                            if s.section_key == "questions"),
+            results=tuple((str(r.id), r.label_ar) for r in results),
+            variables=tuple({v for r in results for v in (r.variables or [])}),
+            sample_ids=tuple({str(thesis_id)}),
+            published_result_ids=tuple(str(r.id) for r in results if r.is_published),
+        )
+        evidence_basis = "legacy" if (sections or results) else "none"
+
     drafts = miner.mine(facts)
     # **ولا يُخترع عنوانٌ ليمرّ مقترح.** أربعةُ أنواعٍ عنوانُها العامل مشتقٌّ
     # من عنوان الرسالة، ورسالةٌ لم يُستخرَج عنوانها بعد لا اسم لها يُقتبس.
@@ -665,15 +697,52 @@ async def mine_opportunities(
         ))
         created += 1
 
+    # ── الختمُ يعني «جرى فحصٌ على دليل»، لا «فُتحت الشاشة» ──
+    #
     # **«لم يُنقَّب بعد» ليست «نُقِّب فلم يُوجد».** بدون هذا الختم الزمنيّ
     # يصير الخبران رقمًا واحدًا: «٠ فرص» — وهو أقسى ما يُقال لباحثٍ لم
-    # يبدأ التنقيب أصلًا. ويُكتب **وإن كان `created == 0`**: فحصٌ وقع
-    # ولم يجد واقعةٌ يجب أن تُسجَّل، لا صمتٌ يُقرأ نتيجة.
-    thesis.opportunities_mined_at = dt.datetime.now(dt.UTC)
+    # يبدأ التنقيب أصلًا. فيُكتب **وإن كان `created == 0`**: فحصٌ وقع ولم
+    # يجد واقعةٌ تُسجَّل.
+    #
+    # **وكان يُكتب بلا شرط، فانقلب صدقُه كذبًا في الحال الثالثة.** رسالةٌ لا
+    # دليلَ فيها أصلًا — لم يعتمد الباحثُ حقيقةً واحدة — كانت تُختم كأنّها
+    # فُحصت. فيقرأ الردُّ بصدق «لم تُعتمد معرفةٌ بعد»، ثمّ يُعيد التحميل
+    # فتقول البطاقةُ **«اكتمل الفحص ولم يُعثر على فرصةٍ مرشَّحة»**
+    # (`processing.OUTCOME_COMPLETED_EMPTY`) — وهي أقسى العبارتين وأكذبُهما:
+    # لم يقع فحصٌ، ولم يكن ثمّ ما يُفحص.
+    #
+    # فالختمُ لدليلٍ قائم وحده. ومع غيابه تسقط البطاقةُ إلى حالها الصادقة:
+    # `OUTCOME_NOT_STARTED` — «لم يبدأ استخراج الفرص بعد».
+    if evidence_basis != "none":
+        thesis.opportunities_mined_at = dt.datetime.now(dt.UTC)
     await session.flush()
 
+    # **«لم يعتمد الباحثُ شيئًا بعد» غيرُ «اعتمد فلم يجد المنقّبُ فرصة».**
+    # كان الخبران يصلان رقمًا واحدًا: صفرًا صامتًا. فيُفصلان.
+    #
+    # **والمادةُ القديمة لا تُوصف بأنّها مُراجَعة.** صفوفُ `ThesisSection`
+    # و`ThesisResult` استخراجٌ آليّ، و`verification_status` فيها لا يُنقَل
+    # عن `unverified` في أيّ مسار. فوصفُها «دليلًا راجعه الباحث» ادّعاءٌ لا
+    # سند له — ولها حصيلتُها باسمها.
+    if created:
+        outcome = "opportunities_created"
+    elif already:
+        outcome = "already_present"
+    elif evidence_basis == "none":
+        outcome = "no_reviewed_canonical_evidence"
+    elif withheld:
+        outcome = "withheld_for_missing_title"
+    elif evidence_basis == "legacy":
+        outcome = "legacy_evidence_but_no_opportunity"
+    else:
+        outcome = "reviewed_evidence_but_no_opportunity"
+
+    # **والأثرُ لا يدّعي ما لم يقع.** «نُقِّب» فعلٌ يفترض دليلًا، وتسجيلُه
+    # على رسالةٍ بلا دليلٍ يُعيد الكذبةَ نفسها في السجلّ الذي يُحتكم إليه.
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="thesis.opportunities_mined",
+        session, tenant_id=principal.tenant_id,
+        action=("thesis.opportunity_scan_skipped_no_evidence"
+                if evidence_basis == "none" else "thesis.opportunities_mined"),
         object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
         state_after={
             "created": created, "already_present": already,
@@ -681,14 +750,39 @@ async def mine_opportunities(
             "kinds": sorted({d.opportunity_kind for d in drafts}),
             "data_age_years": report.data_age_years,
             "literature_age_years": report.literature_age_years,
+            "evidence_basis": evidence_basis,
+            "approved_facts_used": canonical.approved_facts_used,
+            "outcome": outcome,
         },
-        reason="opportunities proposed from extracted thesis elements only (§23.4); "
-               "a proposal that already exists is not written twice",
+        reason=("no reviewed canonical evidence and no legacy element exists, so no "
+                "mining attempt was made and no completion is stamped"
+                if evidence_basis == "none" else
+                "opportunities proposed from researcher-approved facts when they exist, "
+                "otherwise from legacy extracted elements (§23.4); "
+                "a proposal that already exists is not written twice"),
     )
+
+    # **الاختلافُ يُسجَّل بمعرّفه لا بنصّه.** العنوانُ محتوى مستند، والأثرُ
+    # التشغيليّ ليس مكانَه؛ فيُقال إنّ اختلافًا وقع وأين يُراجَع.
+    if title_conflict:
+        await audit.record(
+            session, tenant_id=principal.tenant_id,
+            action="thesis.title_conflict_preserved",
+            object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
+            state_after={
+                "existing_title_preserved": True,
+                "approved_title_fact_id": str(canonical.approved_title_fact_id),
+            },
+            reason="an approved extracted title differs from the title already on the "
+                   "thesis; the existing title is kept and never silently replaced",
+        )
     return MineResponse(
         thesis_id=thesis_id, opportunities_created=created,
         opportunities_already_present=already,
         withheld_for_missing_title=withheld,
+        evidence_basis=evidence_basis,
+        approved_facts_used=canonical.approved_facts_used,
+        outcome=outcome,
         title_note=(_pick(
             principal.locale,
             f"عُلِّق {withheld} مقترحًا لأنّ عنوان الرسالة لم يُستخرَج بعد — "

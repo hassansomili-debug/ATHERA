@@ -242,6 +242,19 @@ class MineResponse(BaseModel):
     #: التشغيلة الثانية «٠ فرص» فيُظنّ أنّ المنقّب لم يجد شيئًا — وهو وجد
     #: ما كان موجودًا. والتنقيب مُعادٌ بلا أثر، لا مُلغًى.
     opportunities_already_present: int = 0
+    #: مصدرُ الدليل: `canonical` معرفةٌ اعتمدها الباحث · `legacy` عناصرُ
+    #: الاستخراج القديمة · `none` لا هذا ولا ذاك. **إضافةٌ متوافقة**: القيمة
+    #: الافتراضية تحفظ سلوكَ المستهلكين القدامى.
+    evidence_basis: str = "none"
+    #: عددُ الحقائق المعتمَدة التي دخلت الفحص فعلًا.
+    approved_facts_used: int = 0
+    #: **حصيلةٌ تُقرأ، لا صفرٌ يُؤوَّل.** و`no_reviewed_canonical_evidence`
+    #: تقول «لم تُعتمد معرفةٌ بعد»، و`reviewed_evidence_but_no_opportunity`
+    #: تقول «اعتُمدت، وفُحصت، ولم تنشأ فرصة» — وكانتا رقمًا واحدًا.
+    #:
+    #: و`legacy_evidence_but_no_opportunity` ثالثةٌ لا تُخلط بهما: المادةُ
+    #: القديمة استخراجٌ آليّ **لم يراجعه أحد**، فلا تُوصف بالمراجعة.
+    outcome: str = "reviewed_evidence_but_no_opportunity"
     note_ar: str = "الفرص مقترحات مؤصَّلة في عناصر الرسالة، ولا تتقدم بلا اعتماد الحقوق."
     note_en: str = "Opportunities are grounded proposals; none advances without rights approval."
 
