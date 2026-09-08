@@ -32,6 +32,21 @@ serve", and it is the failure the ordering exists to prevent.
 you to use `code_only`. That keeps the privileged migration credential out of
 runs that have no use for it.
 
+**`schema_and_code` also proves a forward path before it touches the migration
+credential.** Differing revisions are not automatically an upgrade: they are
+equally consistent with two histories that diverged. So the run proves the
+production revision *exists in the source migration graph* and is a genuine
+**ancestor** of the source head, reachable by walking `down_revision` down from
+it. Multi-step upgrades are fine — several revisions ahead is still a forward
+path.
+
+If that proof fails, the run stops **before the credential is written**, and says
+the production schema is not a valid ancestor of the source head. That is
+divergence, and the correct response is to investigate it, not to migrate. The
+check fails closed on any graph shape it cannot read — a missing parent, a cycle,
+an unknown revision — rather than guessing a direction against a production
+database.
+
 When a migration *is* applied, there is exactly one window — **the currently
 deployed (older) code running on the new schema** — and job 3 proves that window
 is safe before any new code is deployed. This is why additive, nullable

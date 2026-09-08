@@ -86,7 +86,8 @@ def _run_head(script: str, root: pathlib.Path) -> tuple[int, str, str]:
 
 
 def _run_mode(script: str, mode: str, before: str, source: str,
-              out_file: pathlib.Path) -> tuple[int, str, str]:
+              out_file: pathlib.Path,
+              cwd: pathlib.Path | None = None) -> tuple[int, str, str]:
     import os
     import subprocess
     import tempfile
@@ -101,8 +102,24 @@ def _run_mode(script: str, mode: str, before: str, source: str,
         "SOURCE_SCHEMA_HEAD": source,
         "GITHUB_OUTPUT": str(out_file),
     }
-    proc = subprocess.run(["bash", path], capture_output=True, text=True, env=env)
+    proc = subprocess.run(["bash", path], capture_output=True, text=True,
+                          env=env, cwd=cwd)
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def _linear_graph(root: pathlib.Path, chain: list[str]) -> pathlib.Path:
+    """نسبٌ خطّيّ على القرص — وأسماءُ الملفّات لا تدلّ على الترتيب عمدًا."""
+    versions = root / "infra/db/migrations/versions"
+    versions.mkdir(parents=True, exist_ok=True)
+    previous: str | None = None
+    for index, revision in enumerate(chain):
+        down = "None" if previous is None else f'"{previous}"'
+        # الاسمُ معكوسُ الترتيب: `z…` للأقدم، `a…` للأحدث.
+        name = chr(ord("z") - index)
+        (versions / f"{name}_{revision}.py").write_text(
+            f'revision = "{revision}"\ndown_revision = {down}\n', encoding="utf-8")
+        previous = revision
+    return root
 
 
 # ═════════ ١. التكرار ذهب، والمصدرُ واحدٌ مُراجَع ═════════
@@ -334,19 +351,32 @@ def test_the_head_derivation_fails_closed(head_script, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("mode", "before", "source", "expect_ok", "must_say"),
+    ("case", "mode", "before", "source", "chain", "expect_ok", "must_say"),
     [
-        ("code_only", "0030", "0030", True, "nothing is written"),
-        ("code_only", "0030", "0031", False, "release_mode=schema_and_code"),
-        ("schema_and_code", "0030", "0031", True, "0030 -> 0031"),
-        ("schema_and_code", "0030", "0030", False, "release_mode=code_only"),
+        # ١-٤ — قواعدُ النمط: المساواةُ والاختلاف.
+        (1, "code_only", "0030", "0030", ["0030"],
+         True, "nothing is written"),
+        (2, "code_only", "0030", "0031", ["0030", "0031"],
+         False, "release_mode=schema_and_code"),
+        (3, "schema_and_code", "0030", "0031", ["0030", "0031"],
+         True, "0030 -> 0031"),
+        (4, "schema_and_code", "0030", "0030", ["0030"],
+         False, "release_mode=code_only"),
+        # ٥ — **اختلافٌ لا تقدّم**: الإنتاجُ ليس في النسب أصلًا.
+        (5, "schema_and_code", "0040", "0031", ["0030", "0031"],
+         False, "not a valid ancestor"),
+        # ٦ — **قفزةٌ بأكثر من ترحيلٍ تبقى مشروعة** ما دام النسب متّصلًا.
+        (6, "schema_and_code", "0029", "0031", ["0029", "0030", "0031"],
+         True, "forward path proven"),
     ],
 )
-def test_the_four_structural_release_cases(mode_script, tmp_path, mode, before,
-                                           source, expect_ok, must_say):
-    out_file = tmp_path / f"out-{mode}-{before}-{source}"
+def test_the_structural_release_cases(mode_script, tmp_path, case, mode, before,
+                                      source, chain, expect_ok, must_say):
+    root = _linear_graph(tmp_path / f"case{case}", chain)
+    out_file = tmp_path / f"out-case{case}"
     out_file.write_text("", encoding="utf-8")
-    code, stdout, stderr = _run_mode(mode_script, mode, before, source, out_file)
+    code, stdout, stderr = _run_mode(mode_script, mode, before, source, out_file,
+                                     cwd=root)
     blob = stdout + stderr
     if expect_ok:
         assert code == 0, blob
@@ -359,6 +389,84 @@ def test_the_four_structural_release_cases(mode_script, tmp_path, mode, before,
     else:
         assert code != 0, "حالةٌ يجب أن تُرفض مرّت"
     assert must_say in blob, blob
+
+
+def test_the_forward_path_is_proven_before_any_credential_exists(workflow):
+    """**البرهانُ يسبق السرّ.** ولو تُرك لـAlembic لسقط بعد أن يُكتب الاعتماد.
+
+    فالترتيبُ نفسه حارس: خطوةُ القرار قبل خطوة الاعتماد في القائمة، ومسارٌ
+    باطل يسقط عندها — فلا يُماسّ `DATABASE_MIGRATION_URL` أصلًا.
+    """
+    steps = workflow["jobs"]["db-release-gate"]["steps"]
+    names = [s.get("name") or "" for s in steps]
+    decision = next(i for i, s in enumerate(steps) if s.get("id") == "mode")
+    credential = next(i for i, n in enumerate(names) if "Materialise" in n)
+    assert decision < credential, "القرارُ يقع بعد كتابة الاعتماد"
+
+    script = steps[decision]["run"]
+    assert "not a valid ancestor" in script, "لا برهانَ اتّجاهٍ في خطوة القرار"
+    assert "down_revision" in script, "الاتّجاهُ لا يُقرأ من النسب"
+
+
+def test_the_ancestry_proof_fails_closed_on_shapes_it_cannot_read(
+        mode_script, tmp_path):
+    """**ولا يُخمَّن اتّجاهٌ في قاعدة إنتاج.** أبٌ مفقود يعني وقوفًا لا مضيًّا."""
+    root = tmp_path / "broken"
+    versions = root / "infra/db/migrations/versions"
+    versions.mkdir(parents=True)
+    # `0031` يعلن أبًا لا وجود له — نسبٌ لا يُقرأ.
+    (versions / "a.py").write_text(
+        'revision = "0031"\ndown_revision = "0099"\n', encoding="utf-8")
+    (versions / "z.py").write_text(
+        'revision = "0030"\ndown_revision = None\n', encoding="utf-8")
+
+    out_file = tmp_path / "out-broken"
+    out_file.write_text("", encoding="utf-8")
+    code, stdout, stderr = _run_mode(
+        mode_script, "schema_and_code", "0030", "0031", out_file, cwd=root)
+    assert code != 0, "نسبٌ مكسور مرّ"
+    assert "not a valid ancestor" in (stdout + stderr)
+
+
+# ═════════ ٣ج. الدخانُ يُعلن ما يقرأ ═════════
+
+
+def test_smoke_declares_the_web_deploy_it_reports_on(workflow):
+    """**ومرجعٌ إلى مهمّةٍ غير معلَنة يُقيَّم فراغًا.**
+
+    فكان `WEB_RESULT` فارغًا دائمًا، وتنطلق القيمةُ البديلة «skipped» دائمًا:
+    نشرُ وِبٍّ نجح يُبلَّغ «متخطّى»، وآخرُ فشل يُبلَّغ «متخطّى» أيضًا.
+    """
+    smoke = workflow["jobs"]["smoke"]
+    assert "deploy-web" in smoke["needs"], (
+        "الدخانُ يقرأ نتيجةَ مهمّةٍ لا يعلن تبعيّتَه لها")
+
+    summary = next(s for s in smoke["steps"] if (s.get("name") or "") == "Summary")
+    env = summary.get("env") or {}
+    for key, value in env.items():
+        for job in ("deploy-web", "deploy-api", "db-release-gate", "source-preflight"):
+            if f"needs.{job}." in str(value):
+                assert job in smoke["needs"], (
+                    f"{key} يقرأ {job} وهي ليست في needs")
+
+
+def test_a_skipped_web_deploy_cannot_suppress_the_smoke(workflow):
+    """`deploy_web=false` تُتخطّى `deploy-web` — **والدخانُ يبقى يعمل**."""
+    smoke = workflow["jobs"]["smoke"]
+    condition = smoke["if"]
+    assert "always()" in condition, (
+        "بلا `always()` يمنع تخطّي `deploy-web` الدخانَ عبر needs")
+    # والشرطُ معلَّقٌ على نجاح الخادم وحده، لا على الوِب.
+    assert "needs.deploy-api.result == 'success'" in condition
+    assert "deploy-web.result" not in condition, (
+        "الدخانُ مشروطٌ بنتيجة الوِب — فيُخنق حين تُتخطّى")
+
+
+def test_the_smoke_cannot_race_ahead_of_an_enabled_web_deploy(workflow):
+    """`deploy_web=true` — **والدخانُ ينتظر**، فلا يقيس ما قبل النشر."""
+    smoke = workflow["jobs"]["smoke"]
+    assert "deploy-web" in smoke["needs"]
+    assert "deploy-api" in smoke["needs"]
 
 
 def test_code_only_never_invokes_the_migration_machinery(workflow):
