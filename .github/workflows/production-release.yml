@@ -321,6 +321,82 @@ jobs:
           echo "attested before    : ${EXPECTED_SCHEMA_BEFORE}"
           echo "source schema head : ${SOURCE_SCHEMA_HEAD}"
 
+          # ── برهانُ الاتّجاه: أمامَ لا خلفَ ولا جانبَ ──
+          #
+          # **ولا يُترك الأمرُ لـAlembic أن يسقط لاحقًا.** حين تسقط هناك يكون
+          # الاعتمادُ المميَّز قد كُتب في القرص واتُّصل بالإنتاج. فالاتّجاهُ
+          # يُبرهَن هنا، قبل أن يُماسّ السرُّ أصلًا.
+          #
+          # ومخطَّطُ الإنتاج يجب أن يكون **سلفًا حقيقيًّا** لرأس المصدر: موجودًا
+          # في النسب، ويُبلَغ بالنزول من الرأس. فإن لم يكن، فليس المصدرُ
+          # متقدّمًا على الإنتاج بل **متفرّعًا عنه** — وذاك اختلافٌ يُدرَس ولا
+          # يُرحَّل.
+          #
+          # **ويسقط مغلقًا** على أيّ شكلٍ لا يفهمه: أبٌ مفقود، أو حلقة، أو
+          # مراجعةٌ لا وجود لها. ولا يُخمَّن اتّجاهٌ في قاعدة إنتاج.
+          if [ "${RELEASE_MODE}" = "schema_and_code" ] \
+             && [ "${SOURCE_SCHEMA_HEAD}" != "${EXPECTED_SCHEMA_BEFORE}" ]; then
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          before = os.environ["EXPECTED_SCHEMA_BEFORE"]
+          head = os.environ["SOURCE_SCHEMA_HEAD"]
+          versions = pathlib.Path("infra/db/migrations/versions")
+
+
+          def stop(message):
+              print(f"::error::{message}", file=sys.stderr)
+              print("::error::The production schema is not a valid ancestor of the "
+                    "source head.", file=sys.stderr)
+              print("::error::This is divergence, not a pending upgrade. Investigate "
+                    "it; do not migrate.", file=sys.stderr)
+              sys.exit(1)
+
+
+          if not versions.is_dir():
+              stop("the migration versions directory is missing")
+
+          revisions = {}
+          for path in sorted(versions.glob("*.py")):
+              if path.name.startswith("__"):
+                  continue
+              body = path.read_text(encoding="utf-8")
+              rev = re.search(r'^revision\s*=\s*["\'](\w+)["\']', body, re.M)
+              if rev is None:
+                  continue
+              down = re.search(
+                  r'^down_revision\s*=\s*(?:["\'](\w+)["\']|None)', body, re.M)
+              if down is None:
+                  stop(f"{path.name} declares no down_revision (unsupported graph)")
+              revisions[rev.group(1)] = down.group(1)
+
+          if head not in revisions:
+              stop(f"source head {head} is not present in the migration graph")
+          if before not in revisions:
+              stop(f"production schema {before} does not exist in the source graph")
+
+          seen = set()
+          current = head
+          while current is not None:
+              if current in seen:
+                  stop(f"the migration graph contains a cycle at {current}")
+              seen.add(current)
+              if current == before:
+                  break
+              if current not in revisions:
+                  stop(f"{current} has no recorded parent (unsupported graph)")
+              current = revisions[current]
+          else:
+              stop(f"{before} is not an ancestor of {head}")
+
+          print(f"forward path proven: {before} -> ... -> {head} "
+                f"({len(seen) - 1} revision(s) ahead)", file=sys.stderr)
+          PY
+          fi
+
           case "${RELEASE_MODE}" in
             code_only)
               # **ولا تُنشر شيفرةٌ رأسُها أحدثُ من القاعدة.** مصدرٌ عند
@@ -585,7 +661,15 @@ jobs:
   # ═════════ ٦ — فحصُ دخانٍ عامّ، ولا ادّعاءَ قبولٍ ═════════
   smoke:
     name: 6 · Public smoke (non-destructive)
-    needs: [source-preflight, db-release-gate, deploy-api]
+    # **ومرجعٌ إلى مهمّةٍ غير معلَنة يُقيَّم فراغًا.** كان الملخّص يقرأ
+    # `needs.deploy-web.result` و`deploy-web` ليست في `needs`، فيصل فارغًا
+    # دائمًا فتنطلق القيمةُ البديلة «skipped» دائمًا — فيُبلَّغ عن نشرٍ
+    # «متخطّى» وقد نجح، أو وقد فشل. ويسبق الدخانُ النشرَ فوق ذلك.
+    #
+    # فتُعلَن التبعية. و`always()` تُبقي الدخانَ يعمل حين تُتخطّى `deploy-web`
+    # (وهو الوضع الافتراضي `deploy_web=false`)، والشرطُ على `deploy-api` وحده
+    # يمنع فحصَ دخانٍ على نشرٍ لم ينجح.
+    needs: [source-preflight, db-release-gate, deploy-api, deploy-web]
     if: ${{ always() && needs.deploy-api.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
