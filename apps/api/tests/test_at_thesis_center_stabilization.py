@@ -283,17 +283,42 @@ def test_mining_is_measured_by_evidence_the_miner_can_read_not_by_parsed_at():
     assert with_results.can_mine is True
 
 
-def test_the_unavailable_state_names_the_missing_integration_and_promises_nothing():
-    """**«غير متاح» تُقال بسببها، لا بزرٍّ مطفأ ولا بصمت.**
+def test_the_not_yet_scanned_state_promises_nothing_and_demands_nothing():
+    """**«لم يجرِ بعد» تُقال بسببها — ولا تَعِد، ولا تطلب، ولا تنفي.**
 
-    والنصّ يذكر ما ينقص فعلًا — أنّ خطّ القراءة ينتج مرشّحاتٍ تُراجَع ولا
-    يكتب أقسامًا — فلا يُقرأ عطبًا في حساب الباحث.
+    وكان هذا الفحصُ يشترط أن يسمّي النصُّ التكاملَ الناقص: «مراجعة»
+    و«أقسام». وكان ذلك صادقًا يومَ كان المنقّب يقرأ `thesis_sections`
+    و`thesis_results` وحدهما، وكان على الباحث أن يراجع ويَصِل ما اعتمده.
+    ثمّ أزال T0 وT0.1 ذلك الشرطَ من المنتج نفسه — **فصار الفحصُ يشترط
+    نصًّا يَعِد بعملٍ لم يعد موجودًا**، وهي الحالُ التي يُصلحها هذا التغيير.
+
+    فالنصفُ الميّت يسقط وحده، **والنصفُ الحيّ يبقى ويشتدّ**: أنّها لا
+    تَعِد بشيء. ويُضاف إليه ما لم يكن مفحوصًا قطّ — ألّا تطلب من الباحث
+    فعلًا، وألّا تدّعي نفيًا عن العالم لا سندَ له.
     """
     arabic = _actions("ready_for_review").mining_reason
     english = _actions("ready_for_review", locale="en").mining_reason
-    assert "مراجعة" in arabic and "أقسام" in arabic
-    assert "review" in english.lower() and "sections" in english.lower()
+
+    # ١ — تُقال بسببها، وبلغتين متمايزتين (وهذا ما بقي من الدعوى الأصلية).
+    assert arabic.strip() and english.strip()
     assert arabic != english
+
+    # ٢ — **ولا تطلب من الباحث عملًا.** الأتمتةُ تملك الفحص، فنصٌّ يأمر
+    # الباحثَ بمراجعةٍ أو اعتمادٍ أو ضغطِ زرٍّ يعيد بوّابةً تقاعدت.
+    for demand in ("راجع", "اعتمد", "اضغط", "عليك أن", "يجب أن"):
+        assert demand not in arabic, f"نصٌّ يطلب من الباحث فعلًا: {demand}"
+    for demand in ("you must", "you need to", "review your", "approve", "click",
+                   "wire", "once you"):
+        assert demand not in english.lower(), f"copy demands researcher work: {demand}"
+
+    # ٣ — **ولا نفيَ عن العالم.** «لم يجرِ الفحص» ليست «لا فرصَ لهذه الرسالة».
+    assert "لا فرص" not in arabic
+    assert "no publication opportunities" not in english.lower()
+    assert "no opportunities exist" not in english.lower()
+
+    # ٤ — وتقول الواقعةَ القائمة: الفحصُ تلقائيّ، ولم يجرِ بعد.
+    assert "تلقائيًّا" in arabic
+    assert "automatically" in english.lower()
 
 
 def test_mining_is_not_offered_while_the_document_is_still_being_read():

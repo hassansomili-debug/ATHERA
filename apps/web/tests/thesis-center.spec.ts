@@ -41,7 +41,9 @@ interface Actions {
   can_trash_file: boolean;
   is_archived: boolean;
   lifecycle_blocked_reason: string | null;
-  mining_state: "available" | "in_flight" | "no_evidence";
+  mining_state:
+    | "available" | "in_flight" | "no_evidence"
+    | "found" | "failed" | "withheld" | "completed_empty";
   mining_reason: string;
   parse_withdrawn_reason: string;
   blocked_reason: string | null;
@@ -61,9 +63,12 @@ interface Card {
   archivedAt: string | null;
 }
 
+// **نصُّ الخادم كما هو اليوم.** وكان هنا النصُّ المتقاعد: «المنقّب يقرأ
+// الأقسام والنتائج المستخرجة» — أزاله T0/T0.1 من المنتج، وبقاؤه في
+// تجهيزةٍ يجعلها تخدم واقعًا لم يعد قائمًا.
 const NO_EVIDENCE_AR =
-  "استخراج الفرص غير متاح بعد. المنقّب يقرأ الأقسام والنتائج المستخرجة، ولم يُكتب " +
-  "منها شيءٌ لهذه الرسالة.";
+  "لم يجرِ فحصُ الفرص بعد: لا دليلَ مؤهَّل على هذه الرسالة حتى الآن. " +
+  "والفحصُ يبدأ تلقائيًّا بعد قراءة الرسالة، ولا يلزمك تشغيلُه.";
 const IN_FLIGHT_AR = "المعالجة جاريةٌ الآن — واستخراج الفرص ينتظر انتهاءها.";
 const AVAILABLE_AR = "استخراج الفرص متاح: توجد عناصر مستخرجة يقرؤها المنقّب.";
 const PARSE_WITHDRAWN_AR = "«تفكيك الرسالة» مسارٌ قديم بقي في الواجهة البرمجية.";
