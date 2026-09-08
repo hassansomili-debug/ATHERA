@@ -117,19 +117,56 @@ async def _chunk(session, tenant_id, file_id, text, seq=1):
 
 
 async def _candidate(session, tenant_id, *, run_id, file_id, chunk, field_key,
-                     value, category="project_decision", status="unverified"):
-    """مرشّحٌ بالشكل الذي يكتبه خطُّ المستندات — `{"value": …}` وقيمتُه `Any`."""
+                     value, category="project_decision", status="unverified",
+                     confidence=0.97, extraction="extracted", quote=None):
+    """مرشّحٌ بالشكل الذي يكتبه خطُّ المستندات — `{"value": …}` وقيمتُه `Any`.
+
+    و`extraction_status` **داخل `value`** لا عمودًا، كما يكتبه خطُّ المعالجة
+    ويقرؤه `routers/document_intelligence.py`.
+    """
     from athera_api.models.research import FactCandidate
 
     candidate = FactCandidate(
         tenant_id=tenant_id, extraction_run_id=run_id, file_id=file_id,
         chunk_id=chunk.id, memory_category=category, field_key=field_key,
         statement_ar=str(value),
-        value={"value": value, "extraction_status": "extracted"},
-        quote=chunk.text[:400], locator=chunk.locator, confidence=0.9, status=status)
+        value={"value": value, "extraction_status": extraction},
+        quote=chunk.text[:400] if quote is None else quote,
+        locator=chunk.locator, confidence=confidence, status=status)
     session.add(candidate)
     await session.flush()
     return candidate
+
+
+async def _machine_thesis(tid, uid, *, title_ar=None, confidence=0.97,
+                          extra=(), filename="آليّة.pdf"):
+    """رسالةٌ حديثة بحقائقَ **آليّةٍ لم يعتمدها أحد** — الحالُ الجديدة.
+
+    ولا `approve_candidate`، ولا `ResearcherMemory`: هذا بالضبط ما صار
+    مؤهَّلًا للتنقيب بعد تحوّل السياسة.
+    """
+    from athera_api.db import tenant_session
+
+    thesis_id, file_id, run_id = await _seed(tid, uid, title_ar=title_ar,
+                                             filename=filename)
+    async with tenant_session(tid, uid) as session:
+        body = " ".join([TITLE, QUESTION_ONE, QUESTION_TWO, FINDING,
+                         CONSTRUCT_ONE, CONSTRUCT_TWO, POPULATION])
+        chunk = await _chunk(session, tid, file_id, body)
+        for key, value, category in (
+            ("title_ar", TITLE, "researcher_fact"),
+            ("questions", [QUESTION_ONE, QUESTION_TWO], "project_decision"),
+            ("constructs", [CONSTRUCT_ONE, CONSTRUCT_TWO], "project_decision"),
+            ("primary_findings", [FINDING], "verified_evidence"),
+        ):
+            await _candidate(session, tid, run_id=run_id, file_id=file_id,
+                             chunk=chunk, field_key=key, value=value,
+                             category=category, confidence=confidence)
+        for key, value, conf in extra:
+            await _candidate(session, tid, run_id=run_id, file_id=file_id,
+                             chunk=chunk, field_key=key, value=value,
+                             confidence=conf)
+    return thesis_id, file_id, run_id
 
 
 async def _approve(session, tenant_id, user_id, candidate_id):
@@ -300,38 +337,45 @@ async def test_the_opportunity_is_grounded_in_the_approved_facts(two_tenants):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_only_approved_facts_reach_the_miner(two_tenants):
-    """معتمَدٌ ومرفوضٌ وغيرُ مراجَع — ولا يمرّ إلّا الأول."""
+async def test_human_decisions_outrank_every_automatic_rule(two_tenants):
+    """**قرارُ الإنسان يسبق كلَّ حسابٍ آليّ** — ولو بلغت الثقةُ ذروتها.
+
+    `rejected` تُستبعد، و`unknown` تُحال إلى المراجعة، وعاليةُ الثقة التي لم
+    يمسَّها أحد تمرّ. وهذا هو تحوّلُ السياسة: الباحثُ يعتمد القراراتِ
+    العلمية، لا كلَّ استخراجٍ وسيط.
+    """
     from athera_api.db import tenant_session
-    from athera_api.services.thesis import canonical_facts
+    from athera_api.services.thesis import canonical_facts, fact_eligibility
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
     thesis_id, file_id, run_id = await _seed(tid, uid)
 
     async with tenant_session(tid, uid) as session:
-        body = " ".join([QUESTION_ONE, REJECTED_TEXT, UNVERIFIED_TEXT, FINDING])
+        body = " ".join([QUESTION_ONE, REJECTED_TEXT, UNVERIFIED_TEXT])
         chunk = await _chunk(session, tid, file_id, body)
-        good = await _candidate(session, tid, run_id=run_id, file_id=file_id,
-                                chunk=chunk, field_key="questions", value=[QUESTION_ONE])
-        await _approve(session, tid, uid, good.id)
-        rejected = await _candidate(session, tid, run_id=run_id, file_id=file_id,
-                                    chunk=chunk, field_key="questions",
-                                    value=[REJECTED_TEXT])
-        # **الرفضُ قرارٌ له فاعل** — والقاعدة تفرض ذلك
-        # (`ck_fact_candidates_ck_candidate_decided_requires_actor`). فيُرفض
-        # بالمسار الحقيقيّ لا بكتابة العمود، وإلّا وُصف حالٌ لا يقع في المنتج.
-        await _reject(session, tid, uid, rejected.id)
-        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
-                         field_key="questions", value=[UNVERIFIED_TEXT])
+        untouched = await _candidate(
+            session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+            field_key="questions", value=[QUESTION_ONE], confidence=0.97)
+        refused = await _candidate(
+            session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+            field_key="questions", value=[REJECTED_TEXT], confidence=0.99)
+        await _reject(session, tid, uid, refused.id)
+        unsure = await _candidate(
+            session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+            field_key="questions", value=[UNVERIFIED_TEXT], confidence=0.99,
+            status="unknown")
 
     async with tenant_session(tid, uid) as session:
         evidence = await canonical_facts.load(
             session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
 
     assert evidence.facts.questions == (QUESTION_ONE,)
-    assert REJECTED_TEXT not in evidence.facts.questions
-    assert UNVERIFIED_TEXT not in evidence.facts.questions
+    assert REJECTED_TEXT not in evidence.facts.questions, "مرفوضٌ عبر بثقةٍ عالية"
+    assert UNVERIFIED_TEXT not in evidence.facts.questions, "«غير محسوم» عبر"
+    assert evidence.counts.get(fact_eligibility.REVIEW_REQUIRED, 0) >= 1
+    assert "rejected_by_researcher" in evidence.reasons
+    assert untouched.id and unsure.id  # الصفوفُ باقيةٌ، ولا تاريخَ يُحذف
 
 
 @requires_db
@@ -415,40 +459,30 @@ async def test_a_title_the_researcher_wrote_is_never_silently_replaced(two_tenan
 
 @requires_db
 @pytest.mark.asyncio
-async def test_extracted_but_unreviewed_candidates_do_not_mine_and_say_so(two_tenants):
-    """استخراجٌ بلا مراجعة لا يُنقّب — **ويُقال السببُ باسمه**."""
-    from athera_api.db import tenant_session
+async def test_low_confidence_extraction_does_not_mine_and_says_why(two_tenants):
+    """استخراجٌ دون العتبة لا يُنقّب — **ويُقال السببُ باسمه**.
 
+    ولا يُختم `opportunities_mined_at`: البطاقةُ لا تدّعي فحصًا لم يقع على
+    دليلٍ مؤهَّل، فتبقى «لم يبدأ استخراج الفرص بعد».
+    """
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    thesis_id, file_id, run_id = await _seed(tid, uid)
-    async with tenant_session(tid, uid) as session:
-        chunk = await _chunk(session, tid, file_id, " ".join([QUESTION_ONE, FINDING]))
-        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
-                         field_key="questions", value=[QUESTION_ONE])
+    # دون كلّ عتبةٍ في الخريطة — ولا تُرفع لأنّ المنقّبَ يشتهي دليلًا.
+    thesis_id, _f, _r = await _machine_thesis(tid, uid, confidence=0.40)
 
     async with _client(tid, uid) as client:
         body = (await client.post(
             f"/api/v1/theses/{thesis_id}/mine-opportunities")).json()
 
     assert body["opportunities_created"] == 0
-    assert body["evidence_basis"] == "none"
-    assert body["outcome"] == "no_reviewed_canonical_evidence"
-    assert body["approved_facts_used"] == 0
-
-    # ── والحالُ المحفوظة تقول ما قاله الردّ ──
-    #
-    # **وهنا كان العطبُ يعود بعد إعادة التحميل.** الختمُ كان يُكتب بلا شرط،
-    # و`processing.opportunity_outcome` تقرأ أيَّ ختمٍ غير فارغ فتقول
-    # «اكتمل الفحص ولم يُعثر على فرصة» — لباحثٍ لم يعتمد حقيقةً واحدة.
+    assert body["eligible_facts_used"] == 0
+    assert body["outcome"] == "no_eligible_evidence"
     assert await _mined_at(tid, uid, thesis_id) is None, "خُتمت رسالةٌ لم تُفحص"
 
     for locale, forbidden in (("ar", "اكتمل الفحص"), ("en", "scan completed")):
         card = await _card(tid, uid, thesis_id, locale=locale)
         assert card["opportunities_outcome"] != "completed_empty"
-        assert forbidden not in (card["opportunities_outcome_label"] or ""), (
-            "البطاقةُ تدّعي فحصًا لم يقع"
-        )
+        assert forbidden not in (card["opportunities_outcome_label"] or "")
 
 
 # ═════════ ٦ · المسارُ القديم كما كان ═════════
@@ -598,3 +632,261 @@ async def test_reviewed_evidence_that_yields_nothing_says_so_and_is_stamped(two_
 
     card = await _card(tid, uid, thesis_id)
     assert card["opportunities_outcome"] == "completed_empty"
+
+
+# ═════════ ٧ · المسارُ الذهبيّ الجديد: بلا اعتمادٍ بشريّ أصلًا ═════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_machine_facts_alone_produce_a_grounded_opportunity(two_tenants):
+    """**البرهانُ المركزيّ لتحوّل السياسة.**
+
+    رسالةٌ حديثة، حقائقُها `unverified` و`extraction_status=extracted` وعاليةُ
+    الثقة ومؤصَّلةُ الاقتباس، وتشغيلتُها مسموحة — **ولا اعتمادَ بشريًّا
+    واحدًا**، ولا صفَّ ذاكرةٍ موثقة، ولا صفًّا في الجدولين القديمين. ومع ذلك
+    تنشأ فرصةُ نشرٍ مؤصَّلة.
+    """
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import FactCandidate, ResearcherMemory
+    from athera_api.models.thesis import PublicationOpportunity
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _run = await _machine_thesis(tid, uid)
+
+    async with _client(tid, uid) as client:
+        response = await client.post(f"/api/v1/theses/{thesis_id}/mine-opportunities")
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["opportunities_created"] > 0, "حقائقُ آليّةٌ مؤهَّلة لم تُنتج فرصة"
+    assert body["evidence_basis"] == "canonical"
+    assert body["eligible_facts_used"] > 0
+    assert body["approved_facts_used"] == 0, "لا اعتمادَ بشريًّا في هذا المسار"
+    assert body["processing_scope"] == "advanced_extraction"
+
+    async with tenant_session(tid, uid) as session:
+        memories = (await session.execute(
+            select(func.count(ResearcherMemory.id)))).scalar_one()
+        approved = (await session.execute(
+            select(func.count(FactCandidate.id)).where(
+                FactCandidate.file_id == file_id,
+                FactCandidate.status == "approved"))).scalar_one()
+        rows = (await session.execute(
+            select(PublicationOpportunity)
+            .where(PublicationOpportunity.thesis_id == thesis_id))).scalars().all()
+        fact_ids = {str(cid) for cid in (await session.execute(
+            select(FactCandidate.id).where(
+                FactCandidate.file_id == file_id))).scalars().all()}
+
+    assert memories == 0, "أُنشئت ذاكرةٌ موثقة — والمسار لا يحتاجها"
+    assert approved == 0, "اعتُمدت حقيقةٌ — والمسار لا يحتاج اعتمادًا"
+    sections, results = await _counts(tid, uid, thesis_id)
+    assert sections == 0 and results == 0, "كُتب صفٌّ في المعماريّة القديمة"
+
+    assert rows, "لا فرص"
+    for row in rows:
+        for ref in list(row.result_refs or []) + list(row.sample_refs or []):
+            assert ref in fact_ids, "مرجعٌ لا يعود إلى حقيقةٍ حقيقية"
+            assert ref != str(thesis_id), "معرّفُ الرسالة انتحل هويّةَ عيّنة"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_confidence_tiers_use_the_real_field_policy(two_tenants):
+    """عاليةٌ تُؤهَّل، ومتوسّطةٌ تُعين ولا تُنشئ، ومنخفضةٌ تُستبعد."""
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import canonical_facts, fact_eligibility
+
+    auto_min, support_min = fact_eligibility.thresholds_for("constructs")
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, run_id = await _seed(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        chunk = await _chunk(session, tid, file_id,
+                             " ".join([CONSTRUCT_ONE, CONSTRUCT_TWO, POPULATION]))
+        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+                         field_key="constructs", value=[CONSTRUCT_ONE],
+                         confidence=auto_min + 0.02)
+        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+                         field_key="constructs", value=[CONSTRUCT_TWO],
+                         confidence=(auto_min + support_min) / 2)
+        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+                         field_key="population", value=POPULATION,
+                         confidence=support_min - 0.30)
+
+    async with tenant_session(tid, uid) as session:
+        evidence = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+
+    assert evidence.facts.variables == (CONSTRUCT_ONE,)
+    assert CONSTRUCT_TWO not in evidence.facts.variables, "متوسّطةُ الثقة أسندت"
+    assert evidence.facts.sample_ids == (), "منخفضةُ الثقة أسندت عيّنة"
+    assert evidence.counts.get(fact_eligibility.SUPPORT_ONLY, 0) == 1
+    assert evidence.counts.get(fact_eligibility.EXCLUDED, 0) >= 1
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_high_confidence_never_buys_past_grounding_or_a_review_flag(two_tenants):
+    """**الثقةُ ثقةُ استخراجٍ لا ثقةُ علم.** و`0.99` لا تشتري تجاوزًا."""
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import canonical_facts, fact_eligibility
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, run_id = await _seed(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        chunk = await _chunk(session, tid, file_id, QUESTION_ONE)
+        # اقتباسٌ لا وجود له في المقطع — عطبُ تأصيلٍ لا تشتريه ثقة.
+        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+                         field_key="questions", value=[QUESTION_ONE],
+                         confidence=0.99, quote="عبارةٌ لم ترد في المستند إطلاقًا")
+        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+                         field_key="hypotheses", value=["فرضٌ غامض"],
+                         confidence=0.99, extraction="ambiguous")
+        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+                         field_key="constructs", value=[CONSTRUCT_ONE],
+                         confidence=0.99, extraction="needs_review")
+
+    async with tenant_session(tid, uid) as session:
+        evidence = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+
+    assert evidence.eligible_facts_used == 0
+    assert "quote_not_grounded" in evidence.reasons
+    assert evidence.counts.get(fact_eligibility.REVIEW_REQUIRED, 0) == 2
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_material_conflict_withholds_only_its_own_concept(two_tenants):
+    """‏310 مقابل 297 — **يُحجب حجمُ العيّنة وحده**، وتمضي بقيّةُ الأدلّة."""
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _f, _r = await _machine_thesis(
+        tid, uid, extra=(("sample_size", "بلغ عدد أفراد العينة 310", 0.97),
+                         ("sample_size", "بلغ عدد أفراد العينة 297", 0.97)))
+
+    async with _client(tid, uid) as client:
+        body = (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).json()
+
+    assert body["conflicts_detected"] == 1
+    assert body["facts_withheld_for_conflict"] == 2
+    # **ولا تُعطَّل الرسالة**: الأسئلةُ والنتائجُ ما زالت تُنتج فرصًا.
+    assert body["opportunities_created"] > 0, "تعارضٌ في مفهومٍ عطّل الرسالة كلَّها"
+    assert body["eligible_facts_used"] > 0
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_approved_correction_supersedes_a_machine_fact(two_tenants):
+    """**الإنسانُ المعتمِد يبطل الآليَّ في المفهوم نفسه** — ولا يُحذف تاريخ."""
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import FactCandidate
+    from athera_api.services.thesis import canonical_facts
+
+    correction = "الالتزام التنظيمي"
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, run_id = await _seed(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        chunk = await _chunk(session, tid, file_id,
+                             " ".join([CONSTRUCT_ONE, correction]))
+        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+                         field_key="constructs", value=[CONSTRUCT_ONE],
+                         confidence=0.99)
+        human = await _candidate(session, tid, run_id=run_id, file_id=file_id,
+                                 chunk=chunk, field_key="constructs",
+                                 value=[correction], confidence=0.80)
+        await _approve(session, tid, uid, human.id)
+
+    async with tenant_session(tid, uid) as session:
+        evidence = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+        remaining = (await session.execute(
+            select(func.count(FactCandidate.id))
+            .where(FactCandidate.file_id == file_id))).scalar_one()
+
+    assert evidence.facts.variables == (correction,), evidence.facts.variables
+    assert CONSTRUCT_ONE not in evidence.facts.variables, "الآليُّ غلب المعتمَد"
+    assert evidence.approved_verified_used == 1
+    assert "superseded_by_researcher_decision" in evidence.reasons
+    assert remaining == 2, "حُذف تاريخ"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_confidence_never_overrides_ownership(two_tenants):
+    """ملفٌّ آخر ومستأجرٌ آخر — **ولا تشتري الثقةُ مِلكيّة**."""
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import canonical_facts
+
+    a, b = two_tenants["a"], two_tenants["b"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _run = await _seed(tid, uid, filename="هذه.pdf")
+    _other, other_file, other_run = await _seed(tid, uid, filename="أخرى.pdf")
+
+    async with tenant_session(tid, uid) as session:
+        chunk = await _chunk(session, tid, other_file, QUESTION_ONE)
+        await _candidate(session, tid, run_id=other_run, file_id=other_file,
+                         chunk=chunk, field_key="questions", value=[QUESTION_ONE],
+                         confidence=0.99)
+
+    btid, buid = b["tenant_id"], b["user_id"]
+    _bt, bfile, brun = await _seed(btid, buid, filename="مستأجر-آخر.pdf")
+    async with tenant_session(btid, buid) as session:
+        bchunk = await _chunk(session, btid, bfile, QUESTION_TWO)
+        await _candidate(session, btid, run_id=brun, file_id=bfile, chunk=bchunk,
+                         field_key="questions", value=[QUESTION_TWO], confidence=0.99)
+
+    async with tenant_session(tid, uid) as session:
+        evidence = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+
+    assert evidence.eligible_facts_used == 0, "حقيقةٌ من ملفٍّ آخر عبرت"
+    assert evidence.facts.questions == ()
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_withheld_modern_thesis_never_escapes_into_legacy(two_tenants):
+    """**الحجبُ المقصود لا يُنزَّل صامتًا.**
+
+    رسالةٌ لها أثرٌ حديث ضعيفُ الثقة، ولها صفوفٌ قديمة صالحة للتنقيب. ولو
+    سقط المسارُ إلى القديم لنُشر من بابٍ خلفيّ ما رُفض من الباب الأمامي.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import ThesisResult, ThesisSection
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _f, _r = await _machine_thesis(tid, uid, title_ar=TITLE,
+                                              confidence=0.40)
+
+    async with tenant_session(tid, uid) as session:
+        session.add(ThesisSection(
+            tenant_id=tid, thesis_id=thesis_id, section_key="questions",
+            content_ar=QUESTION_ONE, locator="p.1", quote=QUESTION_ONE[:200],
+            verification_status="unverified"))
+        session.add(ThesisResult(
+            tenant_id=tid, thesis_id=thesis_id, label_ar=FINDING,
+            variables=[CONSTRUCT_ONE, CONSTRUCT_TWO], is_published=False))
+
+    async with _client(tid, uid) as client:
+        body = (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).json()
+
+    assert body["evidence_basis"] == "canonical_withheld", body["evidence_basis"]
+    assert body["opportunities_created"] == 0, "هرب المسارُ إلى الجداول القديمة"
+    assert body["outcome"] == "no_eligible_evidence"
+    assert await _mined_at(tid, uid, thesis_id) is None
