@@ -270,6 +270,9 @@ class MineResponse(BaseModel):
     #: **ولا قيمةَ افتراضية تسمّي حالًا لا تُصدرها الشيفرة**: افتراضٌ كهذا
     #: كذبةٌ صغيرة تنتظر أن تُقرأ حقيقةً في العقد.
     outcome: str = "no_eligible_evidence"
+    #: **حالُ التنقيب نفسه** — مستقلّةٌ عن حال الاستخراج (ترحيل 0031).
+    #: `not_started` · `running` · `completed` · `withheld` · `failed`.
+    mining_state: str = "not_started"
     note_ar: str = "الفرص مقترحات مؤصَّلة في عناصر الرسالة، ولا تتقدم بلا اعتماد الحقوق."
     note_en: str = "Opportunities are grounded proposals; none advances without rights approval."
 

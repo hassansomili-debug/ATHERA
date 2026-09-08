@@ -368,7 +368,18 @@ def test_the_router_refuses_to_write_a_proposal_that_already_exists():
 
     assert "arg='lock'" in body or "with_for_update" in body, (
         "التنقيب بلا قفلٍ على صفّ الرسالة — طلبان متزامنان يكتبان معًا")
-    assert "PublicationOpportunity" in body and "Continue" in body, (
+
+    # **والحلقةُ انتقلت إلى الخدمة، فالحارسُ يتبعها.** صار التنقيب يقع في
+    # مسارين — تلقائيّ ويدويّ — ونسختان من منطقٍ واحد تتباعدان. فالمنطقُ
+    # في `services/thesis/mining.py`، والخاصّيّةُ المفحوصة هي هي: تخطٍّ
+    # مشروطٌ قبل الكتابة، فلا يُكتب مقترحٌ قائم مرّةً ثانية.
+    service = ast.parse(
+        (API / "services" / "thesis" / "mining.py").read_text(encoding="utf-8"))
+    runner = next(
+        node for node in ast.walk(service)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run")
+    loop = ast.dump(runner)
+    assert "PublicationOpportunity" in loop and "Continue" in loop, (
         "لا تخطٍّ مشروطٌ في الحلقة — فكلُّ مقترحٍ يُكتب ولو كان قائمًا")
     # والقفلُ حقيقيّ في الحارس المشترك، لا اسمًا في وسيط.
     guard = next(
@@ -610,8 +621,12 @@ def test_migration_0030_belongs_to_this_wave_and_is_purely_additive():
     """
     versions = ROOT / "infra" / "db" / "migrations" / "versions"
     numbers = sorted(path.name.split("_", 1)[0] for path in versions.glob("0*.py"))
-    assert numbers[-1] == "0030", f"آخرُ ترحيلٍ ليس 0030: {numbers[-1]}"
+    # **والرأسُ يتقدّم، وتوسعيّةُ 0030 لا تتغيّر.** أضافت T1 الترحيلَ
+    # `0031` (حالُ التنقيب)، فتثبيتُ «آخرُ ترحيلٍ 0030» تقادم — وليس هو ما
+    # يفحصه هذا الاختبار. والمفحوصُ باقٍ: أنّ 0030 واحدٌ وأنّه توسعةٌ محضة.
+    assert numbers[-1] == "0031", f"رأسُ السلسلة ليس 0031: {numbers[-1]}"
     assert numbers.count("0030") == 1, "ترحيلان يحملان الرقم 0030"
+    assert numbers.count("0031") == 1, "ترحيلان يحملان الرقم 0031"
 
     body = (versions / "0030_thesis_archive.py").read_text(encoding="utf-8")
     upgrade = body[body.index("def upgrade()"):body.index("def downgrade()")]

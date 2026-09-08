@@ -95,6 +95,17 @@ class Thesis(Base, TenantScoped, Timestamped):
     opportunities_mined_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
 
+    # ── حالُ التنقيب: حقيقةٌ مستقلّة عن حال الاستخراج (ترحيل 0031) ──
+    #
+    # **ولا يكتب أحدُهما في خانة الآخر.** التنقيب يبدأ تلقائيًّا بعد
+    # الاستخراج، وبلا عمودٍ خاصٍّ به يبقى مخرجٌ واحد لتسجيل فشله: أن يُكتب
+    # في حال الاستخراج `extract_failed` — فيُمحى عملٌ نجح فعلًا، وتُعلَن
+    # الرسالةُ فاشلةَ الاستخراج ومرشّحاتُها مكتوبةٌ مؤصَّلةٌ تنتظر المراجعة.
+    mining_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="not_started")
+    #: **رمزُ سببٍ قصير، ولا نصَّ مستند.** الأثرُ التشغيليّ ليس مكانَ محتوى.
+    mining_last_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # ── الأرشفة: وسمٌ يُخفي، **ولا يحذف شيئًا** (ترحيل 0030) ──
     #
     # وأوّلُ علاجٍ لغياب المخرج كتب `DELETE FROM theses` على رسالةٍ لا
