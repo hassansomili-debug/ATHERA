@@ -263,8 +263,15 @@ class MineResponse(BaseModel):
     #: تقول «اعتُمدت، وفُحصت، ولم تنشأ فرصة» — وكانتا رقمًا واحدًا.
     #:
     #: و`legacy_evidence_but_no_opportunity` ثالثةٌ لا تُخلط بهما: المادةُ
-    #: القديمة استخراجٌ آليّ **لم يراجعه أحد**، فلا تُوصف بالمراجعة.
-    outcome: str = "reviewed_evidence_but_no_opportunity"
+    #: القديمة استخراجٌ آليّ **لم يراجعه أحد**، فلا تُوصف بالمراجعة. وهي
+    #: باقيةٌ على حالها بعد T0.1.
+    #:
+    #: **و`reviewed_evidence_but_no_opportunity` تقاعدت من الإصدار** مع
+    #: T0.1: صار الوصفُ الصحيح `eligible_evidence_but_no_opportunity`، إذ
+    #: لم تعد المراجعةُ البشرية شرطَ الأهليّة. ولا تُترك قيمةً افتراضية:
+    #: **افتراضٌ يسمّي حالًا لا تُصدرها الشيفرة كذبةٌ صغيرة تنتظر أن تُقرأ
+    #: حقيقة.**
+    outcome: str = "no_eligible_evidence"
     note_ar: str = "الفرص مقترحات مؤصَّلة في عناصر الرسالة، ولا تتقدم بلا اعتماد الحقوق."
     note_en: str = "Opportunities are grounded proposals; none advances without rights approval."
 

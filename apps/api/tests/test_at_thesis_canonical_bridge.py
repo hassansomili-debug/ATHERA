@@ -178,6 +178,15 @@ async def _approve(session, tenant_id, user_id, candidate_id):
         actor_user_id=user_id, reason="reviewed in the acceptance test")
 
 
+async def _mark_unknown(session, tenant_id, user_id, candidate_id):
+    """«لا أعرف» قرارٌ ثالث **له فاعل** — والقاعدة تفرضه كما تفرضه للرفض."""
+    from athera_api.services import memory
+
+    return await memory.mark_candidate_unknown(
+        session, tenant_id=tenant_id, candidate_id=candidate_id,
+        actor_user_id=user_id, reason="undecided in the acceptance test")
+
+
 async def _reject(session, tenant_id, user_id, candidate_id):
     """**والرفضُ بمساره أيضًا** — لا بكتابة عمودٍ بيد."""
     from athera_api.services import memory
@@ -363,8 +372,11 @@ async def test_human_decisions_outrank_every_automatic_rule(two_tenants):
         await _reject(session, tid, uid, refused.id)
         unsure = await _candidate(
             session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
-            field_key="questions", value=[UNVERIFIED_TEXT], confidence=0.99,
-            status="unknown")
+            field_key="questions", value=[UNVERIFIED_TEXT], confidence=0.99)
+        # **ولا يُكتب العمودُ بيد**: القيدُ
+        # `ck_fact_candidates_ck_candidate_decided_requires_actor` يفرض فاعلًا،
+        # وقرارٌ بلا صاحبٍ حالٌ لا تقع في المنتج.
+        await _mark_unknown(session, tid, uid, unsure.id)
 
     async with tenant_session(tid, uid) as session:
         evidence = await canonical_facts.load(
@@ -401,7 +413,7 @@ async def test_a_verified_memory_from_another_file_cannot_feed_this_thesis(two_t
         evidence = await canonical_facts.load(
             session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
 
-    assert evidence.approved_facts_used == 0, "ذاكرةُ ملفٍّ آخر عبرت إلى هذه الرسالة"
+    assert evidence.eligible_facts_used == 0, "ذاكرةُ ملفٍّ آخر عبرت إلى هذه الرسالة"
     assert evidence.has_evidence is False
 
 
@@ -587,10 +599,11 @@ async def test_legacy_evidence_that_yields_nothing_is_never_called_reviewed(two_
     assert body["opportunities_created"] == 0
     assert body["evidence_basis"] == "legacy"
     assert body["outcome"] == "legacy_evidence_but_no_opportunity"
-    assert body["outcome"] != "reviewed_evidence_but_no_opportunity", (
-        "وُصفت مادةٌ قديمة بأنّها معرفةٌ راجعها الباحث"
+    assert body["outcome"] != "eligible_evidence_but_no_opportunity", (
+        "وُصفت مادةٌ قديمة بأنّها دليلٌ مؤهَّل حديث"
     )
     assert body["approved_facts_used"] == 0
+    assert body["eligible_facts_used"] == 0
     assert await _mined_at(tid, uid, thesis_id) is not None, "فحصٌ وقع ولم يُختم"
 
 
@@ -627,7 +640,7 @@ async def test_reviewed_evidence_that_yields_nothing_says_so_and_is_stamped(two_
     assert body["opportunities_created"] == 0
     assert body["evidence_basis"] == "canonical"
     assert body["approved_facts_used"] > 0
-    assert body["outcome"] == "reviewed_evidence_but_no_opportunity"
+    assert body["outcome"] == "eligible_evidence_but_no_opportunity"
     assert await _mined_at(tid, uid, thesis_id) is not None, "فحصٌ حقيقيّ لم يُختم"
 
     card = await _card(tid, uid, thesis_id)
