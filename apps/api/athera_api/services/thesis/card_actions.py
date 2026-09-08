@@ -36,6 +36,7 @@ ACTION_ATTACH_FILE: Final = "attach_file"      # رسالةٌ مسجّلة يد�
 ACTION_ARCHIVE: Final = "archive"              # أخفِ السجلّ من مركز الرسائل
 ACTION_RESTORE: Final = "restore"              # أعده من الأرشيف
 ACTION_TRASH_FILE: Final = "trash_file"        # انقل ملفّ المصدر إلى السلّة
+ACTION_VIEW_OPPORTUNITIES: Final = "view_opportunities"  # افتح فرصَ النشر القائمة
 
 ACTIONS: Final[tuple[str, ...]] = (
     ACTION_REVIEW, ACTION_PROCESS, ACTION_REPROCESS,
@@ -70,10 +71,13 @@ REVIEWABLE: Final[tuple[str, ...]] = (
 
 MINING_AVAILABLE: Final = "available"          # عند المنقّب دليلٌ يقرؤه
 MINING_IN_FLIGHT: Final = "in_flight"          # المعالجة جاريةٌ الآن
-MINING_NO_EVIDENCE: Final = "no_evidence"      # لا أقسام ولا نتائج مستخرجة
+MINING_NO_EVIDENCE: Final = "no_evidence"      # لا دليلَ مؤهَّل بعد
+MINING_FOUND: Final = "found"                  # فرصٌ قائمةٌ على هذه الرسالة
+MINING_FAILED: Final = "failed"                # تعثّر التنقيب — ولا يمسّ الاستخراج
 
 MINING_STATES: Final[tuple[str, ...]] = (
     MINING_AVAILABLE, MINING_IN_FLIGHT, MINING_NO_EVIDENCE,
+    MINING_FOUND, MINING_FAILED,
 )
 
 MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
@@ -82,8 +86,25 @@ MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
         "Opportunity mining is available: extracted elements exist for the miner to read.",
     ),
     MINING_IN_FLIGHT: (
-        "المعالجة جاريةٌ الآن — واستخراج الفرص ينتظر انتهاءها.",
-        "Processing is running; opportunity mining waits for it to finish.",
+        "جارٍ استخراج فرص النشر من رسالتك — يبدأ تلقائيًّا بعد القراءة.",
+        "Scanning your thesis for publication opportunities; this starts automatically.",
+    ),
+    MINING_FOUND: (
+        # **ومبدئيّةٌ تُقال في متن العبارة، لا في حاشية.** الفرصُ مشتقّةٌ من
+        # عناصر الرسالة وحدها: لا مقابلةَ بأدبٍ منشور، ولا حكمَ جِدّةٍ، ولا
+        # ترتيبَ أفضليّة. وادّعاءُ أيٍّ من ذلك اليوم وعدٌ لا سند له.
+        "فرصُ نشرٍ مبدئيّة مشتقّة من عناصر رسالتك وحدها — قبل مقابلتها "
+        "بالأدب المنشور، وقبل أيّ حكمٍ على جِدّتها أو ترتيبها.",
+        "Preliminary publication opportunities derived from your thesis alone — before "
+        "any comparison with published literature, and before any novelty or ranking "
+        "judgement.",
+    ),
+    MINING_FAILED: (
+        # **وفشلُ التنقيب لا يُقرأ فشلَ استخراج.** ما استُخرج باقٍ ومؤصَّل.
+        "تعثّر استخراجُ الفرص. وقراءةُ رسالتك تمّت وما استُخرج منها محفوظ — "
+        "ويمكن إعادةُ محاولة الاستخراج وحدها.",
+        "Opportunity scanning failed. Reading your thesis succeeded and everything "
+        "extracted from it is kept; only the scan can be retried.",
     ),
     MINING_NO_EVIDENCE: (
         "استخراج الفرص غير متاح بعد. المنقّب يقرأ الأقسام والنتائج المستخرجة، "
@@ -99,17 +120,30 @@ MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
 }
 
 
-def mining_state(*, processing_state: str, sections: int, results: int) -> str:
-    """هل عند المنقّب دليلٌ يقرؤه — **ولا يُخمَّن الجواب من `parsed_at`**.
+def mining_state(*, processing_state: str, thesis_mining_state: str,
+                 opportunities: int, sections: int, results: int) -> str:
+    """حالُ التنقيب كما يراها الباحث — **ومصدرُها حالُ التنقيب نفسه**.
 
-    `parsed_at` ختمُ المسار القديم وحده، وقد صار المسارُ الحديث هو القاعدة.
-    فالسؤال يُسأل عن الجداول التي **يقرؤها المنقّب فعلًا**، لا عن ختمِ
-    عمليةٍ أخرى.
+    **وعدُّ الجداول القديمة لم يعد الحَكَم.** كان الجوابُ يُشتقّ من
+    `ThesisSection`/`ThesisResult`، وهما لا يُكتبان في المسار الحديث أصلًا:
+    ‏`ThesisResult` بلا كاتبٍ في التطبيق كلّه. فرسالةٌ حديثةٌ نُقِّبت فعلًا
+    وكُتبت فرصُها كانت تُعرض «لا دليل» — والشاشةُ تكذب على واقعةٍ محفوظة.
+
+    فالترتيب: فرصٌ قائمةٌ أوّلًا (وهي واقعةٌ لا تُؤوَّل)، ثمّ حالُ التنقيب
+    المحفوظة، ثمّ العملُ الجاري. **والقديمُ يبقى مقروءًا للتوافق** ولا
+    يقود الرحلةَ الحديثة.
     """
+    if opportunities > 0:
+        return MINING_FOUND
+    if thesis_mining_state == "running" or processing_state in processing.IN_FLIGHT:
+        return MINING_IN_FLIGHT
+    if thesis_mining_state == "failed":
+        return MINING_FAILED
+    if thesis_mining_state in {"completed", "withheld"}:
+        return MINING_NO_EVIDENCE
+    # **توافقٌ مع القديم، لا قيادةٌ منه.**
     if sections > 0 or results > 0:
         return MINING_AVAILABLE
-    if processing_state in processing.IN_FLIGHT:
-        return MINING_IN_FLIGHT
     return MINING_NO_EVIDENCE
 
 
@@ -159,6 +193,8 @@ class CardActions:
     can_parse: bool
     can_attach_file: bool
     can_mine: bool
+    #: **فرصٌ قائمة تُفتح** — وهي وجهةُ الرحلة، لا زرُّ تشغيلٍ يدويّ.
+    can_view_opportunities: bool
     can_archive: bool
     can_restore: bool
     can_trash_file: bool
@@ -182,6 +218,8 @@ def compute(
     results: int,
     locale: str,
     archived: bool = False,
+    opportunities: int = 0,
+    thesis_mining_state: str = "not_started",
 ) -> CardActions:
     """آلةُ حالِ البطاقة — **وكلُّ فعلٍ معروضٍ فعلٌ يقبله الخادم**.
 
@@ -219,8 +257,20 @@ def compute(
     can_attach_file = (not has_file) and (not in_flight) and not archived
 
     mining = mining_state(processing_state=processing_state,
+                          thesis_mining_state=thesis_mining_state,
+                          opportunities=opportunities,
                           sections=sections, results=results)
-    can_mine = mining == MINING_AVAILABLE and not in_flight and not archived
+
+    # ── الأتمتة تملك التنقيب، فلا زرَّ تشغيلٍ يدويّ في الحال السويّة ──
+    #
+    # **وزرٌّ يطلب من الباحث تشغيلَ ما يعمل من نفسه يجعله مسؤولًا عن آلة.**
+    # فيبقى الفعلُ اليدويّ **إعادةَ محاولةٍ عند التعثّر وحده**، وللمسار
+    # القديم الذي لا أتمتةَ له. وما عدا ذلك: تُفتح الفرصُ ولا تُشغَّل.
+    can_mine = (
+        (mining == MINING_FAILED or mining == MINING_AVAILABLE)
+        and not in_flight and not archived
+    )
+    can_view_opportunities = opportunities > 0 and not archived
 
     # **دورةُ الحياة تقف أثناء العمل الجاري** — والسببُ يُقال حيث يقع.
     lifecycle_blocked = (_pick(locale, *LIFECYCLE_BLOCKED_LABELS)
@@ -234,6 +284,13 @@ def compute(
         primary = ACTION_RESTORE
     elif can_attach_file:
         primary = ACTION_ATTACH_FILE
+    # ── وجهةُ الرحلة تسبق ضبطَ الجودة ──
+    #
+    # **ومراجعةُ الوقائع صارت اختيارية.** كانت الفعلَ الأول لأنّ التنقيب
+    # كان يتوقّف عليها؛ ولم يعد. فرسالةٌ لها فرصٌ قائمة وجهتُها الفرص،
+    # والمراجعةُ تبقى معروضةً لمن أرادها — ضبطَ جودةٍ لا بوّابةَ مرور.
+    elif can_view_opportunities:
+        primary = ACTION_VIEW_OPPORTUNITIES
     elif can_review:
         primary = ACTION_REVIEW
     elif can_process:
@@ -258,6 +315,7 @@ def compute(
         can_parse=offers_parse(processing_state, has_file=has_file),
         can_attach_file=can_attach_file,
         can_mine=can_mine,
+        can_view_opportunities=can_view_opportunities,
         can_archive=can_archive,
         can_restore=can_restore,
         can_trash_file=can_trash_file,

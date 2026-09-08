@@ -301,8 +301,12 @@ def test_mining_is_not_offered_while_the_document_is_still_being_read():
 
     running = _actions("extracting", sections=4)
     assert running.can_mine is False
-    # وسببُه «يجري الآن» لا «لا دليل» — والخبران مختلفان.
-    assert running.mining_state == card_actions.MINING_AVAILABLE
+    # **وسببُه «يجري الآن» لا «لا دليل»** — والخبران مختلفان.
+    #
+    # وكانت الدعوى تطلب `MINING_AVAILABLE` وتناقض تعليقَها هذا: عدُّ الأقسام
+    # كان يُفحص قبل العمل الجاري، فيُقال «متاح» عن رسالةٍ تُقرأ الآن. وصار
+    # العملُ الجاري يسبق، فوافقت الحالُ ما كان التعليقُ يطلبه أصلًا.
+    assert running.mining_state == card_actions.MINING_IN_FLIGHT
     assert running.is_running is True
 
 

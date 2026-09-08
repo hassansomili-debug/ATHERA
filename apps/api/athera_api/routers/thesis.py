@@ -1123,7 +1123,12 @@ def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
         actions=ThesisCardActions(**asdict(card_actions.compute(
             processing_state=state, file_id=row.file_id,
             sections=sections, results=result_rows, locale=locale,
-            archived=is_archived))),
+            archived=is_archived,
+            # **من الصفّ نفسه، بلا رحلةٍ ثانية.** العدُّ محسوبٌ في عبارة
+            # القائمة كعمودٍ مرتبط، والقاعدةُ في مومباي والخادمُ في
+            # سنغافورة: استعلامٌ لكلّ بطاقة يعني رحلةً لكلّ صفّ.
+            opportunities=found,
+            thesis_mining_state=getattr(row, "mining_state", "not_started")))),
     )
 
 

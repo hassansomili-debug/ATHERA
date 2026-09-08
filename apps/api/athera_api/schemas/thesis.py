@@ -42,6 +42,8 @@ class ThesisCardActions(BaseModel):
     can_parse: bool = False
     can_attach_file: bool = False
     can_mine: bool = False
+    #: فرصٌ قائمةٌ تُفتح — وجهةُ الرحلة، لا زرُّ تشغيلٍ يدويّ.
+    can_view_opportunities: bool = False
     can_archive: bool = False
     can_restore: bool = False
     can_trash_file: bool = False
