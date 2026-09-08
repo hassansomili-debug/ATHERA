@@ -631,6 +631,16 @@ async def mine_opportunities(
                 title_conflict = True
         facts = replace(canonical.facts, title=thesis.title_ar)
         evidence_basis = "canonical"
+    elif canonical.has_canonical_footprint:
+        # ── الأثرُ الحديث يملك الرسالة، ولو لم يُنتج مؤهَّلًا ──
+        #
+        # **ولا هروبَ إلى القديم حين يُحجب الحديث.** حقائقُ هذه الرسالة
+        # موجودة، وقد استُبعدت أو حُجبت لسببٍ يُقال: ثقةٌ دون العتبة، أو
+        # تعارضٌ مادّيّ، أو رايةُ مراجعة. والنزولُ حينها إلى `ThesisSection`
+        # يحوّل الحجبَ المقصود إلى **تنزيلٍ صامت** — فيُنشر من بابٍ خلفيّ ما
+        # رُفض نشرُه من الباب الأمامي.
+        facts = miner.ThesisFacts(thesis_id=str(thesis_id), title=thesis.title_ar)
+        evidence_basis = "canonical_withheld"
     else:
         sections = (
             await session.execute(
@@ -713,7 +723,7 @@ async def mine_opportunities(
     #
     # فالختمُ لدليلٍ قائم وحده. ومع غيابه تسقط البطاقةُ إلى حالها الصادقة:
     # `OUTCOME_NOT_STARTED` — «لم يبدأ استخراج الفرص بعد».
-    if evidence_basis != "none":
+    if evidence_basis in {"canonical", "legacy"}:
         thesis.opportunities_mined_at = dt.datetime.now(dt.UTC)
     await session.flush()
 
@@ -728,21 +738,25 @@ async def mine_opportunities(
         outcome = "opportunities_created"
     elif already:
         outcome = "already_present"
-    elif evidence_basis == "none":
-        outcome = "no_reviewed_canonical_evidence"
+    elif canonical.facts_withheld_for_conflict:
+        # **تعارضٌ مادّيّ حُجب لأجله مفهوم** — خبرٌ قائمٌ بذاته، لا «لا دليل».
+        outcome = "evidence_withheld_for_conflict"
+    elif evidence_basis in {"none", "canonical_withheld"}:
+        outcome = "no_eligible_evidence"
     elif withheld:
         outcome = "withheld_for_missing_title"
     elif evidence_basis == "legacy":
         outcome = "legacy_evidence_but_no_opportunity"
     else:
-        outcome = "reviewed_evidence_but_no_opportunity"
+        outcome = "eligible_evidence_but_no_opportunity"
 
     # **والأثرُ لا يدّعي ما لم يقع.** «نُقِّب» فعلٌ يفترض دليلًا، وتسجيلُه
     # على رسالةٍ بلا دليلٍ يُعيد الكذبةَ نفسها في السجلّ الذي يُحتكم إليه.
     await audit.record(
         session, tenant_id=principal.tenant_id,
-        action=("thesis.opportunity_scan_skipped_no_evidence"
-                if evidence_basis == "none" else "thesis.opportunities_mined"),
+        action=("thesis.opportunities_mined"
+                if evidence_basis in {"canonical", "legacy"}
+                else "thesis.opportunity_scan_skipped_no_evidence"),
         object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
         state_after={
             "created": created, "already_present": already,
@@ -751,12 +765,18 @@ async def mine_opportunities(
             "data_age_years": report.data_age_years,
             "literature_age_years": report.literature_age_years,
             "evidence_basis": evidence_basis,
-            "approved_facts_used": canonical.approved_facts_used,
+            "eligible_facts_used": canonical.eligible_facts_used,
+            "approved_facts_used": canonical.approved_verified_used,
+            "processing_scope": canonical.processing_scope,
+            "classification_counts": canonical.counts,
+            "conflicts_detected": canonical.conflicts_detected,
+            "facts_withheld_for_conflict": canonical.facts_withheld_for_conflict,
+            "exclusion_reasons": canonical.reasons,
             "outcome": outcome,
         },
-        reason=("no reviewed canonical evidence and no legacy element exists, so no "
+        reason=("no auto-eligible canonical fact and no usable legacy element, so no "
                 "mining attempt was made and no completion is stamped"
-                if evidence_basis == "none" else
+                if evidence_basis not in {"canonical", "legacy"} else
                 "opportunities proposed from researcher-approved facts when they exist, "
                 "otherwise from legacy extracted elements (§23.4); "
                 "a proposal that already exists is not written twice"),
@@ -781,7 +801,11 @@ async def mine_opportunities(
         opportunities_already_present=already,
         withheld_for_missing_title=withheld,
         evidence_basis=evidence_basis,
-        approved_facts_used=canonical.approved_facts_used,
+        approved_facts_used=canonical.approved_verified_used,
+        eligible_facts_used=canonical.eligible_facts_used,
+        processing_scope=canonical.processing_scope,
+        conflicts_detected=canonical.conflicts_detected,
+        facts_withheld_for_conflict=canonical.facts_withheld_for_conflict,
         outcome=outcome,
         title_note=(_pick(
             principal.locale,
