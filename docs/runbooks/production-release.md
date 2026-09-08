@@ -3,29 +3,39 @@
 **Workflow:** `.github/workflows/production-release.yml`
 **Trigger:** manual only (`workflow_dispatch`). It is never fired by a push.
 
-This runbook covers the release of Wave 1.1 and every release after it. It
-describes infrastructure only. **It cannot tell you the product is correct** —
-that is a separate acceptance gate, described at the end.
+This runbook covers every production release. It describes infrastructure only.
+**It cannot tell you the product is correct** — that is a separate acceptance
+gate, described at the end.
 
 ---
 
 ## 0. The one invariant everything else serves
 
-**Migrate first, then deploy.**
+**Code is never deployed against a schema it cannot serve.**
 
-Wave 1.1's code declares `theses.archived_at` and `theses.archived_by`, so
-SQLAlchemy selects them on every read of `theses`. That code **cannot serve any
-schema below `0030`** — deploy it first and the Thesis Center's first request
-returns `UndefinedColumnError: column theses.archived_at does not exist`.
+Application code that declares a column cannot serve a schema that lacks it: the
+first request returns `UndefinedColumnError` instead of a page. So the schema
+must never be *behind* the code being deployed.
 
-The currently deployed API (v88) has no archive columns in its model at all,
-writes `theses` with its own explicit column list, and never reads an archive.
-`0030` is additive and both columns are nullable, so v88 keeps working on the
-new schema — both columns simply stay `NULL`, which means "not archived", the
-correct state for everything v88 writes.
+That yields two — and only two — legitimate release shapes:
 
-So there is exactly one window — **old code on the new schema** — and job 3
-proves it is safe before any new code is deployed.
+| Mode | When | What happens |
+|---|---|---|
+| `code_only` | the release carries no new migration | the schema is read and compared, never written |
+| `schema_and_code` | the release carries a new migration | migrate first, verify, then deploy |
+
+**`code_only` refuses to run if the source's schema head is newer than
+production.** That combination is precisely "deploy code the database cannot
+serve", and it is the failure the ordering exists to prevent.
+
+**`schema_and_code` refuses to run if there is nothing to migrate**, and tells
+you to use `code_only`. That keeps the privileged migration credential out of
+runs that have no use for it.
+
+When a migration *is* applied, there is exactly one window — **the currently
+deployed (older) code running on the new schema** — and job 3 proves that window
+is safe before any new code is deployed. This is why additive, nullable
+migrations are strongly preferred: the deployed code tolerates them.
 
 ---
 
@@ -36,7 +46,8 @@ proves it is safe before any new code is deployed.
 `Settings → Environments → New environment → production`
 
 Every job that can write to production declares `environment: production`
-(`db-migrate`, `deploy-api`, `deploy-web`). Configure on that environment:
+(`db-release-gate`, `deploy-api`, `deploy-web`). Configure on that
+environment:
 
 - **Required reviewers** — add the owner. This is the human gate: the workflow
   pauses before the first job that can touch production and waits for approval.
@@ -75,45 +86,75 @@ string, never runs `set -x`, and never dumps the environment.
 
 | Input | What to enter |
 |---|---|
-| `expected_main_sha` | The full 40-character commit SHA on `main` you are releasing. **Wave 1.1 = `9195850dc6ff87f726801a05e02b6fd814846c13`** |
+| `expected_main_sha` | The full 40-character commit SHA on `main` you are releasing. Read it from `origin/main` now. **No SHA is recorded in this runbook** — a written example gets pasted long after it stopped being main's head. |
+| `release_mode` | `code_only` (default) or `schema_and_code`. Choose the least privileged mode that does the job; see §0. |
+| `expected_schema_before` | The alembic revision you have **just read out of production**, moments before dispatching. |
 | `deploy_web` | `false` if Vercel Git integration already deploys `main` (§5). `true` only if you have turned that off. |
 
 The workflow refuses to run if the SHA you typed is not currently the head of
 `origin/main`. That is deliberate: if `main` moved, what you reviewed is not
 what would ship.
 
+### `expected_schema_before` is an attestation, not a setting
+
+It has **no default, and this runbook prints no example value**, on purpose. A
+revision written down anywhere becomes the next stale constant: correct the day
+it is written, wrong after the next migration, and unnoticed until a release is
+refused — which is exactly the defect that made an earlier version of this
+workflow unusable.
+
+Read the value from the database immediately before you dispatch, and type what
+you saw. The run verifies your attestation against the live database and stops if
+they disagree, so a careless value fails closed rather than proceeding on a
+wrong assumption.
+
 ---
 
 ## 3. What each job does
 
 **1 · Source preflight (read-only).** No production secret enters this job at
-all. It verifies the checkout equals the input and equals `origin/main`; that
-`infra/db/migrations/versions/0030_thesis_archive.py` exists and declares
-`revision = "0030"` / `down_revision = "0029"`; that the migration graph has
-**exactly one head** and it is `0030`; that every tool the workflow later calls
-actually exists; and that `fly.toml` still has **no `release_command`**, so
-deploying the API cannot silently migrate.
+all. It verifies the checkout equals the input and equals `origin/main`; it
+**derives the source schema head from the revision graph** — following
+`revision` / `down_revision`, never filename order — and fails closed on zero
+heads, more than one head, a missing parent, or a duplicate revision id; it
+checks every tool the workflow later calls actually exists; and that `fly.toml`
+still has **no `release_command`**, so deploying the API cannot silently
+migrate.
 
-**2 · Database preflight and migration** (`environment: production`). Writes the
-migration credential to a runner-local file with mode 600 (see §4), then:
+**2 · Database release gate** (`environment: production`). **This job runs in
+both modes**, so the jobs after it depend on it normally. A job that were skipped
+outright would propagate its skip through `needs` and silently skip the deploy —
+the very failure shape this pipeline exists to prevent.
 
-- **Gate: refuses to migrate unless `alembic_version` is exactly `0029`.** This
-  runs *before* any write. See §6.
+Always, in both modes:
+
+- **Read-only schema preflight.** Verifies live `alembic_version` equals your
+  `expected_schema_before`, and that exactly one row is recorded. Nothing is
+  written. In `code_only` this *is* the database gate.
+- **Mode coherence check**, which runs before any credential exists:
+  `code_only` requires the source head to equal production; `schema_and_code`
+  requires them to differ. Either violation stops the run here.
+
+Only in `schema_and_code`:
+
+- Writes the migration credential to a runner-local file with mode 600 (§4).
 - Applies the migration via `scripts/migrate_production.py`.
-- Proves the result: `alembic_version == 0030`, exactly one row, the archive
-  columns exist and are nullable, `ck_theses_archive_is_named` exists,
-  `ix_theses_tenant_live_page` exists, RLS is still `ENABLE` **and** `FORCE` on
-  tenant tables, and the runtime role `athera_app` has neither `rolsuper` nor
-  `rolbypassrls`.
+- Proves the result: `alembic_version` equals the derived source head, exactly
+  one row, RLS still `ENABLE` **and** `FORCE` on tenant tables, and the runtime
+  role `athera_app` has neither `rolsuper` nor `rolbypassrls`.
 - Runs `scripts/verify_db_constraints.py`, which attempts every forbidden
-  operation and fails if any succeeds.
-- Deletes the credential file in an `always()` step.
+  operation and fails if any succeeds. **It is write-capable**, so it does not
+  run on a path that writes nothing.
 
-**3 · Old API healthy on schema 0030.** Probes `/healthz` and `/readyz` on
-`athera-api.fly.dev` **before** the new API deploys. `/readyz` is the meaningful
-one: it returns 503 unless the runtime role has `rolsuper=false` and
-`rolbypassrls=false`. If the already-deployed v88 cannot serve `0030`, the
-release stops here rather than deploying on top of a broken state.
+Always: deletes the credential file in an `always()` step, whether or not one was
+ever written.
+
+**3 · Currently deployed API healthy on the verified schema.** Probes `/healthz`
+and `/readyz` on `athera-api.fly.dev` **before** the new API deploys. `/readyz`
+is the meaningful one: it returns 503 unless the runtime role has
+`rolsuper=false` and `rolbypassrls=false`. After a migration this proves the
+older deployed code survives the new schema; in `code_only` it proves what is
+running now is healthy before you replace it.
 
 **4 · Deploy API to Fly.** Deploys the exact release commit to `athera-api`,
 labelled with the release SHA, then polls health until it passes. This job never
@@ -194,8 +235,9 @@ Git integration is connected to this repository, **merging to `main` already
 deploys Web** — with no coordination with the database or API.
 
 > **This breaks the migrate-first invariant.** A Web bundle that ships on merge
-> can take traffic before the database is at `0030` and before the new API is
-> deployed. Users would hit a front end whose backend cannot serve it.
+> can take traffic before the database is at the release's schema head and
+> before the new API is deployed. Users would hit a front end whose
+> backend cannot serve it.
 
 You must choose **one** authoritative path:
 
@@ -218,29 +260,37 @@ requires the owner to turn Git auto-deploy off first; until then, leave
 
 ## 6. What a blocked migration means
 
-If job 2 stops at *"refuse to migrate unless production is exactly at 0029"*,
-**nothing was written.** The gate runs before any write. It means one of:
+If job 2 stops in its read-only preflight or its mode check, **nothing was
+written** — both run before any credential exists. It means one of:
 
-- the database is already at `0030` — the migration ran before; skip to
-  deploying, do not force anything;
-- the database is at some other revision — it is not the database you think it
-  is, or it is behind; investigate before doing anything;
-- `alembic_version` has more than one row — a branched history was merged without
-  resolution, and `upgrade head` would be ambiguous.
+- **production disagrees with your `expected_schema_before`.** Either you typed a
+  value you did not just read, or it is not the database you think it is. Read
+  the live revision again and start over; do not adjust the input to make the run
+  proceed.
+- **`code_only` was chosen but the source carries a newer migration.** The
+  release includes schema work. Dispatch it as `schema_and_code`, or release an
+  earlier commit.
+- **`schema_and_code` was chosen but the source head already equals
+  production.** There is nothing to migrate; dispatch as `code_only` so the
+  migration credential is never materialised.
+- **`alembic_version` has more than one row** — a branched history was merged
+  without resolution, and `upgrade head` would be ambiguous.
 
-In all three cases the correct response is to stop and look, not to re-run.
+In every case the correct response is to stop and look, not to re-run and not to
+edit the input until it passes.
 
 ---
 
 ## 7. The database is never auto-downgraded
 
-If job 3, 4, 5 or 6 fails **after** the migration succeeded, the schema stays at
-`0030` and the workflow fails loudly.
+If job 3, 4, 5 or 6 fails **after** a migration succeeded, the schema stays where
+the migration left it and the workflow fails loudly.
 
-This is deliberate. `0030` is additive and the old v88 API tolerates it, so
-sitting at `0030` with the old code deployed is a **safe, serviceable state**. An
-automatic downgrade, by contrast, would run destructive DDL during an incident,
-at the moment when least is understood. Downgrading is a separate, human
+This is deliberate. An additive migration is tolerated by the previously deployed
+code — which is why job 3 proves exactly that — so sitting at the new schema with
+the old code deployed is a **safe, serviceable state**. An automatic downgrade,
+by contrast, would run destructive DDL during an incident, at the moment when
+least is understood. Downgrading is a separate, human
 authorized operation — `make migrate-down`, run deliberately, by a person who has
 read what failed.
 
@@ -272,16 +322,17 @@ deployed and reports healthy, and that public URLs respond.
 It proves nothing about whether a researcher can upload a thesis, review
 extraction, archive a record, or restore one.
 
-**Nobody may declare `WAVE 1.1 PRODUCTION GREEN` on the strength of this
-workflow.** The release order is:
+**Nobody may declare a wave PRODUCTION GREEN on the strength of this workflow.**
+The release order is:
 
-1. Production is at schema `0029`, API v88.
-2. Apply `0029 → 0030`.
-3. Verify schema head is `0030`.
-4. Deploy Wave 1.1 API and Web.
+1. Read the live schema revision out of production.
+2. Choose the mode: `schema_and_code` if the release carries a migration,
+   `code_only` if it does not.
+3. Migrate (if any) and verify the resulting schema.
+4. Deploy API, and Web by whichever single path is authoritative (§5).
 5. **Run production acceptance.**
-6. Declare `WAVE 1.1 PRODUCTION GREEN` only after production acceptance passes.
-7. Do not begin Wave 2-A deployment until Wave 1.1 production is confirmed
+6. Declare the wave PRODUCTION GREEN only after production acceptance passes.
+7. Do not begin the next wave's deployment until the current one is confirmed
    GREEN.
 
 Steps 1–4 are what this workflow automates. Steps 5 and 6 are human.
