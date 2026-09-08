@@ -258,19 +258,17 @@ class MineResponse(BaseModel):
     conflicts_detected: int = 0
     #: ما حُجب لأجل ذلك التعارض — ويُحجب المفهومُ وحده لا الرسالة.
     facts_withheld_for_conflict: int = 0
-    #: **حصيلةٌ تُقرأ، لا صفرٌ يُؤوَّل.** و`no_reviewed_canonical_evidence`
-    #: تقول «لم تُعتمد معرفةٌ بعد»، و`reviewed_evidence_but_no_opportunity`
-    #: تقول «اعتُمدت، وفُحصت، ولم تنشأ فرصة» — وكانتا رقمًا واحدًا.
+    #: **حصيلةٌ تُقرأ، لا صفرٌ يُؤوَّل.** و`no_eligible_evidence` تقول «لا
+    #: دليلَ مؤهَّل»، و`eligible_evidence_but_no_opportunity` تقول «فُحص
+    #: دليلٌ مؤهَّل ولم تنشأ فرصة» — وكانتا رقمًا واحدًا.
     #:
     #: و`legacy_evidence_but_no_opportunity` ثالثةٌ لا تُخلط بهما: المادةُ
-    #: القديمة استخراجٌ آليّ **لم يراجعه أحد**، فلا تُوصف بالمراجعة. وهي
-    #: باقيةٌ على حالها بعد T0.1.
+    #: القديمة استخراجٌ آليّ **لم يراجعه أحد**، فلا تُوصف بالمراجعة.
     #:
-    #: **و`reviewed_evidence_but_no_opportunity` تقاعدت من الإصدار** مع
-    #: T0.1: صار الوصفُ الصحيح `eligible_evidence_but_no_opportunity`، إذ
-    #: لم تعد المراجعةُ البشرية شرطَ الأهليّة. ولا تُترك قيمةً افتراضية:
-    #: **افتراضٌ يسمّي حالًا لا تُصدرها الشيفرة كذبةٌ صغيرة تنتظر أن تُقرأ
-    #: حقيقة.**
+    #: و`evidence_withheld_for_conflict` رابعةٌ: حُجب مفهومٌ لتعارضٍ مادّيّ.
+    #:
+    #: **ولا قيمةَ افتراضية تسمّي حالًا لا تُصدرها الشيفرة**: افتراضٌ كهذا
+    #: كذبةٌ صغيرة تنتظر أن تُقرأ حقيقةً في العقد.
     outcome: str = "no_eligible_evidence"
     note_ar: str = "الفرص مقترحات مؤصَّلة في عناصر الرسالة، ولا تتقدم بلا اعتماد الحقوق."
     note_en: str = "Opportunities are grounded proposals; none advances without rights approval."

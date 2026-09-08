@@ -1223,9 +1223,15 @@ def test_the_sample_size_shape_rules_are_conservative():
         ok, why = policy.structurally_valid("sample_size", [good])
         assert ok, f"{good!r} رُفض: {why}"
 
-    for bad in ("0", "لا يوجد عدد", "310 invited, 297 responded", ""):
+    # **والإشارةُ جزءٌ من العدد.** نمطُ `\\d+` كان يقع خارج السالب فتُقرأ
+    # «‪-310‬» موجبةً — طرحُ الإشارة وإعادةُ التأويل اختلاقُ واقعةٍ لم تُقل.
+    for bad in ("0", "-310", "n = -310", "‪−310‬", "لا يوجد عدد",
+                "310 invited, 297 responded", ""):
         ok, _why = policy.structurally_valid("sample_size", [bad] if bad else [])
         assert not ok, f"{bad!r} قُبل"
+
+    negative, why = policy.structurally_valid("sample_size", ["-310"])
+    assert not negative and why == "sample_size_has_a_non_positive_count", why
 
 
 # ═════════ ١٢ · الأثرُ المالك هو الأثرُ ذو الصلة ═════════
@@ -1302,3 +1308,32 @@ async def test_a_mining_relevant_but_withheld_footprint_still_blocks_legacy(
     assert body["evidence_basis"] == "canonical_withheld", body["evidence_basis"]
     assert body["opportunities_created"] == 0, "هرب المسارُ إلى الجداول القديمة"
     assert body["outcome"] == "no_eligible_evidence"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_negative_sample_size_is_refused_at_maximum_confidence(two_tenants):
+    r"""**وعددٌ سالب لا يصير حجمَ عيّنةٍ لأنّ الثقة عالية.**
+
+    وكان نمطُ `\d+` يقع خارج الإشارة، فتُقرأ «‪-310‬» ثلاثمئةً وعشرة موجبة
+    وتمرّ — قيمةٌ مستحيلة تُسند عيّنةً في فرصةِ نشرٍ محفوظة.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import canonical_facts
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, run_id = await _seed(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        chunk = await _chunk(session, tid, file_id, "بلغ حجم العينة -310 مفردة n = -310")
+        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+                         field_key="sample_size", value="بلغ حجم العينة -310 مفردة",
+                         confidence=0.99)
+
+    async with tenant_session(tid, uid) as session:
+        evidence = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+
+    assert evidence.facts.sample_ids == (), "عددٌ سالب أسند عيّنة"
+    assert "sample_size_has_a_non_positive_count" in evidence.reasons, evidence.reasons

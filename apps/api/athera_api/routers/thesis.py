@@ -568,6 +568,38 @@ async def parse_thesis(
                          sections_extracted=sections, results_extracted=len(results))
 
 
+# ═════════ أسبابُ الأثر: تصف ما وقع، لا سياسةً سابقة ═════════
+#
+# **وأثرٌ يصف سياسةً لم تعد متّبعة عطبٌ من صنف الملخّص الذي يقول «متخطّى»
+# دائمًا**: يُقرأ حجّةً موثوقة وهو ليس كذلك. وكان السببُ يقول «من الحقائق
+# التي اعتمدها الباحث، وإلّا فمن العناصر القديمة» — وقد صار الاستخراجُ
+# الآليُّ المؤهَّل يُنقّب بلا اعتمادِ إنسان، فبطلت العبارة.
+#
+# ولا نصَّ مستندٍ في شيءٍ منها: أسبابٌ ورموز، لا محتوى رسالة.
+_MINING_REASONS: dict[str, str] = {
+    "canonical": (
+        "mined from eligible canonical facts for this thesis file; eligibility is "
+        "either researcher-approved with a verified memory, or auto-eligible machine "
+        "extraction that passed every provenance, grounding, shape and field-threshold "
+        "gate"
+    ),
+    "legacy": (
+        "mined from legacy ThesisSection/ThesisResult evidence, used only because no "
+        "mining-relevant canonical footprint (a FactCandidate whose field_key is in "
+        "READ_KEYS) owns this thesis"
+    ),
+    "canonical_withheld": (
+        "a mining-relevant canonical footprint owns this thesis but nothing was "
+        "eligible; legacy fallback was intentionally suppressed so that a deliberate "
+        "withholding is never silently downgraded into a legacy mining run"
+    ),
+    "none": (
+        "no mining-relevant canonical footprint and no usable legacy evidence, so no "
+        "mining attempt was made and no completion is stamped"
+    ),
+}
+
+
 @router.post("/theses/{thesis_id}/mine-opportunities", response_model=MineResponse,
              status_code=status.HTTP_202_ACCEPTED)
 async def mine_opportunities(
@@ -774,12 +806,7 @@ async def mine_opportunities(
             "exclusion_reasons": canonical.reasons,
             "outcome": outcome,
         },
-        reason=("no auto-eligible canonical fact and no usable legacy element, so no "
-                "mining attempt was made and no completion is stamped"
-                if evidence_basis not in {"canonical", "legacy"} else
-                "opportunities proposed from researcher-approved facts when they exist, "
-                "otherwise from legacy extracted elements (§23.4); "
-                "a proposal that already exists is not written twice"),
+        reason=_MINING_REASONS[evidence_basis],
     )
 
     # **الاختلافُ يُسجَّل بمعرّفه لا بنصّه.** العنوانُ محتوى مستند، والأثرُ

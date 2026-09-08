@@ -155,7 +155,10 @@ def thresholds_for(field_key: str | None) -> tuple[float, float]:
 # ═════════ صلاحيةُ الشكل — محافِظةٌ، ومركزُها هنا لا في المشغّل ═════════
 
 _ARABIC_DIGITS: Final = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-_INTEGER: Final[re.Pattern[str]] = re.compile(r"\d+")
+#: **والإشارةُ جزءٌ من العدد.** كان النمطُ `\d+` فيقع خارج السالب: تُقرأ
+#: «‪-310‬» ثلاثمئةً وعشرة موجبة، فيصير عددٌ سالبٌ حجمَ عيّنةٍ صالحًا.
+#: وطرحُ الإشارة وإعادةُ تأويل القيمة موجبةً اختلاقٌ لواقعةٍ لم تُقل.
+_SIGNED_INTEGER: Final[re.Pattern[str]] = re.compile(r"[-\u2212+]?\d+")
 _LETTER: Final[re.Pattern[str]] = re.compile(r"[^\W\d_]", re.UNICODE)
 _DOCUMENT_SUFFIX: Final[re.Pattern[str]] = re.compile(
     r"\.(pdf|docx?|txt|rtf|odt|pptx?)\s*$", re.IGNORECASE)
@@ -163,15 +166,28 @@ _PAGE_COUNT_LABEL: Final[re.Pattern[str]] = re.compile(
     r"^\s*(عدد\s+الصفحات|page\s*count|pages)\b", re.IGNORECASE)
 
 
-def sample_counts(texts: list[str]) -> set[int]:
-    """كلُّ عددٍ صحيحٍ موجبٍ في النصّ — بالأرقام العربية والهندية معًا."""
-    found: set[int] = set()
+def _integers(texts: list[str]) -> list[int]:
+    """كلُّ عددٍ صحيحٍ في النصّ **بإشارته** — عربيَّ الأرقام أو هنديَّها."""
+    found: list[int] = []
     for text in texts:
-        for token in _INTEGER.findall(text.translate(_ARABIC_DIGITS)):
-            value = int(token)
-            if value > 0:
-                found.add(value)
+        normalised = text.translate(_ARABIC_DIGITS).replace("\u2212", "-")
+        for token in _SIGNED_INTEGER.findall(normalised):
+            found.append(int(token.replace("\u2212", "-")))
     return found
+
+
+def sample_counts(texts: list[str]) -> set[int]:
+    """الأعدادُ الموجبة وحدها — والسالبُ يُكشف بـ`has_non_positive_count`."""
+    return {value for value in _integers(texts) if value > 0}
+
+
+def has_non_positive_count(texts: list[str]) -> bool:
+    """**والصفرُ والسالبُ يُبطلان القيمة، ولا يُتخطّيان بحثًا عن موجب.**
+
+    فنصٌّ فيه «‪-310‬» لا يقول «لا عدد فيه»؛ يقول عددًا لا يصلح حجمَ عيّنة.
+    وتخطّيه إلى موجبٍ آخر في العبارة نفسها اختيارٌ لا سند له.
+    """
+    return any(value <= 0 for value in _integers(texts))
 
 
 def structurally_valid(field_key: str | None, texts: list[str]) -> tuple[bool, str]:
@@ -184,6 +200,8 @@ def structurally_valid(field_key: str | None, texts: list[str]) -> tuple[bool, s
         return False, "empty_or_malformed_value"
 
     if field_key == "sample_size":
+        if has_non_positive_count(texts):
+            return False, "sample_size_has_a_non_positive_count"
         counts = sample_counts(texts)
         if not counts:
             # صفرٌ أو سالبٌ أو بلا عددٍ أصلًا — لا حجمَ عيّنةٍ فيه.

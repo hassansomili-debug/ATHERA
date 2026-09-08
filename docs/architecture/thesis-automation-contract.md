@@ -127,8 +127,11 @@ broken thesis.
 ## 7. Conflicts — what is decidable, and what is deliberately deferred
 
 **Implemented:** `sample_size`. Two different population counts for one study is
-a contradiction with no reading that reconciles it. Detection normalises to the
-first integer, so `"n = 310"` and `"310"` agree. On conflict, **only
+a contradiction with no reading that reconciles it. Detection reads integers
+**with their sign** and in either Arabic-Indic or Western digits, so `"n = 310"`
+and `"310"` and `"٣١٠"` agree, while `"0"`, `"-310"` and `"n = -310"` are refused
+outright. An earlier pattern matched `\d+` only, which left the minus outside the
+match and silently reinterpreted a negative as a valid positive count. On conflict, **only
 `sample_size` is withheld** — unrelated evidence keeps mining and the thesis is
 not blocked.
 
@@ -157,12 +160,24 @@ document text in logs** — reasons are recorded by code and fact id only.
 | `unknown` | `REVIEW_REQUIRED` |
 | `approved` + verified same-file `ResearcherMemory` | highest trust |
 
-When the researcher has decided a concept, later machine extraction for that same
-field is superseded and stops grounding anything. **No history is deleted** — the
-rows remain; only their eligibility changes.
+**No history is deleted** — rows remain; only their eligibility changes.
 
-Supersession is applied **at field level**, because that is what the model
-actually represents. No semantic supersession relation is invented.
+How far a human decision reaches depends on whether the field can hold more than
+one value, read from `FieldSpec.multi` in the existing catalogue rather than a
+second list that would drift from it:
+
+- **Singleton fields** (e.g. `title_ar`): a verified human decision **may suppress
+  machine alternatives field-wide**. A thesis has one title; approving one settles
+  the field.
+- **Multi-value fields** (`questions`, `hypotheses`, `constructs`, `instruments`,
+  `primary_findings`, `hypothesis_results`, `qualitative_themes`): approving one
+  item **does not erase unrelated machine items** that merely share a `field_key`.
+  Suppression there would need **deterministic item identity**, which the model
+  does not carry — and **an unknown relation is not supersession**. So no
+  suppression happens without it.
+
+Field-wide suppression on a multi-value field was the earlier behaviour; it
+discarded correct, distinct evidence for no reason beyond a shared key.
 
 ---
 
@@ -170,12 +185,22 @@ actually represents. No semantic supersession relation is invented.
 
 1. approved + verified canonical
 2. `AUTO_ELIGIBLE` machine facts
-3. legacy `ThesisSection` / `ThesisResult` — **only when the thesis has no modern
-   canonical footprint at all**
+3. legacy `ThesisSection` / `ThesisResult` — **only when no mining-relevant
+   canonical footprint owns the thesis**
 
-**The modern footprint owns the thesis.** If canonical facts exist but are
-low-confidence, conflicted or withheld, the pipeline does **not** fall back to
-legacy tables. Doing so would convert a deliberate withholding into a silent
+**Ownership is mining-relevant, not merely "some extraction happened".** The
+footprint is a `FactCandidate` whose `field_key` is in `READ_KEYS`. It holds even
+when every such candidate ends up `SUPPORT_ONLY`, `REVIEW_REQUIRED` or
+`EXCLUDED` — that is exactly what preserves `canonical_withheld`.
+
+Candidates for **non-mining metadata only** (`page_count`, `source_filename`) do
+**not** by themselves block legacy fallback: nothing extracted from them is
+mineable, so blocking on them would refuse a legitimate legacy run on the
+strength of an unrelated artefact.
+
+**The modern footprint owns the thesis.** If mining-relevant canonical facts
+exist but are low-confidence, conflicted or withheld, the pipeline does **not**
+fall back to legacy tables. Doing so would convert a deliberate withholding into a silent
 downgrade — publishing through the back door exactly what was refused at the
 front. That state is reported as `canonical_withheld`.
 
@@ -202,6 +227,17 @@ Unchanged from the previous contract, and still enforced:
 `eligible_evidence_but_no_opportunity` · `no_eligible_evidence` ·
 `evidence_withheld_for_conflict` · `withheld_for_missing_title` ·
 `legacy_evidence_but_no_opportunity`
+
+**`eligible_evidence_but_no_opportunity` is the canonical zero-result outcome.**
+`reviewed_evidence_but_no_opportunity` and `no_reviewed_canonical_evidence` were
+retired with T0.1 and are **not emitted**: human review is no longer the condition
+of eligibility, so naming it in the outcome would describe a policy the code does
+not follow.
+
+Audit reasons are written per `evidence_basis` for the same reason — `canonical`,
+`legacy`, `canonical_withheld` and `none` each state what actually happened,
+including that legacy fallback was *intentionally* suppressed in the withheld
+case. **No document text appears in any of them.**
 
 `opportunities_mined_at` is stamped **only when a real attempt ran on eligible
 evidence** — including when that attempt legitimately found nothing. It is not
