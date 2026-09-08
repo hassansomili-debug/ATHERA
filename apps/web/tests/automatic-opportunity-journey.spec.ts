@@ -88,13 +88,16 @@ async function serve(page: Page, opportunities: number) {
       ]);
     }
     if (path.endsWith("/publication-map")) {
+      // **الشكلُ هو العقد.** `PublicationMapResponse.overlap` كائنٌ لا
+      // قائمة (`OverlapMatrixResponse` — `schemas/thesis.py:371,320`)،
+      // والخادمُ يبنيه دائمًا. وردٌّ مُلفَّق يخالف العقدَ ليس اختبارًا
+      // للمنتج: هو عطبٌ يُنسب إلى المنتج ظلمًا.
       return json(route, 200, {
-        thesis_id: THESIS, opportunities: [], overlap: [],
-        aging: {
-          data_age_years: null, literature_age_years: null,
-          needs_literature_update: false, needs_reanalysis_review: false,
-          note: "", note_ar: "", note_en: "",
-        },
+        thesis_id: THESIS,
+        title: "الرسالة الأولى.pdf",
+        opportunities: [],
+        overlap: { thesis_id: THESIS, pairs: [], alerts: 0, note_ar: "", note_en: "" },
+        gate_summary: {},
       });
     }
     if (path === "/api/v1/settings/posture") {
