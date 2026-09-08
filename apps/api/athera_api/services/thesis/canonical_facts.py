@@ -116,32 +116,12 @@ class CanonicalEvidence:
 
 
 def _texts(candidate: FactCandidate) -> list[str]:
-    """قيمُ الحقيقةِ الواحدة نصًّا — **بلا تقطيعٍ للنثر**.
+    """قيمُ الحقيقةِ نصًّا — **والتطبيعُ في `fact_eligibility` وحده**.
 
-    والشكلُ المخزون `{"value": …, "extraction_status": …}` و`value` نوعُه
-    `Any`: نصٌّ للحقول المفردة، وقائمةٌ للحقول المتعدّدة. ولا تُشطر عبارةٌ
-    واحدة إلى عبارتين لتكثر المقترحات — الكثرةُ المصنوعة تُنتج فرصًا لا
-    أصل لها.
+    ونسختان من قاعدةِ قراءةٍ تتباعدان: تُشدَّد إحداهما ويبقى البابُ مفتوحًا
+    من الأخرى. فتُفوَّض هنا ولا تُعاد كتابتها.
     """
-    payload = candidate.value if isinstance(candidate.value, dict) else None
-    raw = payload.get("value") if payload else None
-
-    out: list[str] = []
-    if isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, str | int | float) and not isinstance(item, bool):
-                text = str(item).strip()
-                if text:
-                    out.append(text)
-    elif isinstance(raw, str | int | float) and not isinstance(raw, bool):
-        text = str(raw).strip()
-        if text:
-            out.append(text)
-
-    if out:
-        return out
-    statement = (candidate.statement_ar or "").strip()
-    return [statement] if statement else []
+    return policy.usable_texts(candidate)
 
 
 async def load(
@@ -179,8 +159,21 @@ async def load(
     if not rows:
         return empty
 
+    # ── الأثرُ الذي يملك الرسالة هو الأثرُ **ذو الصلة بالتنقيب** ──
+    #
+    # **وبياناتُ الوصف وحدها لا تحجب المسارَ القديم.** رسالةٌ قديمة رُفع
+    # ملفُّها فاستُخرج منه `page_count` و`source_filename` لا تصير بذلك
+    # «حديثةً محجوبة»: لا شيء ممّا استُخرج منها يُنقَّب أصلًا. وحجبُها حينئذٍ
+    # يمنع تنقيبًا مشروعًا بحجّة أثرٍ لا يمتّ إليه بصلة.
+    mining_relevant = any(
+        (candidate.field_key or "") in READ_KEYS for candidate, _m, _c, _r in rows)
+    if not mining_relevant:
+        return empty
+
     scope = policy.SCOPE_UNKNOWN
-    for _c, _m, _chunk, run in rows:
+    for candidate, _m, _chunk, run in rows:
+        if (candidate.field_key or "") not in READ_KEYS:
+            continue
         if run is not None:
             candidate_scope = policy.processing_scope(run.status)
             if candidate_scope == policy.SCOPE_ADVANCED:
@@ -191,30 +184,35 @@ async def load(
     verdicts: dict[uuid.UUID, policy.Verdict] = {}
     by_id: dict[uuid.UUID, FactCandidate] = {}
     texts_by_id: dict[uuid.UUID, list[str]] = {}
-    human_fields: set[str] = set()
+    human_singletons: set[str] = set()
 
     for candidate, memory, chunk, run in rows:
         texts = _texts(candidate)
         verdict = policy.classify(
             candidate, tenant_id=tenant_id, file_id=file_id,
-            run_status=run.status if run is not None else None,
-            chunk=chunk, memory=memory, known_fields=READ_KEYS,
-            has_text=bool(texts),
+            run=run, chunk=chunk, memory=memory, known_fields=READ_KEYS,
+            texts=texts,
         )
         verdicts[candidate.id] = verdict
         by_id[candidate.id] = candidate
         texts_by_id[candidate.id] = texts
-        if verdict.eligible and verdict.reason == "approved_and_verified_by_researcher":
-            human_fields.add(candidate.field_key or "")
+        # **والإبطالُ للمفرد وحده.** انظر الشرح عند تطبيقه.
+        if verdict.from_human and (candidate.field_key or "") in policy.SINGLETON_FIELDS:
+            human_singletons.add(candidate.field_key or "")
 
-    # ── الإنسانُ المعتمِد يُبطل الآليَّ في المفهوم نفسه ──
+    # ── الإنسانُ المعتمِد يُبطل الآليَّ: في المفرد وحده ──
     #
-    # **ولا تُخترع علاقةُ إحلالٍ دلاليّة لا يمثّلها النموذج.** الإبطالُ هنا
-    # على مستوى الحقل: حقلٌ حسم فيه الباحثُ لا يُغذّيه استخراجٌ لاحق.
+    # **والإبطالُ على مستوى الحقل كان أوسعَ من الحقّ.** حقلٌ مفرد كالعنوان
+    # لا يحتمل قيمتين، فاعتمادُ الباحثِ فيه يحسمه كلَّه. أمّا حقلٌ متعدّد
+    # كالأسئلة فاعتمادُ سؤالٍ واحد **لا يقول شيئًا** عن سؤالٍ آخر مستخرَجٍ
+    # صحيحٍ يشاركه المفتاحَ وحده. ومحوُه لمجرّد المشاركة يفقد دليلًا سليمًا.
+    #
+    # ولا يُبطَل عنصرٌ متعدّدٌ إلّا بهويّةِ عنصرٍ حتميّة — ولا وجود لها في
+    # النموذج اليوم. **وعلاقةٌ مجهولة ليست علاقةَ إحلال.**
     for fact_id, verdict in list(verdicts.items()):
         if (verdict.eligible
-                and verdict.reason != "approved_and_verified_by_researcher"
-                and (by_id[fact_id].field_key or "") in human_fields):
+                and not verdict.from_human
+                and (by_id[fact_id].field_key or "") in human_singletons):
             verdicts[fact_id] = dataclasses.replace(
                 verdict, classification=policy.EXCLUDED,
                 reason="superseded_by_researcher_decision")
