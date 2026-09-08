@@ -1169,6 +1169,70 @@ def test_no_mining_copy_asks_the_researcher_for_retired_work():
     assert (card_actions.MINING_LABELS[card_actions.MINING_WITHHELD]
             != card_actions.MINING_LABELS[card_actions.MINING_COMPLETED_EMPTY])
 
+def test_web_fixtures_pin_mining_copy_to_the_server_contract():
+    """**قائمةُ الممنوع تنجرف بطبيعتها؛ والتثبيتُ الموجب لا ينجرف.**
+
+    ثبّتت تجهيزاتُ الواجهة نصَّ تنقيبٍ متقاعدًا أربعَ مرّات، ونجت مرّتان
+    منها من كنسٍ سالب — لأنّ الكنس السالب لا يرى إلّا العباراتِ التي
+    عرفناها خطأً سلفًا: أُزيلت فقرةٌ فبقيت مقدّمتُها، وهي نصٌّ آخر تمامًا.
+
+    فيُقلب الفحص. لا يُسأل «أفيه عبارةٌ ممنوعة؟» بل **«أهذا النصُّ هو
+    نصُّ العقد القائم؟»** — فيسقط أيُّ انحرافٍ ولو كان بعبارةٍ لم تُرَ من
+    قبل. وموضعان يُفحصان: ما تخدمه التجهيزةُ `mining_reason`، وما يُدَّعى
+    على `card-mining-note`.
+    """
+    import re
+
+    from athera_api.services.thesis import card_actions
+
+    corpus = {text for pair in card_actions.MINING_LABELS.values() for text in pair}
+    web_tests = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web" / "tests"
+    assert web_tests.is_dir(), f"لم يُعثر على تجهيزات الواجهة: {web_tests}"
+
+    def constant(source: str, name: str) -> str:
+        match = re.search(rf"const {name} =(.*?);", source, re.S)
+        assert match, f"ثابتٌ يُخدَم ولا تعريفَ له: {name}"
+        return "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', match.group(1)))
+
+    checked = 0
+    for path in sorted(web_tests.rglob("*.ts")):
+        source = path.read_text(encoding="utf-8")
+        lines = source.splitlines()
+
+        # ١ — **ما يُخدَم `mining_reason` نصُّ عقدٍ حرفًا بحرف.**
+        # ويقف الالتقاط عند فاصلة الخاصّيّة ولا يعبر `;`: فتُستثنى بذلك
+        # تصريحةُ الواجهة (`mining_reason: string;`) ولا تبتلع ما بعدها.
+        for served in re.finditer(r"mining_reason:\s*([^;]*?),\n", source, re.S):
+            expression = served.group(1)
+            for name in sorted(set(re.findall(r"\b([A-Z][A-Z0-9_]{3,})\b", expression))):
+                value = constant(source, name)
+                checked += 1
+                assert value in corpus, (
+                    f"{path.name}: `{name}` يخدم نصًّا ليس في `MINING_LABELS` — {value[:70]}")
+            # **والنصُّ الحرفيُّ يُفحص كالمعرّف.** تجهيزتان كانتا تخترعان
+            # صياغةً تشبه العقد ولا هي منه، ولا معرّفَ لهما يُفحص.
+            for text in re.findall(r'"((?:[^"\\]|\\.)*)"', expression):
+                if len(text) < 12:
+                    continue
+                checked += 1
+                assert any(text in entry for entry in corpus), (
+                    f"{path.name}: نصٌّ يُخدَم وليس في `MINING_LABELS` — {text[:70]}")
+
+        # ٢ — **وما يُدَّعى على ملاحظة التنقيب مشتقٌّ منه لا مكتوبٌ بيد.**
+        for index, line in enumerate(lines):
+            if "card-mining-note" not in line:
+                continue
+            for text in re.findall(r'"((?:[^"\\]|\\.)*)"', "\n".join(lines[index:index + 3])):
+                if len(text) < 12 or text.startswith("card-"):
+                    continue
+                checked += 1
+                assert any(text in entry for entry in corpus), (
+                    f"{path.name}:{index + 1}: دعوى على نصِّ تنقيبٍ ليس في العقد — {text[:70]}")
+
+    # **وحارسٌ لا يجد ما يفحصه حارسٌ ميّت.** لو تغيّر شكلُ التجهيزة صمت
+    # هذا الفحصُ ونجح أبدًا، وهو أسوأ من غيابه.
+    assert checked, "الحارسُ لم يفحص شيئًا — تغيّر الشكلُ فصار بلا أثر"
+
 
 @requires_db
 @pytest.mark.asyncio
