@@ -51,7 +51,8 @@ class ThesisCardActions(BaseModel):
     #: سببُ منعِ الأرشفة والسلّة أثناء عملٍ جارٍ — **والخادم يفرضه أيضًا**.
     lifecycle_blocked_reason: str | None = None
 
-    #: available · in_flight · no_evidence
+    #: available · in_flight · no_evidence · found · failed ·
+    #: withheld · completed_empty
     mining_state: str
     #: لماذا التنقيب متاحٌ أو غير متاح — **بنصٍّ يصف الواقع لا وعدًا**.
     mining_reason: str
@@ -145,6 +146,13 @@ class ThesisResponse(BaseModel):
 
     #: **مؤرشَفة = مُخفاة لا محذوفة** (ترحيل 0030). و`None` تعني «في القائمة».
     archived_at: dt.datetime | None = None
+
+    #: **حالُ التنقيب المحفوظة** (ترحيل 0031): `not_started` · `running` ·
+    #: `completed` · `withheld` · `failed`. تُقرأ من العمود مباشرةً، ولا
+    #: تُشتقّ من `actions.mining_state` (ذاك سطحُ عرضٍ لا حالُ تخزين).
+    #:
+    #: و`mining_last_error` **لا يخرج في العقد**: رمزٌ تقنيّ داخليّ.
+    mining_state: str = "not_started"
 
     # ── الأفعال: قرارٌ واحد يُحسب في الخادم ──
     actions: ThesisCardActions

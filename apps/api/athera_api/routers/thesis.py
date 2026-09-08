@@ -1120,6 +1120,9 @@ def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
         # **آلةُ الحال في موضعٍ واحد** — والشاشة تعرض ما يقوله الخادم، ولا
         # تعيد بناء الشروط في JSX فتفترق عنه.
         archived_at=archived_at,
+        #: **خاصّيّةٌ تشغيليّة من الدرجة الأولى** (ترحيل 0031) — تُقرأ خامًّا
+        #: كما هي، لا مشتقّةً من سطح البطاقة. و`mining_last_error` لا يخرج.
+        mining_state=row.mining_state,
         actions=ThesisCardActions(**asdict(card_actions.compute(
             processing_state=state, file_id=row.file_id,
             sections=sections, results=result_rows, locale=locale,
@@ -1128,7 +1131,10 @@ def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
             # القائمة كعمودٍ مرتبط، والقاعدةُ في مومباي والخادمُ في
             # سنغافورة: استعلامٌ لكلّ بطاقة يعني رحلةً لكلّ صفّ.
             opportunities=found,
-            thesis_mining_state=getattr(row, "mining_state", "not_started")))),
+            # **ويُقرأ العمودُ صراحةً.** على مخطَّط 0031 هو قائمٌ فعلًا،
+            # وقيمةٌ افتراضية تُخفي إسقاطًا ناقصًا بدل أن تكشفه. والتوافقُ
+            # المتدحرج يُحَلّ عند حدّ النشر: ترحيلٌ أوّلًا ثمّ خدمة.
+            thesis_mining_state=row.mining_state))),
     )
 
 
@@ -1168,6 +1174,11 @@ async def list_theses(
             Thesis.processing_state, Thesis.processing_state_changed_at,
             Thesis.processing_attempts, Thesis.failure_code,
             Thesis.text_layer_state, Thesis.ocr_state, Thesis.opportunities_mined_at,
+            # **حالُ التنقيب المحفوظة (ترحيل 0031) — في الإسقاط نفسه.**
+            # كانت غائبةً عنه، فتقرأ البطاقةُ `not_started` بعد كلّ تحميل
+            # مهما كان المحفوظ `failed` أو `withheld`، ويُخفي ذلك وجودُ
+            # فرصةٍ وحده. عمودٌ في الصفحة المقتطعة: بلا استعلامٍ لكلّ بطاقة.
+            Thesis.mining_state,
             Thesis.archived_at,
         )
         .where(Thesis.tenant_id == principal.tenant_id)

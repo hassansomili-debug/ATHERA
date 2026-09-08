@@ -74,10 +74,14 @@ MINING_IN_FLIGHT: Final = "in_flight"          # المعالجة جاريةٌ �
 MINING_NO_EVIDENCE: Final = "no_evidence"      # لا دليلَ مؤهَّل بعد
 MINING_FOUND: Final = "found"                  # فرصٌ قائمةٌ على هذه الرسالة
 MINING_FAILED: Final = "failed"                # تعثّر التنقيب — ولا يمسّ الاستخراج
+# **حُجب ≠ اكتمل بلا نتيجة، وكلاهما ≠ فشل.** ثلاثُ وقائعَ مختلفة كانت
+# تُطوى في واحدة، فتقول البطاقةُ عن سياسةٍ وقعت كما يجب إنّها «لا دليل».
+MINING_WITHHELD: Final = "withheld"            # دليلٌ قائم، حُجب عن الاستعمال التلقائيّ
+MINING_COMPLETED_EMPTY: Final = "completed_empty"  # جرى على دليلٍ مؤهَّل فلم يتكوّن شيء
 
 MINING_STATES: Final[tuple[str, ...]] = (
     MINING_AVAILABLE, MINING_IN_FLIGHT, MINING_NO_EVIDENCE,
-    MINING_FOUND, MINING_FAILED,
+    MINING_FOUND, MINING_FAILED, MINING_WITHHELD, MINING_COMPLETED_EMPTY,
 )
 
 MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
@@ -106,16 +110,35 @@ MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
         "Opportunity scanning failed. Reading your thesis succeeded and everything "
         "extracted from it is kept; only the scan can be retried.",
     ),
+    # **ونصُّ «راجِعْ ثمّ صِلْ ما اعتمدته بالمنقّب» نُزع.** كان يصف خطًّا
+    # تقاعد في T0 وT0.1: الأتمتة تقرأ المعرفةَ المعتمَدة من نفسها، ولا
+    # اعتمادَ لكلّ واقعة. وإبقاؤه يطلب من الباحث عملًا لم يعد موجودًا.
     MINING_NO_EVIDENCE: (
-        "استخراج الفرص غير متاح بعد. المنقّب يقرأ الأقسام والنتائج المستخرجة، "
-        "ولم يُكتب منها شيءٌ لهذه الرسالة: خطُّ القراءة الحالي ينتج مرشّحاتِ "
-        "وقائع تُراجَع، ولا يكتب أقسامًا ولا نتائج. فيصير متاحًا بعد مراجعة ما "
-        "استُخرج ووصلِ ما اعتمدته بالمنقّب — ولا يُعرض زرٌّ يَعِد بذلك قبل وقوعه.",
-        "Opportunity mining is not available yet. The miner reads extracted sections and "
-        "results, and none were written for this thesis: the current reading pipeline "
-        "produces reviewable fact candidates and writes neither sections nor results. It "
-        "becomes available once your reviewed extraction is wired into the miner — and no "
-        "button promises that before it is true.",
+        "لم يجرِ فحصُ الفرص بعد: لا دليلَ مؤهَّل على هذه الرسالة حتى الآن. "
+        "والفحصُ يبدأ تلقائيًّا بعد قراءة الرسالة، ولا يلزمك تشغيلُه.",
+        "The opportunity scan has not run yet: no eligible evidence exists on this "
+        "thesis so far. The scan starts automatically once the thesis has been read; "
+        "you do not need to trigger it.",
+    ),
+    # **حُجب: سياسةٌ وقعت كما يجب، لا عطب.** ولا يُقال فيه «اعتمِدْ وقائعَ
+    # قبل التنقيب» — تلك بوّابةٌ تقاعدت، والمراجعةُ هنا ضبطُ جودةٍ اختياريّ.
+    MINING_WITHHELD: (
+        "اكتمل فحصُ الرسالة، وفيها معرفةٌ مستخرَجة. وحُجب بعضُ الأدلّة عن "
+        "الاستعمال التلقائيّ لأسبابٍ تتعلّق بالثقة أو الاتّساق أو سلامة "
+        "الدليل. ولا يلزمك اعتمادُ شيءٍ لتعمل الأتمتة؛ ومراجعةُ ما استُخرج "
+        "ضبطُ جودةٍ اختياريّ، وقد تُتيح أدلّةً أكثر.",
+        "The thesis scan completed and extracted knowledge exists. Some evidence was "
+        "withheld from automatic use for confidence, consistency, or evidence-integrity "
+        "reasons. Nothing needs your approval for the automation to run; reviewing what "
+        "was extracted is optional quality control and may make more evidence usable.",
+    ),
+    # **ولا يُقال «لا فرصَ نشرٍ لهذه الرسالة».** تلك دعوى عن العالم لا نملك
+    # سندَها؛ وما نملكه أنّ النظام لم يُكوّن واحدةً موثوقةً ممّا توفّر.
+    MINING_COMPLETED_EMPTY: (
+        "اكتمل فحص الرسالة، ولم يتمكن النظام من تكوين فرصة نشر موثوقة بما يكفي "
+        "من الأدلة المتاحة.",
+        "The thesis scan completed, but the available evidence was not sufficient to "
+        "form a reliable publication opportunity.",
     ),
 }
 
@@ -132,6 +155,17 @@ def mining_state(*, processing_state: str, thesis_mining_state: str,
     فالترتيب: فرصٌ قائمةٌ أوّلًا (وهي واقعةٌ لا تُؤوَّل)، ثمّ حالُ التنقيب
     المحفوظة، ثمّ العملُ الجاري. **والقديمُ يبقى مقروءًا للتوافق** ولا
     يقود الرحلةَ الحديثة.
+
+    ## و`running` محلّيّةُ المعاملة — تُقال كما هي لا كما نتمنّاها
+
+    `mining.run` يكتب `running` ثمّ يُتمّ عملَه ويكتب الحالَ النهائية
+    **في المعاملة نفسها**. فلا جلسةٌ أخرى تراها قطّ: هي حارسٌ داخل
+    المعاملة، لا حالٌ مرصودةٌ من الخارج. فالسطرُ الذي يقرؤها هنا صحيحٌ
+    ولا يُعتمد عليه، و`in_flight` تُبلَغ عمليًّا من `processing_state`.
+
+    **ولا يُصلَح ذلك بمعاملتين هنا:** إيداعُ `running` وحدها يفتح بابَ
+    «عالقةٌ في الجريان» إن مات المسار بينهما، وذاك يحتاج استرجاعًا
+    للحال البائتة — عملٌ لاحقٌ مستقلّ، لا أثرٌ جانبيّ لبطاقة.
     """
     if opportunities > 0:
         return MINING_FOUND
@@ -139,8 +173,10 @@ def mining_state(*, processing_state: str, thesis_mining_state: str,
         return MINING_IN_FLIGHT
     if thesis_mining_state == "failed":
         return MINING_FAILED
-    if thesis_mining_state in {"completed", "withheld"}:
-        return MINING_NO_EVIDENCE
+    if thesis_mining_state == "withheld":
+        return MINING_WITHHELD
+    if thesis_mining_state == "completed":
+        return MINING_COMPLETED_EMPTY
     # **توافقٌ مع القديم، لا قيادةٌ منه.**
     if sections > 0 or results > 0:
         return MINING_AVAILABLE
@@ -267,7 +303,9 @@ def compute(
     # فيبقى الفعلُ اليدويّ **إعادةَ محاولةٍ عند التعثّر وحده**، وللمسار
     # القديم الذي لا أتمتةَ له. وما عدا ذلك: تُفتح الفرصُ ولا تُشغَّل.
     can_mine = (
-        (mining == MINING_FAILED or mining == MINING_AVAILABLE)
+        # و`completed_empty` ليست منها: جرى الفحصُ على دليلٍ مؤهَّل فلم
+        # يتكوّن شيء، وزرٌّ يَعِد بنتيجةٍ أخرى من المُدخل نفسه وعدٌ كاذب.
+        (mining in {MINING_FAILED, MINING_AVAILABLE, MINING_WITHHELD})
         and not in_flight and not archived
     )
     can_view_opportunities = opportunities > 0 and not archived

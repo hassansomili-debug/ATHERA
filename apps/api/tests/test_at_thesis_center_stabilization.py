@@ -969,6 +969,182 @@ async def test_over_http_a_thesis_from_the_modern_pipeline_is_told_mining_is_not
     assert card["actions"]["can_parse"] is False
 
 
+# ══════ حالُ التنقيب المحفوظة تعبر HTTP — ولا تُشتقّ ولا تُنسى ══════
+#
+# **وتمرّ كلُّها بـ`GET /api/v1/theses`، لا بـ`card_actions.compute`.**
+# العطبُ الذي أفلت كان في إسقاط عبارة القائمة وحدها: آلةُ الحال سليمة،
+# ونداؤها مباشرةً في اختبارٍ يُخفي أنّ العمود لا يبلغها أصلًا.
+
+
+async def _thesis_with_mining_state(tid, uid, state, *, filename, error=None):
+    """رسالةٌ قُرئت بنجاح، وحالُ تنقيبها محفوظةٌ في العمود (ترحيل 0031)."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+    from athera_api.services.thesis import processing
+
+    thesis_id, _ = await _seed(tid, uid, filename=filename)
+    async with tenant_session(tid, uid) as session:
+        await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
+                              state=processing.READY_FOR_REVIEW)
+    async with tenant_session(tid, uid) as session:
+        thesis = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        thesis.mining_state = state
+        thesis.mining_last_error = error
+    return thesis_id
+
+
+async def _card_over_http(tid, uid, thesis_id):
+    """البطاقةُ كما يراها العميل — بعد رحلةٍ كاملة، كأنّه أعاد التحميل."""
+    async with _client(tid, uid) as client:
+        response = await client.get("/api/v1/theses")
+        assert response.status_code == 200, response.text
+        return next(row for row in response.json() if row["id"] == str(thesis_id))
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_a_failed_mining_survives_a_reload(two_tenants):
+    """**الانحدارُ الأهمّ: المحفوظُ يعبر التحميل.**
+
+    ‏`failed` مكتوبةٌ في القاعدة، وكانت تُقرأ `not_started` بعد كلّ تحميل
+    لأنّ إسقاطَ الصفحة لا يحمل العمود — ويُخفي ذلك وجودُ فرصةٍ وحده.
+    """
+    from athera_api.services.thesis import card_actions
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id = await _thesis_with_mining_state(
+        tid, uid, "failed", filename="تعثّر تنقيبها.pdf", error="OperationalError")
+
+    card = await _card_over_http(tid, uid, thesis_id)
+
+    assert card["opportunities_found"] == 0
+    # ١ — العمودُ يبلغ البطاقة، ولا يُستبدل بـ«لم يبدأ».
+    assert card["mining_state"] == "failed", "حالُ التنقيب لا تصل إلى العقد"
+    assert card["actions"]["mining_state"] == card_actions.MINING_FAILED
+    # ٢ — وإعادةُ المحاولة متاحة: التعثّر يُستأنف.
+    assert card["actions"]["can_mine"] is True
+    # ٣ — والسببُ صادق: القراءةُ نجحت، والمتعثّر هو الفحصُ وحده.
+    reason = card["actions"]["mining_reason"]
+    assert reason and "تعثّر" in reason
+    assert card["processing_state"] == "ready_for_review"
+    # ٤ — ولا رمزَ خطأٍ تقنيّ يخرج في العقد.
+    assert "mining_last_error" not in card
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_withheld_is_not_failure_and_demands_no_approval(two_tenants):
+    """**حُجب سياسةٌ وقعت كما يجب** — لا عطبٌ، ولا بوّابةُ اعتماد."""
+    from athera_api.services.thesis import card_actions
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id = await _thesis_with_mining_state(
+        tid, uid, "withheld", filename="حُجب دليلها.pdf")
+
+    card = await _card_over_http(tid, uid, thesis_id)
+
+    assert card["opportunities_found"] == 0
+    assert card["mining_state"] == "withheld"
+    # ولا تُطوى في «لا دليل» ولا في «فشل» — ثلاثُ وقائعَ لا واحدة.
+    assert card["actions"]["mining_state"] == card_actions.MINING_WITHHELD
+    assert card["actions"]["mining_state"] != card_actions.MINING_FAILED
+    assert card["actions"]["mining_state"] != card_actions.MINING_NO_EVIDENCE
+
+    reason = card["actions"]["mining_reason"]
+    # **ولا شرطَ مراجعةٍ متقاعد**: المراجعةُ ضبطُ جودةٍ اختياريّ.
+    assert "اختياريّ" in reason
+    assert "ووصلِ ما اعتمدته" not in reason
+    assert "يقرأ الأقسام والنتائج المستخرجة" not in reason
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_a_completed_empty_scan_claims_nothing_about_the_world(two_tenants):
+    """اكتمل الفحصُ ولم يتكوّن شيء — **ولا يُقال «لا فرصَ لهذه الرسالة»**."""
+    from athera_api.services.thesis import card_actions
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id = await _thesis_with_mining_state(
+        tid, uid, "completed", filename="اكتمل بلا نتيجة.pdf")
+
+    card = await _card_over_http(tid, uid, thesis_id)
+
+    assert card["opportunities_found"] == 0
+    assert card["mining_state"] == "completed"
+    assert card["actions"]["mining_state"] == card_actions.MINING_COMPLETED_EMPTY
+    assert card["actions"]["mining_state"] != card_actions.MINING_WITHHELD
+
+    reason = card["actions"]["mining_reason"]
+    assert "لم يتمكن النظام من تكوين فرصة نشر موثوقة" in reason
+    # **ودعوى عن العالم لا سندَ لها** — الفرقُ بين «لا يوجد» و«لم نُكوّن».
+    assert "لا فرص" not in reason
+    # ولا زرَّ يَعِد بنتيجةٍ أخرى من المُدخل نفسه.
+    assert card["actions"]["can_mine"] is False
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_the_golden_path_opens_opportunities_without_a_button(two_tenants):
+    """المسارُ السويّ: فرصٌ قائمة، وجهةٌ تُفتح — **ولا تشغيلَ يدويّ**."""
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import PublicationOpportunity
+    from athera_api.services.thesis import card_actions
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id = await _thesis_with_mining_state(
+        tid, uid, "completed", filename="نُقِّبت فوُجدت.pdf")
+    async with tenant_session(tid, uid) as session:
+        session.add(PublicationOpportunity(
+            tenant_id=tid, thesis_id=thesis_id,
+            opportunity_kind="independent_question", paper_kind="extraction",
+            working_title_ar="ورقةٌ من السؤال الأول"))
+
+    card = await _card_over_http(tid, uid, thesis_id)
+
+    assert card["opportunities_found"] == 1
+    # والمحفوظُ يبقى محفوظًا: سطحُ البطاقة لا يمحو حالَ التخزين.
+    assert card["mining_state"] == "completed"
+    assert card["actions"]["mining_state"] == card_actions.MINING_FOUND
+    assert card["actions"]["can_view_opportunities"] is True
+    assert card["actions"]["can_mine"] is False, "زرُّ تشغيلٍ في المسار السويّ"
+    assert card["actions"]["primary"] == "view_opportunities"
+
+
+def test_no_mining_copy_asks_the_researcher_for_retired_work():
+    """**نصٌّ يطلب عملًا تقاعد كذبةٌ على الباحث.**
+
+    ‏T0 وT0.1 أزالا اعتمادَ كلّ واقعةٍ ووصلَها بالمنقّب. فلا يبقى في أيّ
+    نصٍّ أثرٌ لهما — ولا دعوى عن العالم في «اكتمل بلا نتيجة».
+    """
+    from athera_api.services.thesis import card_actions
+
+    retired_ar = ("ووصلِ ما اعتمدته", "يقرأ الأقسام والنتائج المستخرجة")
+    retired_en = ("wired into the miner", "reads extracted sections and",
+                  "once your reviewed extraction")
+    for state, (arabic, english) in card_actions.MINING_LABELS.items():
+        for phrase in retired_ar:
+            assert phrase not in arabic, f"{state}: نصٌّ متقاعد — {phrase}"
+        for phrase in retired_en:
+            assert phrase not in english, f"{state}: retired copy — {phrase}"
+
+    empty_ar, empty_en = card_actions.MINING_LABELS[card_actions.MINING_COMPLETED_EMPTY]
+    assert "لم يتمكن النظام من تكوين فرصة نشر موثوقة" in empty_ar
+    assert "not sufficient to form a reliable publication opportunity" in empty_en
+    assert "لا فرص" not in empty_ar
+    assert "no publication opportunities" not in empty_en.lower()
+
+    # **ولكلِّ حالٍ نصُّها**: حُجب لا تستعير نصَّ «اكتمل بلا نتيجة».
+    assert (card_actions.MINING_LABELS[card_actions.MINING_WITHHELD]
+            != card_actions.MINING_LABELS[card_actions.MINING_COMPLETED_EMPTY])
+
+
 @requires_db
 @pytest.mark.asyncio
 async def test_over_http_a_manual_thesis_with_no_file_is_offered_an_attachment(two_tenants):
