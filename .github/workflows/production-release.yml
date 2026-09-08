@@ -1,18 +1,50 @@
-# إصدارُ الإنتاج بحرّاسه | Guarded production release (Wave 1.1 and after).
+# إصدارُ الإنتاج بحرّاسه | Guarded production release.
 #
 # **يُشغَّل بيدٍ وحدها.** لا `push` ولا `schedule`: ترحيلُ الإنتاج ونشرُه
 # قرارٌ يُتّخذ، لا أثرٌ جانبيّ لدمجٍ في `main`.
 #
-# **والترتيبُ هو العقد**: تُرحَّل القاعدة أوّلًا، ثمّ يُنشر الخادم، ثمّ
-# الوِب. شيفرةُ الموجة 1.1 تُعلن `theses.archived_at`/`archived_by`، فلا
-# تخدم مخطَّطًا دون `0030` إطلاقًا؛ وخادمُ v88 القائم لا يعرف العمودين
-# ويحتملهما لأنّهما يقبلان الفراغ. فالنافذةُ الوحيدة «قديمٌ على 0030»،
-# وتُفحص هنا قبل أن يُنشر الجديد.
+# ═════════ لماذا عُمِّم هذا المشغّل ═════════
 #
-# **ولا تراجعَ آليًّا عن الترحيل.** `0030` توسعةٌ محضة يحتملها الخادمُ
-# القديم؛ فإن سقطت مهمّةٌ بعده تبقى القاعدة عند `0030` ويسقط التشغيل
-# صراحةً. التنازلُ عمليةٌ يأذن بها إنسان، لا استردادٌ تلقائيّ يقع في لحظة
-# ارتباك.
+# **العطب: مشغّلٌ ينتهي صلاحيتُه بعد ترحيلٍ واحد.** كُتب لموجة 1.1 فحُفرت
+# فيه أرقامُها: حارسٌ يرفض ما لم تكن القاعدة عند `0029`، وخطوةٌ تُرحّل
+# `0029 → 0030`، وبرهانٌ يطلب `0030`، ومهمّةٌ اسمُها «خادم v88 على مخطَّط
+# 0030». ثم رُحِّلت القاعدةُ فعلًا إلى `0030` — فصار المشغّلُ يرفض نفسَه:
+# الحارسُ يطلب `0029` والقاعدةُ عند `0030`، و`deploy-api` معلّقٌ خلف
+# `db-migrate`، فلا سبيل إلى **نشرِ شيفرةٍ بلا ترحيل** أصلًا.
+#
+# وأثرُ ذلك أنّ إصلاحًا مدموجًا في `main` بقي غيرَ منشور: لا لأنّه ناقص،
+# بل لأنّ آلةَ الإصدار انتهت صلاحيتُها. **فالعلاجُ تعميمُ الآلة لا ترقيعُ
+# رقمٍ فيها** — رقمٌ جديد يُحفر اليوم يُنتج العطبَ نفسه بعد الترحيل القادم.
+#
+# ═════════ نمطان، ومشغّلٌ واحد ═════════
+#
+# **ولا مشغّلَ ثانٍ.** طريقان إلى الإنتاج يعنيان حارسَين يتباعدان، وأحدُهما
+# سيُنسى. فالنمطُ مُدخَلٌ لا ملفّ:
+#
+#   `code_only`       — شيفرةٌ فقط. المخطَّطُ يُقرأ ولا يُكتب، ويُشترط أن
+#                       يكون رأسُ المصدر مطابقًا لما في الإنتاج. **ولا
+#                       يُنشر أبدًا مصدرٌ رأسُه أحدثُ من القاعدة.**
+#   `schema_and_code` — ترحيلٌ ثمّ نشر. ويُشترط أن يكون رأسُ المصدر مخالفًا
+#                       لما في الإنتاج، وإلّا رُفض التشغيلُ وقيل للمشغِّل
+#                       إنّ نمطَه `code_only` — فلا تُستدعى آلةُ الترحيل
+#                       المميَّزة بلا داعٍ.
+#
+# **والافتراضُ `code_only`**: الأقلُّ صلاحيةً هو الافتراض، ورفعُ الصلاحية
+# اختيارٌ يُكتب بيد.
+#
+# **ولا يُستنتج إذنُ الترحيل من كون المصدر أحدث.** رأسٌ أحدثُ في المستودع
+# واقعةٌ عن المستودع، لا إذنًا من إنسان. الإذنُ هو `schema_and_code` صراحةً.
+#
+# ═════════ لماذا `expected_schema_before` مطلوبٌ بلا قيمةٍ افتراضية ═════════
+#
+# **قيمةٌ افتراضية هنا تُعيد العطبَ بعينه.** `0030` مكتوبةً افتراضًا تصير
+# `0029` القادمة: صحيحةً اليوم، كاذبةً بعد ترحيل، ولا أحد يلاحظ حتى يُرفض
+# إصدار. فيقرؤها المشغِّلُ من الإنتاج لحظةَ التشغيل ويكتبها — **إقرارٌ بما
+# رآه**، لا حقلٌ يُمرَّر كما وُجد. ولا مثالَ لرقمٍ في وصفها: المثالُ يُنسخ.
+#
+# **ولا تراجعَ آليًّا عن ترحيل.** إن سقطت مهمّةٌ بعده تبقى القاعدة حيث
+# صارت ويسقط التشغيل صراحةً. التنازلُ قرارُ إنسان، لا استردادٌ تلقائيّ يقع
+# في لحظة ارتباك.
 #
 # **ولا سرَّ يُطبع.** لا `set -x`، ولا `env`، ولا صدى لرابط اتصال. وأسماء
 # الأسرار وحدها مذكورة، وقيمُها تأتي من بيئة `production` في المستودع.
@@ -26,6 +58,25 @@ on:
           The exact 40-character commit SHA on main to release. Read it from
           origin/main at release time — never carry one over from a runbook or a
           previous release; the workflow refuses anything that is not main's head.
+        required: true
+        type: string
+      release_mode:
+        description: >-
+          code_only deploys code against the schema already in production and
+          never migrates. schema_and_code migrates first, then deploys. Choose
+          the least privileged mode that does the job.
+        required: true
+        default: code_only
+        type: choice
+        options:
+          - code_only
+          - schema_and_code
+      expected_schema_before:
+        description: >-
+          The alembic revision you just observed in production, read directly
+          from the database moments before dispatching. It is an attestation of
+          what you saw, not a value to carry over — the run refuses if
+          production disagrees with it.
         required: true
         type: string
       deploy_web:
@@ -77,6 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_sha: ${{ steps.pin.outputs.sha }}
+      source_schema_head: ${{ steps.head.outputs.source_schema_head }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,37 +159,73 @@ jobs:
           fi
           echo "sha=${checked_out}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify the migration chain in the source tree
+      - name: Derive the source schema head from the revision graph
+        id: head
+        # **الرأسُ يُشتقّ من نسبِ المراجعات لا من ترتيب أسماء الملفّات.**
+        # ترتيبُ الأسماء يصدق ما دام أحدٌ يرقّم بانتظام، ويكذب في أول فرعٍ
+        # يُدمج أو ملفٍّ يُسمّى بغير قاعدته. والنسبُ (`revision`/
+        # `down_revision`) هو ما يقرؤه Alembic نفسه.
+        #
+        # **ويسقط مغلقًا**: بلا رأس، أو برأسين، أو بأبٍ مفقود، أو بمعرّفٍ
+        # مكرَّر — كلُّها حالاتٌ لا يجوز أن تُصدَّر، ولا واحدةَ منها تُصلَّح
+        # هنا بالتخمين.
         run: |
           set -euo pipefail
-          file="infra/db/migrations/versions/0030_thesis_archive.py"
-          test -f "${file}" || { echo "::error::${file} is missing"; exit 1; }
-          grep -qE '^revision = "0030"' "${file}" \
-            || { echo "::error::${file} does not declare revision 0030"; exit 1; }
-          grep -qE '^down_revision = "0029"' "${file}" \
-            || { echo "::error::${file} does not descend from 0029"; exit 1; }
-          echo "0030_thesis_archive.py: revision 0030, down_revision 0029"
-
-      - name: Assert exactly one Alembic head, and that it is 0030
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import pathlib, re, sys
+
           versions = pathlib.Path("infra/db/migrations/versions")
-          revisions = {}
-          for path in sorted(versions.glob("0*.py")):
-              body = path.read_text(encoding="utf-8")
-              rev = re.search(r'^revision = "(\w+)"', body, re.M)
-              down = re.search(r'^down_revision = (?:"(\w+)"|None)', body, re.M)
-              if rev:
-                  revisions[rev.group(1)] = down.group(1) if down else None
-          parents = {d for d in revisions.values() if d}
-          heads = sorted(r for r in revisions if r not in parents)
-          print(f"revisions: {len(revisions)}  heads: {heads}")
-          if heads != ["0030"]:
-              print(f"::error::expected exactly one head 0030, found {heads}")
+          if not versions.is_dir():
+              print("::error::migration versions directory is missing", file=sys.stderr)
               sys.exit(1)
+
+          revisions: dict[str, str | None] = {}
+          origin: dict[str, str] = {}
+          problems: list[str] = []
+
+          for path in sorted(versions.glob("*.py")):
+              if path.name.startswith("__"):
+                  continue
+              body = path.read_text(encoding="utf-8")
+              rev = re.search(r'^revision\s*=\s*["\'](\w+)["\']', body, re.M)
+              if rev is None:
+                  continue
+              down = re.search(
+                  r'^down_revision\s*=\s*(?:["\'](\w+)["\']|None)', body, re.M)
+              if down is None:
+                  problems.append(f"{path.name}: declares no down_revision")
+                  continue
+              rid = rev.group(1)
+              if rid in origin:
+                  problems.append(
+                      f"duplicate revision id {rid}: {origin[rid]} and {path.name}")
+              origin[rid] = path.name
+              revisions[rid] = down.group(1)
+
+          if not revisions:
+              problems.append("no migration revisions found")
+
+          for rid, parent in revisions.items():
+              if parent is not None and parent not in revisions:
+                  problems.append(f"{rid} declares missing parent {parent}")
+
+          parents = {p for p in revisions.values() if p is not None}
+          heads = sorted(r for r in revisions if r not in parents)
+
+          print(f"revisions: {len(revisions)}", file=sys.stderr)
+          print(f"heads    : {heads}", file=sys.stderr)
+
+          if len(heads) != 1:
+              problems.append(f"expected exactly one head, found {heads}")
+
+          if problems:
+              for problem in problems:
+                  print(f"::error::{problem}", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"source_schema_head={heads[0]}")
           PY
+          echo "source schema head: $(grep '^source_schema_head=' "$GITHUB_OUTPUT" | tail -1)"
 
       - name: Assert the release tooling this workflow calls actually exists
         run: |
@@ -164,17 +252,32 @@ jobs:
           fi
           echo "fly.toml carries no release_command"
 
-  # ═════════ ٢ — القاعدة: حارسٌ قبل الكتابة، ثمّ ترحيل، ثمّ برهان ═════════
-  db-migrate:
-    name: 2 · Database preflight and migration
+  # ═════════ ٢ — بوّابةُ القاعدة: تعمل دائمًا، وتكتب بشرط ═════════
+  #
+  # **ولا تُبنى بوّابةٌ تُتخطّى بكاملها في نمط.** مهمّةٌ محكومة بـ`if` على
+  # مستوى المهمّة تُصبح `skipped`، و`needs` تنشر التخطّي إلى ما بعدها —
+  # فيُتخطّى النشرُ صامتًا. وهو **شكلُ العطب الذي نُصلحه** لا علاجُه.
+  #
+  # فالبوّابةُ تعمل في النمطين: الفحصُ القرائيّ دائمٌ، والخطواتُ الكاتبة
+  # وحدها مشروطة. فتنجح في الحالين، وتعتمد عليها المهامُّ التالية اعتمادًا
+  # عاديًّا بلا حيلة.
+  db-release-gate:
+    name: 2 · Database release gate
     needs: source-preflight
     runs-on: ubuntu-latest
     environment: production
+    outputs:
+      migration_executed: ${{ steps.mode.outputs.migration_executed }}
+      schema_before: ${{ steps.mode.outputs.schema_before }}
+      schema_after: ${{ steps.mode.outputs.schema_after }}
     env:
       APP_ENV: production
       # المنفذُ المباشر. **لا 6543**: مُجمِّع المعاملات لا يضمن جلسةً واحدة
       # بين العبارات، والترحيلُ وقفلُه يفترضان ذلك.
       PGPORT: "5432"
+      RELEASE_MODE: ${{ inputs.release_mode }}
+      EXPECTED_SCHEMA_BEFORE: ${{ inputs.expected_schema_before }}
+      SOURCE_SCHEMA_HEAD: ${{ needs.source-preflight.outputs.source_schema_head }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -191,11 +294,157 @@ jobs:
           python -m pip install --quiet -e "apps/api[dev]"
           python -m pip install --quiet alembic "psycopg[binary]"
 
+      - name: Read-only schema preflight — production must match the attestation
+        # **قراءةٌ محضة، وتقع في النمطين.** `verify_release_schema.py` بلا
+        # `--after-migration` يقرأ `alembic_version` ويقارن، ولا يكتب شيئًا.
+        # وهذا هو حارسُ القاعدة في `code_only`: هويّةُ المخطَّط.
+        env:
+          DATABASE_VERIFY_URL: ${{ secrets.DATABASE_VERIFY_URL }}
+          PGHOST: ${{ secrets.PRODUCTION_DB_HOST }}
+          PGUSER: ${{ secrets.ATHERA_DB_APP_USER }}
+          PGPASSWORD: ${{ secrets.ATHERA_DB_APP_PASSWORD }}
+          PGDATABASE: postgres
+        run: |
+          set -euo pipefail
+          echo "attested schema before : ${EXPECTED_SCHEMA_BEFORE}"
+          python scripts/release/verify_release_schema.py \
+            --expect-version "${EXPECTED_SCHEMA_BEFORE}"
+
+      - name: Decide the mode, and refuse an incoherent one
+        id: mode
+        # **الحسمُ يسبق الاعتماد.** كلُّ رفضٍ ممكن يقع هنا، قبل أن يُكتب
+        # سرُّ الترحيل في ملفّ — فلا يُمَسّ الاعتمادُ المميَّز في تشغيلةٍ
+        # كان سيُرفض على أيّ حال.
+        run: |
+          set -euo pipefail
+          echo "release mode       : ${RELEASE_MODE}"
+          echo "attested before    : ${EXPECTED_SCHEMA_BEFORE}"
+          echo "source schema head : ${SOURCE_SCHEMA_HEAD}"
+
+          # ── برهانُ الاتّجاه: أمامَ لا خلفَ ولا جانبَ ──
+          #
+          # **ولا يُترك الأمرُ لـAlembic أن يسقط لاحقًا.** حين تسقط هناك يكون
+          # الاعتمادُ المميَّز قد كُتب في القرص واتُّصل بالإنتاج. فالاتّجاهُ
+          # يُبرهَن هنا، قبل أن يُماسّ السرُّ أصلًا.
+          #
+          # ومخطَّطُ الإنتاج يجب أن يكون **سلفًا حقيقيًّا** لرأس المصدر: موجودًا
+          # في النسب، ويُبلَغ بالنزول من الرأس. فإن لم يكن، فليس المصدرُ
+          # متقدّمًا على الإنتاج بل **متفرّعًا عنه** — وذاك اختلافٌ يُدرَس ولا
+          # يُرحَّل.
+          #
+          # **ويسقط مغلقًا** على أيّ شكلٍ لا يفهمه: أبٌ مفقود، أو حلقة، أو
+          # مراجعةٌ لا وجود لها. ولا يُخمَّن اتّجاهٌ في قاعدة إنتاج.
+          if [ "${RELEASE_MODE}" = "schema_and_code" ] \
+             && [ "${SOURCE_SCHEMA_HEAD}" != "${EXPECTED_SCHEMA_BEFORE}" ]; then
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          before = os.environ["EXPECTED_SCHEMA_BEFORE"]
+          head = os.environ["SOURCE_SCHEMA_HEAD"]
+          versions = pathlib.Path("infra/db/migrations/versions")
+
+
+          def stop(message):
+              print(f"::error::{message}", file=sys.stderr)
+              print("::error::The production schema is not a valid ancestor of the "
+                    "source head.", file=sys.stderr)
+              print("::error::This is divergence, not a pending upgrade. Investigate "
+                    "it; do not migrate.", file=sys.stderr)
+              sys.exit(1)
+
+
+          if not versions.is_dir():
+              stop("the migration versions directory is missing")
+
+          revisions = {}
+          for path in sorted(versions.glob("*.py")):
+              if path.name.startswith("__"):
+                  continue
+              body = path.read_text(encoding="utf-8")
+              rev = re.search(r'^revision\s*=\s*["\'](\w+)["\']', body, re.M)
+              if rev is None:
+                  continue
+              down = re.search(
+                  r'^down_revision\s*=\s*(?:["\'](\w+)["\']|None)', body, re.M)
+              if down is None:
+                  stop(f"{path.name} declares no down_revision (unsupported graph)")
+              revisions[rev.group(1)] = down.group(1)
+
+          if head not in revisions:
+              stop(f"source head {head} is not present in the migration graph")
+          if before not in revisions:
+              stop(f"production schema {before} does not exist in the source graph")
+
+          seen = set()
+          current = head
+          while current is not None:
+              if current in seen:
+                  stop(f"the migration graph contains a cycle at {current}")
+              seen.add(current)
+              if current == before:
+                  break
+              if current not in revisions:
+                  stop(f"{current} has no recorded parent (unsupported graph)")
+              current = revisions[current]
+          else:
+              stop(f"{before} is not an ancestor of {head}")
+
+          print(f"forward path proven: {before} -> ... -> {head} "
+                f"({len(seen) - 1} revision(s) ahead)", file=sys.stderr)
+          PY
+          fi
+
+          case "${RELEASE_MODE}" in
+            code_only)
+              # **ولا تُنشر شيفرةٌ رأسُها أحدثُ من القاعدة.** مصدرٌ عند
+              # `0031` وقاعدةٌ عند `0030` يعني خادمًا يعلن أعمدةً لا وجود
+              # لها — وهو انقطاعُ خدمةٍ لا إصدار.
+              if [ "${SOURCE_SCHEMA_HEAD}" != "${EXPECTED_SCHEMA_BEFORE}" ]; then
+                echo "::error::code_only requires the source schema head to equal the"
+                echo "::error::schema in production. Source is ${SOURCE_SCHEMA_HEAD};"
+                echo "::error::production is ${EXPECTED_SCHEMA_BEFORE}."
+                echo "::error::This release carries a migration — dispatch it with"
+                echo "::error::release_mode=schema_and_code, or release an older commit."
+                exit 1
+              fi
+              echo "migration_executed=no" >> "$GITHUB_OUTPUT"
+              echo "schema_after=${EXPECTED_SCHEMA_BEFORE}" >> "$GITHUB_OUTPUT"
+              echo "code_only: schema stays at ${EXPECTED_SCHEMA_BEFORE}; nothing is written"
+              ;;
+            schema_and_code)
+              # **ولا تُستدعى آلةُ الترحيل بلا ما تُرحِّله.** تشغيلةٌ
+              # بمصدرٍ مطابقٍ للإنتاج تعني نشرًا بلا ترحيل — وذاك `code_only`
+              # باسمه. واستدعاءُ الاعتماد المميَّز حينها مخاطرةٌ بلا مقابل.
+              if [ "${SOURCE_SCHEMA_HEAD}" = "${EXPECTED_SCHEMA_BEFORE}" ]; then
+                echo "::error::schema_and_code was requested, but the source schema head"
+                echo "::error::(${SOURCE_SCHEMA_HEAD}) already equals production."
+                echo "::error::There is nothing to migrate. Dispatch with"
+                echo "::error::release_mode=code_only so no migration credential is used."
+                exit 1
+              fi
+              echo "migration_executed=yes" >> "$GITHUB_OUTPUT"
+              echo "schema_after=${SOURCE_SCHEMA_HEAD}" >> "$GITHUB_OUTPUT"
+              echo "schema_and_code: ${EXPECTED_SCHEMA_BEFORE} -> ${SOURCE_SCHEMA_HEAD}"
+              ;;
+            *)
+              echo "::error::unknown release_mode '${RELEASE_MODE}'"
+              exit 1
+              ;;
+          esac
+          echo "schema_before=${EXPECTED_SCHEMA_BEFORE}" >> "$GITHUB_OUTPUT"
+
       - name: Materialise the migration credential into a runner-local file
         # **`scripts/migrate_production.py` يقرأ من ملفّ لا من البيئة** —
         # وذاك مقصود: الاعتمادُ المميَّز لا يُحمَّل ضمنًا مع كلّ أمر من جذر
         # المستودع، وهو الحدُّ الذي وُضع بعد أن بلغت تشغيلةُ `pytest` قاعدةَ
         # الإنتاج. فيُكتب هنا في ملفٍّ مؤقّت بأذونٍ ضيّقة، ويُمحى دائمًا.
+        #
+        # **ولا يُماسّ هذا السرُّ في `code_only` إطلاقًا**: الخطوةُ لا تعمل،
+        # فلا يُحقَن في بيئة أيّ خطوة، ولا يُكتب في ملفّ.
+        if: ${{ inputs.release_mode == 'schema_and_code' }}
         env:
           DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
         run: |
@@ -208,20 +457,7 @@ jobs:
           echo "MIGRATION_ENV_FILE=${env_file}" >> "$GITHUB_ENV"
           echo "wrote migration env file (mode 600); value not printed"
 
-      - name: Gate — refuse to migrate unless production is exactly at 0029
-        # **الحارسُ يسبق الكتابة.** قاعدةٌ ليست عند `0029` إمّا رُحّلت
-        # سلفًا، أو ليست القاعدةَ المقصودة — وكلاهما سببٌ للتوقّف لا للمضيّ.
-        env:
-          DATABASE_VERIFY_URL: ${{ secrets.DATABASE_VERIFY_URL }}
-          PGHOST: ${{ secrets.PRODUCTION_DB_HOST }}
-          PGUSER: ${{ secrets.ATHERA_DB_APP_USER }}
-          PGPASSWORD: ${{ secrets.ATHERA_DB_APP_PASSWORD }}
-          PGDATABASE: postgres
-        run: |
-          set -euo pipefail
-          python scripts/release/verify_release_schema.py --expect-version 0029
-
-      - name: Apply migration 0029 → 0030
+      - name: Apply the migration
         # **المدخلُ القانونيّ وحده.** `make migrate` محلّيّ (`alembic upgrade
         # head` من `infra/db`) ولا يعرف هذه الحدود. و`--confirm` يطابق مرجعَ
         # المشروع المستخرَج من الرابط نفسه: حارسٌ ضدّ الخطأ المطبعيّ، وبدونه
@@ -230,6 +466,7 @@ jobs:
         # و`--confirm` يأخذ الثابتَ المُراجَع في رأس هذا الملفّ، لا سرًّا
         # ثانيًا يحمل الهويّة نفسها. **والمقارنة قائمةٌ كما كانت**: إن خالف
         # مرجعُ الرابط هذا الثابتَ رُفض الترحيل ولم يُكتب شيء.
+        if: ${{ inputs.release_mode == 'schema_and_code' }}
         run: |
           set -euo pipefail
           python scripts/migrate_production.py \
@@ -237,6 +474,7 @@ jobs:
             --env-file "${MIGRATION_ENV_FILE}"
 
       - name: Prove the schema after migration
+        if: ${{ inputs.release_mode == 'schema_and_code' }}
         env:
           DATABASE_VERIFY_URL: ${{ secrets.DATABASE_VERIFY_URL }}
           PGHOST: ${{ secrets.PRODUCTION_DB_HOST }}
@@ -246,12 +484,18 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/release/verify_release_schema.py \
-            --expect-version 0030 --after-migration
+            --expect-version "${SOURCE_SCHEMA_HEAD}" --after-migration
 
       - name: Verify database constraints hold
-        # `scripts/verify_db_constraints.py` يحاول ارتكاب كلّ ممنوع ويفشل إن
-        # نجح أيٌّ منها. وهو موجودٌ في المستودع — بخلاف `verify_audit_chain.py`
-        # الذي يوصي به الدليل القديم ولا وجود له.
+        # `scripts/verify_db_constraints.py` **يحاول ارتكاب كلّ ممنوع**:
+        # `UPDATE audit_events`، و`DELETE FROM audit_events`، وإدخالاتٌ
+        # يجب أن تُرفض. وهو إذن فحصٌ يكتب — أو يحاول أن يكتب.
+        #
+        # **فلا يُشغَّل في `code_only`.** إضافةُ فحصٍ قادرٍ على الكتابة إلى
+        # مسارٍ لا يكتب — لمجرّد أن تبقى المهمّةُ متماثلةَ الشكل — تُوسّع
+        # الصلاحيةَ لأجل الجمال. وحارسُ `code_only` هو هويّةُ المخطَّط،
+        # وقد وقعت قبل هذه الخطوة.
+        if: ${{ inputs.release_mode == 'schema_and_code' }}
         env:
           DATABASE_VERIFY_URL: ${{ secrets.DATABASE_VERIFY_URL }}
         run: |
@@ -263,25 +507,33 @@ jobs:
           python scripts/verify_db_constraints.py
 
       - name: Remove the migration credential file
+        # **يُمحى وإن سقط ما قبله.** والحذفُ غيرُ مشروطٍ بالنمط عمدًا: ملفٌّ
+        # لم يُكتب أصلًا يُحذف بلا ضرر، وشرطٌ إضافيّ هنا بابٌ لخطأٍ يترك
+        # اعتمادًا على قرص المشغّل.
         if: always()
         run: |
           set -euo pipefail
           rm -f "${RUNNER_TEMP}/.env.production.migration" || true
           echo "migration env file removed"
 
-  # ═════════ ٣ — النافذة: خادمُ v88 القائم على مخطَّط 0030 ═════════
+  # ═════════ ٣ — النافذة: الخادمُ المنشورُ على المخطَّط المُتحقَّق ═════════
   #
-  # **قبل أن يُنشر الجديد.** إن سقط القديمُ على المخطَّط الجديد فالنشرُ
-  # يزيد الطين بلّة، والقرارُ حينها بشريّ.
+  # **قبل أن يُنشر الجديد.** إن سقط المنشورُ حاليًّا على المخطَّط القائم
+  # فالنشرُ يزيد الطين بلّة، والقرارُ حينها بشريّ. وتقع في النمطين: في
+  # `schema_and_code` تفحص احتمالَ الخادم القديم للمخطَّط الجديد، وفي
+  # `code_only` تُثبت أنّ ما يعمل الآن صحيحٌ قبل استبداله.
   legacy-compatibility:
-    name: 3 · Old API healthy on schema 0030
-    needs: db-migrate
+    name: 3 · Currently deployed API healthy on the verified production schema
+    needs: db-release-gate
     runs-on: ubuntu-latest
+    env:
+      SCHEMA_AFTER: ${{ needs.db-release-gate.outputs.schema_after }}
     steps:
-      - name: Probe the currently deployed API against the migrated schema
+      - name: Probe the currently deployed API against the verified schema
         run: |
           set -euo pipefail
           base="https://athera-api.fly.dev"
+          echo "verified production schema: ${SCHEMA_AFTER}"
           # `/readyz` هي المعنيّة: تردّ 503 ما لم يكن دورُ التشغيل بلا
           # تفوّقٍ وبلا تجاوزٍ لـRLS. و`/healthz` تقول إنّ العملية حيّة.
           for attempt in 1 2 3 4 5 6; do
@@ -289,20 +541,20 @@ jobs:
             ready="$(curl -sS -o /dev/null -w '%{http_code}' "${base}/readyz" || echo 000)"
             echo "attempt ${attempt}: /healthz=${health} /readyz=${ready}"
             if [ "${health}" = "200" ] && [ "${ready}" = "200" ]; then
-              echo "the deployed (v88) API serves schema 0030 correctly"
+              echo "the currently deployed API serves schema ${SCHEMA_AFTER} correctly"
               exit 0
             fi
             sleep 10
           done
-          echo "::error::the already-deployed API is not healthy on schema 0030."
-          echo "::error::Schema stays at 0030 by design. Do not deploy on top of this;"
-          echo "::error::investigate first — this is a human decision, not a retry."
+          echo "::error::the already-deployed API is not healthy on schema ${SCHEMA_AFTER}."
+          echo "::error::The schema stays where it is by design. Do not deploy on top of"
+          echo "::error::this; investigate first — a human decision, not a retry."
           exit 1
 
   # ═════════ ٤ — الخادم: نشرُ الهيئة بعينها، ولا ترحيلَ من هنا ═════════
   deploy-api:
     name: 4 · Deploy API to Fly
-    needs: [source-preflight, db-migrate, legacy-compatibility]
+    needs: [source-preflight, db-release-gate, legacy-compatibility]
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -325,6 +577,8 @@ jobs:
             --label "release-sha=${RELEASE_SHA}"
 
       - name: Verify the API is healthy after deploy
+        env:
+          SCHEMA_AFTER: ${{ needs.db-release-gate.outputs.schema_after }}
         run: |
           set -euo pipefail
           base="https://athera-api.fly.dev"
@@ -339,7 +593,7 @@ jobs:
             sleep 15
           done
           echo "::error::API did not become healthy after deploy."
-          echo "::error::The schema stays at 0030; do not auto-downgrade."
+          echo "::error::The schema stays at ${SCHEMA_AFTER}; do not auto-downgrade."
           exit 1
 
       - name: Record what is running
@@ -407,7 +661,15 @@ jobs:
   # ═════════ ٦ — فحصُ دخانٍ عامّ، ولا ادّعاءَ قبولٍ ═════════
   smoke:
     name: 6 · Public smoke (non-destructive)
-    needs: [source-preflight, deploy-api]
+    # **ومرجعٌ إلى مهمّةٍ غير معلَنة يُقيَّم فراغًا.** كان الملخّص يقرأ
+    # `needs.deploy-web.result` و`deploy-web` ليست في `needs`، فيصل فارغًا
+    # دائمًا فتنطلق القيمةُ البديلة «skipped» دائمًا — فيُبلَّغ عن نشرٍ
+    # «متخطّى» وقد نجح، أو وقد فشل. ويسبق الدخانُ النشرَ فوق ذلك.
+    #
+    # فتُعلَن التبعية. و`always()` تُبقي الدخانَ يعمل حين تُتخطّى `deploy-web`
+    # (وهو الوضع الافتراضي `deploy_web=false`)، والشرطُ على `deploy-api` وحده
+    # يمنع فحصَ دخانٍ على نشرٍ لم ينجح.
+    needs: [source-preflight, db-release-gate, deploy-api, deploy-web]
     if: ${{ always() && needs.deploy-api.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
@@ -432,23 +694,39 @@ jobs:
           test "${fail}" -eq 0 || { echo "::error::a public surface did not respond"; exit 1; }
 
       - name: Summary
+        # **ولا يُبلَّغ عن ترحيلٍ لم يقع.** الملخّصُ يقرأ ما أخرجته البوّابة،
+        # لا ما يفترضه كاتبُ المشغّل. وفي `code_only` يقول «قبل = بعد»
+        # و«الترحيل: لا» — وهما الحقيقة، لا صيغةٌ مهذّبة عنها.
         env:
           RELEASE_SHA: ${{ needs.source-preflight.outputs.release_sha }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
+          SCHEMA_BEFORE: ${{ needs.db-release-gate.outputs.schema_before }}
+          SCHEMA_AFTER: ${{ needs.db-release-gate.outputs.schema_after }}
+          MIGRATION_EXECUTED: ${{ needs.db-release-gate.outputs.migration_executed }}
+          SOURCE_HEAD: ${{ needs.source-preflight.outputs.source_schema_head }}
+          API_RESULT: ${{ needs.deploy-api.result }}
           WEB_RESULT: ${{ needs.deploy-web.result }}
         run: |
           set -euo pipefail
+          if [ "${MIGRATION_EXECUTED}" = "yes" ]; then
+            db_line="migrated ${SCHEMA_BEFORE} -> ${SCHEMA_AFTER}, verified, plus the forbidden-operation suite"
+          else
+            db_line="read-only schema identity check; no migration credential was materialised"
+          fi
           {
             echo "# Production release summary"
             echo
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Release SHA | \`${RELEASE_SHA}\` |"
-            echo "| Repository head at release | \`${RELEASE_SHA}\` (verified == origin/main) |"
-            echo "| Schema before | 0029 (gated: refused to migrate otherwise) |"
-            echo "| Schema after | 0030 (verified, single head) |"
-            echo "| DB verification | archive columns, paired-null constraint, live-page index, FORCE RLS, runtime role without BYPASSRLS, forbidden-operation suite |"
-            echo "| Old API on 0030 | verified healthy before the new deploy |"
-            echo "| API deploy | Fly \`athera-api\`, no release_command, health verified |"
+            echo "| Release SHA | \`${RELEASE_SHA}\` (verified == origin/main) |"
+            echo "| Release mode | \`${RELEASE_MODE}\` |"
+            echo "| Expected schema before | \`${SCHEMA_BEFORE}\` (attested, then verified live) |"
+            echo "| Source schema head | \`${SOURCE_HEAD}\` (derived from the revision graph) |"
+            echo "| Migration executed | ${MIGRATION_EXECUTED} |"
+            echo "| Verified schema after | \`${SCHEMA_AFTER}\` |"
+            echo "| Database verification | ${db_line} |"
+            echo "| Deployed API on that schema | verified healthy before the new deploy |"
+            echo "| API deploy | ${API_RESULT} — Fly \`athera-api\`, no release_command, health verified |"
             echo "| Web deploy | ${WEB_RESULT:-skipped (Git integration path)} |"
             echo "| Public smoke | /healthz, /readyz, /, /ar/login |"
             echo
@@ -456,6 +734,6 @@ jobs:
             echo
             echo "This workflow proves infrastructure only. It performs no authenticated"
             echo "journey and makes no claim about product correctness. Nobody may declare"
-            echo "WAVE 1.1 PRODUCTION GREEN until product acceptance passes separately."
+            echo "a wave PRODUCTION GREEN until product acceptance passes separately."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "INFRA RELEASE GREEN — PRODUCT ACCEPTANCE REQUIRED"
