@@ -1,7 +1,9 @@
 # Thesis Automation Contract — what canonical knowledge is safe to mine
 
-**Status:** T0.1. Implemented in `apps/api/athera_api/services/thesis/fact_eligibility.py`
-and consumed by `services/thesis/canonical_facts.py`.
+**Status:** T0.1 eligibility contract **implemented** in
+`apps/api/athera_api/services/thesis/fact_eligibility.py` and consumed by
+`services/thesis/canonical_facts.py`. **P0-T1 automatic opportunity triggering
+implemented by PR #115** — see §12.
 
 ---
 
@@ -250,10 +252,97 @@ attempt, `thesis.opportunity_scan_skipped_no_evidence` otherwise.
 
 ---
 
-## 12. Not in T0.1
+## 12. T1 — the automatic pipeline (PR #115)
 
-Automatic pipeline triggering · Thesis Center UI · auto-calling
-`mine-opportunities` after extraction · literature update · opportunity ranking ·
-rights and authorship · the Journey Orchestrator.
+T0.1 settled *which facts are safe to mine*. T1 settles *who starts the mining*:
+the system does, and the researcher's first decision is a scientific one.
 
-**This contract changes only what canonical thesis knowledge is safe to mine.**
+### 12.1 The path, end to end
+
+    upload
+      → extraction
+      → automatic eligibility classification (T0.1, §2)
+      → automatic thesis-internal mining
+      → mining state persisted on `theses` (migration 0031)
+      → Thesis Center shows a real opportunity count
+      → "View publication opportunities"
+      → the researcher selects the scientific opportunity
+
+**No per-fact approval is required anywhere on this path, and no manual mine
+button appears on it.** High-confidence eligible machine facts feed the miner
+automatically under the T0.1 gates (§§3, 5); the researcher is never asked to
+sign intermediate extraction.
+
+The trigger is `_mine_after_extraction` in
+`services/document_intelligence/pipeline.py`, and it runs only where extraction
+reached `AWAITING_REVIEW`. `local_only` and `awaiting_consent` never reach it: a
+privacy decision is neither mined for nor reported as a mining failure.
+
+### 12.2 What these opportunities are — and are not
+
+Opportunities produced here are **preliminary and thesis-internal**, derived
+from the elements of one thesis alone.
+
+**Not in T1: literature validation, novelty judgement, and final ranking.** An
+opportunity carries no claim that it is new, and no claim about its standing
+against any other opportunity.
+
+**The rights and authorship gate comes later** — when a researcher selects an
+opportunity and it becomes a Paper Project. Nothing on the automatic path
+advances a paper or assigns authorship.
+
+### 12.3 Mining state is durable, and separate from extraction state
+
+Migration `0031` adds `theses.mining_state` with five durable values:
+
+`not_started` · `running` · `completed` · `withheld` · `failed`
+
+**`running` is transaction-local in the current implementation and is not an
+externally durable observable.** `mining.run` writes `running` and its terminal
+value inside the same transaction, so no second session ever reads it. It is an
+in-transaction guard, not a state the product can observe or recover from, and
+the card reaches "in flight" from `processing_state` instead. Committing
+`running` on its own would create stale-`running` rows after process death and
+would need a recovery path — deliberately out of scope here, and named as a
+limitation rather than left to be mistaken for a capability.
+
+**A mining failure never rewrites a successful extraction.** Failure is recorded
+on the mining axis alone and in its own transaction: `processing_state` stays
+`ready_for_review`, and the fact candidates stay exactly as extraction left them.
+
+### 12.4 Three different facts, three different things said
+
+`failed`, `withheld` and `completed_empty` are **distinct product meanings**, and
+the card never collapses them into one:
+
+- **`failed`** — the scan broke. Extraction still succeeded, and a retry is
+  offered.
+- **`withheld`** — extracted knowledge exists, and some evidence was withheld
+  from automatic use for confidence, consistency or evidence-integrity reasons
+  (§§3, 7, 8). This is policy working as designed, not a defect, and **nothing
+  needs the researcher's approval for the automation to run**. Review is
+  optional quality control that may make more evidence usable.
+- **`completed_empty`** — the card surface for a durable `completed` that
+  produced nothing: the scan ran on eligible evidence and could not form a
+  reliable opportunity. It does **not** claim that no publication opportunity
+  exists, which is a statement about the world the system cannot support.
+
+### 12.5 Manual mining is a recovery path, not the golden path
+
+`POST /theses/{id}/mine-opportunities` remains, and the card offers it only
+where a retry means something — `failed`, `withheld`, and the legacy path that
+has no automation behind it. It is **absent on the golden path**, where
+opportunities exist and the card's action is to open them.
+
+---
+
+## 13. Not in T1
+
+Literature federation and validation · novelty validation · final opportunity
+ranking · rights and authorship conversion of a selected opportunity into a
+Paper Project · the Journey Orchestrator · G9 analysis provenance · AI idea
+persistence · the reviewer and revision workflow.
+
+**T0.1 governs what canonical thesis knowledge is safe to mine; T1 governs who
+starts the mining and what the researcher is shown.** Neither makes any claim
+about the published literature.
