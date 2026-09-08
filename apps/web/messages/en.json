@@ -422,6 +422,7 @@
     "sections": "Sections extracted",
     "opportunities": "Opportunities found",
     "mine": "Mine opportunities",
+    "viewOpportunities": "View publication opportunities",
     "rightsNote": "The rights basis is a claim the researcher records; approval is a separate decision at gate GT1.",
     "basis": {
       "thesis_owner": "Thesis owner",

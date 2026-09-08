@@ -283,17 +283,42 @@ def test_mining_is_measured_by_evidence_the_miner_can_read_not_by_parsed_at():
     assert with_results.can_mine is True
 
 
-def test_the_unavailable_state_names_the_missing_integration_and_promises_nothing():
-    """**«غير متاح» تُقال بسببها، لا بزرٍّ مطفأ ولا بصمت.**
+def test_the_not_yet_scanned_state_promises_nothing_and_demands_nothing():
+    """**«لم يجرِ بعد» تُقال بسببها — ولا تَعِد، ولا تطلب، ولا تنفي.**
 
-    والنصّ يذكر ما ينقص فعلًا — أنّ خطّ القراءة ينتج مرشّحاتٍ تُراجَع ولا
-    يكتب أقسامًا — فلا يُقرأ عطبًا في حساب الباحث.
+    وكان هذا الفحصُ يشترط أن يسمّي النصُّ التكاملَ الناقص: «مراجعة»
+    و«أقسام». وكان ذلك صادقًا يومَ كان المنقّب يقرأ `thesis_sections`
+    و`thesis_results` وحدهما، وكان على الباحث أن يراجع ويَصِل ما اعتمده.
+    ثمّ أزال T0 وT0.1 ذلك الشرطَ من المنتج نفسه — **فصار الفحصُ يشترط
+    نصًّا يَعِد بعملٍ لم يعد موجودًا**، وهي الحالُ التي يُصلحها هذا التغيير.
+
+    فالنصفُ الميّت يسقط وحده، **والنصفُ الحيّ يبقى ويشتدّ**: أنّها لا
+    تَعِد بشيء. ويُضاف إليه ما لم يكن مفحوصًا قطّ — ألّا تطلب من الباحث
+    فعلًا، وألّا تدّعي نفيًا عن العالم لا سندَ له.
     """
     arabic = _actions("ready_for_review").mining_reason
     english = _actions("ready_for_review", locale="en").mining_reason
-    assert "مراجعة" in arabic and "أقسام" in arabic
-    assert "review" in english.lower() and "sections" in english.lower()
+
+    # ١ — تُقال بسببها، وبلغتين متمايزتين (وهذا ما بقي من الدعوى الأصلية).
+    assert arabic.strip() and english.strip()
     assert arabic != english
+
+    # ٢ — **ولا تطلب من الباحث عملًا.** الأتمتةُ تملك الفحص، فنصٌّ يأمر
+    # الباحثَ بمراجعةٍ أو اعتمادٍ أو ضغطِ زرٍّ يعيد بوّابةً تقاعدت.
+    for demand in ("راجع", "اعتمد", "اضغط", "عليك أن", "يجب أن"):
+        assert demand not in arabic, f"نصٌّ يطلب من الباحث فعلًا: {demand}"
+    for demand in ("you must", "you need to", "review your", "approve", "click",
+                   "wire", "once you"):
+        assert demand not in english.lower(), f"copy demands researcher work: {demand}"
+
+    # ٣ — **ولا نفيَ عن العالم.** «لم يجرِ الفحص» ليست «لا فرصَ لهذه الرسالة».
+    assert "لا فرص" not in arabic
+    assert "no publication opportunities" not in english.lower()
+    assert "no opportunities exist" not in english.lower()
+
+    # ٤ — وتقول الواقعةَ القائمة: الفحصُ تلقائيّ، ولم يجرِ بعد.
+    assert "تلقائيًّا" in arabic
+    assert "automatically" in english.lower()
 
 
 def test_mining_is_not_offered_while_the_document_is_still_being_read():
@@ -301,8 +326,12 @@ def test_mining_is_not_offered_while_the_document_is_still_being_read():
 
     running = _actions("extracting", sections=4)
     assert running.can_mine is False
-    # وسببُه «يجري الآن» لا «لا دليل» — والخبران مختلفان.
-    assert running.mining_state == card_actions.MINING_AVAILABLE
+    # **وسببُه «يجري الآن» لا «لا دليل»** — والخبران مختلفان.
+    #
+    # وكانت الدعوى تطلب `MINING_AVAILABLE` وتناقض تعليقَها هذا: عدُّ الأقسام
+    # كان يُفحص قبل العمل الجاري، فيُقال «متاح» عن رسالةٍ تُقرأ الآن. وصار
+    # العملُ الجاري يسبق، فوافقت الحالُ ما كان التعليقُ يطلبه أصلًا.
+    assert running.mining_state == card_actions.MINING_IN_FLIGHT
     assert running.is_running is True
 
 
@@ -368,7 +397,18 @@ def test_the_router_refuses_to_write_a_proposal_that_already_exists():
 
     assert "arg='lock'" in body or "with_for_update" in body, (
         "التنقيب بلا قفلٍ على صفّ الرسالة — طلبان متزامنان يكتبان معًا")
-    assert "PublicationOpportunity" in body and "Continue" in body, (
+
+    # **والحلقةُ انتقلت إلى الخدمة، فالحارسُ يتبعها.** صار التنقيب يقع في
+    # مسارين — تلقائيّ ويدويّ — ونسختان من منطقٍ واحد تتباعدان. فالمنطقُ
+    # في `services/thesis/mining.py`، والخاصّيّةُ المفحوصة هي هي: تخطٍّ
+    # مشروطٌ قبل الكتابة، فلا يُكتب مقترحٌ قائم مرّةً ثانية.
+    service = ast.parse(
+        (API / "services" / "thesis" / "mining.py").read_text(encoding="utf-8"))
+    runner = next(
+        node for node in ast.walk(service)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run")
+    loop = ast.dump(runner)
+    assert "PublicationOpportunity" in loop and "Continue" in loop, (
         "لا تخطٍّ مشروطٌ في الحلقة — فكلُّ مقترحٍ يُكتب ولو كان قائمًا")
     # والقفلُ حقيقيّ في الحارس المشترك، لا اسمًا في وسيط.
     guard = next(
@@ -610,8 +650,12 @@ def test_migration_0030_belongs_to_this_wave_and_is_purely_additive():
     """
     versions = ROOT / "infra" / "db" / "migrations" / "versions"
     numbers = sorted(path.name.split("_", 1)[0] for path in versions.glob("0*.py"))
-    assert numbers[-1] == "0030", f"آخرُ ترحيلٍ ليس 0030: {numbers[-1]}"
+    # **والرأسُ يتقدّم، وتوسعيّةُ 0030 لا تتغيّر.** أضافت T1 الترحيلَ
+    # `0031` (حالُ التنقيب)، فتثبيتُ «آخرُ ترحيلٍ 0030» تقادم — وليس هو ما
+    # يفحصه هذا الاختبار. والمفحوصُ باقٍ: أنّ 0030 واحدٌ وأنّه توسعةٌ محضة.
+    assert numbers[-1] == "0031", f"رأسُ السلسلة ليس 0031: {numbers[-1]}"
     assert numbers.count("0030") == 1, "ترحيلان يحملان الرقم 0030"
+    assert numbers.count("0031") == 1, "ترحيلان يحملان الرقم 0031"
 
     body = (versions / "0030_thesis_archive.py").read_text(encoding="utf-8")
     upgrade = body[body.index("def upgrade()"):body.index("def downgrade()")]
@@ -948,6 +992,246 @@ async def test_over_http_a_thesis_from_the_modern_pipeline_is_told_mining_is_not
     assert card["actions"]["mining_state"] == "no_evidence"
     assert card["actions"]["mining_reason"], "«غير متاح» بلا سبب"
     assert card["actions"]["can_parse"] is False
+
+
+# ══════ حالُ التنقيب المحفوظة تعبر HTTP — ولا تُشتقّ ولا تُنسى ══════
+#
+# **وتمرّ كلُّها بـ`GET /api/v1/theses`، لا بـ`card_actions.compute`.**
+# العطبُ الذي أفلت كان في إسقاط عبارة القائمة وحدها: آلةُ الحال سليمة،
+# ونداؤها مباشرةً في اختبارٍ يُخفي أنّ العمود لا يبلغها أصلًا.
+
+
+async def _thesis_with_mining_state(tid, uid, state, *, filename, error=None):
+    """رسالةٌ قُرئت بنجاح، وحالُ تنقيبها محفوظةٌ في العمود (ترحيل 0031)."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+    from athera_api.services.thesis import processing
+
+    thesis_id, _ = await _seed(tid, uid, filename=filename)
+    async with tenant_session(tid, uid) as session:
+        await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
+                              state=processing.READY_FOR_REVIEW)
+    async with tenant_session(tid, uid) as session:
+        thesis = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        thesis.mining_state = state
+        thesis.mining_last_error = error
+    return thesis_id
+
+
+async def _card_over_http(tid, uid, thesis_id):
+    """البطاقةُ كما يراها العميل — بعد رحلةٍ كاملة، كأنّه أعاد التحميل."""
+    async with _client(tid, uid) as client:
+        response = await client.get("/api/v1/theses")
+        assert response.status_code == 200, response.text
+        return next(row for row in response.json() if row["id"] == str(thesis_id))
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_a_failed_mining_survives_a_reload(two_tenants):
+    """**الانحدارُ الأهمّ: المحفوظُ يعبر التحميل.**
+
+    ‏`failed` مكتوبةٌ في القاعدة، وكانت تُقرأ `not_started` بعد كلّ تحميل
+    لأنّ إسقاطَ الصفحة لا يحمل العمود — ويُخفي ذلك وجودُ فرصةٍ وحده.
+    """
+    from athera_api.services.thesis import card_actions
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id = await _thesis_with_mining_state(
+        tid, uid, "failed", filename="تعثّر تنقيبها.pdf", error="OperationalError")
+
+    card = await _card_over_http(tid, uid, thesis_id)
+
+    assert card["opportunities_found"] == 0
+    # ١ — العمودُ يبلغ البطاقة، ولا يُستبدل بـ«لم يبدأ».
+    assert card["mining_state"] == "failed", "حالُ التنقيب لا تصل إلى العقد"
+    assert card["actions"]["mining_state"] == card_actions.MINING_FAILED
+    # ٢ — وإعادةُ المحاولة متاحة: التعثّر يُستأنف.
+    assert card["actions"]["can_mine"] is True
+    # ٣ — والسببُ صادق: القراءةُ نجحت، والمتعثّر هو الفحصُ وحده.
+    reason = card["actions"]["mining_reason"]
+    assert reason and "تعثّر" in reason
+    assert card["processing_state"] == "ready_for_review"
+    # ٤ — ولا رمزَ خطأٍ تقنيّ يخرج في العقد.
+    assert "mining_last_error" not in card
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_withheld_is_not_failure_and_demands_no_approval(two_tenants):
+    """**حُجب سياسةٌ وقعت كما يجب** — لا عطبٌ، ولا بوّابةُ اعتماد."""
+    from athera_api.services.thesis import card_actions
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id = await _thesis_with_mining_state(
+        tid, uid, "withheld", filename="حُجب دليلها.pdf")
+
+    card = await _card_over_http(tid, uid, thesis_id)
+
+    assert card["opportunities_found"] == 0
+    assert card["mining_state"] == "withheld"
+    # ولا تُطوى في «لا دليل» ولا في «فشل» — ثلاثُ وقائعَ لا واحدة.
+    assert card["actions"]["mining_state"] == card_actions.MINING_WITHHELD
+    assert card["actions"]["mining_state"] != card_actions.MINING_FAILED
+    assert card["actions"]["mining_state"] != card_actions.MINING_NO_EVIDENCE
+
+    reason = card["actions"]["mining_reason"]
+    # **ولا شرطَ مراجعةٍ متقاعد**: المراجعةُ ضبطُ جودةٍ اختياريّ.
+    assert "اختياريّ" in reason
+    assert "ووصلِ ما اعتمدته" not in reason
+    assert "يقرأ الأقسام والنتائج المستخرجة" not in reason
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_a_completed_empty_scan_claims_nothing_about_the_world(two_tenants):
+    """اكتمل الفحصُ ولم يتكوّن شيء — **ولا يُقال «لا فرصَ لهذه الرسالة»**."""
+    from athera_api.services.thesis import card_actions
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id = await _thesis_with_mining_state(
+        tid, uid, "completed", filename="اكتمل بلا نتيجة.pdf")
+
+    card = await _card_over_http(tid, uid, thesis_id)
+
+    assert card["opportunities_found"] == 0
+    assert card["mining_state"] == "completed"
+    assert card["actions"]["mining_state"] == card_actions.MINING_COMPLETED_EMPTY
+    assert card["actions"]["mining_state"] != card_actions.MINING_WITHHELD
+
+    reason = card["actions"]["mining_reason"]
+    assert "لم يتمكن النظام من تكوين فرصة نشر موثوقة" in reason
+    # **ودعوى عن العالم لا سندَ لها** — الفرقُ بين «لا يوجد» و«لم نُكوّن».
+    assert "لا فرص" not in reason
+    # ولا زرَّ يَعِد بنتيجةٍ أخرى من المُدخل نفسه.
+    assert card["actions"]["can_mine"] is False
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_over_http_the_golden_path_opens_opportunities_without_a_button(two_tenants):
+    """المسارُ السويّ: فرصٌ قائمة، وجهةٌ تُفتح — **ولا تشغيلَ يدويّ**."""
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import PublicationOpportunity
+    from athera_api.services.thesis import card_actions
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id = await _thesis_with_mining_state(
+        tid, uid, "completed", filename="نُقِّبت فوُجدت.pdf")
+    async with tenant_session(tid, uid) as session:
+        session.add(PublicationOpportunity(
+            tenant_id=tid, thesis_id=thesis_id,
+            opportunity_kind="independent_question", paper_kind="extraction",
+            working_title_ar="ورقةٌ من السؤال الأول"))
+
+    card = await _card_over_http(tid, uid, thesis_id)
+
+    assert card["opportunities_found"] == 1
+    # والمحفوظُ يبقى محفوظًا: سطحُ البطاقة لا يمحو حالَ التخزين.
+    assert card["mining_state"] == "completed"
+    assert card["actions"]["mining_state"] == card_actions.MINING_FOUND
+    assert card["actions"]["can_view_opportunities"] is True
+    assert card["actions"]["can_mine"] is False, "زرُّ تشغيلٍ في المسار السويّ"
+    assert card["actions"]["primary"] == "view_opportunities"
+
+
+def test_no_mining_copy_asks_the_researcher_for_retired_work():
+    """**نصٌّ يطلب عملًا تقاعد كذبةٌ على الباحث.**
+
+    ‏T0 وT0.1 أزالا اعتمادَ كلّ واقعةٍ ووصلَها بالمنقّب. فلا يبقى في أيّ
+    نصٍّ أثرٌ لهما — ولا دعوى عن العالم في «اكتمل بلا نتيجة».
+    """
+    from athera_api.services.thesis import card_actions
+
+    retired_ar = ("ووصلِ ما اعتمدته", "يقرأ الأقسام والنتائج المستخرجة")
+    retired_en = ("wired into the miner", "reads extracted sections and",
+                  "once your reviewed extraction")
+    for state, (arabic, english) in card_actions.MINING_LABELS.items():
+        for phrase in retired_ar:
+            assert phrase not in arabic, f"{state}: نصٌّ متقاعد — {phrase}"
+        for phrase in retired_en:
+            assert phrase not in english, f"{state}: retired copy — {phrase}"
+
+    empty_ar, empty_en = card_actions.MINING_LABELS[card_actions.MINING_COMPLETED_EMPTY]
+    assert "لم يتمكن النظام من تكوين فرصة نشر موثوقة" in empty_ar
+    assert "not sufficient to form a reliable publication opportunity" in empty_en
+    assert "لا فرص" not in empty_ar
+    assert "no publication opportunities" not in empty_en.lower()
+
+    # **ولكلِّ حالٍ نصُّها**: حُجب لا تستعير نصَّ «اكتمل بلا نتيجة».
+    assert (card_actions.MINING_LABELS[card_actions.MINING_WITHHELD]
+            != card_actions.MINING_LABELS[card_actions.MINING_COMPLETED_EMPTY])
+
+def test_web_fixtures_pin_mining_copy_to_the_server_contract():
+    """**قائمةُ الممنوع تنجرف بطبيعتها؛ والتثبيتُ الموجب لا ينجرف.**
+
+    ثبّتت تجهيزاتُ الواجهة نصَّ تنقيبٍ متقاعدًا أربعَ مرّات، ونجت مرّتان
+    منها من كنسٍ سالب — لأنّ الكنس السالب لا يرى إلّا العباراتِ التي
+    عرفناها خطأً سلفًا: أُزيلت فقرةٌ فبقيت مقدّمتُها، وهي نصٌّ آخر تمامًا.
+
+    فيُقلب الفحص. لا يُسأل «أفيه عبارةٌ ممنوعة؟» بل **«أهذا النصُّ هو
+    نصُّ العقد القائم؟»** — فيسقط أيُّ انحرافٍ ولو كان بعبارةٍ لم تُرَ من
+    قبل. وموضعان يُفحصان: ما تخدمه التجهيزةُ `mining_reason`، وما يُدَّعى
+    على `card-mining-note`.
+    """
+    import re
+
+    from athera_api.services.thesis import card_actions
+
+    corpus = {text for pair in card_actions.MINING_LABELS.values() for text in pair}
+    web_tests = pathlib.Path(__file__).resolve().parents[3] / "apps" / "web" / "tests"
+    assert web_tests.is_dir(), f"لم يُعثر على تجهيزات الواجهة: {web_tests}"
+
+    def constant(source: str, name: str) -> str:
+        match = re.search(rf"const {name} =(.*?);", source, re.S)
+        assert match, f"ثابتٌ يُخدَم ولا تعريفَ له: {name}"
+        return "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', match.group(1)))
+
+    checked = 0
+    for path in sorted(web_tests.rglob("*.ts")):
+        source = path.read_text(encoding="utf-8")
+        lines = source.splitlines()
+
+        # ١ — **ما يُخدَم `mining_reason` نصُّ عقدٍ حرفًا بحرف.**
+        # ويقف الالتقاط عند فاصلة الخاصّيّة ولا يعبر `;`: فتُستثنى بذلك
+        # تصريحةُ الواجهة (`mining_reason: string;`) ولا تبتلع ما بعدها.
+        for served in re.finditer(r"mining_reason:\s*([^;]*?),\n", source, re.S):
+            expression = served.group(1)
+            for name in sorted(set(re.findall(r"\b([A-Z][A-Z0-9_]{3,})\b", expression))):
+                value = constant(source, name)
+                checked += 1
+                assert value in corpus, (
+                    f"{path.name}: `{name}` يخدم نصًّا ليس في `MINING_LABELS` — {value[:70]}")
+            # **والنصُّ الحرفيُّ يُفحص كالمعرّف.** تجهيزتان كانتا تخترعان
+            # صياغةً تشبه العقد ولا هي منه، ولا معرّفَ لهما يُفحص.
+            for text in re.findall(r'"((?:[^"\\]|\\.)*)"', expression):
+                if len(text) < 12:
+                    continue
+                checked += 1
+                assert any(text in entry for entry in corpus), (
+                    f"{path.name}: نصٌّ يُخدَم وليس في `MINING_LABELS` — {text[:70]}")
+
+        # ٢ — **وما يُدَّعى على ملاحظة التنقيب مشتقٌّ منه لا مكتوبٌ بيد.**
+        for index, line in enumerate(lines):
+            if "card-mining-note" not in line:
+                continue
+            for text in re.findall(r'"((?:[^"\\]|\\.)*)"', "\n".join(lines[index:index + 3])):
+                if len(text) < 12 or text.startswith("card-"):
+                    continue
+                checked += 1
+                assert any(text in entry for entry in corpus), (
+                    f"{path.name}:{index + 1}: دعوى على نصِّ تنقيبٍ ليس في العقد — {text[:70]}")
+
+    # **وحارسٌ لا يجد ما يفحصه حارسٌ ميّت.** لو تغيّر شكلُ التجهيزة صمت
+    # هذا الفحصُ ونجح أبدًا، وهو أسوأ من غيابه.
+    assert checked, "الحارسُ لم يفحص شيئًا — تغيّر الشكلُ فصار بلا أثر"
 
 
 @requires_db

@@ -276,7 +276,9 @@ function thesis(row: Row) {
       is_archived: row.archived,
       lifecycle_blocked_reason: null,
       mining_state: "no_evidence",
-      mining_reason: "لا شواهد كافية بعد.",
+      mining_reason:
+        "لم يجرِ فحصُ الفرص بعد: لا دليلَ مؤهَّل على هذه الرسالة حتى الآن. "
+        + "والفحصُ يبدأ تلقائيًّا بعد قراءة الرسالة، ولا يلزمك تشغيلُه.",
       parse_withdrawn_reason: "المسار القديم مسحوبٌ من البطاقة.",
       blocked_reason: null,
     },

@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import uuid
+from typing import NamedTuple
 
 import pytest
 
@@ -1307,16 +1308,33 @@ _SAMPLE_BATCH = [{"fields": [{
 }]}]
 
 
-async def _one_candidate(session, tid, uid, *, field_key="sample_size"):
-    """مرشّح واحد مؤصَّل — أرضيةٌ مشتركة لاختبارات دورة القرار.
+class _Seeded(NamedTuple):
+    """مفتاحُ ما زُرع سلفًا — **معرّفاتٌ فقط: لا جلسةَ فيه ولا استخراج**.
 
-    التشغيل يجري بصانع جلسات مستقل (كما في الإنتاج)، ثم يُقرأ الصفّ في
-    الجلسة التي مرّرها المستدعي.
+    وهو الحارسُ الشكليّ: `_read_candidate` لا يقبل إلّا هذا، وهذا لا يُنتَج
+    إلّا من `_seed_extracted_candidate` — أي بعد أن تُغلق معاملاتُ الزرع.
     """
-    from athera_api.models.files import File
-    from athera_api.models.research import FactCandidate
-    from sqlalchemy import select
 
+    file_id: uuid.UUID
+    thesis_id: uuid.UUID
+    field_key: str
+
+
+async def _seed_extracted_candidate(tid, uid, *, field_key="sample_size") -> _Seeded:
+    """يزرع رسالةً ويستخرج منها مرشّحًا مؤصَّلًا — **بمعاملاتِه وحدها**.
+
+    **ولا يقبل جلسةَ مستدعٍ، عمدًا — والتوقيعُ هو الحارس لا التعليق.**
+
+    خطُّ الاستخراج يفتح جلساتِه المستقلّة ويكتب بها، وفيها `audit.record`
+    الذي يأخذ قفلًا استشاريًّا لسلسلة تدقيق المستأجر كلّه. فلو جرى داخل
+    معاملةٍ يملكها المستدعي وكانت قد أخذت ذلك القفل، لانتظر الاستخراجُ
+    قفلًا لا يُطلَق إلّا بانتهاء معاملةٍ تنتظره هو. ولا يفكّه كاشفُ
+    التخاصم: المعاملةُ الأولى ليست منتظِرةً في القاعدة، بل خاملةٌ داخل
+    معاملة بينما المهمّةُ نفسها محجوزة — فلا حلقةَ تُرى، والتعليقُ أبديّ.
+
+    **وهذا حدُّ الإنتاج نفسه:** الموجّه يُغلق معاملاته القصيرة قبل أن
+    ينادي `run_extraction`، ولا يُبقي معاملةً مفتوحةً عبره.
+    """
     file_id, thesis_id = await _seed_file(tid, uid)
     batch = [{"fields": [{
         "field_key": field_key, "status": "extracted", "value": "120",
@@ -1324,16 +1342,81 @@ async def _one_candidate(session, tid, uid, *, field_key="sample_size"):
         "extraction_confidence": 0.8,
     }]}]
     await _extract(tid, uid, file_id, batch)
+    return _Seeded(file_id=file_id, thesis_id=thesis_id, field_key=field_key)
 
-    record = (await session.execute(select(File).where(File.id == file_id))).scalar_one()
+
+async def _read_candidate(session, seeded: _Seeded):
+    """يقرأ ما زُرع في جلسة المستدعي — **ولا استخراجَ هنا ولا معاملةَ ثانية**."""
+    from athera_api.models.files import File
+    from athera_api.models.research import FactCandidate
     from athera_api.models.thesis import Thesis
+    from sqlalchemy import select
+
+    record = (await session.execute(
+        select(File).where(File.id == seeded.file_id))).scalar_one()
     thesis = (await session.execute(
-        select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        select(Thesis).where(Thesis.id == seeded.thesis_id))).scalar_one()
     row = (await session.execute(
-        select(FactCandidate).where(FactCandidate.file_id == file_id,
-                                    FactCandidate.field_key == field_key)
+        select(FactCandidate).where(FactCandidate.file_id == seeded.file_id,
+                                    FactCandidate.field_key == seeded.field_key)
     )).scalar_one()
     return record, thesis, row
+
+
+def test_seeding_can_never_run_inside_a_caller_owned_transaction():
+    """**الحدُّ الذي عُلِّقت عليه الحزمةُ كلَّها — حارسٌ شكليّ لا تعليق.**
+
+    الزرعُ يفتح جلساتِه المستقلّة، وفيها `audit.record` بقفلِه الاستشاريّ
+    لسلسلة تدقيق المستأجر. فإن جرى داخل معاملةٍ يملكها الاختبار وكانت قد
+    أخذت ذلك القفل (بـ`di.decide` مثلًا)، انتظر قفلًا لا يُطلَق إلّا
+    بانتهاء معاملةٍ تنتظره هو. ولا يفكّه كاشفُ التخاصم: لا حلقةَ يراها —
+    الأولى خاملةٌ داخل معاملة، لا منتظِرة. فالتعليقُ أبديّ وصامت.
+
+    **ولا يُحرَس بترتيبِ سطرٍ في اختبارٍ واحد**، بل بثلاثة قيودٍ بنيوية:
+    توقيعُ الزرع لا يقبل جلسة، والقراءةُ لا تستخرج، ولا نداءَ زرعٍ أو
+    استخراجٍ يقع نصًّا داخل `async with tenant_session(...)`.
+
+    وهذا هو حدُّ الإنتاج نفسه: الموجّه يُغلق معاملاته القصيرة قبل
+    `run_extraction` — فالاختبارُ صار يحترم ما يحترمه المنتج.
+    """
+    import ast
+
+    module = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+
+    def function(name):
+        return next(n for n in ast.walk(module)
+                    if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
+
+    # ١ — الزرعُ لا يقبل جلسةً أصلًا، فالإساءةُ القديمة لا تُكتب.
+    seed = function("_seed_extracted_candidate")
+    seed_args = [a.arg for a in seed.args.args + seed.args.kwonlyargs]
+    assert "session" not in seed_args, "الزرعُ عاد يقبل جلسةَ مستدعٍ"
+
+    # ٢ — والقراءةُ تقرأ فقط: لا استخراجَ ولا زرعَ تحتها.
+    read_calls = {
+        n.func.id for n in ast.walk(function("_read_candidate"))
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert not read_calls & {"_extract", "_seed_file", "_seed_extracted_candidate"}, (
+        f"القراءةُ صارت تستخرج: {sorted(read_calls)}")
+
+    # ٣ — ولا زرعَ ولا استخراجَ داخل معاملةٍ يملكها المستدعي، في أيّ اختبار.
+    forbidden = {"_extract", "_seed_file", "_seed_extracted_candidate"}
+    offenders = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.AsyncWith):
+            continue
+        if not any(isinstance(item.context_expr, ast.Call)
+                   and isinstance(item.context_expr.func, ast.Name)
+                   and item.context_expr.func.id == "tenant_session"
+                   for item in node.items):
+            continue
+        offenders += [
+            f"{inner.func.id}:{inner.lineno}" for inner in ast.walk(node)
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+            and inner.func.id in forbidden
+        ]
+    assert not offenders, f"زرعٌ أو استخراجٌ داخل معاملةِ مستدعٍ: {offenders}"
 
 
 @requires_db
@@ -1349,8 +1432,10 @@ async def test_unverified_to_unknown_and_no_verified_memory(two_tenants):
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
 
+    seeded = await _seed_extracted_candidate(tid, uid)
+
     async with tenant_session(tid, uid) as session:
-        _, _, row = await _one_candidate(session, tid, uid)
+        _, _, row = await _read_candidate(session, seeded)
         assert row.status == "unverified"
 
         before = len((await session.execute(
@@ -1386,9 +1471,15 @@ async def test_unknown_can_later_be_approved_or_rejected(two_tenants):
     principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
                           mfa_satisfied=True, locale="ar")
 
+    # **الزرعُ كلُّه أوّلًا، خارج أيّ معاملةٍ يملكها الاختبار.** وهذا هو
+    # الحدُّ الذي كان مخروقًا هنا: زرعٌ ثانٍ داخل معاملةٍ أخذت سلفًا قفلَ
+    # سلسلة التدقيق بـ`di.decide` — فكان الاستخراجُ ينتظره إلى الأبد.
+    first = await _seed_extracted_candidate(tid, uid)
+    second = await _seed_extracted_candidate(tid, uid, field_key="design")
+
     async with tenant_session(tid, uid) as session:
         # «لا أعرف» ← «معتمَد»
-        _, _, row = await _one_candidate(session, tid, uid)
+        _, _, row = await _read_candidate(session, first)
         await di.decide(row.id, CandidateDecision(decision="unknown"),
                         principal=principal, session=session)
         assert row.status == "unknown"
@@ -1398,7 +1489,7 @@ async def test_unknown_can_later_be_approved_or_rejected(two_tenants):
         assert row.resulting_memory_id is not None
 
         # «لا أعرف» ← «مرفوض»
-        _, _, other = await _one_candidate(session, tid, uid, field_key="design")
+        _, _, other = await _read_candidate(session, second)
         await di.decide(other.id, CandidateDecision(decision="unknown"),
                         principal=principal, session=session)
         rejected = await di.decide(other.id, CandidateDecision(decision="reject",
@@ -1430,8 +1521,10 @@ async def test_reextraction_never_silently_overwrites_unknown(two_tenants):
     principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
                           mfa_satisfied=True, locale="ar")
 
+    seeded = await _seed_extracted_candidate(tid, uid)
+
     async with tenant_session(tid, uid) as session:
-        record, thesis, row = await _one_candidate(session, tid, uid)
+        record, thesis, row = await _read_candidate(session, seeded)
         await di.decide(row.id, CandidateDecision(decision="unknown"),
                         principal=principal, session=session)
         assert row.status == "unknown"
@@ -1477,8 +1570,10 @@ async def test_unknown_is_counted_apart_from_rejected(two_tenants):
     principal = Principal(user_id=uid, tenant_id=tid, roles=["researcher"],
                           mfa_satisfied=True, locale="ar")
 
+    seeded = await _seed_extracted_candidate(tid, uid)
+
     async with tenant_session(tid, uid) as session:
-        _, thesis, unknown_row = await _one_candidate(session, tid, uid)
+        _, thesis, unknown_row = await _read_candidate(session, seeded)
         await di.decide(unknown_row.id, CandidateDecision(decision="unknown"),
                         principal=principal, session=session)
 
@@ -1508,8 +1603,11 @@ async def test_the_database_accepts_unknown_and_rejects_a_fifth_state(two_tenant
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
 
+    seeded = await _seed_extracted_candidate(tid, uid)
+    other_seeded = await _seed_extracted_candidate(tid, uid, field_key="design")
+
     async with tenant_session(tid, uid) as session:
-        _, _, row = await _one_candidate(session, tid, uid)
+        _, _, row = await _read_candidate(session, seeded)
         await session.execute(
             text("UPDATE fact_candidates SET status='unknown', decided_by=:u, "
                  "decided_at=now() WHERE id=:i"),
@@ -1522,7 +1620,7 @@ async def test_the_database_accepts_unknown_and_rejects_a_fifth_state(two_tenant
 
     with pytest.raises(IntegrityError) as err:
         async with tenant_session(tid, uid) as session:
-            _, _, row = await _one_candidate(session, tid, uid, field_key="design")
+            _, _, row = await _read_candidate(session, other_seeded)
             await session.execute(
                 text("UPDATE fact_candidates SET status='maybe', decided_by=:u, "
                      "decided_at=now() WHERE id=:i"),
@@ -1583,8 +1681,10 @@ async def test_downgrade_0016_refuses_while_unknown_rows_exist(two_tenants):
             "WHERE conname='ck_fact_candidates_ck_candidate_status'"
         ))).scalar_one()
 
+    seeded = await _seed_extracted_candidate(tid, uid)
+
     async with tenant_session(tid, uid) as session:
-        _, _, row = await _one_candidate(session, tid, uid)
+        _, _, row = await _read_candidate(session, seeded)
         await di.decide(row.id, CandidateDecision(decision="unknown"),
                         principal=principal, session=session)
         await session.flush()
@@ -2166,8 +2266,10 @@ async def test_revocation_blocks_future_processing_and_keeps_review_history(two_
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
 
+    seeded = await _seed_extracted_candidate(tid, uid)
+
     async with tenant_session(tid, uid) as session:
-        record, _thesis, candidate = await _one_candidate(session, tid, uid)
+        record, _thesis, candidate = await _read_candidate(session, seeded)
         await consent_service.record_decision(
             session, tenant_id=tid, file_id=record.id, actor_user_id=uid,
             granted=True, provider="anthropic", model="m")

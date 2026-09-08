@@ -41,7 +41,9 @@ interface Actions {
   can_trash_file: boolean;
   is_archived: boolean;
   lifecycle_blocked_reason: string | null;
-  mining_state: "available" | "in_flight" | "no_evidence";
+  mining_state:
+    | "available" | "in_flight" | "no_evidence"
+    | "found" | "failed" | "withheld" | "completed_empty";
   mining_reason: string;
   parse_withdrawn_reason: string;
   blocked_reason: string | null;
@@ -61,10 +63,17 @@ interface Card {
   archivedAt: string | null;
 }
 
+// **نصُّ الخادم كما هو اليوم.** وكان هنا النصُّ المتقاعد: «المنقّب يقرأ
+// الأقسام والنتائج المستخرجة» — أزاله T0/T0.1 من المنتج، وبقاؤه في
+// تجهيزةٍ يجعلها تخدم واقعًا لم يعد قائمًا.
 const NO_EVIDENCE_AR =
-  "استخراج الفرص غير متاح بعد. المنقّب يقرأ الأقسام والنتائج المستخرجة، ولم يُكتب " +
-  "منها شيءٌ لهذه الرسالة.";
-const IN_FLIGHT_AR = "المعالجة جاريةٌ الآن — واستخراج الفرص ينتظر انتهاءها.";
+  "لم يجرِ فحصُ الفرص بعد: لا دليلَ مؤهَّل على هذه الرسالة حتى الآن. " +
+  "والفحصُ يبدأ تلقائيًّا بعد قراءة الرسالة، ولا يلزمك تشغيلُه.";
+// **ونصُّ «جارٍ» من العقد أيضًا.** كان هنا نصٌّ بائتٌ لا يدّعي عليه
+// أحد، فبقي يخدم خادمًا لم يعد قائمًا ولا فحصَ يسقط به.
+const IN_FLIGHT_AR =
+  "جارٍ استخراج فرص النشر من رسالتك — " +
+  "يبدأ تلقائيًّا بعد القراءة.";
 const AVAILABLE_AR = "استخراج الفرص متاح: توجد عناصر مستخرجة يقرؤها المنقّب.";
 const PARSE_WITHDRAWN_AR = "«تفكيك الرسالة» مسارٌ قديم بقي في الواجهة البرمجية.";
 /** نصُّ المنع أثناء العمل الجاري — **والخادم يفرضه أيضًا، لا الشاشةُ وحدها**. */
@@ -514,19 +523,26 @@ test.describe("the card offers only what the server accepts", () => {
   });
 });
 
-test.describe("mining is offered only where the miner has something to read", () => {
-  test("a thesis read by the modern pipeline is told mining is not ready, with a reason",
+test.describe("the manual mine button appears only where a retry means something", () => {
+  test("a modern thesis with no eligible evidence is told the scan has not run, and asked for nothing",
     async ({ page }) => {
-      // **الرسالةُ التي كشفت العطب**: جاهزةٌ للمراجعة، ولا قسم ولا نتيجة.
+      // **الرسالةُ التي كشفت العطب صارت الرسالةَ السويّة.**
+      //
+      // كانت هذه الدعوى تقول «التنقيب غير جاهز» لأنّ رسالةً قرأها الخطُّ
+      // الحديث لم يكن المنقّبُ يجد لها ما يقرؤه. وقد أزال T0/T0.1 وهذه
+      // الموجةُ ذلك الشرطَ نفسَه: الأتمتةُ تملك الفحص وتبدأ من نفسها.
+      // فما يبقى ضمانةً حيّة أن يُقال ما وقع — لم يجرِ بعد — بلا زرٍّ
+      // ولا طلبِ عملٍ من الباحث.
       const server = newServer([make("modern-one", { state: "ready_for_review" })]);
       await serve(page, server);
       await openTheses(page);
 
       const card = cardOf(page, "modern-one");
+      // ولا زرَّ تشغيل: لا مضيئًا ولا مطفأً.
       await expect(card.getByTestId("card-mine")).toHaveCount(0);
-      await expect(card.getByTestId("card-mining-note"))
-        .toContainText("استخراج الفرص غير متاح بعد");
-      // ولا يُقال ذلك زرًّا مطفأً: لا زرَّ أصلًا.
+      // **والنصُّ يُشتقّ من العقد لا يُكتب بيدٍ ثانية** — والنسخةُ الثانية
+      // هي التي تفترق عن الأصل بأوّل تعديل، وقد افترقت مرّتين.
+      await expect(card.getByTestId("card-mining-note")).toContainText(NO_EVIDENCE_AR);
       await expect(card.getByRole("button", { name: "استخراج الفرص", exact: true }))
         .toHaveCount(0);
     });

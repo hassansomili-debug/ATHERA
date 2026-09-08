@@ -80,7 +80,18 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
     apiFetch<Thesis[]>("/api/v1/theses", { locale })
       .then((rows) => {
         setTheses(rows);
-        if (rows.length > 0) setThesisId(rows[0]!.id);
+        // ── الوصولُ المباشر من بطاقة الرسالة ──
+        //
+        // **ومعامل الرابط ليس إذنًا.** `?thesis_id=` يكتبه من شاء بما شاء.
+        // فلا يُطلب به شيءٌ من الخادم ولا يُوثق: يُقارَن بالقائمة التي
+        // ردّها الخادمُ لصاحب الجلسة بعينه — وهي المصفّاة بالمستأجر
+        // والصلاحية. فإن لم يكن فيها لم يُختر، وسقط إلى الأولى بلا خطأ:
+        // رابطٌ قديمٌ أو مُلفَّق يفتح الشاشةَ كما لو دخلها الباحثُ عاديًّا.
+        const requested = new URLSearchParams(window.location.search).get("thesis_id");
+        const owned = requested && rows.some((row) => row.id === requested)
+          ? requested : null;
+        if (owned) setThesisId(owned);
+        else if (rows.length > 0) setThesisId(rows[0]!.id);
       })
       .catch((err) =>
         setError(err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed")),
@@ -124,6 +135,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
       {theses.length > 1 ? (
         // قائمةُ اختيارٍ بلا اسمٍ مُعلَن — والخريطة كلّها تُشتقّ من اختيارها.
         <select
+          data-testid="thesis-picker"
           aria-label={t("opportunities.chooseThesis")}
           value={thesisId ?? ""}
           onChange={(e) => setThesisId(e.target.value)}

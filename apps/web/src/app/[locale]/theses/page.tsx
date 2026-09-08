@@ -69,13 +69,14 @@ interface CardActions {
   can_parse: boolean;
   can_attach_file: boolean;
   can_mine: boolean;
+  can_view_opportunities: boolean;
   can_archive: boolean;
   can_restore: boolean;
   can_trash_file: boolean;
   is_archived: boolean;
   /** سببُ منعِ الأرشفة والسلّة أثناء عملٍ جارٍ — **والخادم يفرضه أيضًا**. */
   lifecycle_blocked_reason: string | null;
-  /** available · in_flight · no_evidence */
+  /** available · in_flight · no_evidence · found · failed · withheld · completed_empty */
   mining_state: string;
   mining_reason: string;
   parse_withdrawn_reason: string;
@@ -660,7 +661,23 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                   </button>
                 ) : null}
 
-                {/* **ولا زرَّ تنقيبٍ إلّا حين يكون عند المنقّب دليلٌ يقرؤه.** */}
+                {/* ── وجهةُ الرحلة: فرصٌ قائمةٌ تُفتح ──
+
+                    **والتنقيبُ يبدأ من نفسه بعد القراءة**، فلا يُطلب من
+                    الباحث تشغيلُ ما يعمل وحده. وهذا رابطٌ إلى رسالته
+                    بعينها، لا شاشةٌ يُعيد فيها اختيارها. */}
+                {actions.can_view_opportunities ? (
+                  <Link
+                    href={`/${locale}/opportunities?thesis_id=${thesis.id}`}
+                    data-testid="card-view-opportunities"
+                    style={lead("view_opportunities")}
+                  >
+                    {t("theses.viewOpportunities")}
+                  </Link>
+                ) : null}
+
+                {/* **ولا زرَّ تنقيبٍ إلّا حين تعثّر التنقيب أو كان المسارُ
+                    قديمًا بلا أتمتة** — وما عداه يعمل من نفسه. */}
                 {actions.can_mine ? (
                   <button
                     type="button"
@@ -690,8 +707,11 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                 ) : null}
               </div>
 
-              {/* **«غير متاح» تُقال بسببها** — والسببُ من الخادم لا من الشاشة. */}
-              {!actions.can_mine ? (
+              {/* **وحالُ التنقيب تُقال دائمًا** — والسببُ من الخادم لا من
+                  الشاشة. وتُقال أيضًا حين توجد فرص: هناك تحمل التحفّظ،
+                  أنّها مبدئيّةٌ من عناصر الرسالة قبل أيّ مقابلةٍ بالأدب
+                  المنشور أو حكمٍ على جِدّتها. */}
+              {actions.mining_reason ? (
                 <p className="provenance-note" data-testid="card-mining-note"
                    style={{ marginBlockStart: 8 }}>
                   {actions.mining_reason}

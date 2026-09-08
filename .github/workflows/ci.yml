@@ -289,6 +289,16 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
+      # ── الرحلةُ التلقائية: غيابُ الخطوات هو المفحوص ──
+      #
+      # تُقرأ الرسالة، فيجد الباحثُ فرصًا قائمة. ولا اعتمادَ حقيقةٍ واحدة،
+      # ولا زرَّ تنقيبٍ يضغطه، ولا إعادةَ اختيارٍ لرسالته. وطبقتها طبقةُ
+      # `product-surface`: شبكةٌ معترَضة، بلا خادمٍ خلفي وبلا اعتماد.
+      - name: Automatic opportunity journey (no approval, no mine button)
+        run: cd apps/web && npm run test:auto-journey
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
       # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
       #
       # تشغيلُها من PR يفحص إنتاجًا لا يحمل شيفرة الـPR — نتيجةٌ مضلِّلة.

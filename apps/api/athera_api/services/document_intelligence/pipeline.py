@@ -16,7 +16,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.files import File
@@ -30,6 +30,14 @@ from .deterministic import extract as deterministic_extract
 from .fields import MODEL_FIELDS, Section, memory_category_for
 from .selection import ChunkView, excluded_report, select_chunks_for
 from .states import Status
+
+# **حدُّ انتظارِ الأقفال في التنقيب التلقائيّ وحده.**
+#
+# `audit.record` يأخذ قفلًا استشاريًّا لسلسلة تدقيق المستأجر كلّه. ومعاملةٌ
+# أخرى تمسكه تُعلّق هذا التنقيبَ **بلا حدّ**: التنقيبُ خلفيٌّ بعد استخراجٍ
+# نجح، فلا أحدَ ينتظره ولا شيءَ يقطعه. فيُحَدّ انتظارُه هنا — وهنا وحده،
+# ولا تُمسّ دلالاتُ التدقيق للمنصّة كلّها (ذاك عملُ P1).
+AUTO_MINING_LOCK_TIMEOUT_MS = 5000
 
 # حزمة حقول واحدة لكل قسم — استدعاء لكل حقل يضاعف الكلفة بلا فائدة.
 _BATCH_SECTIONS = (
@@ -447,8 +455,96 @@ async def run_extraction(
                              run_id=prepared.run_id, failed=failed)
         status = Status(run.status)
 
+    # ── التنقيب التلقائيّ — بعد أن يُحفظ الاستخراج، لا معه ──
+    #
+    # **وحدُّ الفشل مرسومٌ هنا بالبنية لا بالنيّة.** التنقيب يقع في معاملةٍ
+    # **مستقلّة** تبدأ بعد أن استقرّ الاستخراجُ في القاعدة. فمهما تعثّر —
+    # استثناءً كان أو خطأ قاعدة — لا يستطيع أن يتراجع عن الاستخراج ولا أن
+    # يُعيد كتابة حاله. فالباحثُ الذي نجح استخراجُ رسالته يبقى سجلُّه
+    # يقول ذلك، ومرشّحاتُه مكتوبةٌ مؤصَّلةٌ تنتظر مراجعته.
+    if status is Status.AWAITING_REVIEW:
+        await _mine_after_extraction(
+            session_maker, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            file_id=prepared.file_id)
+
     return PipelineResult(prepared.run_id, status, prepared.chunks, candidates,
                           prepared.excluded, failed, None, tuple(sorted(attempted)))
+
+
+async def _mine_after_extraction(
+    session_maker, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
+    file_id: uuid.UUID,
+) -> None:
+    """يُنقّب فرصَ الرسالة تلقائيًّا — **ولا يُفشل استخراجًا نجح**.
+
+    و`local_only` و`awaiting_consent` لا تبلغ هنا أصلًا: الشرطُ عند المُنادي
+    `AWAITING_REVIEW` وحدها. فقرارُ الخصوصية **لا يُنقَّب له ولا يُعلَن
+    فشلًا** — لا شيء يقع، ولا شيء يُدَّعى.
+
+    والاستيرادُ داخل الدالّة عمدًا: `services.thesis.mining` يعتمد على
+    كتالوج هذه الحزمة، فاستيرادُه في الأعلى حلقةٌ عند الإقلاع.
+    """
+    from ..thesis import mining, processing as thesis_processing  # noqa: PLC0415
+
+    try:
+        async with session_maker() as session:
+            thesis = (
+                await session.execute(
+                    select(Thesis)
+                    .where(Thesis.tenant_id == tenant_id, Thesis.file_id == file_id)
+                    .with_for_update())
+            ).scalar_one_or_none()
+            if thesis is None:
+                return
+            # **ولا يُكتب على سجلٍّ أخفاه الباحث.** الأرشفةُ قرارٌ وقع بينما
+            # كان الاستخراجُ يجري، ويُحترم.
+            if thesis.archived_at is not None:
+                return
+            if thesis.processing_state in thesis_processing.IN_FLIGHT:
+                return
+            # **والحدُّ يُضبط هنا: بعد قفلِ الصفّ، وقبل التنقيب.**
+            #
+            # وترتيبُه مقصودٌ حرفًا بحرف. لو سبق `FOR UPDATE` لصار تنقيبٌ
+            # آخر مشروعٌ على الصفّ نفسه «فشلًا» لمجرّد أنّه انتظر دورَه —
+            # وتسلسلُ الصفّ يجب أن يبقى انتظارًا لا فشلًا. فالحدُّ يقع على
+            # ما **بعد** القفل، وأوّلُه القفلُ الاستشاريّ لسلسلة التدقيق.
+            #
+            # و`set_config(..., true)` محلّيٌّ للمعاملة: ينتهي بانتهائها،
+            # ولا يتسرّب إلى اتصالٍ يعود إلى التجمّع.
+            await session.execute(
+                text("SELECT set_config('lock_timeout', :timeout, true)"),
+                {"timeout": f"{AUTO_MINING_LOCK_TIMEOUT_MS}ms"},
+            )
+            await mining.run(session, tenant_id=tenant_id,
+                             actor_user_id=actor_user_id, thesis=thesis)
+    except Exception as error:  # noqa: BLE001 — الحدُّ نفسه هو المقصود
+        # **يُسجَّل على محور التنقيب وحده.** ولا نصَّ مستندٍ ولا رسالةَ
+        # استثناءٍ خام في العمود: نوعُ الخطأ يكفي لمعرفة أين يُنظر.
+        await _record_mining_failure(
+            session_maker, tenant_id=tenant_id, file_id=file_id,
+            code=type(error).__name__[:64])
+
+
+async def _record_mining_failure(
+    session_maker, *, tenant_id: uuid.UUID, file_id: uuid.UUID, code: str,
+) -> None:
+    """يكتب `mining_state='failed'` — **ولا يمسّ حالَ الاستخراج**."""
+    from ..thesis import mining  # noqa: PLC0415
+
+    try:
+        async with session_maker() as session:
+            thesis = (
+                await session.execute(
+                    select(Thesis)
+                    .where(Thesis.tenant_id == tenant_id, Thesis.file_id == file_id)
+                    .with_for_update())
+            ).scalar_one_or_none()
+            if thesis is None:
+                return
+            thesis.mining_state = mining.FAILED
+            thesis.mining_last_error = code
+    except Exception:  # noqa: BLE001, S110 — تسجيلُ الفشل لا يُفشل شيئًا بدوره
+        pass
 
 
 async def ensure_thesis_for_file(
