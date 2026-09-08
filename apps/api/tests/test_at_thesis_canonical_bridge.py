@@ -1483,6 +1483,84 @@ async def test_a_mining_failure_never_rewrites_a_successful_extraction(two_tenan
 
 @requires_db
 @pytest.mark.asyncio
+async def test_audit_lock_contention_is_bounded_and_fabricates_nothing(
+        two_tenants, monkeypatch):
+    """**التعليقُ الذي أوقف الحزمة ٥٥ دقيقة — محدودٌ الآن، وبلا اختلاق.**
+
+    قفلُ سلسلة التدقيق استشاريٌّ ومشتركٌ للمستأجر كلّه. ومعاملةٌ أخرى
+    تمسكه كانت تُعلّق هذا التنقيبَ **بلا حدّ ولا صوت**: لا حلقةَ يراها
+    كاشفُ التخاصم، فلا شيءَ يقطع الانتظار.
+
+    فالحدُّ يُضبط بعد قفلِ الصفّ وقبل التنقيب، فينتهي الانتظارُ فشلًا
+    موصوفًا على محور التنقيب وحده — **ولا يمسّ استخراجًا نجح**.
+    """
+    from sqlalchemy import func, select, text
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import FactCandidate
+    from athera_api.models.thesis import PublicationOpportunity, Thesis
+    from athera_api.services.document_intelligence import pipeline
+    from athera_api.services.thesis import mining, processing
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _run = await _machine_thesis(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
+                              state=processing.READY_FOR_REVIEW)
+
+    async def counts():
+        async with tenant_session(tid, uid) as session:
+            candidates = (await session.execute(
+                select(func.count(FactCandidate.id))
+                .where(FactCandidate.file_id == file_id))).scalar_one()
+            opportunities = (await session.execute(
+                select(func.count(PublicationOpportunity.id))
+                .where(PublicationOpportunity.thesis_id == thesis_id))).scalar_one()
+            return candidates, opportunities
+
+    before = await counts()
+    assert before[0] > 0, "لا مرشّحات — الزرعُ لم يقع فالفحصُ بلا معنى"
+    assert before[1] == 0
+
+    # ٢٠٠ms للسرعة وحدها؛ الآليّةُ هي هي.
+    monkeypatch.setattr(pipeline, "AUTO_MINING_LOCK_TIMEOUT_MS", 200)
+
+    async with tenant_session(tid, uid) as blocker:
+        # اتصالٌ يمسك قفلَ السلسلة نفسَه ولا يُفلته حتى تنتهي الكتلة.
+        await blocker.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('athera_audit_chain'),"
+                 " hashtext(:tid))"),
+            {"tid": str(tid)},
+        )
+        # **وهذا هو موضعُ التعليق سابقًا.** ينتهي الآن بحدِّه هو، لا بمهلة CI.
+        await pipeline._mine_after_extraction(  # noqa: SLF001
+            lambda: tenant_session(tid, uid),
+            tenant_id=tid, actor_user_id=uid, file_id=file_id)
+
+    async with tenant_session(tid, uid) as session:
+        thesis = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+
+    # ١ — الاستخراجُ الناجح لم يُمسّ، وهي الدعوى الأثقل.
+    assert thesis.processing_state == processing.READY_FOR_REVIEW, (
+        "تخاصمُ قفلٍ أعاد كتابة حالِ الاستخراج")
+    assert thesis.processing_state != processing.FAILED
+    # ٢ — وحالُ التنقيب تصف التنقيب وحده.
+    assert thesis.mining_state == mining.FAILED
+    # ٣ — ولا ختمَ نجاحٍ كاذب.
+    assert thesis.opportunities_mined_at is None
+    # ٤ — ولا فرصةٌ مختلَقة، ولا مرشّحٌ ضاع: التراجعُ نظيف.
+    assert await counts() == (before[0], 0), "تغيّر ما لا يجوز أن يتغيّر"
+    # ٥ — ولا نصَّ مستندٍ يتسرّب إلى عمود الخطأ.
+    assert thesis.mining_last_error and len(thesis.mining_last_error) <= 64
+    for leak in (TITLE, QUESTION_ONE, FINDING):
+        assert leak not in thesis.mining_last_error
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_an_archived_thesis_is_not_mined_behind_the_researcher(two_tenants):
     """قرارُ الإخفاء وقع أثناء الاستخراج — **ويُحترم**."""
     from sqlalchemy import func, select

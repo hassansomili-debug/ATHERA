@@ -16,7 +16,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.files import File
@@ -30,6 +30,14 @@ from .deterministic import extract as deterministic_extract
 from .fields import MODEL_FIELDS, Section, memory_category_for
 from .selection import ChunkView, excluded_report, select_chunks_for
 from .states import Status
+
+# **حدُّ انتظارِ الأقفال في التنقيب التلقائيّ وحده.**
+#
+# `audit.record` يأخذ قفلًا استشاريًّا لسلسلة تدقيق المستأجر كلّه. ومعاملةٌ
+# أخرى تمسكه تُعلّق هذا التنقيبَ **بلا حدّ**: التنقيبُ خلفيٌّ بعد استخراجٍ
+# نجح، فلا أحدَ ينتظره ولا شيءَ يقطعه. فيُحَدّ انتظارُه هنا — وهنا وحده،
+# ولا تُمسّ دلالاتُ التدقيق للمنصّة كلّها (ذاك عملُ P1).
+AUTO_MINING_LOCK_TIMEOUT_MS = 5000
 
 # حزمة حقول واحدة لكل قسم — استدعاء لكل حقل يضاعف الكلفة بلا فائدة.
 _BATCH_SECTIONS = (
@@ -494,6 +502,19 @@ async def _mine_after_extraction(
                 return
             if thesis.processing_state in thesis_processing.IN_FLIGHT:
                 return
+            # **والحدُّ يُضبط هنا: بعد قفلِ الصفّ، وقبل التنقيب.**
+            #
+            # وترتيبُه مقصودٌ حرفًا بحرف. لو سبق `FOR UPDATE` لصار تنقيبٌ
+            # آخر مشروعٌ على الصفّ نفسه «فشلًا» لمجرّد أنّه انتظر دورَه —
+            # وتسلسلُ الصفّ يجب أن يبقى انتظارًا لا فشلًا. فالحدُّ يقع على
+            # ما **بعد** القفل، وأوّلُه القفلُ الاستشاريّ لسلسلة التدقيق.
+            #
+            # و`set_config(..., true)` محلّيٌّ للمعاملة: ينتهي بانتهائها،
+            # ولا يتسرّب إلى اتصالٍ يعود إلى التجمّع.
+            await session.execute(
+                text("SELECT set_config('lock_timeout', :timeout, true)"),
+                {"timeout": f"{AUTO_MINING_LOCK_TIMEOUT_MS}ms"},
+            )
             await mining.run(session, tenant_id=tenant_id,
                              actor_user_id=actor_user_id, thesis=thesis)
     except Exception as error:  # noqa: BLE001 — الحدُّ نفسه هو المقصود
