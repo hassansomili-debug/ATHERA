@@ -113,6 +113,42 @@ async function serve(page: Page, opportunities: number) {
   });
 }
 
+/**
+ * ما يقوله الفحصُ حين يسقط — **لا مهلةٌ صامتة**.
+ *
+ * وسقطت هذه الرقعةُ مرّةً بأنّ عنصرًا ظهر ثمّ اختفى في أجزاء من الثانية:
+ * ‏`toBeVisible` نجحت و`toHaveValue` لم تجد شيئًا. والسجلُّ يقول «لم يوجد»
+ * ولا يقول **لماذا** — أهو تنقّلٌ إلى الدخول، أم انكسارُ تصيير، أم إخفاءُ
+ * حارسِ الجلسة. فتُلتقط الشواهدُ الثلاثة ويُطبع أيّها وقع.
+ */
+interface Watch {
+  console: string[];
+  errors: string[];
+  urls: string[];
+}
+
+function watch(page: Page): Watch {
+  const w: Watch = { console: [], errors: [], urls: [] };
+  page.on("console", (m) => {
+    if (m.type() === "error") w.console.push(m.text().slice(0, 200));
+  });
+  page.on("pageerror", (e) => w.errors.push(String(e).slice(0, 200)));
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) w.urls.push(frame.url());
+  });
+  return w;
+}
+
+async function report(page: Page, w: Watch, stage: string) {
+  console.log(`\n── ${stage} ──`);
+  console.log("   final url    :", page.url());
+  console.log("   navigations  :", w.urls.join(" -> ") || "none");
+  console.log("   selects in dom:", await page.locator("select").count());
+  console.log("   picker in dom :", await page.getByTestId("thesis-picker").count());
+  console.log("   page errors  :", w.errors.join(" | ") || "none");
+  console.log("   console errs :", w.console.slice(-4).join(" | ") || "none");
+}
+
 test.beforeEach(async ({ page }) => {
   await seedSession(page);
 });
@@ -151,19 +187,33 @@ test("the card opens this thesis, with no reselection", async ({ page }) => {
   await expect(page).toHaveURL(new RegExp(`/${AR}/opportunities\\?thesis_id=${THESIS}$`));
 
   // والشاشةُ تفتح على تلك الرسالة، لا على أولى القائمة.
-  await expect(page.locator("select").first()).toHaveValue(THESIS);
+  await expect(page.getByTestId("thesis-picker")).toHaveValue(THESIS);
 });
 
 test("a thesis the researcher does not own is never preselected", async ({ page }) => {
+  const w = watch(page);
   await serve(page, 3);
 
   // **ومعامل الرابط ليس إذنًا.** معرّفٌ ليس في قائمة صاحب الجلسة يسقط إلى
   // الأولى بلا خطأ — ولا يكشف وجودَ رسالةٍ ولا غيابَها.
+  //
+  // **والزيارةُ المباشرة هي المقصودة**: هكذا يصل رابطٌ يُلصَق أو يُشارَك.
   await page.goto(`/${AR}/opportunities?thesis_id=00000000-0000-0000-0000-000000000000`);
 
-  const select = page.locator("select").first();
-  await expect(select).toBeVisible();
-  await expect(select).toHaveValue(THESIS);
+  // ولا يُقاس شيءٌ قبل أن تستقرّ الشاشة: `networkidle` تنتظر ما بعد الترطيب
+  // من طلباتٍ وتنقّلاتِ حارسِ الجلسة، فلا يُقرأ عنصرٌ في طريقه إلى الزوال.
+  await page.waitForLoadState("networkidle");
+
+  const picker = page.getByTestId("thesis-picker");
+  const settled = await picker.waitFor({ state: "visible", timeout: 15_000 })
+    .then(() => true, () => false);
+  if (!settled) await report(page, w, "unowned-id/no-picker");
+  expect(settled, "قائمةُ اختيار الرسالة لم تستقرّ على الشاشة").toBe(true);
+
+  // **ولا يُختار ما لا يملكه**: يسقط إلى أولى قائمته هو.
+  await expect(picker).toHaveValue(THESIS);
+  // ولا يُكشف شيءٌ عن المعرّف المطلوب — لا في الصفحة ولا في رسالة خطأ.
+  await expect(page.locator("body")).not.toContainText("00000000-0000-0000-0000-000000000000");
 });
 
 test("a thesis with nothing mined shows no opportunity link", async ({ page }) => {

@@ -135,6 +135,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ locale
       {theses.length > 1 ? (
         // قائمةُ اختيارٍ بلا اسمٍ مُعلَن — والخريطة كلّها تُشتقّ من اختيارها.
         <select
+          data-testid="thesis-picker"
           aria-label={t("opportunities.chooseThesis")}
           value={thesisId ?? ""}
           onChange={(e) => setThesisId(e.target.value)}
