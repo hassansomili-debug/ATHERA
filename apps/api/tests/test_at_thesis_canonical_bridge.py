@@ -1337,3 +1337,196 @@ async def test_a_negative_sample_size_is_refused_at_maximum_confidence(two_tenan
 
     assert evidence.facts.sample_ids == (), "عددٌ سالب أسند عيّنة"
     assert "sample_size_has_a_non_positive_count" in evidence.reasons, evidence.reasons
+
+
+
+# ═════════ ٨ · الرحلةُ التلقائية: بلا اعتمادٍ وبلا زرّ ═════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_extraction_completion_mines_opportunities_with_no_human_step(
+        two_tenants):
+    """**البرهانُ المركزيّ لـP0-T1.**
+
+    اكتمالُ الاستخراج وحده يُنتج فرصَ نشرٍ محفوظة: **ولا `approve_candidate`،
+    ولا ذاكرةٌ موثقة، ولا طلبُ تنقيبٍ يدويّ واحد**. والمسارُ المُستدعى هو
+    مسارُ الإنتاج نفسه — `_mine_after_extraction` الذي يناديه خطُّ المعالجة
+    بعد أن يستقرّ الاستخراجُ في القاعدة.
+    """
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import FactCandidate, ResearcherMemory
+    from athera_api.models.thesis import PublicationOpportunity, Thesis
+    from athera_api.services.document_intelligence import pipeline
+    from athera_api.services.thesis import mining
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _run = await _machine_thesis(tid, uid)
+
+    # **ولا نداءَ يدويّ.** هذه هي النقطة التي يناديها خطُّ المعالجة بنفسه.
+    await pipeline._mine_after_extraction(  # noqa: SLF001 — المسارُ المفحوص بعينه
+        lambda: tenant_session(tid, uid),
+        tenant_id=tid, actor_user_id=uid, file_id=file_id)
+
+    async with tenant_session(tid, uid) as session:
+        opportunities = (await session.execute(
+            select(func.count(PublicationOpportunity.id))
+            .where(PublicationOpportunity.thesis_id == thesis_id))).scalar_one()
+        memories = (await session.execute(
+            select(func.count(ResearcherMemory.id)))).scalar_one()
+        approved = (await session.execute(
+            select(func.count(FactCandidate.id)).where(
+                FactCandidate.file_id == file_id,
+                FactCandidate.status == "approved"))).scalar_one()
+        thesis = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+
+    assert opportunities > 0, "اكتمالُ الاستخراج لم يُنتج فرصةً واحدة"
+    assert memories == 0, "أُنشئت ذاكرةٌ موثقة — والرحلةُ لا تحتاجها"
+    assert approved == 0, "اعتُمدت حقيقةٌ — والرحلةُ لا تحتاج اعتمادًا"
+    assert thesis.mining_state == mining.COMPLETED, thesis.mining_state
+    assert thesis.opportunities_mined_at is not None
+    sections, results = await _counts(tid, uid, thesis_id)
+    assert sections == 0 and results == 0, "كُتب صفٌّ في المعماريّة القديمة"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_automatic_trigger_never_writes_a_duplicate(two_tenants):
+    """تشغيلُه مرّتين، ثمّ يدويًّا — **ولا صفَّ فرصةٍ يتكرّر**."""
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import PublicationOpportunity
+    from athera_api.services.document_intelligence import pipeline
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _run = await _machine_thesis(tid, uid)
+
+    async def count():
+        async with tenant_session(tid, uid) as session:
+            return (await session.execute(
+                select(func.count(PublicationOpportunity.id))
+                .where(PublicationOpportunity.thesis_id == thesis_id))).scalar_one()
+
+    for _ in range(2):
+        await pipeline._mine_after_extraction(  # noqa: SLF001
+            lambda: tenant_session(tid, uid),
+            tenant_id=tid, actor_user_id=uid, file_id=file_id)
+    after_auto = await count()
+    assert after_auto > 0
+
+    # والمسارُ اليدويّ يقرأ ما كتبته الأتمتة فيتخطّاه.
+    async with _client(tid, uid) as client:
+        body = (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).json()
+
+    assert body["opportunities_created"] == 0, "المسارُ اليدويّ كرّر ما كُتب"
+    assert body["opportunities_already_present"] == after_auto
+    assert await count() == after_auto, "تضاعفت الفرصُ في القاعدة"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_mining_failure_never_rewrites_a_successful_extraction(two_tenants):
+    """**أهمُّ حدٍّ في هذه الموجة.**
+
+    الاستخراجُ نجح ومرشّحاتُه مكتوبةٌ مؤصَّلة. فمهما تعثّر التنقيبُ بعده،
+    لا يُعاد وصفُ الرسالة «فشل استخراجُها» — ذاك يمحو عملًا وقع، ويدفع
+    الباحثَ إلى إعادةٍ لا داعي لها.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+    from athera_api.services.document_intelligence import pipeline
+    from athera_api.services.thesis import mining, processing
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _run = await _machine_thesis(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        await processing.mark(session, tenant_id=tid, thesis_id=thesis_id,
+                              state=processing.READY_FOR_REVIEW)
+
+    broken = RuntimeError("mining exploded")
+
+    async def explode(*_args, **_kwargs):
+        raise broken
+
+    original = mining.run
+    mining.run = explode
+    try:
+        await pipeline._mine_after_extraction(  # noqa: SLF001
+            lambda: tenant_session(tid, uid),
+            tenant_id=tid, actor_user_id=uid, file_id=file_id)
+    finally:
+        mining.run = original
+
+    async with tenant_session(tid, uid) as session:
+        thesis = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+
+    # **حالُ الاستخراج لم تُمسّ** — وهي الدعوى التي يقوم عليها كلُّ شيء.
+    assert thesis.processing_state == processing.READY_FOR_REVIEW, (
+        "فشلُ تنقيبٍ أعاد كتابة حالِ الاستخراج")
+    assert thesis.processing_state != processing.FAILED
+    # وحالُ التنقيب تقول الحقيقة عن نفسها.
+    assert thesis.mining_state == mining.FAILED
+    assert thesis.mining_last_error == "RuntimeError"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_archived_thesis_is_not_mined_behind_the_researcher(two_tenants):
+    """قرارُ الإخفاء وقع أثناء الاستخراج — **ويُحترم**."""
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import PublicationOpportunity, Thesis
+    from athera_api.services.document_intelligence import pipeline
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _run = await _machine_thesis(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        thesis = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        thesis.archived_at = dt.datetime.now(dt.UTC)
+        thesis.archived_by = uid
+
+    await pipeline._mine_after_extraction(  # noqa: SLF001
+        lambda: tenant_session(tid, uid),
+        tenant_id=tid, actor_user_id=uid, file_id=file_id)
+
+    async with tenant_session(tid, uid) as session:
+        count = (await session.execute(
+            select(func.count(PublicationOpportunity.id))
+            .where(PublicationOpportunity.thesis_id == thesis_id))).scalar_one()
+    assert count == 0, "كُتبت فرصٌ لسجلٍّ أخفاه الباحث"
+
+
+def test_the_lifecycle_guard_covers_automatic_mining():
+    """**والسباقُ مع الأرشفة أُغلق بمفردات الموجة 1.1 نفسها.**"""
+    import ast
+    import pathlib
+
+    # **ومسارٌ نسبيٌّ يتعلّق بمجلّد التشغيل** — يمرّ محليًّا ويسقط حيث
+    # يُشغَّل pytest من غير هذا المجلّد. فيُشتقّ من موضع الملفّ نفسه.
+    root = pathlib.Path(__file__).resolve().parents[1]
+    source = (root / "athera_api" / "routers" / "thesis.py").read_text(
+        encoding="utf-8")
+    tree = ast.parse(source)
+    guard = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_refuse_if_in_flight")
+    body = ast.dump(guard)
+    assert "mining_state" in body, "الحارسُ لا يعرف التنقيبَ الجاري"
+    assert body.count("processing_in_flight") >= 2, (
+        "اختُرعت آليةُ منعٍ موازية بدل مفردات الموجة 1.1")
