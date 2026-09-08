@@ -558,8 +558,12 @@ def test_multi_valued_facts_are_read_as_items_and_prose_is_never_split():
     assert canonical_facts._texts(_fake({"value": None}, "عبارة")) == ["عبارة"]
     assert canonical_facts._texts(_fake(None, "عبارة")) == ["عبارة"]
     assert canonical_facts._texts(_fake({"value": ["", "  "]}, "")) == []
-    # عنصرٌ ليس نصًّا ولا رقمًا يُترك ولا يُخمَّن له تمثيل.
-    assert canonical_facts._texts(_fake({"value": [{"x": 1}, "ب"]})) == ["ب"]
+    # **قائمةٌ مختلطة تسقط كلُّها.** عنصرٌ غيرُ قياسيّ يعني أنّ ما قُصد
+    # بالقيمة غيرُ مقطوعٍ به، وما لا يُقطع فيه لا يُنشر.
+    assert canonical_facts._texts(_fake({"value": [{"x": 1}, "ب"]})) == []
+    # ونصُّ العبارة لا يُنقذ قيمةً حاضرةً فاسدة.
+    assert canonical_facts._texts(
+        _fake({"value": [{"x": 1}]}, "[{'x': 1}]")) == []
 
 
 def test_a_null_result_is_only_counted_when_the_fact_says_so():
@@ -804,8 +808,17 @@ async def test_a_material_conflict_withholds_only_its_own_concept(two_tenants):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_an_approved_correction_supersedes_a_machine_fact(two_tenants):
-    """**الإنسانُ المعتمِد يبطل الآليَّ في المفهوم نفسه** — ولا يُحذف تاريخ."""
+async def test_an_approved_construct_leaves_a_distinct_machine_construct_alone(
+        two_tenants):
+    """**والمتعدّدُ لا يُمحى بالمشاركة.**
+
+    كان هذا الفحصُ يطلب أن يختفي كلُّ بناءٍ آليّ حين يعتمد الباحثُ بناءً
+    واحدًا — وذاك الإبطالُ الواسع الذي أُزيل: `constructs` حقلٌ متعدّد،
+    واعتمادُ «الالتزام التنظيمي» **لا يقول شيئًا** عن «القيادة التحويلية».
+    ولا هويّةَ عنصرٍ حتميّة في النموذج، **وعلاقةٌ مجهولة ليست إحلالًا**.
+
+    والحسمُ الميدانيّ للمفرد وحده — انظر فحصَ العنوان.
+    """
     from sqlalchemy import func, select
 
     from athera_api.db import tenant_session
@@ -835,10 +848,10 @@ async def test_an_approved_correction_supersedes_a_machine_fact(two_tenants):
             select(func.count(FactCandidate.id))
             .where(FactCandidate.file_id == file_id))).scalar_one()
 
-    assert evidence.facts.variables == (correction,), evidence.facts.variables
-    assert CONSTRUCT_ONE not in evidence.facts.variables, "الآليُّ غلب المعتمَد"
+    assert correction in evidence.facts.variables, "المعتمَدُ البشريّ سقط"
+    assert CONSTRUCT_ONE in evidence.facts.variables, (
+        "بناءٌ آليٌّ سليم مُحي لمجرّد مشاركته المفتاح")
     assert evidence.approved_verified_used == 1
-    assert "superseded_by_researcher_decision" in evidence.reasons
     assert remaining == 2, "حُذف تاريخ"
 
 
@@ -1015,12 +1028,15 @@ async def test_approved_with_a_broken_memory_never_falls_through_to_confidence(
         two_tenants, breakage):
     """**والاعتمادُ المكسور لا ينزل إلى حساب الثقة.**
 
-    كان الفرعُ يعود بالأهليّة عند تمام الشروط ويسقط إلى العتبة عند نقصانها،
-    فمرشّحٌ «معتمَد» بذاكرةٍ مفقودةٍ أو غيرِ موثقةٍ يُصنَّف مؤهَّلًا **بثقة
-    الآلة** — فيصير الاعتمادُ المكسور أقوى من الاعتماد المفقود.
+    كان الفرعُ يعود بالأهليّة عند تمام شروط الذاكرة، ويسقط إلى العتبة عند
+    نقصانها — فمرشّحٌ «معتمَد» بذاكرةٍ مفقودةٍ أو غيرِ موثقةٍ يُصنَّف مؤهَّلًا
+    **بثقة الآلة**، فيصير الاعتمادُ المكسور أقوى من الاعتماد المفقود.
+
+    و`wrong_tenant` تُنشأ **في جلسة صاحبها**: أوّلُ صياغةٍ حاولت كتابتها من
+    جلسة المستأجر الآخر فرفضتها RLS — وكانت محقّة. فالسياسةُ لا تُضعَّف
+    لتُفحص؛ يُبنى الصفُّ حيث يجوز بناؤه، ثمّ يُطلب من المصنِّف أن يرفضه.
     """
     import datetime as _dt
-    import uuid as _uuid
 
     from athera_api.db import tenant_session
     from athera_api.models.research import ResearcherMemory
@@ -1028,25 +1044,42 @@ async def test_approved_with_a_broken_memory_never_falls_through_to_confidence(
 
     a, b = two_tenants["a"], two_tenants["b"]
     tid, uid = a["tenant_id"], a["user_id"]
+    btid, buid = b["tenant_id"], b["user_id"]
     thesis_id, file_id, run_id = await _seed(tid, uid)
-    _bt, bfile, _brun = await _seed(b["tenant_id"], b["user_id"], filename="ب.pdf")
+    _bt, bfile, _brun = await _seed(btid, buid, filename="ب.pdf")
+
+    foreign_memory_id = None
+    if breakage == "wrong_tenant":
+        async with tenant_session(btid, buid) as session:
+            foreign = ResearcherMemory(
+                tenant_id=btid, memory_category="project_decision",
+                statement_ar=QUESTION_ONE, value={"value": QUESTION_ONE},
+                source_type="upload", source_file_id=bfile,
+                source_locator="p.1", source_quote=QUESTION_ONE[:200],
+                verification_status="verified", verified_by=buid,
+                verified_at=_dt.datetime.now(_dt.UTC))
+            session.add(foreign)
+            await session.flush()
+            foreign_memory_id = foreign.id
 
     async with tenant_session(tid, uid) as session:
         chunk = await _chunk(session, tid, file_id, QUESTION_ONE)
         candidate = await _candidate(
             session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
             field_key="questions", value=[QUESTION_ONE], confidence=0.99)
+        candidate.status = "approved"
+        candidate.decided_by = uid
+        candidate.decided_at = _dt.datetime.now(_dt.UTC)
 
         if breakage == "no_memory":
-            candidate.status = "approved"
-            candidate.decided_by = uid
-            candidate.decided_at = _dt.datetime.now(_dt.UTC)
             candidate.resulting_memory_id = None
+        elif breakage == "wrong_tenant":
+            candidate.resulting_memory_id = foreign_memory_id
         else:
             memory = ResearcherMemory(
-                tenant_id=tid if breakage != "wrong_tenant" else b["tenant_id"],
-                memory_category="project_decision", statement_ar=QUESTION_ONE,
-                value={"value": QUESTION_ONE}, source_type="upload",
+                tenant_id=tid, memory_category="project_decision",
+                statement_ar=QUESTION_ONE, value={"value": QUESTION_ONE},
+                source_type="upload",
                 source_file_id=file_id if breakage != "wrong_file" else bfile,
                 source_locator=chunk.locator, source_quote=chunk.text[:200],
                 verification_status=("verified" if breakage != "unverified"
@@ -1054,11 +1087,7 @@ async def test_approved_with_a_broken_memory_never_falls_through_to_confidence(
                 verified_by=uid, verified_at=_dt.datetime.now(_dt.UTC))
             session.add(memory)
             await session.flush()
-            candidate.status = "approved"
-            candidate.decided_by = uid
-            candidate.decided_at = _dt.datetime.now(_dt.UTC)
             candidate.resulting_memory_id = memory.id
-            assert memory.id != _uuid.UUID(int=0)
 
     async with tenant_session(tid, uid) as session:
         evidence = await canonical_facts.load(

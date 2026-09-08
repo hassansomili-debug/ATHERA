@@ -212,29 +212,45 @@ def structurally_valid(field_key: str | None, texts: list[str]) -> tuple[bool, s
 
 
 def usable_texts(candidate: FactCandidate) -> list[str]:
-    """قيمُ الحقيقةِ نصًّا — **ولا يُقبل قاموسٌ لأنّه ليس فارغًا**.
+    """قيمُ الحقيقةِ نصًّا — **وتسقط مغلقةً على بنيةٍ لا يعرفها العقد**.
 
     والشكلُ المخزون `{"value": …}` و`value` نوعُه `Any`. فتُقبل السلاسلُ
-    والأعدادُ وقوائمُها، ويُترك ما عداها: بنيةٌ لا يعرفها العقدُ ليست
-    دليلًا، وصدقُها في بايثون (`bool({...})`) ليس صدقًا علميًّا.
+    والأعدادُ وقوائمُها، ويُرفض ما عداها.
+
+    **ونصُّ العبارة لا يُنقذ قيمةً فاسدة.** كان الرجوعُ إلى `statement_ar`
+    يقع كلّما خلت القراءةُ من نتيجة — ومنها حين تكون القيمةُ حاضرةً لكنّها
+    قائمةُ قواميس. و`statement_ar` مكتوبٌ `str(value)`، فيصير
+    `"[{'name': …}]"` نصًّا غيرَ فارغ **فيمرّ**. فيدخل قاموسٌ مُسلسَلٌ إلى
+    مراجع المتغيّرات في فرصةِ نشرٍ محفوظة.
+
+    فيُفصل الحالان: قيمةٌ **غائبة** يُصان معها نصُّ العبارة، وقيمةٌ
+    **حاضرةٌ فاسدة** تسقط مغلقةً ولا تُترجَم.
+
+    وعنصرٌ واحد غيرُ قياسيّ يُسقط القائمةَ كلَّها: قائمةٌ مختلطة لا يُقطع
+    فيها بما قُصد، **وما لا يُقطع فيه لا يُنشر**.
     """
     payload = candidate.value if isinstance(candidate.value, dict) else None
+    present = payload is not None and "value" in payload
     raw = payload.get("value") if payload else None
 
-    out: list[str] = []
-    if isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, str | int | float) and not isinstance(item, bool):
-                text = str(item).strip()
-                if text:
-                    out.append(text)
-    elif isinstance(raw, str | int | float) and not isinstance(raw, bool):
-        text = str(raw).strip()
-        if text:
-            out.append(text)
-
-    if out:
+    if present and raw is not None:
+        out: list[str] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str | int | float) and not isinstance(item, bool):
+                    text = str(item).strip()
+                    if text:
+                        out.append(text)
+                else:
+                    return []
+        elif isinstance(raw, str | int | float) and not isinstance(raw, bool):
+            text = str(raw).strip()
+            if text:
+                out.append(text)
+        else:
+            return []
         return out
+
     statement = (candidate.statement_ar or "").strip()
     return [statement] if statement else []
 
