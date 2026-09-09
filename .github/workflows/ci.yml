@@ -359,3 +359,75 @@ jobs:
         with: { python-version: "3.12" }
       - name: Dependency audit
         run: pip install pip-audit && pip-audit -r <(pip install -e apps/api --dry-run --report - 2>/dev/null || echo "") || true
+
+  # ══════════════════════════════════════════════════════════════════
+  # قبولُ T1 على الإنتاج المنشور — بفرعٍ واحدٍ بعينه
+  # ══════════════════════════════════════════════════════════════════
+  #
+  # **ولا تعمل هذه المهمّة في كلّ طلب دمج.** الرحلةُ تكتب في الإنتاج
+  # (ترفع رسالةً اصطناعية ثمّ تؤرشفها)، فتُقيَّد بفرعِ القبول وحده،
+  # وبمستودعِ الأصل وحده — فلا تُشغّلها شوكةٌ باعتمادِ المالك.
+  #
+  # **وتسقط مغلقةً لا خضراء.** بوّابةٌ مقفلة أو اعتمادٌ غائب يُنهيان
+  # المهمّة بفشلٍ صريح: «لم تُشغَّل» ليست «نجحت»، وتخطٍّ صامتٌ هنا يُقرأ
+  # قبولًا وقع ولم يقع.
+  t1-production-acceptance:
+    name: T1 — قبول الإنتاج | T1 production acceptance
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request'
+            && github.head_ref == 'ops/p0-t1-production-acceptance'
+            && github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      PUBRIVA_ACCEPT_EMAIL: ${{ secrets.PUBRIVA_ACCEPT_EMAIL }}
+      PUBRIVA_ACCEPT_PASSWORD: ${{ secrets.PUBRIVA_ACCEPT_PASSWORD }}
+      PUBRIVA_ACCEPT_EMAIL_2: ${{ secrets.PUBRIVA_ACCEPT_EMAIL_2 }}
+      PUBRIVA_ACCEPT_PASSWORD_2: ${{ secrets.PUBRIVA_ACCEPT_PASSWORD_2 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: cd apps/web && npm ci
+      # `--no-save` عمدًا، كما في مهمّة المتصفح: لا Node على جهاز التطوير
+      # لإعادة توليد القفل، وإضافةُ الحزمة بلا قفلٍ مطابق تكسر `npm ci`.
+      - run: cd apps/web && npm install --no-save @playwright/test@^1.51.1
+      - run: cd apps/web && npx playwright install --with-deps chromium
+
+      # ── البوّابة: تُفحص صراحةً، ويُفشَل عندها ولا يُتخطّى ──
+      - name: Fail closed unless the acceptance gate and credentials are present
+        env:
+          ACCEPT_READY: ${{ vars.PUBRIVA_ACCEPT_READY }}
+        run: |
+          if [ "$ACCEPT_READY" != "true" ]; then
+            echo "::error::PUBRIVA_ACCEPT_READY is not 'true' — T1 production acceptance did NOT run."
+            echo "::error::this job fails closed on purpose: not-run is not green."
+            exit 1
+          fi
+          if [ -z "$PUBRIVA_ACCEPT_EMAIL" ] || [ -z "$PUBRIVA_ACCEPT_PASSWORD" ]; then
+            echo "::error::the primary acceptance credentials are missing — failing closed."
+            exit 1
+          fi
+          if [ -z "$PUBRIVA_ACCEPT_EMAIL_2" ] || [ -z "$PUBRIVA_ACCEPT_PASSWORD_2" ]; then
+            echo "::warning::the second acceptance account is absent — part A will run and"
+            echo "::warning::part B will report SECOND_ACCEPTANCE_ACCOUNT_REQUIRED."
+            echo "::warning::T1 is NOT fully green without the second-tenant privacy proof."
+          fi
+
+      # ── الرحلة: متصفّحٌ حقيقيّ على الإنتاج المنشور، بلا تلفيق ──
+      #
+      # `--retries=0` مقصود: إعادةُ محاولةٍ ترفع رسالةً اصطناعيةً ثانية
+      # إلى الإنتاج، وتُخفي تقطّعًا بدل أن تكشفه.
+      - name: T1 acceptance journey (real browser, deployed production)
+        run: |
+          cd apps/web && npx playwright test tests/t1-production-acceptance.spec.ts \
+            --retries=0 --workers=1
+        env:
+          PUBRIVA_WEB_URL: https://pubriva.com
+          PUBRIVA_T1_RUN_ID: ${{ github.run_id }}
+
+      # **ولا يُرفع شيء من هذه الرحلة إطلاقًا — ولو فشلت.**
+      # المسجّلات مُطفأة في الرقعة نفسها، لكن `error-context.md` يُكتب على
+      # أي حال ويحمل لقطةَ DOM لصفحةٍ فيها حقولُ اعتماد. فتُمحى المخرجات
+      # قبل أيّ رفع، ولا خطوةَ رفعٍ في هذه المهمّة أصلًا.
+      - name: Destroy acceptance artifacts before any upload
+        if: always()
+        run: rm -rf apps/web/playwright-report apps/web/test-results
