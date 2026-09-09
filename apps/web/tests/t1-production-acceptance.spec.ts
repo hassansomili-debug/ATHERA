@@ -17,6 +17,12 @@ import { LOCALE, signIn } from "./journey";
  * والمستندُ يُبنى في زمن التشغيل: لا ملفَّ ثنائيًّا في المستودع، ومحتواه
  * مخترَعٌ بالكامل — لا أشخاصَ حقيقيّين ولا دراسةً حقيقية.
  *
+ * وهو نصٌّ عربيٌّ بترميز UTF-8، لا PDF. و`.txt` نوعٌ مقبولٌ في المدخل
+ * نفسه (`ACCEPT` في `ThesisIntake`)، وهذا القبولُ يفحص أتمتة T1 — رفعٌ
+ * فقراءةٌ فأهليّةٌ فتنقيبٌ تلقائيّ — لا تصييرَ PDF. وبناءُ PDF بخطّ
+ * Helvetica لا يُرمّز العربية أصلًا، فكان يُسقط التشغيلةَ حمرةً كاذبة
+ * تكلّف رفعًا إلى الإنتاج وتحقيقًا، بلا إشارةٍ واحدة عن المنتج.
+ *
  * ## الحدُّ الذي تقف عنده
  *
  * تصل إلى **مرحلة الاختيار** ثمّ تقف: لا حقوقَ ولا تأليفَ ولا إنشاءَ
@@ -77,89 +83,71 @@ function stage(name: string, detail: string): void {
 // مستندٌ اصطناعيّ يُبنى في زمن التشغيل — لا ملفَّ ثنائيًّا في المستودع
 // ══════════════════════════════════════════════════════════════════════
 //
-// **والبصمةُ تُفحص على الخادم**: `storage.validate_content` تشترط أن يبدأ
-// المرفوع بـ`%PDF-`، فلا يمرّ نصٌّ يُسمّي نفسه PDF. فيُبنى مستندٌ صحيح
-// البنية: كتالوجٌ وصفحةٌ وخطٌّ ومجرى محتوى، ومرجعٌ متقاطع بإزاحاتٍ محسوبة.
-// (البناءُ نفسه المثبت في `rc-thesis-journey.spec.ts`.)
-function buildPdf(contentStream: string): Buffer {
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
-      "/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${contentStream.length} >>\nstream\n${contentStream}endstream`,
-  ];
-  let pdf = "%PDF-1.4\n";
-  const offsets: number[] = [];
-  objects.forEach((body, index) => {
-    offsets.push(pdf.length);
-    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
-  });
-  const xref = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (const offset of offsets) pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\n` +
-         `startxref\n${xref}\n%%EOF\n`;
-  return Buffer.from(pdf, "latin1");
-}
+// **ويُعلن اصطناعَه في متنه، لا في اسمه وحده.** فمن يفتحه في الإنتاج
+// يقرأ في سطره الثاني أنّه ليس دراسةً منشورة ولا بيانات حقيقية.
+//
+// **ورقمٌ واحدٌ في المستند كلِّه**: حجمُ العيّنة. وما عداه مكتوبٌ بالحروف
+// عمدًا — `fact_eligibility` يرفض عدّين متنازعين على حقل العيّنة، فرقمٌ
+// ثانٍ يُسقط التشغيلةَ على قاعدةٍ من قواعد المنتج لا على عطبٍ فيه.
+//
+// **ولا إحصاءَ لم يُجرَ**: لا معاملات ولا قيم دلالة ولا أحجام أثر. النتائج
+// عباراتٌ اتجاهية وحسب — وهو القيدُ نفسه الذي يفرضه المنتج على الباحث،
+// فلا يليق بمستند القبول أن يُخالفه.
+const THESIS_TEXT = [
+  `العنوان: اختبار قبول PUBRIVA — أثر جودة المحتوى الرقمي في الثقة بالعلامة التجارية (${MARKER})`,
+  "",
+  "طبيعة المستند: هذا مستندٌ اصطناعيٌّ أُنشئ لاختبار قبولٍ آليّ. وليس دراسةً",
+  "منشورة، ولا يقوم على بياناتٍ حقيقية، ولا يصف أشخاصًا حقيقيّين، ولا يجوز",
+  "الاستشهاد به في عملٍ علميّ.",
+  "",
+  "مشكلة الدراسة: تعتمد المؤسسات على المحتوى الرقمي في بناء صورتها لدى",
+  "جمهورها، ويلاحظ القائمون على التسويق تفاوتًا في ثقة الجمهور لا يفسّره حجم",
+  "الإنفاق وحده. ولا تتوفّر في السياق المحلّي قراءةٌ واضحة للعلاقة بين جودة ما",
+  "يُنشر رقميًّا وبين الثقة بالعلامة التجارية.",
+  "",
+  "أهداف الدراسة: وصف مستوى جودة المحتوى الرقمي كما يدركه الجمهور، ووصف مستوى",
+  "الثقة بالعلامة التجارية لديه، وبيان اتجاه العلاقة بين الاثنين، والكشف عن",
+  "دور التفاعل مع المحتوى في هذه العلاقة.",
+  "",
+  "أسئلة الدراسة: ما مستوى جودة المحتوى الرقمي كما يدركه المشاركون؟ وما مستوى",
+  "الثقة بالعلامة التجارية لديهم؟ وما اتجاه العلاقة بين جودة المحتوى المدركة",
+  "والثقة بالعلامة؟ وهل يختلف اتجاه هذه العلاقة باختلاف مستوى التفاعل مع",
+  "المحتوى؟",
+  "",
+  "مجتمع الدراسة: متابعو الحسابات الرقمية للعلامات التجارية في قطاع الخدمات،",
+  "ممّن يتابعون محتواها متابعةً منتظمة خلال فصلٍ واحد.",
+  "",
+  "حجم العينة: 312 مشاركًا اختيروا من مجتمع الدراسة الموصوف أعلاه.",
+  "",
+  "المتغيرات: جودة المحتوى الرقمي · الثقة بالعلامة التجارية · التفاعل مع",
+  "المحتوى.",
+  "",
+  "المنهج: منهجٌ كمّيٌّ وصفيٌّ ارتباطيّ، يصف الظاهرة ويبحث اتجاه الاقتران بين",
+  "متغيّراتها، ولا يثبت سببًا.",
+  "",
+  "الأداة: استبانةٌ اصطناعية أُعدّت لهذا الاختبار، تقيس إدراك جودة المحتوى",
+  "والثقة بالعلامة والتفاعل معها، وروجعت قبل الاستعمال.",
+  "",
+  "النتائج:",
+  "أولًا: جاء إدراك جودة المحتوى الرقمي عند المشاركين في مستوى مرتفع.",
+  "ثانيًا: جاءت الثقة بالعلامة التجارية في مستوى متوسط، وهي أدنى من مستوى",
+  "إدراك الجودة.",
+  "ثالثًا: اتّجهت العلاقة بين جودة المحتوى المدركة والثقة بالعلامة اتجاهًا",
+  "موجبًا.",
+  "رابعًا: ظهر هذا الاتجاه الموجب أوضحَ لدى المشاركين الأكثر تفاعلًا مع",
+  "المحتوى منه لدى الأقلّ تفاعلًا.",
+  "خامسًا: لم يظهر في بيانات هذا المستند الاصطناعي ما يشير إلى اتجاهٍ سالب في",
+  "أيٍّ من المقارنات الموصوفة.",
+  "",
+  "الخلاصة: يشير هذا المستند الاصطناعي إلى أنّ جودة المحتوى الرقمي المدركة",
+  "تقترن اقترانًا موجبًا بالثقة بالعلامة التجارية، وأنّ التفاعل مع المحتوى",
+  "يصاحب هذا الاقتران. وهي دلالاتٌ وصفيةٌ اتجاهية لا تثبت سببًا، ولا تقوم على",
+  "بياناتٍ حقيقية.",
+].join("\n");
 
-/**
- * متنُ الرسالة الاصطناعية — **مخترَعٌ بالكامل**.
- *
- * ولا رقمَ فيه إلّا واحد: حجمُ العيّنة. فالأعدادُ الأخرى مكتوبةٌ بالحروف
- * عمدًا، حتى لا يبقى في المستند رقمان يصلح كلٌّ منهما أن يُقرأ عيّنةً —
- * فيصير الاستخراجُ مبهمًا لسببٍ صنعه الفحص لا المنتج.
- */
-const THESIS_LINES: string[] = [
-  `Title: ${SYNTHETIC_TITLE}`,
-  "This is synthetic acceptance content. It describes no real study and no real person.",
-  "",
-  "Research problem: secondary school teachers in the studied district report that",
-  "learners disengage during extended reading tasks, and no local instrument exists",
-  "to describe that disengagement in a way teachers can act upon.",
-  "",
-  "Objectives: to describe the disengagement pattern, to build a short classroom",
-  "instrument for it, and to test whether a structured reading routine changes it.",
-  "",
-  "Research questions: What pattern of reading disengagement appears in the studied",
-  "district? Does a structured reading routine change that pattern? Does the change",
-  "differ between learners with high and low prior reading confidence?",
-  "",
-  "Population: secondary school learners enrolled in public schools in the studied",
-  "district during a single academic term.",
-  "",
-  "Sample: the final sample consisted of 214 learners drawn from the population above.",
-  "",
-  "Constructs: reading disengagement, prior reading confidence, and routine adherence.",
-  "",
-  "Methodology: a quasi-experimental design with a pre-test and a post-test, using an",
-  "intervention group and a comparison group formed at class level.",
-  "",
-  "Instrument: a short classroom reading-disengagement scale developed for this study,",
-  "reviewed by subject teachers and piloted before use.",
-  "",
-  "Findings: Finding one, disengagement concentrated in the later part of long tasks.",
-  "Findings: Finding two, the structured routine reduced disengagement in the",
-  "intervention group relative to the comparison group.",
-  "Findings: Finding three, prior reading confidence moderated the size of that change.",
-  "Findings: Finding four, routine adherence varied widely between participating classes.",
-  "",
-  "Conclusion: a short classroom instrument can describe reading disengagement well",
-  "enough for teachers to act on it, and a structured routine is associated with a",
-  "reduction in that disengagement within this synthetic dataset.",
-];
-
-/** يهرب ما يكسر نصَّ PDF: القوسان والشرطةُ المائلة. */
-function escapePdfText(line: string): string {
-  return line.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
-}
-
-function syntheticThesisPdf(): Buffer {
-  let stream = "BT /F1 11 Tf 54 740 Td 14 TL\n";
-  for (const line of THESIS_LINES) stream += `(${escapePdfText(line)}) Tj T*\n`;
-  stream += "ET\n";
-  return buildPdf(stream);
+/** المتنُ بترميز UTF-8 — لا بناءَ ثنائيًّا ولا ملفَّ في المستودع. */
+function syntheticThesisText(): Buffer {
+  return Buffer.from(THESIS_TEXT, "utf8");
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -234,10 +222,19 @@ test.describe.serial("P0-T1 production acceptance", () => {
 
       // المدخل مخفيّ خلف زرّ، و`setInputFiles` يكتب فيه كما يفعل المتصفح
       // بعد اختيار المستخدم — بلا اختراع نداءٍ للواجهة البرمجية.
+      // **رقمٌ واحدٌ في المستند كلِّه، ويُفحص قبل أن يُرفع.** فلو تسلّل
+      // عددٌ ثانٍ لسقطت التشغيلةُ لاحقًا على قاعدةِ الأهليّة — وهي قاعدةٌ
+      // صحيحة، فيُكشف الخللُ هنا في التجهيزة لا هناك في المنتج.
+      const numbers = THESIS_TEXT.match(/\d+/g) ?? [];
+      expect(
+        numbers,
+        `the synthetic document must carry exactly one number (the sample size): ${numbers}`,
+      ).toEqual(["312"]);
+
       await page.locator('input[type="file"]').setInputFiles({
-        name: `${SYNTHETIC_TITLE}.pdf`,
-        mimeType: "application/pdf",
-        buffer: syntheticThesisPdf(),
+        name: `${SYNTHETIC_TITLE}.txt`,
+        mimeType: "text/plain",
+        buffer: syntheticThesisText(),
       });
 
       const response = await uploadResponse;
