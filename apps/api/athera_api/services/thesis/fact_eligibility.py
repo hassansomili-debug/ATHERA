@@ -132,8 +132,15 @@ AUTOMATABLE_STATUSES: Final[frozenset[str]] = frozenset({"unverified", STATUS_AP
 DEFAULT_AUTO_MIN: Final = 0.85
 DEFAULT_SUPPORT_MIN: Final = 0.70
 
+#: **العنوانُ حقلٌ بلغتين، وسياستُه واحدة.** كان `title_en` يسقط إلى
+#: الافتراضِ الأدنى (0.85/0.70) بينما `title_ar` عند (0.90/0.75) — أي أنّ
+#: عنوانًا إنجليزيًّا كان يُقبَل آليًّا بثقةٍ **أقلّ** ممّا يُقبل به نظيرُه
+#: العربيّ. وهذا رفعٌ للعتبة إلى مستوى العربية، لا خفضٌ لها.
+TITLE_FIELDS: Final[frozenset[str]] = frozenset({"title_ar", "title_en"})
+
 FIELD_THRESHOLDS: Final[dict[str, tuple[float, float]]] = {
     "title_ar": (0.90, 0.75),
+    "title_en": (0.90, 0.75),
     "questions": (0.90, 0.75),
     "hypotheses": (0.90, 0.75),
     "constructs": (0.90, 0.75),
@@ -212,7 +219,9 @@ def structurally_valid(field_key: str | None, texts: list[str]) -> tuple[bool, s
             return False, "sample_size_has_competing_counts"
         return True, ""
 
-    if field_key == "title_ar":
+    # **وحُرّاسُ شكلِ العنوان تسري على اللغتين.** كانت مقصورةً على
+    # `title_ar`، فيمرّ في `title_en` اسمُ ملفٍّ أو عدُّ صفحاتٍ بلا فحص.
+    if field_key in TITLE_FIELDS:
         title = texts[0].strip()
         if not title:
             return False, "title_empty"

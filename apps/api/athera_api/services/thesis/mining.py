@@ -111,13 +111,31 @@ async def run(
 
     title_conflict = False
     if canonical.has_evidence:
-        # **وما كتبه الباحثُ بيده لا يُستبدل باستخراجٍ اعتُمد.**
-        if canonical.approved_title:
-            if thesis.title_ar is None:
-                thesis.title_ar = canonical.approved_title
-            elif thesis.title_ar.strip() != canonical.approved_title.strip():
+        # ── العنوانُ: لغتُه تُحفظ، وعمودُه يخصّها وحدها ──
+        #
+        # **وكان يُقرأ من `thesis.title_ar` وحده.** فرسالةٌ إنجليزية عنوانُها
+        # معتمَدٌ ومتحقَّق في `title_en` تصل إلى هنا بلا عنوان، فتُعلَّق
+        # مقترحاتُها المعنونة ويُختم التنقيبُ مكتملًا بصفر فرص — وهو ما رصده
+        # قبولُ الإنتاج.
+        #
+        # **وما كتبه الباحثُ بيده لا يُستبدل باستخراجٍ اعتُمد**: التعارضُ
+        # يُسجَّل، والقائمُ يبقى.
+        chosen = canonical.title
+        if chosen is None:
+            # لا عنوانَ كنسيًّا. والتسميةُ حينئذٍ ممّا كتبه الباحثُ على الصفّ
+            # إن كتب — ولا يُخترع شيء.
+            naming = thesis.title_ar or thesis.title_en
+        else:
+            existing = getattr(thesis, chosen.column)
+            if existing is None:
+                setattr(thesis, chosen.column, chosen.text)
+                naming = chosen.text
+            elif existing.strip() != chosen.text.strip():
                 title_conflict = True
-        facts = replace(canonical.facts, title=thesis.title_ar)
+                naming = existing
+            else:
+                naming = existing
+        facts = replace(canonical.facts, title=naming)
         evidence_basis = "canonical"
     elif canonical.has_canonical_footprint:
         # **ولا هروبَ إلى القديم حين يُحجب الحديث.**
@@ -235,6 +253,13 @@ async def run(
             "conflicts_detected": canonical.conflicts_detected,
             "facts_withheld_for_conflict": canonical.facts_withheld_for_conflict,
             "exclusion_reasons": canonical.reasons,
+            # **ومصدرُ العنوان يُسمّى.** ‏«اكتمل بصفر» عن رسالةٍ لها عنوانٌ
+            # إنجليزيّ معتمَد كان خبرًا صادقًا عن قراءةٍ عمياء؛ فيُقال من أين
+            # جاء العنوان، أو أنّه لم يُوجد.
+            "title_source": canonical.title_source,
+            "title_language": canonical.title.language if canonical.title else None,
+            "title_is_scientific_evidence": bool(
+                canonical.title and canonical.title.is_scientific_evidence),
             "outcome": outcome,
             "mining_state": thesis.mining_state,
         },
@@ -249,6 +274,8 @@ async def run(
             state_after={
                 "existing_title_preserved": True,
                 "approved_title_fact_id": str(canonical.approved_title_fact_id),
+                "title_source": canonical.title_source,
+                "title_column": canonical.title.column if canonical.title else None,
             },
             reason="an approved extracted title differs from the title already on the "
                    "thesis; the existing title is kept and never silently replaced",

@@ -27,6 +27,12 @@ class ThesisFacts:
     #: على أيّ حال — فيسقط `" ".join([...])` بـ`TypeError` ويُردّ الباحثُ
     #: بخمسمئة على مسارٍ صحيح تمامًا.
     title: str | None = None
+    #: **هل العنوانُ دليلٌ علميّ أم تسميةٌ للسياق؟**
+    #:
+    #: والعنوانُ لا يُنشئ مقترحًا في الحالين — انظر `_marker_haystack`. وهذه
+    #: الرايةُ للتدقيق والوضوح: عنوانُ سياقٍ مصدرُه حقيقةٌ `SUPPORT_ONLY`
+    #: يُسمّي مقترحًا قام على دليلٍ آخر، ولا يُقرأ شاهدًا على شيء.
+    title_is_scientific_evidence: bool = False
     questions: tuple[str, ...] = ()
     hypotheses: tuple[str, ...] = ()
     results: tuple[tuple[str, str], ...] = ()      # (result_id, label)
@@ -128,6 +134,9 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
     #
     # **وهذه الأربعة وحدها عنوانُها العامل مشتقٌّ من عنوان الرسالة**، فتُعلَّق
     # حين لا عنوان — ولا يُخترع لها واحد. انظر `_titled_drafts`.
+    #
+    # **والعنوانُ شرطٌ لتسميتها لا سببٌ لوجودها**: سببُها إشارةٌ في سؤالٍ أو
+    # فرضية، أو عيّنةٌ ومتغيّراتٌ ثلاثة. فبعنوانٍ وحده لا يقوم منها شيء.
     drafts += _titled_drafts(facts, unpublished)
     return drafts
 
@@ -152,9 +161,17 @@ _TITLED_KINDS: Final = (
 
 
 def _marker_haystack(facts: ThesisFacts) -> str:
-    """**والغائبُ لا يُضمّ إلى النصّ.** `" ".join` على `None` يسقط بـ`TypeError`."""
-    return " ".join(
-        part for part in (facts.title, *facts.questions, *facts.hypotheses) if part)
+    """الإشاراتُ تُقرأ من **الدليل العلميّ وحده** — لا من العنوان.
+
+    **وكان العنوانُ داخلًا فيه، فكان يُنشئ فرصةً بنفسه.** رسالةٌ عنوانُها
+    «أثر كذا في كذا» تحمل إشارةَ «المحدّدات» في عنوانها؛ فإن لم يكن معها
+    سؤالٌ ولا فرضية ولا نتيجة، خرج منها مقترحٌ كاملٌ مصدرُه اسمُها. وذاك
+    اكتشافُ فرصةٍ من لا شيء.
+
+    والعنوانُ يبقى تسميةً للمقترح — يُقتبس في `working_title_ar` — ولا يبقى
+    سببًا لوجوده. `" ".join` على `None` يسقط بـ`TypeError`، فيُصفّى الغائب.
+    """
+    return " ".join(part for part in (*facts.questions, *facts.hypotheses) if part)
 
 
 def _secondary_analysis_fits(facts: ThesisFacts) -> bool:
