@@ -72,9 +72,11 @@ const NO_EVIDENCE_AR =
 // **ونصُّ «جارٍ» من العقد أيضًا.** كان هنا نصٌّ بائتٌ لا يدّعي عليه
 // أحد، فبقي يخدم خادمًا لم يعد قائمًا ولا فحصَ يسقط به.
 const IN_FLIGHT_AR =
-  "جارٍ استخراج فرص النشر من رسالتك — " +
-  "يبدأ تلقائيًّا بعد القراءة.";
-const AVAILABLE_AR = "استخراج الفرص متاح: توجد عناصر مستخرجة يقرؤها المنقّب.";
+  "نعالج الرسالة ونستخرج فرص النشر — " +
+  "يبدأ ذلك تلقائيًّا ولا يلزمك تشغيله.";
+const AVAILABLE_AR =
+  "يمكن استكمال معالجة الرسالة الآن — " +
+  "فيها عناصر تصلح أساسًا لفرص نشر.";
 const PARSE_WITHDRAWN_AR = "«تفكيك الرسالة» مسارٌ قديم بقي في الواجهة البرمجية.";
 /** نصُّ المنع أثناء العمل الجاري — **والخادم يفرضه أيضًا، لا الشاشةُ وحدها**. */
 const LIFECYCLE_BLOCKED_AR =
@@ -543,7 +545,7 @@ test.describe("the manual mine button appears only where a retry means something
       // **والنصُّ يُشتقّ من العقد لا يُكتب بيدٍ ثانية** — والنسخةُ الثانية
       // هي التي تفترق عن الأصل بأوّل تعديل، وقد افترقت مرّتين.
       await expect(card.getByTestId("card-mining-note")).toContainText(NO_EVIDENCE_AR);
-      await expect(card.getByRole("button", { name: "استخراج الفرص", exact: true }))
+      await expect(card.getByRole("button", { name: "استكمال معالجة الرسالة", exact: true }))
         .toHaveCount(0);
     });
 

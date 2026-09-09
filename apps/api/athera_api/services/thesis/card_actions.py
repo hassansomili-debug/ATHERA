@@ -85,13 +85,17 @@ MINING_STATES: Final[tuple[str, ...]] = (
 )
 
 MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
+    # **ولا مفرداتِ نظامٍ في وجه الباحث.** «المنقّب» و«استخراج الفرص»
+    # اسمان داخليّان؛ والباحثُ يقرأ ما يعنيه هو: رسالتُه ومعالجتُها.
     MINING_AVAILABLE: (
-        "استخراج الفرص متاح: توجد عناصر مستخرجة يقرؤها المنقّب.",
-        "Opportunity mining is available: extracted elements exist for the miner to read.",
+        "يمكن استكمال معالجة الرسالة الآن — فيها عناصر تصلح أساسًا لفرص نشر.",
+        "This thesis can be processed further now: it holds elements that can support "
+        "publication opportunities.",
     ),
     MINING_IN_FLIGHT: (
-        "جارٍ استخراج فرص النشر من رسالتك — يبدأ تلقائيًّا بعد القراءة.",
-        "Scanning your thesis for publication opportunities; this starts automatically.",
+        "نعالج الرسالة ونستخرج فرص النشر — يبدأ ذلك تلقائيًّا ولا يلزمك تشغيله.",
+        "We are processing your thesis and preparing its publication opportunities; "
+        "this starts automatically and you do not need to trigger it.",
     ),
     MINING_FOUND: (
         # **ومبدئيّةٌ تُقال في متن العبارة، لا في حاشية.** الفرصُ مشتقّةٌ من
@@ -136,9 +140,10 @@ MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
     # سندَها؛ وما نملكه أنّ النظام لم يُكوّن واحدةً موثوقةً ممّا توفّر.
     MINING_COMPLETED_EMPTY: (
         "اكتمل فحص الرسالة، ولم يتمكن النظام من تكوين فرصة نشر موثوقة بما يكفي "
-        "من الأدلة المتاحة.",
+        "من الأدلة المتاحة. ويمكنك استكمال المعالجة للمحاولة من جديد.",
         "The thesis scan completed, but the available evidence was not sufficient to "
-        "form a reliable publication opportunity.",
+        "form a reliable publication opportunity. You can continue processing to try "
+        "again.",
     ),
 }
 
@@ -303,9 +308,15 @@ def compute(
     # فيبقى الفعلُ اليدويّ **إعادةَ محاولةٍ عند التعثّر وحده**، وللمسار
     # القديم الذي لا أتمتةَ له. وما عدا ذلك: تُفتح الفرصُ ولا تُشغَّل.
     can_mine = (
-        # و`completed_empty` ليست منها: جرى الفحصُ على دليلٍ مؤهَّل فلم
-        # يتكوّن شيء، وزرٌّ يَعِد بنتيجةٍ أخرى من المُدخل نفسه وعدٌ كاذب.
-        (mining in {MINING_FAILED, MINING_AVAILABLE, MINING_WITHHELD})
+        # **و`completed_empty` صارت منها — وهذا عكسُ قرارٍ سابق، بسببه.**
+        #
+        # كان الحجّة أنّ زرًّا يَعِد بنتيجةٍ أخرى من المُدخل نفسه وعدٌ كاذب.
+        # وقد كان ذلك صحيحًا يومَ كان التكوينُ ثابتًا. ثمّ صار المُدخل نفسُه
+        # يُنتج مقترحًا محافظًا لم يكن يُنتجه (`_fallback_draft`)، فرسالةٌ
+        # خُتمت بصفر قبل الإصلاح تُنتج اليوم فرصةً عند إعادة المحاولة.
+        # فمنعُ الاستكمال هنا يحبس الباحثَ في نتيجةٍ تجاوزها المنتج.
+        (mining in {MINING_FAILED, MINING_AVAILABLE, MINING_WITHHELD,
+                    MINING_COMPLETED_EMPTY})
         and not in_flight and not archived
     )
     can_view_opportunities = opportunities > 0 and not archived

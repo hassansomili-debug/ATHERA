@@ -38,6 +38,13 @@ class ThesisFacts:
     results: tuple[tuple[str, str], ...] = ()      # (result_id, label)
     instruments: tuple[tuple[str, str], ...] = ()  # (instrument_id, label)
     variables: tuple[str, ...] = ()
+    #: **معرّفاتُ حقائقِ البُنى الحقيقية** — لا نصوصُها.
+    #:
+    #: و`variables` أعلاه نصوصٌ تُعرض ويُعدّ بها؛ وهذه مراجعُ تُحفظ في
+    #: `PublicationOpportunity.variable_refs` فتُردّ إلى `FactCandidate`
+    #: قائم. والمساران القديمان يكتبان النصَّ هناك — عيبُ إسنادٍ سابقٌ
+    #: لهذا التغيير، ولم يُوسَّع إليه المدى.
+    construct_refs: tuple[str, ...] = ()
     sample_ids: tuple[str, ...] = ()
     qualitative_phases: tuple[str, ...] = ()
     null_result_ids: tuple[str, ...] = ()
@@ -130,6 +137,16 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
             result_refs=list(facts.null_result_ids), sample_refs=list(facts.sample_ids),
         ))
 
+    # ٩ب — **مقترحٌ محافظٌ واحد حين لا يقوم شكلٌ متخصّص.**
+    #
+    # رسالةٌ لها نتيجةٌ مستخرَجةٌ مؤهَّلة وعنوانٌ يُسمّيها وبناءٌ أو عيّنة
+    # تُعرّفها: عندها ما يكفي لمقترحٍ واحدٍ مؤصَّل، وردُّ صاحبها بصفر خبرٌ
+    # كاذب عن رسالةٍ فيها عمل. ويقع **بعد** الأشكال المتخصّصة فلا يزاحمها،
+    # و**لا يقع إن قام منها شيء** — فواحدٌ لا اثنان.
+    #
+    # ولا يقوم على عنوانٍ وحده أبدًا: النتيجةُ شرطٌ فيه. وهو البابُ نفسه
+    # الذي أُغلق في `_marker_haystack`، فلا يُفتح من الجهة الأخرى.
+    #
     # 5/6/7/9 — محددات، نتائج مترتبة، مقارنة، تحليل ثانوي.
     #
     # **وهذه الأربعة وحدها عنوانُها العامل مشتقٌّ من عنوان الرسالة**، فتُعلَّق
@@ -138,7 +155,41 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
     # **والعنوانُ شرطٌ لتسميتها لا سببٌ لوجودها**: سببُها إشارةٌ في سؤالٍ أو
     # فرضية، أو عيّنةٌ ومتغيّراتٌ ثلاثة. فبعنوانٍ وحده لا يقوم منها شيء.
     drafts += _titled_drafts(facts, unpublished)
+    if not drafts:
+        drafts += _fallback_draft(facts, unpublished)
     return drafts
+
+
+def _fallback_draft(facts: ThesisFacts, unpublished: list[str]) -> list[OpportunityDraft]:
+    """مقترحٌ واحدٌ محافظ — **مشتقٌّ من أدلّةٍ قائمة، ولا يضيف دعوى**.
+
+    وشروطُه الثلاثة كلُّها لازمة:
+
+      ‏١ عنوانٌ كنسيٌّ يُسمّي المقترح — ولا يُخترع اسم.
+      ‏٢ **نتيجةٌ علمية واحدة على الأقلّ** غيرُ منشورة — وهي المُنشئ.
+      ‏٣ بناءٌ أو عيّنة تُعرّف الرسالة.
+
+    **والعنوانُ وحده لا يُنتج شيئًا**: الشرطُ الثاني يمنعه. ولا نتيجةَ
+    تُختلق ولا سؤالَ جديد يُدّعى؛ والمراجعُ كلُّها معرّفاتُ حقائقَ حقيقية.
+    """
+    if not facts.title or not unpublished:
+        return []
+    context = list(facts.construct_refs) or list(facts.sample_ids)
+    if not context:
+        return []
+    return [OpportunityDraft(
+        opportunity_kind="secondary_analysis", paper_kind="extension",
+        working_title_ar=f"تحليل ثانوي على بيانات: {facts.title[:60]}",
+        research_question_ar=None,
+        rationale_ar="مشتقّة من أدلّة قائمة في الرسالة: نتيجةٌ مستخرَجة ومعها "
+                     "بناءٌ أو عيّنة. ولا سؤالَ جديدًا ولا نتيجةً مضافة.",
+        rationale_en="Derived from evidence already in the thesis: an extracted "
+                     "finding together with a construct or a sample. It adds no new "
+                     "question and no new result.",
+        result_refs=list(unpublished),
+        variable_refs=list(facts.construct_refs),
+        sample_refs=list(facts.sample_ids),
+    )]
 
 
 # ═════════ المقترحاتُ التي لا تقوم إلّا بعنوانٍ مستخرَج ═════════

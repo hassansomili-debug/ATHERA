@@ -1873,3 +1873,134 @@ async def test_a_support_only_title_alone_mines_nothing(two_tenants):
     assert total == 0, "عنوانٌ داعمٌ وحده أنتج فرصة"
     # **ولا هروبَ إلى الجداول القديمة** — الأثرُ الحديث يملك الرسالة.
     assert outcome.evidence_basis == "canonical_withheld"
+
+
+# ══════════ استعادةُ مركز الرسائل: المقترحُ المحافظ وحدودُه ══════════
+
+
+def test_the_conservative_fallback_needs_a_real_result_not_a_title():
+    """**٧ · لا اختلاق.** العنوانُ لا يكفي، والنتيجةُ هي المُنشئ.
+
+    وهو البابُ نفسه الذي أُغلق في `_marker_haystack`؛ فلو فُتح من جهة
+    المقترح المحافظ لعاد العطبُ بابًا آخر.
+    """
+    from athera_api.services.thesis import miner
+
+    title = "Determinants of brand trust in digital services"
+    only_title = miner.ThesisFacts(thesis_id=str(uuid.uuid4()), title=title,
+                                   construct_refs=("c1",), sample_ids=("s1",))
+    assert miner.mine(only_title) == [], "عنوانٌ وسياقٌ بلا نتيجة أنتج مقترحًا"
+
+    only_result = miner.ThesisFacts(thesis_id=str(uuid.uuid4()),
+                                    results=(("r1", "نتيجة"),), construct_refs=("c1",))
+    assert miner.mine(only_result) == [], "نتيجةٌ بلا عنوان أنتجت مقترحًا يُسمّى باختلاق"
+
+    no_context = miner.ThesisFacts(thesis_id=str(uuid.uuid4()), title=title,
+                                   results=(("r1", "نتيجة"),))
+    assert miner.mine(no_context) == [], "بلا بناءٍ ولا عيّنة تكوّن مقترح"
+
+
+def test_the_conservative_fallback_produces_exactly_one_grounded_opportunity():
+    """**٨ · كلُّ مرجعٍ يردّ إلى حقيقةٍ حقيقية.**
+
+    والمقترحُ واحدٌ لا اثنان، ولا يقع إن قام شكلٌ متخصّص.
+    """
+    from athera_api.services.thesis import miner
+
+    facts = miner.ThesisFacts(
+        thesis_id=str(uuid.uuid4()),
+        title="Determinants of brand trust in digital services",
+        results=(("res-1", "ارتفعت الثقة لدى الأكثر تفاعلًا"),),
+        construct_refs=("con-1", "con-2"),
+        sample_ids=("sam-1",),
+    )
+    drafts = miner.mine(facts)
+    assert len(drafts) == 1, f"عددُ المقترحات {len(drafts)} لا واحد"
+
+    draft = drafts[0]
+    assert draft.opportunity_kind == "secondary_analysis"
+    assert draft.paper_kind == "extension"
+    # **ولا مرجعَ مخترَع**: كلُّها معرّفاتٌ سُلّمت في المدخلات.
+    known = {"res-1", "con-1", "con-2", "sam-1"}
+    for refs in (draft.result_refs, draft.variable_refs, draft.sample_refs):
+        assert set(refs) <= known, f"مرجعٌ لا أصلَ له: {refs}"
+    assert draft.result_refs == ["res-1"]
+    assert set(draft.variable_refs) == {"con-1", "con-2"}
+    assert draft.sample_refs == ["sam-1"]
+    # ولا دعوى بحثية جديدة.
+    assert draft.research_question_ar is None
+    assert "قائمة في الرسالة" in draft.rationale_ar
+
+
+def test_the_fallback_never_competes_with_a_specialised_shape():
+    """مقترحٌ متخصّصٌ قام ⇒ لا مقترحَ محافظًا معه."""
+    from athera_api.services.thesis import miner
+
+    facts = miner.ThesisFacts(
+        thesis_id=str(uuid.uuid4()), title="عنوان الرسالة",
+        questions=("ما محددات الثقة بالعلامة التجارية؟",),
+        results=(("res-1", "نتيجة"),), construct_refs=("con-1",), sample_ids=("sam-1",),
+    )
+    drafts = miner.mine(facts)
+    assert drafts, "لم يقم شيء"
+    kinds = [d.opportunity_kind for d in drafts]
+    assert kinds.count("secondary_analysis") <= 1, "تكرّر التحليل الثانوي"
+    assert "independent_question" in kinds, "الشكلُ المتخصّص لم يقم"
+
+
+def test_the_blocked_and_completed_empty_boundary_is_declared():
+    """**والحدُّ بينهما مكتوبٌ لا مفهومٌ ضمنًا.**"""
+    from athera_api.services.thesis import mining
+
+    assert set(mining.BLOCKED_REASONS) == {
+        "no_canonical_title", "no_construct_or_sample_context",
+        "no_opportunity_shape_matched",
+    }
+    source = inspect.getsource(mining)
+    assert "opportunity_generation_blocked" in source
+    # المِحكُّ معلَنٌ في الشيفرة نفسها: نتيجةٌ علمية أم لا.
+    assert "and facts.results" in source
+
+
+def test_the_researcher_never_reads_system_vocabulary():
+    """**هـ · لا مفرداتِ نظامٍ في وجه الباحث.**"""
+    from athera_api.services.thesis import card_actions
+
+    internal = ("FactCandidate", "canonical", "mining_state", "extraction_run",
+                "المنقّب", "استخراج الفرص")
+    for state, (arabic, english) in card_actions.MINING_LABELS.items():
+        for term in internal:
+            assert term not in arabic, f"{state}: مفردةُ نظامٍ في النصّ العربي — {term}"
+            assert term.lower() not in english.lower(), f"{state}: system term — {term}"
+
+    # وحالُ العمل الجاري تقول للباحث ما يجري بلغته.
+    arabic, _ = card_actions.MINING_LABELS[card_actions.MINING_IN_FLIGHT]
+    assert "نعالج الرسالة ونستخرج فرص النشر" in arabic
+
+
+def test_a_completed_empty_thesis_can_be_continued():
+    """**هـ · «اكتمل بصفر» ليس طريقًا مسدودًا.**"""
+    from athera_api.services.thesis import card_actions
+
+    actions = card_actions.compute(
+        processing_state="ready_for_review", file_id=uuid.uuid4(),
+        sections=0, results=0, locale="ar", opportunities=0,
+        thesis_mining_state="completed",
+    )
+    assert actions.mining_state == card_actions.MINING_COMPLETED_EMPTY
+    assert actions.can_mine is True, "الباحثُ حُبس في نتيجةٍ تجاوزها المنتج"
+    assert actions.can_view_opportunities is False
+
+
+def test_an_extracted_english_title_is_shown_not_the_filename():
+    """**هـ · العنوانُ المستخرَج يُعرض ولو كان بلغةٍ أخرى.**"""
+    from athera_api.services.thesis import processing
+
+    shown, extracted = processing.display_title(
+        None, "Assimilation and belonging", "Assimilation final 2.pdf", "ar")
+    assert shown == "Assimilation and belonging"
+    assert extracted is True, "عنوانٌ مستخرَجٌ فعلًا وُصف بأنّه اسمُ ملفّ"
+
+    # وبلا عنوانٍ أصلًا يبقى اسمُ الملفّ، ويُقال إنّه اسمُ ملفّ.
+    shown, extracted = processing.display_title(None, None, "ملفّ.pdf", "ar")
+    assert (shown, extracted) == ("ملفّ.pdf", False)

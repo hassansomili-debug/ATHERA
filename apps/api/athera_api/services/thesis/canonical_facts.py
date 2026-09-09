@@ -378,6 +378,7 @@ async def load(
     questions: list[str] = []
     hypotheses: list[str] = []
     variables: list[str] = []
+    construct_refs: list[str] = []
     instruments: list[tuple[str, str]] = []
     results: list[tuple[str, str]] = []
     sample_ids: list[str] = []
@@ -411,6 +412,9 @@ async def load(
             hypotheses.extend(texts)
         elif key == KEY_CONSTRUCTS:
             variables.extend(texts)
+            # **ومعرّفُ الحقيقة يُحفظ إلى جانب نصّها** — فالمقترحُ يُسنَد
+            # إلى صفٍّ قائم لا إلى عبارةٍ منسوخة.
+            construct_refs.append(ref)
         elif key == KEY_INSTRUMENTS:
             instruments.extend((ref, text) for text in texts)
         elif key in RESULT_KEYS:
@@ -429,6 +433,7 @@ async def load(
         results=tuple(dict.fromkeys(results)),
         instruments=tuple(dict.fromkeys(instruments)),
         variables=tuple(dict.fromkeys(variables)),
+        construct_refs=tuple(dict.fromkeys(construct_refs)),
         sample_ids=tuple(dict.fromkeys(sample_ids)),
         # **الثيمةُ ليست مرحلةَ دراسة.** الثيماتُ تُغذّي النتائج أعلاه.
         qualitative_phases=(),

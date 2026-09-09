@@ -53,6 +53,27 @@ STATES: Final[tuple[str, ...]] = (NOT_STARTED, RUNNING, COMPLETED, WITHHELD, FAI
 #: أساسُ الدليل الذي يُعدّ محاولةً حقيقية — وبه يُختم ويُسجَّل «نُقِّب».
 REAL_ATTEMPT: Final[frozenset[str]] = frozenset({"canonical", "legacy"})
 
+# ═════════ «اكتمل بلا نتيجة» ≠ «تعذّر التكوين» ═════════
+#
+# **والفرقُ بينهما ليس تفصيلًا لغويًّا، فليُقرأ قبل أن يُطوى أحدُهما في الآخر:**
+#
+#   • `eligible_evidence_but_no_opportunity` — جرى التنقيبُ على دليلٍ
+#     مؤهَّل **لا نتيجةَ علمية فيه**. فلا شيءَ كان يمكن أن يتكوّن أصلًا،
+#     والاكتمالُ هنا صادقٌ ونهائيّ. وهو ما تعرضه البطاقةُ `completed_empty`.
+#
+#   • `opportunity_generation_blocked` — جرى التنقيبُ على دليلٍ مؤهَّل
+#     **فيه نتيجةٌ علمية واحدة على الأقلّ**، ثمّ لم يتكوّن شيء. أي أنّ
+#     المُدخل كان كافيًا في ظاهره وتعثّر التكوين. وهذه حالٌ تُستأنف، لا
+#     نجاحٌ يُعلَن — ومعها سببٌ يقرؤه الآلة.
+#
+# فالمِحكُّ واحد: **أفيه نتيجةٌ علمية أم لا؟**
+BLOCKED_NO_TITLE: Final = "no_canonical_title"
+BLOCKED_NO_CONTEXT: Final = "no_construct_or_sample_context"
+BLOCKED_NO_SHAPE: Final = "no_opportunity_shape_matched"
+BLOCKED_REASONS: Final[tuple[str, ...]] = (
+    BLOCKED_NO_TITLE, BLOCKED_NO_CONTEXT, BLOCKED_NO_SHAPE,
+)
+
 # ═════════ أسبابُ الأثر: تصف ما وقع، لا سياسةً سابقة ═════════
 
 _MINING_REASONS: Final[dict[str, str]] = {
@@ -86,6 +107,8 @@ class MiningOutcome:
     withheld_for_missing_title: int
     evidence_basis: str
     outcome: str
+    #: سببُ تعذّر التكوين — `None` ما لم يكن `outcome` هو التعذّر.
+    blocked_reason: str | None = None
     mining_state: str
     kinds: list[str]
     aging: aging.AgingReport
@@ -208,6 +231,17 @@ async def run(
     if evidence_basis in REAL_ATTEMPT:
         thesis.opportunities_mined_at = dt.datetime.now(dt.UTC)
 
+    # **والمِحكُّ نتيجةٌ علمية قائمة.** بلا نتيجةٍ لا يكون تعذّرًا: لا شيء
+    # كان يمكن أن يتكوّن، والاكتمالُ صادق.
+    blocked_reason: str | None = None
+    if evidence_basis == "canonical" and not created and not already and facts.results:
+        if not facts.title:
+            blocked_reason = BLOCKED_NO_TITLE
+        elif not (facts.construct_refs or facts.sample_ids):
+            blocked_reason = BLOCKED_NO_CONTEXT
+        else:
+            blocked_reason = BLOCKED_NO_SHAPE
+
     if created:
         outcome = "opportunities_created"
     elif already:
@@ -216,6 +250,11 @@ async def run(
         outcome = "evidence_withheld_for_conflict"
     elif evidence_basis in {"none", "canonical_withheld"}:
         outcome = "no_eligible_evidence"
+    elif blocked_reason is not None:
+        # **ولا يُقال «اكتمل» عن تعذّر.** يسبق `withheld_for_missing_title`
+        # لأنّه يحمل السببَ نفسَه وزيادة: عددُ المعلَّق وصفُ عَرَض، والسببُ
+        # وصفُ علّة.
+        outcome = "opportunity_generation_blocked"
     elif withheld:
         outcome = "withheld_for_missing_title"
     elif evidence_basis == "legacy":
@@ -256,6 +295,7 @@ async def run(
             # **ومصدرُ العنوان يُسمّى.** ‏«اكتمل بصفر» عن رسالةٍ لها عنوانٌ
             # إنجليزيّ معتمَد كان خبرًا صادقًا عن قراءةٍ عمياء؛ فيُقال من أين
             # جاء العنوان، أو أنّه لم يُوجد.
+            "blocked_reason": blocked_reason,
             "title_source": canonical.title_source,
             "title_language": canonical.title.language if canonical.title else None,
             "title_is_scientific_evidence": bool(
@@ -283,7 +323,7 @@ async def run(
 
     return MiningOutcome(
         created=created, already_present=already, withheld_for_missing_title=withheld,
-        evidence_basis=evidence_basis, outcome=outcome,
+        evidence_basis=evidence_basis, outcome=outcome, blocked_reason=blocked_reason,
         mining_state=thesis.mining_state,
         kinds=sorted({d.opportunity_kind for d in drafts}),
         aging=report, canonical=canonical, title_conflict=title_conflict,
