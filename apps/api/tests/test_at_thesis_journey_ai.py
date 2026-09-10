@@ -247,3 +247,75 @@ async def test_a_model_failure_leaves_no_partial_thread(two_tenants, monkeypatch
             .where(ThreadElement.project_id == project_id))).scalar_one()
 
     assert written == 0, f"سقط النموذجُ وبقي {written} صفًّا — أثرٌ نصفيّ"
+
+# ══════════ ٥. البصمةُ البائتة: إذنٌ لا يصلح للّقطة الجديدة ══════════
+
+
+def test_the_stale_fingerprint_gate_precedes_the_model_call():
+    """**والرفضُ قبل النداء لا بعده** — فحصٌ على ترتيب المصدر."""
+    source = inspect.getsource(journey.build_thread)
+    assert "planning_state" in source, "لا فحصَ لبصمة اللقطة"
+    assert source.index("BLOCK_STALE_CONSENT") < source.index("run_structured_detached"), (
+        "البصمةُ تُفحص بعد النداء — أي أنّ النداء وقع على لقطةٍ بائتة")
+
+
+def test_the_stale_check_uses_the_fingerprint_of_the_snapshot_just_built():
+    """ولا تُفحص بصمةٌ غيرُ بصمةِ الأدلّة التي ستُرسَل فعلًا."""
+    source = inspect.getsource(journey.build_thread)
+    assert "fingerprint = evidence.fingerprint" in source
+    assert "context_fingerprint=fingerprint" in source
+
+
+def test_stale_is_its_own_reason_not_folded_into_refusal():
+    """**«بائت» ليست «مرفوض».** الباحثُ لم يرجع عن شيء، والفرقُ يُقال."""
+    assert journey.BLOCK_STALE_CONSENT != journey.BLOCK_NO_CONSENT
+    assert journey.BLOCK_STALE_CONSENT == "ai_consent_stale"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_stale_fingerprint_makes_zero_external_calls(two_tenants, monkeypatch):
+    """**أُذن ثمّ تغيّرت الأدلّة — فلا نداءَ واحد.**
+
+    والدعوى هي العدد صفر، لا صحّةُ نصّ الخطأ.
+    """
+    from athera_api.brain.orchestrator import Orchestrator
+    from athera_api.db import tenant_session
+    from athera_api.services import consent
+    from athera_api.services.planning import context as research_context
+
+    calls: list[str] = []
+
+    async def _forbidden(*args, **kwargs):
+        calls.append(kwargs.get("agent_key", "?"))
+        raise AssertionError("نداءٌ خارجيّ وقع على لقطةٍ بائتة")
+
+    monkeypatch.setattr(Orchestrator, "run_structured_detached", _forbidden)
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    file_id, project_id = uuid.uuid4(), uuid.uuid4()
+
+    # إذنٌ حقيقيّ على الملفّ، ثمّ إذنُ تخطيطٍ ببصمةٍ **لا تطابق** اللقطة.
+    async with tenant_session(tid, uid) as session:
+        await consent.record_decision(
+            session, tenant_id=tid, file_id=file_id, actor_user_id=uid,
+            granted=True, provider="anthropic", model="m")
+        await consent.record_planning_decision(
+            session, tenant_id=tid, project_id=project_id, actor_user_id=uid,
+            granted=True, context_fingerprint="a-fingerprint-from-an-older-snapshot",
+            provider="anthropic", model="m")
+
+    async with tenant_session(tid, uid) as session:
+        live = await research_context.build(
+            session, tenant_id=tid, project_id=project_id,
+            capability=consent.PLANNING_CAPABILITY, source_file_id=file_id)
+    assert live.fingerprint != "a-fingerprint-from-an-older-snapshot"
+
+    with pytest.raises(journey.JourneyBlocked) as blocked:
+        await journey.build_thread(
+            lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
+            file_id=file_id, project_id=project_id)
+
+    assert journey.BLOCK_STALE_CONSENT in blocked.value.reasons
+    assert calls == [], f"وقع {len(calls)} نداءً على لقطةٍ بائتة"

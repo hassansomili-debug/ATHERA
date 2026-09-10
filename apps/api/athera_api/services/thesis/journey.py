@@ -53,6 +53,10 @@ STATES: Final[tuple[str, ...]] = (
 
 #: أسبابُ التوقّف — رموزٌ تقرؤها الآلةُ وتترجمها الشاشة.
 BLOCK_NO_CONSENT: Final = "ai_consent_required"
+#: **أُذن ثمّ تغيّرت الأدلّة.** وليست رفضًا — الباحثُ لم يرجع عن شيء — لكنّها
+#: ليست إذنًا للّقطة الجديدة. وإرسالُها تحت إذنٍ سابقٍ إرسالُ ما لم يره
+#: صاحبُ القرار.
+BLOCK_STALE_CONSENT: Final = "ai_consent_stale"
 BLOCK_NO_SELECTION: Final = "researcher_selection_required"
 BLOCK_OVERLAP: Final = "overlap_unresolved"
 BLOCK_RIGHTS: Final = "rights_gate_not_passed"
@@ -556,11 +560,26 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
         evidence = await research_context.build(
             session, tenant_id=tenant_id, project_id=project_id,
             capability=consent.PLANNING_CAPABILITY, source_file_id=file_id)
+        fingerprint = evidence.fingerprint
+
+        # ── والبصمةُ تُفحص قبل النداء، لا بعده ──
+        #
+        # **إذنٌ أُعطي للقطةٍ لا يصلح لغيرها.** أُضيفت ذاكرةٌ موثقة أو تبدّل
+        # نصُّها، فصارت الأدلّةُ غيرَ التي رآها الباحثُ حين أذن. وإرسالُها
+        # تحت ذلك الإذن إرسالُ ما لم يره — ولو كان الإذنُ قائمًا شكلًا.
+        #
+        # ويقع الفحصُ **داخل هذه المعاملة القصيرة**، فالرفضُ يسبق النداء
+        # ولا يقع نداءٌ واحد على لقطةٍ بائتة.
+        planning = await consent.planning_state(
+            session, tenant_id=tenant_id, project_id=project_id,
+            context_fingerprint=fingerprint)
+        if planning == consent.STALE:
+            raise JourneyBlocked((BLOCK_STALE_CONSENT,))
+
         known = frozenset(str(item.memory_id) for item in evidence.items)
         payload = json.dumps(
             [dict(item.as_model_view(), id=str(item.memory_id)) for item in evidence.items],
             ensure_ascii=False)
-        fingerprint = evidence.fingerprint
 
     # ── (٢) بلا معاملة: النداءُ الخارجيّ عبر البوّابة وحدها ──
     draft, agent_run_id = await Orchestrator().run_structured_detached(

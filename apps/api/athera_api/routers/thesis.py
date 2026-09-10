@@ -154,6 +154,11 @@ def _opportunity_response(row: PublicationOpportunity, locale: str) -> Opportuni
         salami_alert=row.salami_alert, status=row.status,
         rights_approved=row.rights_approved_at is not None,
         authorship_approved=row.authorship_approved_at is not None,
+        # **ويُعدّ ما هو مكتوبٌ فعلًا.** ثلاثةُ حقولٍ تحمل مراجعَ حقائقَ
+        # حقيقية، فيُجمع طولُها — ولا يُقدَّر ولا يُدوَّر.
+        provenance_count=sum(
+            len(refs or []) for refs in
+            (row.result_refs, row.sample_refs, row.variable_refs)),
     )
 
 

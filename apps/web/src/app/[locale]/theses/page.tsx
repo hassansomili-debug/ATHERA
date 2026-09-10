@@ -676,6 +676,17 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                   </Link>
                 ) : null}
 
+                {/* **ورحلةُ هذه الرسالة إلى ورقة** — ستُّ خطواتٍ تقول ما تمّ
+                    وما ينتظر. ولا شرطَ عليها: الصفحةُ نفسُها تعرض الحالَ
+                    كما هي، ورابطٌ يظهر ويختفي يُخفي الرحلةَ عمّن يحتاجها. */}
+                <Link
+                  href={`/${locale}/theses/${thesis.id}/journey`}
+                  data-testid="card-journey"
+                  style={BUTTON}
+                >
+                  {t("journey.cardLink")}
+                </Link>
+
                 {/* **ولا زرَّ تنقيبٍ إلّا حين تعثّر التنقيب أو كان المسارُ
                     قديمًا بلا أتمتة** — وما عداه يعمل من نفسه. */}
                 {actions.can_mine ? (

@@ -304,6 +304,9 @@ class OpportunityResponse(BaseModel):
     status: str
     rights_approved: bool
     authorship_approved: bool
+    #: **عددُ المراجع الحقيقية** التي يقوم عليها المقترح — لا نسبةٌ ولا درجة.
+    #: يُعدّ ما هو مكتوبٌ في الصفّ، فصفرٌ هنا يعني مقترحًا بلا إسناد.
+    provenance_count: int = 0
 
 
 class DimensionResponse(BaseModel):
