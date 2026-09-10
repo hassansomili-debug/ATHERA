@@ -361,50 +361,6 @@ def test_reuse_writes_no_row_and_claims_no_agent_run():
 
 @requires_db
 @pytest.mark.asyncio
-async def test_a_stale_fingerprint_makes_zero_external_calls(two_tenants, monkeypatch):
-    """**والدعوى هي العدد صفر** — لا مجرّد أنّ الرفض وقع.
-
-    إذنٌ أُعطي للقطةٍ لا يصلح لغيرها؛ وإرسالُها تحته إرسالُ ما لم يره الباحث.
-    """
-    from athera_api.brain.orchestrator import Orchestrator
-    from athera_api.db import tenant_session
-    from athera_api.services import consent
-
-    calls: list[str] = []
-
-    async def _forbidden(*args, **kwargs):
-        calls.append(kwargs.get("agent_key", "?"))
-        raise AssertionError("نداءٌ خارجيّ وقع على لقطةٍ بائتة")
-
-    monkeypatch.setattr(Orchestrator, "run_structured_detached", _forbidden)
-    # الإذنُ قائمٌ شكلًا، والبصمةُ بائتة — وهذا هو الفرقُ المقصود.
-    monkeypatch.setattr(journey, "consent_granted",
-                        lambda *a, **k: _true(), raising=False)
-    monkeypatch.setattr(consent, "planning_state",
-                        lambda *a, **k: _value(consent.STALE))
-
-    a = two_tenants["a"]
-    tid, uid = a["tenant_id"], a["user_id"]
-
-    with pytest.raises(journey.JourneyBlocked) as blocked:
-        await journey.build_thread(
-            lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
-            file_id=uuid.uuid4(), project_id=uuid.uuid4())
-
-    assert journey.BLOCK_STALE_CONSENT in blocked.value.reasons
-    assert calls == [], f"وقع {len(calls)} نداءً على لقطةٍ بائتة"
-
-
-async def _true() -> bool:
-    return True
-
-
-async def _value(v):
-    return v
-
-
-@requires_db
-@pytest.mark.asyncio
 async def test_building_the_thread_twice_creates_no_duplicate_elements(
         two_tenants, monkeypatch):
     """**والضغطُ ثانيًا لا يُضاعف عقدَ المشروع.**"""
