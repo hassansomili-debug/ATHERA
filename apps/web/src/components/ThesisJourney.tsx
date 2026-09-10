@@ -57,6 +57,15 @@ interface Journey {
   state: string;
   blocking_reasons: string[];
   can_build_paper: boolean;
+  /**
+   * **الخيطُ الذهبيّ خطوةٌ في الرحلة، لا نقطةُ نهايةٍ تُكتشف.**
+   *
+   * كان الخادمُ يبنيه بنقطةٍ قائمة، ولا شيءَ في الشاشة ينادِيها — فحالُ
+   * `thread_ready` واقعةٌ لا تقع إلّا لمن قرأ الشيفرة. والواقعةُ والفعلُ
+   * كلاهما من الخادم: الشاشةُ لا تجتهد في البوّابات.
+   */
+  thread_ready: boolean;
+  can_build_thread: boolean;
   opportunities: number;
   states: string[];
 }
@@ -124,6 +133,23 @@ export function ThesisJourney({
 
   const refresh = useDeferredLoad(load);
 
+  /**
+   * سببُ التوقّف المحدَّد، من `context.reasons` — **لا الجملةَ الجامعة**.
+   *
+   * و`thesis.journey_blocked` نصُّها «التفاصيل في أسباب التوقّف»، وأسبابُ
+   * الرحلة المعروضة تُشتقّ من وقائعَ لا تحمل بياتَ البصمة: فبصمةٌ بائتة
+   * تُردّ بجملةٍ تحيل إلى قائمةٍ لا تذكرها — طريقٌ مسدود. والرموزُ تسافر
+   * في `context`، ولها نصُّها المترجَم أصلًا.
+   */
+  function refusalText(err: AtheraApiError): string {
+    const codes = (err.payload.context?.reasons ?? "")
+      .split(",")
+      .map((code) => code.trim())
+      .filter(Boolean);
+    if (codes.length === 0) return err.localized(locale);
+    return codes.map((code) => t(`journey.blocked.${code}`)).join(" ");
+  }
+
   async function act(opportunityId: string, run: () => Promise<void>) {
     setBusy(opportunityId);
     setError(null);
@@ -132,7 +158,7 @@ export function ThesisJourney({
       await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError
-        ? err.localized(locale)
+        ? refusalText(err)
         : t("common.loadFailed"));
     } finally {
       setBusy(null);
@@ -164,6 +190,21 @@ export function ThesisJourney({
     });
   }
 
+  /**
+   * بناءُ الخيط الذهبيّ — **بنقطةِ النهاية القائمة، ولا منطقَ يُعاد هنا**.
+   *
+   * والباحثُ لا يُطلب منه أن يزور شاشةَ الخيط بنفسه ويجمع مشروعَه: الفعلُ
+   * حيث الرحلة. وما يمنعه يقوله الخادمُ رمزًا (`ai_consent_required`،
+   * `ai_consent_stale`) وتترجمه القائمةُ فوق البطاقات.
+   */
+  function buildThread(opportunityId: string) {
+    return act(opportunityId, async () => {
+      await apiFetch(
+        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/thread`,
+        { method: "POST", locale });
+    });
+  }
+
   /** مخطوطةُ **هذه** الفرصة — أو لا شيء. ولا تُقرأ مخطوطةُ جارتها. */
   function manuscriptOf(opportunityId: string): string | undefined {
     return manuscripts[opportunityId];
@@ -171,6 +212,8 @@ export function ThesisJourney({
 
   const current = journey ? (STEP_OF_STATE[journey.state] ?? 0) : 0;
   const canBuild = journey?.can_build_paper === true;
+  const canBuildThread = journey?.can_build_thread === true;
+  const threadReady = journey?.thread_ready === true;
 
   return (
     <section
@@ -293,17 +336,54 @@ export function ThesisJourney({
             style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockStart: 6 }}
           >
             {manuscriptOf(opportunity.id) ? (
-              <a
-                data-testid="journey-open-studio"
-                href={`/${locale}/manuscripts/${manuscriptOf(opportunity.id)}`}
-                style={{
-                  padding: "8px 16px", borderRadius: "var(--radius)",
-                  background: "var(--athera-teal)", color: "#fff",
-                  textDecoration: "none",
-                }}
-              >
-                {t("journey.openStudio")}
-              </a>
+              /* **وترتيبُ الفعلين هو ترتيبُ الرحلة**: الخيطُ الذهبيّ قبل
+                 الاستوديو. والخيطُ لا يُخفى حتى يُكتشف: إمّا زرٌّ يبنيه،
+                 وإمّا إعلانٌ أنّه قائم. */
+              <>
+                {threadReady ? (
+                  <span
+                    data-testid="journey-thread-ready"
+                    className="metric-label"
+                    style={{ alignSelf: "center" }}
+                  >
+                    {t("journey.threadReady")}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="journey-build-thread"
+                    disabled={!canBuildThread || busy === opportunity.id}
+                    onClick={() => void buildThread(opportunity.id)}
+                    style={{
+                      padding: "8px 16px", borderRadius: "var(--radius)",
+                      border: "none",
+                      background: "var(--athera-aqua, var(--athera-teal))",
+                      color: "#04302c", font: "inherit", fontWeight: 600,
+                      cursor: canBuildThread ? "pointer" : "not-allowed",
+                      opacity: canBuildThread ? 1 : 0.5,
+                    }}
+                  >
+                    {busy === opportunity.id
+                      ? t("journey.threadBuilding")
+                      : t("journey.threadCta")}
+                  </button>
+                )}
+
+                {/* **والمسارُ يقصد الاستوديو بعينه.** كان يقصد
+                    `‎/manuscripts/<id>` ولا صفحةَ هناك — فيبلغ الباحثُ
+                    ٤٠٤ بأوّلِ زرٍّ بعد بناء ورقته. */}
+                <a
+                  data-testid="journey-open-studio"
+                  href={`/${locale}/manuscripts/${manuscriptOf(opportunity.id)}/studio`}
+                  style={{
+                    padding: "8px 16px", borderRadius: "var(--radius)",
+                    background: "var(--athera-teal)", color: "#fff",
+                    textDecoration: "none",
+                  }}
+                >
+                  {t("journey.openStudio")}
+                </a>
+              </>
             ) : opportunity.planning_status !== "selected" ? (
               /* **أوّلُ قرارٍ علميّ في الرحلة، وله زرُّه.** والبناءُ لا
                  يُعرض قبله: الخادمُ يردّه بـ«اختر الورقة»، وزرٌّ يَعِد بما

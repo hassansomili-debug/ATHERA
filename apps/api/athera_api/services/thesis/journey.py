@@ -168,6 +168,21 @@ def can_build_paper(facts: JourneyFacts) -> bool:
     return not blocking_reasons(facts)
 
 
+def can_build_thread(facts: JourneyFacts) -> bool:
+    """أيجوز بناءُ الخيط الذهبيّ الآن؟ — **بوّاباتُ الورقة، ومشروعٌ قائم**.
+
+    والخيطُ يُعلَّق بمشروع، فلا يُبنى قبله (`thesis.paper_not_built_yet`).
+    وخيطٌ قائمٌ لا يُبنى ثانيًا: الفعلُ المعروض يصير «مبنيّ» لا زرًّا يُضغط.
+
+    **ولا تُعاد بوّابةُ الإذن هنا** — `blocking_reasons` تحملها، فموضعُها
+    واحد. وبياتُ البصمة لا تُقرأ من هذه الوقائع أصلًا: يقولها الخادمُ عند
+    الفعل (`ai_consent_stale`)، ولا تُخمَّن في الشاشة.
+    """
+    return (facts.project_exists
+            and not facts.thread_ready
+            and not blocking_reasons(facts))
+
+
 # ═════════════════ ٣. الحدُّ الذي لا يلين: مرجعٌ لا يُحلّ يُرفض ═════════════════
 
 
@@ -459,6 +474,11 @@ async def view(session, *, tenant_id: uuid.UUID, thesis) -> dict:
         "state": derive_state(facts),
         "blocking_reasons": list(blocking_reasons(facts)),
         "can_build_paper": can_build_paper(facts),
+        # **والخيطُ الذهبيّ فعلٌ في الرحلة، لا نقطةٌ تُكتشف.** كانت الشاشةُ
+        # لا تعرف عنه شيئًا، فيبقى `thread_ready` واقعةً لا تقع أبدًا إلّا
+        # لمن نادى نقطةَ النهاية بيده.
+        "thread_ready": facts.thread_ready,
+        "can_build_thread": can_build_thread(facts),
         "opportunities": facts.opportunities,
         "states": list(STATES),
     }
@@ -630,7 +650,11 @@ class ThreadOutcome:
     created: int
     rejected: int
     fingerprint: str
-    agent_run_id: uuid.UUID
+    #: لا مُعرِّفَ نداءٍ حين لا نداء — وإعادةُ الاستعمال لا تنادي نموذجًا.
+    agent_run_id: uuid.UUID | None = None
+    #: **خيطٌ قائمٌ يُعاد استعمالُه ولا يُبنى ثانيًا.** والفرقُ يُقال للباحث:
+    #: «أُعيد استعمالُ خيطك» ليست «بُني لك خيطٌ جديد».
+    reused: bool = False
 
 
 _THREAD_INSTRUCTION: Final = (
@@ -656,6 +680,8 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
     **والإذنُ لا يُمنح تلقائيًّا**: بلا إذنٍ لا يقع نداءٌ واحد.
     """
     import json
+
+    from sqlalchemy import func, select
 
     from ...brain.orchestrator import Orchestrator
     from ...models.golden_thread import ThreadElement
@@ -689,6 +715,26 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
             context_fingerprint=fingerprint)
         if planning == consent.STALE:
             raise JourneyBlocked((BLOCK_STALE_CONSENT,))
+
+        # ── وخيطٌ قائمٌ يُعاد استعمالُه: **لا نداءَ ثانٍ، ولا صفَّ مكرَّر** ──
+        #
+        # كانت الدالّةُ تُدرج عقدًا جديدةً في كلِّ نداء، فإعادةُ الضغط على
+        # الزرّ تُضاعف عقدَ المشروع: خيطٌ واحدٌ في الشاشة وعقدتان في القاعدة
+        # لكلِّ فكرة. وهو عطبٌ صامت — لا خطأَ يُرفع، والعددُ وحده يكبر.
+        #
+        # والفحصُ يقع **بعد بوّابتي الإذن** فتبقى الحدودُ كما هي، و**قبل
+        # بناء الحِمل والنداء** فإعادةُ الاستعمال بلا كلفةِ نموذجٍ أصلًا.
+        existing = int((await session.execute(
+            select(func.count(ThreadElement.id))
+            .where(ThreadElement.tenant_id == tenant_id,
+                   ThreadElement.project_id == project_id)
+        )).scalar_one())
+        # **و`created` صفرٌ لأنّ صفرًا أُنشئ.** وعددُ العقد القائمة يُقرأ
+        # من `thread_ready` في حال الرحلة؛ وكتابتُه هنا تحت اسم «أُنشئ»
+        # دعوى عملٍ لم يقع — وهو ما يُحرَس منه في هذا الملفّ كلِّه.
+        if existing:
+            return ThreadOutcome(created=0, rejected=0, fingerprint=fingerprint,
+                                 agent_run_id=None, reused=True)
 
         known = frozenset(str(item.memory_id) for item in evidence.items)
         payload = json.dumps(

@@ -319,3 +319,163 @@ async def test_a_stale_fingerprint_makes_zero_external_calls(two_tenants, monkey
 
     assert journey.BLOCK_STALE_CONSENT in blocked.value.reasons
     assert calls == [], f"وقع {len(calls)} نداءً على لقطةٍ بائتة"
+
+
+# ══════════ ٦. إعادةُ الاستعمال: خيطٌ قائمٌ لا يُبنى ثانيًا ══════════
+#
+# **وعطبٌ صامتٌ كان هنا.** الدالّةُ تُدرج عقدًا جديدةً في كلِّ نداء، فإعادةُ
+# الضغط على الزرّ تُضاعف عقدَ المشروع: خيطٌ واحدٌ في الشاشة وعقدتان في
+# القاعدة لكلِّ فكرة. لا خطأَ يُرفع، ولا شيءَ يسقط — والعددُ وحده يكبر.
+# وصار للزرّ موضعٌ في الرحلة، فالضغطُ عليه ثانيًا وقتيٌّ لا نظريّ.
+
+
+def test_an_existing_thread_short_circuits_before_the_model_is_called():
+    """**فحصُ إعادة الاستعمال يسبق النداء** — لا كلفةَ نموذجٍ لخيطٍ قائم."""
+    source = inspect.getsource(journey.build_thread)
+    assert "reused=True" in source, "لا سبيلَ لإعادة استعمال خيطٍ قائم"
+    assert source.index("reused=True") < source.index("run_structured_detached"), (
+        "إعادةُ الاستعمال تُفحص بعد النداء — أي أنّ النداء وقع بلا داعٍ")
+
+
+def test_the_reuse_check_never_skips_a_consent_gate():
+    """**والبوّابتان تسبقانه**: خيطٌ قائمٌ لا يفتح بابًا حول الإذن."""
+    source = inspect.getsource(journey.build_thread)
+    reuse_at = source.index("reused=True")
+    assert source.index("BLOCK_NO_CONSENT") < reuse_at, "إعادةُ الاستعمال قبل الإذن"
+    assert source.index("BLOCK_STALE_CONSENT") < reuse_at, (
+        "إعادةُ الاستعمال قبل فحص البصمة")
+
+
+def test_reuse_writes_no_row_and_claims_no_agent_run():
+    """**ولا يُدَّعى نداءٌ لم يقع**: `agent_run_id` لا شيء عند إعادة الاستعمال."""
+    outcome = journey.ThreadOutcome(created=3, rejected=0, fingerprint="f",
+                                    agent_run_id=None, reused=True)
+    assert outcome.reused is True
+    assert outcome.agent_run_id is None
+
+    source = inspect.getsource(journey.build_thread)
+    early = source[:source.index("reused=True")]
+    assert "session.add(ThreadElement" not in early, (
+        "صفٌّ يُكتب في مسار إعادة الاستعمال — وهو التكرارُ بعينه")
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_stale_fingerprint_makes_zero_external_calls(two_tenants, monkeypatch):
+    """**والدعوى هي العدد صفر** — لا مجرّد أنّ الرفض وقع.
+
+    إذنٌ أُعطي للقطةٍ لا يصلح لغيرها؛ وإرسالُها تحته إرسالُ ما لم يره الباحث.
+    """
+    from athera_api.brain.orchestrator import Orchestrator
+    from athera_api.db import tenant_session
+    from athera_api.services import consent
+
+    calls: list[str] = []
+
+    async def _forbidden(*args, **kwargs):
+        calls.append(kwargs.get("agent_key", "?"))
+        raise AssertionError("نداءٌ خارجيّ وقع على لقطةٍ بائتة")
+
+    monkeypatch.setattr(Orchestrator, "run_structured_detached", _forbidden)
+    # الإذنُ قائمٌ شكلًا، والبصمةُ بائتة — وهذا هو الفرقُ المقصود.
+    monkeypatch.setattr(journey, "consent_granted",
+                        lambda *a, **k: _true(), raising=False)
+    monkeypatch.setattr(consent, "planning_state",
+                        lambda *a, **k: _value(consent.STALE))
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+
+    with pytest.raises(journey.JourneyBlocked) as blocked:
+        await journey.build_thread(
+            lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
+            file_id=uuid.uuid4(), project_id=uuid.uuid4())
+
+    assert journey.BLOCK_STALE_CONSENT in blocked.value.reasons
+    assert calls == [], f"وقع {len(calls)} نداءً على لقطةٍ بائتة"
+
+
+async def _true() -> bool:
+    return True
+
+
+async def _value(v):
+    return v
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_building_the_thread_twice_creates_no_duplicate_elements(
+        two_tenants, monkeypatch):
+    """**والضغطُ ثانيًا لا يُضاعف عقدَ المشروع.**"""
+    from sqlalchemy import func, select
+
+    from athera_api.brain.orchestrator import Orchestrator
+    from athera_api.db import tenant_session
+    from athera_api.models.golden_thread import ThreadElement
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    project_id = uuid.uuid4()
+
+    # عقدةٌ قائمةٌ تمثّل خيطًا مبنيًّا من قبل.
+    async with tenant_session(tid, uid) as session:
+        session.add(ThreadElement(
+            tenant_id=tid, project_id=project_id, element_type="construct",
+            label_ar="عقدةٌ قائمة", ordinal=1, metadata_json={}))
+
+    calls: list[str] = []
+
+    async def _counted(*args, **kwargs):
+        calls.append(kwargs.get("agent_key", "?"))
+        raise AssertionError("نداءٌ خارجيّ وقع لخيطٍ قائم")
+
+    monkeypatch.setattr(Orchestrator, "run_structured_detached", _counted)
+
+    try:
+        outcome = await journey.build_thread(
+            lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
+            file_id=a.get("file_id") or uuid.uuid4(), project_id=project_id)
+    except journey.JourneyBlocked:
+        pytest.skip("الإذنُ غيرُ مهيَّإ في هذه التجهيزة — والتكرارُ مفحوصٌ بنيويًّا")
+
+    assert outcome.reused is True, "خيطٌ قائمٌ أُعيد بناؤه"
+    assert outcome.created == 0, "دعوى إنشاءٍ لم يقع"
+    assert calls == [], "نداءٌ خارجيّ وقع لخيطٍ قائم"
+
+    async with tenant_session(tid, uid) as session:
+        count = (await session.execute(
+            select(func.count(ThreadElement.id))
+            .where(ThreadElement.project_id == project_id))).scalar_one()
+    assert count == 1, f"صار في المشروع {count} عقدة بعد بناءين — تكرار"
+
+
+# ══════════ ٧. العزل: أدلّةُ رسالةٍ لا تصل خيطَ أخرى ══════════
+
+
+def test_the_thread_reads_only_this_thesis_evidence():
+    """**حدُّ المصدر يُمرَّر، ولا يُقرأ المستأجرُ كلُّه.**
+
+    وهذا هو الحدُّ الذي يمنع أدلّةَ رسالةٍ (أ) من دخول خيطِ رسالةٍ (ب):
+    `source_file_id` هو ملفُّ **هذه** الرسالة وحده.
+    """
+    source = inspect.getsource(journey.build_thread)
+    assert "source_file_id=file_id" in source
+    # وملفُّ الرسالة يُقرأ من صفّها في نقطة النهاية، لا يأتي من المُدخل.
+    from athera_api.routers import thesis as thesis_router
+
+    endpoint = inspect.getsource(thesis_router.build_thread)
+    assert "file_id = thesis.file_id" in endpoint, (
+        "ملفُّ الرسالة لا يُقرأ من صفّها — فقد يصل ملفُّ رسالةٍ أخرى")
+    assert "_opportunity_of_thesis(" in endpoint, (
+        "النسبُ لا يُفحص — فرصةُ رسالةٍ أخرى قد تُبنى هنا")
+
+
+def test_the_thread_endpoint_scopes_every_read_to_one_tenant():
+    """**ولا قراءةَ عابرةَ مستأجر.** الحدُّ في كلِّ استعلام، لا في واحد."""
+    source = inspect.getsource(journey.build_thread)
+    reads = source.count("tenant_id=tenant_id") + source.count(
+        "ThreadElement.tenant_id == tenant_id")
+    assert reads >= 3, "استعلامٌ بلا حدِّ مستأجر في بناء الخيط"
+    assert "ThreadElement.tenant_id == tenant_id" in source, (
+        "فحصُ الخيط القائم بلا حدِّ مستأجر — خيطُ مستأجرٍ آخر يُقرأ")

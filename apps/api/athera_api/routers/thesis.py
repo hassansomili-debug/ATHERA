@@ -1115,7 +1115,8 @@ async def build_thread(
 
     return ThreadBuildResponse(
         project_id=project_id, created=outcome.created, rejected=outcome.rejected,
-        context_fingerprint=outcome.fingerprint, agent_run_id=outcome.agent_run_id)
+        context_fingerprint=outcome.fingerprint, agent_run_id=outcome.agent_run_id,
+        reused=outcome.reused)
 
 
 # ═════════════════ قائمة الرسائل: صدقٌ، وهويّة، وحدٌّ ═════════════════

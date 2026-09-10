@@ -403,6 +403,9 @@ class JourneyResponse(BaseModel):
     #: رموزٌ تقرؤها الآلةُ وتترجمها الشاشة — لا نثرٌ مترجَم في العقد.
     blocking_reasons: list[str] = []
     can_build_paper: bool = False
+    #: الخيطُ الذهبيّ: واقعتُه، والفعلُ المتاح عليها — **فتعرفه الشاشة**.
+    thread_ready: bool = False
+    can_build_thread: bool = False
     opportunities: int = 0
     #: المفرداتُ المعلَنة، فتعرف الشاشةُ ما قد يصلها.
     states: list[str] = []
@@ -455,4 +458,7 @@ class ThreadBuildResponse(BaseModel):
     #: **عددٌ لا متن**: متنُ المرفوض اختلاقٌ لا يُحفظ ولا يُعرض.
     rejected: int
     context_fingerprint: str
-    agent_run_id: uuid.UUID
+    #: لا مُعرِّفَ نداءٍ حين لا نداء — وإعادةُ الاستعمال لا تنادي نموذجًا.
+    agent_run_id: uuid.UUID | None = None
+    #: **أُعيد استعمالُ خيطٍ قائم؟** يُقال ولا يُعرض بناءً لم يقع.
+    reused: bool = False

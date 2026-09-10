@@ -256,3 +256,115 @@ def test_an_element_with_no_reference_at_all_is_rejected():
 @pytest.mark.parametrize("ref", [None, "", 42, uuid.uuid4()])
 def test_only_a_real_string_id_can_resolve(ref):
     assert journey.reference_resolves(ref, frozenset({"x"})) is False
+
+
+# ══════════ ٦. الخيطُ الذهبيّ بوّابةً صافية ══════════
+#
+# **وفعلٌ لا تعرفه الشاشةُ فعلٌ لا يقع.** كانت `build_thread` مكتوبةً
+# ومفحوصةً، ولها نقطةُ نهاية — ولا شيءَ في الرحلة ينادِيها. فحالُ
+# `thread_ready` واقعةٌ لا تقع إلّا لمن قرأ الشيفرة أو نادى الـAPI بيده.
+# فصارت البوّابةُ دالّةً صافيةً يقولها الخادمُ للشاشة.
+
+
+def _ready_facts(**overrides):
+    F = journey.JourneyFacts
+    base = dict(processing_state="ready_for_review", opportunities=1,
+                selected_opportunity=True, rights_passed=True,
+                ai_consent_granted=True)
+    return F(**{**base, **overrides})
+
+
+def test_the_thread_needs_a_project_before_it_can_be_built():
+    """**ولا خيطَ قبل مشروع** — الخيطُ يُعلَّق بمشروعٍ قائم لا يُخترع له صاحب."""
+    assert journey.can_build_thread(_ready_facts()) is False
+    assert journey.can_build_thread(_ready_facts(project_exists=True)) is True
+
+
+def test_an_existing_thread_is_not_offered_for_building_again():
+    """خيطٌ قائمٌ لا يُعرض زرًّا يُضغط — **يُعلَن أنّه قائم**."""
+    facts = _ready_facts(project_exists=True, thread_ready=True)
+    assert journey.can_build_thread(facts) is False
+
+
+def test_the_thread_gate_never_skips_a_paper_gate():
+    """**بوّاباتُ الورقة كلُّها تسبق الخيط** — ولا واحدةَ تُقفز إليه."""
+    for broken in (
+        dataclasses_replace(_ready_facts(project_exists=True), ai_consent_granted=False),
+        dataclasses_replace(_ready_facts(project_exists=True), rights_passed=False),
+        dataclasses_replace(_ready_facts(project_exists=True), overlap_unresolved=1),
+        dataclasses_replace(_ready_facts(project_exists=True),
+                            selected_opportunity=False, opportunities=0),
+    ):
+        assert journey.can_build_thread(broken) is False, (
+            "الخيطُ يُبنى وبوّابةٌ لم تُفتح")
+
+
+def test_the_consent_gate_is_declared_once_and_reused_by_both_actions():
+    """**ولا بوّابةَ تُكتب مرّتين.** `can_build_thread` تسأل `blocking_reasons`."""
+    source = inspect.getsource(journey.can_build_thread)
+    assert "blocking_reasons(facts)" in source
+    assert "ai_consent_granted" not in source, "بوّابةُ الإذن أُعيدت كتابتُها"
+
+
+# ══════════ ٧. صدقُ الحال: الصياغةُ تُقاس بصفوفٍ محفوظة ══════════
+
+
+def test_the_state_moves_with_persisted_sections_only():
+    """**من «مخطوطة» إلى «صياغة» إلى «الأدبيات» — بصفوفٍ لا بنيّة.**
+
+    وهذه هي السلسلةُ التي كانت مقطوعةً في المنتج: `sections_drafted` لا
+    تزيد أبدًا لأنّ لا سبيلَ في الواجهة إلى نقطةِ الصياغة.
+    """
+    built = dict(processing_state="ready_for_review", opportunities=1,
+                 selected_opportunity=True, rights_passed=True,
+                 ai_consent_granted=True, project_exists=True,
+                 thread_ready=True, outline_exists=True, manuscript_exists=True,
+                 sections_expected=10)
+    F = journey.JourneyFacts
+
+    assert journey.derive_state(F(**built, sections_drafted=0)) == (
+        journey.MANUSCRIPT_CREATED)
+    # **وصفٌّ واحدٌ محفوظ يحرّك الحال** — لا نصفَ خطوةٍ ولا نسبة.
+    assert journey.derive_state(F(**built, sections_drafted=1)) == journey.DRAFTING
+    assert journey.derive_state(F(**built, sections_drafted=9)) == journey.DRAFTING
+
+
+def test_a_finished_draft_still_waits_on_real_literature_validation():
+    """**ولا تُقال جاهزيةٌ والأدبياتُ لم تُراجَع** (§14).
+
+    والافتراضُ في العمود «معلّق» لا «مؤكَّد»، فورقةٌ تمّت أقسامُها تقف عند
+    «تحديث الأدبيات» حتى يقع سجلٌّ حقيقيّ — ولا تُعلَن جاهزةً للاستوديو.
+    """
+    built = dict(processing_state="ready_for_review", opportunities=1,
+                 selected_opportunity=True, rights_passed=True,
+                 ai_consent_granted=True, project_exists=True,
+                 thread_ready=True, outline_exists=True, manuscript_exists=True,
+                 sections_expected=10, sections_drafted=10)
+    F = journey.JourneyFacts
+
+    assert journey.derive_state(F(**built, literature_pending=True)) == (
+        journey.LITERATURE_PENDING)
+    assert journey.derive_state(F(**built, literature_pending=False)) == (
+        journey.READY_FOR_PAPER_STUDIO)
+
+
+def test_the_literature_column_defaults_to_pending_not_confirmed():
+    """**الافتراضُ لا يُقرَّ به ما لم يقع.** والعمودُ هو مصدرُ تلك الحال."""
+    from athera_api.models.thesis import PublicationOpportunity
+
+    column = PublicationOpportunity.__table__.c["literature_validation_status"]
+    assert column.default.arg == "pending", (
+        "افتراضُ الأدبيات ليس «معلّقًا» — فورقةٌ تُعلَن جاهزةً بلا مراجعة")
+    assert column.nullable is False
+
+
+def test_the_journey_view_exposes_the_thread_facts_the_screen_reads():
+    """**وحقلٌ تقرؤه الشاشةُ ولا يُصدره الخادمُ عمودٌ فارغ.**"""
+    from athera_api.schemas.thesis import JourneyResponse
+
+    for field in ("thread_ready", "can_build_thread"):
+        assert field in JourneyResponse.model_fields, f"حقلٌ مفقود: {field}"
+
+    source = inspect.getsource(journey.view)
+    assert '"thread_ready": facts.thread_ready' in source
+    assert '"can_build_thread": can_build_thread(facts)' in source
