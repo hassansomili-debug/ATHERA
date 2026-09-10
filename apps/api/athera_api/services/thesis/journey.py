@@ -243,3 +243,227 @@ async def load_facts(session, *, tenant_id: uuid.UUID, thesis) -> JourneyFacts:
         outline_exists=outline_exists,
         manuscript_exists=manuscript_exists,
     )
+
+# ═════════════════ ٥. الأثرُ القائم: قرارُ إعادة الاستعمال ═════════════════
+
+#: الأربعةُ التي تُبنى مرّةً وتُعاد بعدها.
+ARTIFACTS: Final[tuple[str, ...]] = ("project", "thread", "outline", "manuscript")
+
+#: ما تبنيه هذه الشريحةُ حتميًّا. و«الخيط» ليس منها: بناؤه يقوم على أدلّةٍ
+#: ونداءِ نموذج، وذاك عملُ الشريحة التالية. فيُرصد قائمًا ويُعلَن منتظَرًا،
+#: **ولا يُخترع صفٌّ ليُقال إنّه اكتمل**.
+DETERMINISTIC_ARTIFACTS: Final[tuple[str, ...]] = ("project", "outline", "manuscript")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ArtifactSet:
+    """ما هو قائمٌ الآن لهذه الفرصة — **معرّفاتٌ لا صفوف**."""
+
+    project_id: uuid.UUID | None = None
+    thread_id: uuid.UUID | None = None
+    outline_id: uuid.UUID | None = None
+    manuscript_id: uuid.UUID | None = None
+
+    def identifier(self, name: str) -> uuid.UUID | None:
+        return getattr(self, f"{name}_id")
+
+
+def to_create(existing: ArtifactSet) -> tuple[str, ...]:
+    """ما ينقص فيجب إنشاؤه — **وما وُجد يُعاد استعمالُه**.
+
+    قرارٌ على بياناتٍ عادية، فيُفحص بلا قاعدة بيانات. وإعادةُ التشغيل على
+    أثرٍ كامل تُعيد `()`: لا صفَّ ثانيًا لأيٍّ من الأربعة.
+    """
+    return tuple(name for name in ARTIFACTS if existing.identifier(name) is None)
+
+
+def to_reuse(existing: ArtifactSet) -> tuple[str, ...]:
+    return tuple(name for name in ARTIFACTS if existing.identifier(name) is not None)
+
+
+def reuses_everything(existing: ArtifactSet) -> bool:
+    """إعادةُ تشغيلٍ لا تُنشئ شيئًا — وهي دعوى التكرار الآمن."""
+    return not to_create(existing)
+
+
+class JourneyBlocked(Exception):
+    """بوّابةٌ لم تُجتَز — **ومعها أسبابُها رموزًا لا نثرًا**."""
+
+    def __init__(self, reasons):
+        self.reasons = tuple(reasons)
+        super().__init__(",".join(self.reasons))
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class BuildOutcome:
+    """حصيلةُ بناءِ ورقة — وما أُنشئ وما أُعيد استعمالُه، مسمَّيَين."""
+
+    project_id: uuid.UUID
+    outline_id: uuid.UUID
+    manuscript_id: uuid.UUID
+    thread_id: uuid.UUID | None
+    created: tuple[str, ...]
+    reused: tuple[str, ...]
+    pending: tuple[str, ...]
+    state: str
+
+
+# ═════════════════ ٦. الطبقةُ غير الصافية: قراءةُ الأثر وبناؤه ═════════════════
+
+
+async def consent_granted(session, *, tenant_id: uuid.UUID, file_id) -> bool:
+    """**ولا يُمنح الإذنُ تلقائيًّا.** يُقرأ من صفّه، ولا يُفترض."""
+    from .. import consent
+
+    if file_id is None:
+        return False
+    return await consent.state(session, tenant_id=tenant_id, file_id=file_id) == consent.GRANTED
+
+
+async def load_artifacts(session, *, tenant_id: uuid.UUID, opportunity) -> ArtifactSet:
+    """يرصد ما هو قائمٌ لهذه الفرصة — **قراءةٌ فقط، ولا إنشاء**."""
+    from sqlalchemy import select
+
+    from ...models.golden_thread import ThreadElement
+    from ...models.planning import ManuscriptOutline
+    from ...models.publishing import Manuscript
+
+    project_id = opportunity.project_id or opportunity.converted_project_id
+    if project_id is None:
+        return ArtifactSet()
+
+    thread_id = (await session.execute(
+        select(ThreadElement.id)
+        .where(ThreadElement.tenant_id == tenant_id,
+               ThreadElement.project_id == project_id).limit(1)
+    )).scalar_one_or_none()
+    outline_id = (await session.execute(
+        select(ManuscriptOutline.id)
+        .where(ManuscriptOutline.tenant_id == tenant_id,
+               ManuscriptOutline.opportunity_id == opportunity.id).limit(1)
+    )).scalar_one_or_none()
+    manuscript_id = (await session.execute(
+        select(Manuscript.id)
+        .where(Manuscript.tenant_id == tenant_id,
+               Manuscript.opportunity_id == opportunity.id).limit(1)
+    )).scalar_one_or_none()
+    return ArtifactSet(project_id=project_id, thread_id=thread_id,
+                       outline_id=outline_id, manuscript_id=manuscript_id)
+
+
+async def view(session, *, tenant_id: uuid.UUID, thesis) -> dict:
+    """حالُ الرحلة كما تُعرض — **مشتقّةٌ من صفوف، بلا نسبة**."""
+    facts = await load_facts(session, tenant_id=tenant_id, thesis=thesis)
+    facts = dataclasses.replace(
+        facts,
+        ai_consent_granted=await consent_granted(
+            session, tenant_id=tenant_id, file_id=thesis.file_id),
+    )
+    return {
+        "thesis_id": thesis.id,
+        "state": derive_state(facts),
+        "blocking_reasons": list(blocking_reasons(facts)),
+        "can_build_paper": can_build_paper(facts),
+        "opportunities": facts.opportunities,
+        "states": list(STATES),
+    }
+
+
+async def build_paper(session, *, tenant_id: uuid.UUID, actor_user_id,
+                      thesis, opportunity) -> BuildOutcome:
+    """يبني ورقةً من فرصةٍ مختارة — **ويُعيد استعمالَ كلِّ ما هو قائم**.
+
+    ولا نداءَ نموذجٍ هنا إطلاقًا: ما تبنيه هذه الشريحةُ حتميّ (مشروعٌ
+    وهيكلٌ ومخطوطة). **فلا شبكةَ داخل معاملة** — والدرسُ محفوظ من تخاصم
+    سلسلة التدقيق. وصياغةُ النصّ وبناءُ الخيط يقعان في الشريحة التالية،
+    بسلطة سياسةِ الأقسام وبإذنٍ صريح.
+
+    والبوّاباتُ تُقرأ من القلب الصافي ولا تُعاد كتابتُها هنا.
+    """
+    from ...models.planning import ManuscriptOutline
+    from ...models.portfolio import ResearchProject
+    from ...models.publishing import Manuscript
+    from .. import audit
+
+    # ── ١ · المِلكيّة والنسب: الفرصةُ لهذه الرسالة ولهذا المستأجر ──
+    if opportunity.tenant_id != tenant_id or opportunity.thesis_id != thesis.id:
+        raise JourneyBlocked(("opportunity_not_of_this_thesis",))
+
+    # ── ٢ · البوّابات، بترتيبها، من القلب الصافي ──
+    facts = await load_facts(session, tenant_id=tenant_id, thesis=thesis)
+    facts = dataclasses.replace(
+        facts,
+        ai_consent_granted=await consent_granted(
+            session, tenant_id=tenant_id, file_id=thesis.file_id),
+    )
+    reasons = blocking_reasons(facts)
+    if reasons:
+        raise JourneyBlocked(reasons)
+
+    # ── ٣ · ما هو قائمٌ يُعاد استعمالُه، ولا يُنشأ ثانيًا ──
+    existing = await load_artifacts(session, tenant_id=tenant_id, opportunity=opportunity)
+    created: list[str] = []
+
+    project_id = existing.project_id
+    if project_id is None:
+        project = ResearchProject(
+            tenant_id=tenant_id, working_title_ar=opportunity.working_title_ar,
+            working_title_en=opportunity.working_title_en, status="planned",
+            current_gate="G1", is_thesis_derived=True)
+        session.add(project)
+        await session.flush()
+        project_id = project.id
+        # **والرابطتان تُكتبان معًا** — كما في التحويل اليدويّ.
+        opportunity.project_id = project_id
+        opportunity.converted_project_id = project_id
+        created.append("project")
+
+    outline_id = existing.outline_id
+    if outline_id is None:
+        outline = ManuscriptOutline(
+            tenant_id=tenant_id, opportunity_id=opportunity.id, project_id=project_id,
+            # **ولا قسمَ يُكتب هنا.** سياسةُ الأقسام هي السلطةُ الوحيدة،
+            # وتملأ الهيكلَ في الشريحة التالية. وقائمةٌ تُخترع هنا تُنشئ
+            # سلطةً ثانية تفترق عنها.
+            sections=[])
+        session.add(outline)
+        await session.flush()
+        outline_id = outline.id
+        created.append("outline")
+
+    manuscript_id = existing.manuscript_id
+    if manuscript_id is None:
+        manuscript = Manuscript(
+            tenant_id=tenant_id, project_id=project_id,
+            title_ar=opportunity.working_title_ar,
+            title_en=opportunity.working_title_en,
+            language="ar", status="draft",
+            opportunity_id=opportunity.id, outline_id=outline_id)
+        session.add(manuscript)
+        await session.flush()
+        manuscript_id = manuscript.id
+        created.append("manuscript")
+
+    final = ArtifactSet(project_id=project_id, thread_id=existing.thread_id,
+                        outline_id=outline_id, manuscript_id=manuscript_id)
+    pending = tuple(name for name in to_create(final)
+                    if name not in DETERMINISTIC_ARTIFACTS)
+
+    await audit.record(
+        session, tenant_id=tenant_id, action="thesis.paper_built",
+        object_type="publication_opportunity", object_id=opportunity.id,
+        actor_user_id=actor_user_id,
+        state_after={"project_id": str(project_id), "outline_id": str(outline_id),
+                     "manuscript_id": str(manuscript_id),
+                     "created": created, "pending": list(pending)},
+        reason="a paper was built from a researcher-selected opportunity after every "
+               "gate passed; existing artefacts were reused, none duplicated",
+    )
+
+    after = dataclasses.replace(
+        facts, project_exists=True, outline_exists=True, manuscript_exists=True,
+        thread_ready=existing.thread_id is not None)
+    return BuildOutcome(
+        project_id=project_id, outline_id=outline_id, manuscript_id=manuscript_id,
+        thread_id=existing.thread_id, created=tuple(created),
+        reused=to_reuse(existing), pending=pending, state=derive_state(after))

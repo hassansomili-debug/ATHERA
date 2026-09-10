@@ -33,11 +33,13 @@ from ..models.thesis import (
 )
 from ..schemas.thesis import (
     AgingResponse,
+    BuildPaperResponse,
     AuthorAddRequest,
     AuthorResponse,
     ConsentRequest,
     DimensionResponse,
     GateStatusResponse,
+    JourneyResponse,
     MineResponse,
     OpportunityResponse,
     OverlapMatrixResponse,
@@ -56,6 +58,7 @@ from ..services import audit, rbac
 from ..services.parsing import NoTextLayer, UnsupportedDocument, parse
 from ..services.thesis import (
     card_actions,
+    journey,
     mining,
     overlap,
     processing,
@@ -947,6 +950,66 @@ async def convert_to_project(
         reason="converted after GT1 approval and overlap resolution (§23.9, TC-05/06)",
     )
     return _opportunity_response(opportunity, principal.locale)
+
+
+# ═════════════════ رحلةُ الرسالة إلى ورقة ═════════════════
+#
+# **والموجّه رقيقٌ عمدًا.** ترتيبُ البوّابات ومنطقُها في `services/thesis/
+# journey.py`، ولا يُعاد شيءٌ منه هنا: نسختان من بوّابةٍ تفترقان، فتُفتح
+# من إحداهما ما تُغلقه الأخرى.
+
+
+@router.get("/theses/{thesis_id}/journey", response_model=JourneyResponse)
+async def thesis_journey(
+    thesis_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> JourneyResponse:
+    """حالُ الرحلة الآن — مشتقّةٌ من صفوفٍ قائمة، بلا نسبةٍ مخترَعة."""
+    thesis = await _thesis_or_404(session, principal, thesis_id, action="read",
+                                  allow_archived=True)
+    return JourneyResponse(
+        **await journey.view(session, tenant_id=principal.tenant_id, thesis=thesis))
+
+
+@router.post("/theses/{thesis_id}/opportunities/{opportunity_id}/build-paper",
+             response_model=BuildPaperResponse)
+async def build_paper(
+    thesis_id: uuid.UUID,
+    opportunity_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> BuildPaperResponse:
+    """يبني ورقةً من فرصةٍ اختارها الباحث — **ويُعيد استعمالَ ما هو قائم**.
+
+    وإعادةُ الطلب لا تُنشئ صفًّا ثانيًا لأيٍّ من الأربعة.
+    """
+    thesis = await _thesis_or_404(session, principal, thesis_id, action="write",
+                                  lock=True)
+    opportunity = (
+        await session.execute(
+            select(PublicationOpportunity).where(
+                PublicationOpportunity.id == opportunity_id,
+                PublicationOpportunity.tenant_id == principal.tenant_id)
+        )
+    ).scalar_one_or_none()
+    if opportunity is None:
+        raise NotFound("thesis.opportunity_not_found")
+
+    try:
+        outcome = await journey.build_paper(
+            session, tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+            thesis=thesis, opportunity=opportunity)
+    except journey.JourneyBlocked as blocked:
+        # **والسببُ يُقال باسمه** — رمزٌ لا نثر، ولا «تعذّر» صامتة.
+        raise AtheraError("thesis.journey_blocked", status_code=422,
+                          reasons=",".join(blocked.reasons)) from blocked
+
+    return BuildPaperResponse(
+        project_id=outcome.project_id, outline_id=outcome.outline_id,
+        manuscript_id=outcome.manuscript_id, thread_id=outcome.thread_id,
+        created=list(outcome.created), reused=list(outcome.reused),
+        pending=list(outcome.pending), state=outcome.state)
 
 
 # ═════════════════ قائمة الرسائل: صدقٌ، وهويّة، وحدٌّ ═════════════════

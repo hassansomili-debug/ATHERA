@@ -382,3 +382,34 @@ class PublicationMapResponse(BaseModel):
     opportunities: list[OpportunityResponse]
     overlap: OverlapMatrixResponse
     gate_summary: dict[str, int]
+
+
+class JourneyResponse(BaseModel):
+    """حالُ رحلة الرسالة — **حالٌ مسمّاة، ولا نسبةَ مئوية**.
+
+    «٦٠٪ مكتمل» رقمٌ بلا قياسٍ خلفه يقرؤه الباحثُ وعدًا. وكلُّ حالٍ هنا
+    واقعةٌ في القاعدة يمكن الإشارة إلى صفّها.
+    """
+
+    thesis_id: uuid.UUID
+    state: str
+    #: رموزٌ تقرؤها الآلةُ وتترجمها الشاشة — لا نثرٌ مترجَم في العقد.
+    blocking_reasons: list[str] = []
+    can_build_paper: bool = False
+    opportunities: int = 0
+    #: المفرداتُ المعلَنة، فتعرف الشاشةُ ما قد يصلها.
+    states: list[str] = []
+
+
+class BuildPaperResponse(BaseModel):
+    """حصيلةُ بناء ورقة — **وما أُنشئ وما أُعيد استعمالُه، مسمَّيَين**."""
+
+    project_id: uuid.UUID
+    outline_id: uuid.UUID
+    manuscript_id: uuid.UUID
+    thread_id: uuid.UUID | None = None
+    created: list[str] = []
+    reused: list[str] = []
+    #: ما لم يُبنَ بعد ويملكه طَورٌ لاحق — يُعلَن ولا يُدَّعى اكتمالُه.
+    pending: list[str] = []
+    state: str
