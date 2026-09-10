@@ -96,8 +96,6 @@ async def test_the_row_is_committed_before_the_client_is_told_it_was_stored(two_
     finally:
         settings.storage_provider = previous_provider
         storage.reset_store_cache()
-        from athera_api.db import engine
-        await engine.dispose()
 
     assert response.status_code == 201, response.text
     assert visible_when_sent, "لم تُلتقط لحظة إرسال الاستجابة"

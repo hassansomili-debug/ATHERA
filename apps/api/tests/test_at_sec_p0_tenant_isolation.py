@@ -195,11 +195,15 @@ async def bypassing_rls():
         pytest.skip(f"{BYPASS_URL_ENV} is not configured (needs a BYPASSRLS test role)")
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
 
     from athera_api import db
     from athera_api.services import db_posture
 
-    engine = create_async_engine(url, pool_pre_ping=True)
+    # **ومحرّكُ اختبارٍ بلا مجمَّع** — كمحرّك الحزمة في `conftest`: لا اتصالَ
+    # يبقى بعد هذه الكتلة، فلا شيءَ يعبُر إلى حلقةٍ أخرى. و`pool_pre_ping`
+    # لا معنى له بلا مجمَّع. والدورُ والرابطُ لم يتغيّرا: الحارسُ تحته كما هو.
+    engine = create_async_engine(url, poolclass=NullPool)
     original = db.SessionFactory
     try:
         async with engine.connect() as conn:

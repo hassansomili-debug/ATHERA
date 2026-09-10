@@ -182,8 +182,6 @@ async def clients(two_tenants):
     yield made
     for http in made.values():
         await http.aclose()
-    from athera_api.db import engine
-    await engine.dispose()
 
 
 async def _upload(http, data: bytes, name: str, ctype: str):

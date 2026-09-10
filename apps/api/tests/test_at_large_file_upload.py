@@ -81,8 +81,6 @@ async def researcher(two_tenants):
         headers={"Authorization": f"Bearer {token}", "Accept-Language": "ar"},
     ) as http:
         yield http
-    from athera_api.db import engine
-    await engine.dispose()
 
 
 async def _round_trip(http, size_mb: int) -> None:

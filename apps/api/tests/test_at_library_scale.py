@@ -59,8 +59,6 @@ async def clients(two_tenants):
     yield made
     for http in made.values():
         await http.aclose()
-    from athera_api.db import engine
-    await engine.dispose()
 
 
 async def _add_file(session, *, tenant_id, user_id, name: str):
