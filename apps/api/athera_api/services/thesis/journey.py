@@ -23,7 +23,12 @@ import dataclasses
 import uuid
 from typing import Final
 
-# ═════════════════ ١. الحالاتُ السبع عشرة ═════════════════
+# ═════════════════ ١. الحالاتُ السّتَّ عشرة ═════════════════
+#
+# **ولا مفردةَ لا تُصدَر.** كانت `draft_ready` معلَنةً في المفردات ومرسومةً
+# في الشاشة، و`derive_state` لا تعيدها في أيّ فرع — مفردةٌ ميّتة نجت لأنّ
+# الفحص كان يقارن مجموعتين متطابقتين كلتاهما تحملها. فتقاعدت، وحلّ محلَّ
+# ذلك الفحصِ فحصُ **بلوغ**: كلُّ حالٍ في `STATES` تعيدها الدالّةُ فعلًا.
 
 UPLOADED: Final = "uploaded"
 EXTRACTING: Final = "extracting"
@@ -37,7 +42,6 @@ THREAD_READY: Final = "thread_ready"
 OUTLINE_READY: Final = "outline_ready"
 MANUSCRIPT_CREATED: Final = "manuscript_created"
 DRAFTING: Final = "drafting"
-DRAFT_READY: Final = "draft_ready"
 LITERATURE_PENDING: Final = "literature_pending"
 READY_FOR_PAPER_STUDIO: Final = "ready_for_paper_studio"
 AWAITING_AI_CONSENT: Final = "awaiting_ai_consent"
@@ -47,7 +51,7 @@ STATES: Final[tuple[str, ...]] = (
     UPLOADED, EXTRACTING, ANALYSED, OPPORTUNITIES_READY,
     RESEARCHER_DECISION_REQUIRED, RIGHTS_REQUIRED, OVERLAP_REVIEW_REQUIRED,
     PROJECT_CREATED, THREAD_READY, OUTLINE_READY, MANUSCRIPT_CREATED,
-    DRAFTING, DRAFT_READY, LITERATURE_PENDING, READY_FOR_PAPER_STUDIO,
+    DRAFTING, LITERATURE_PENDING, READY_FOR_PAPER_STUDIO,
     AWAITING_AI_CONSENT, FAILED,
 )
 
@@ -101,10 +105,16 @@ def derive_state(facts: JourneyFacts) -> str:
     if facts.extraction_failed:
         return FAILED
     if facts.manuscript_exists:
-        if facts.literature_pending:
-            return LITERATURE_PENDING
-        if facts.sections_expected and facts.sections_drafted >= facts.sections_expected:
-            return READY_FOR_PAPER_STUDIO
+        # **وترتيبُ الخطوات هو ترتيبُ الفحص**: بناءُ الورقة (٤) قبل تحديث
+        # الأدبيات (٥) قبل الاستوديو (٦). وكان `literature_pending` يُفحص
+        # أوّلًا، فمخطوطةٌ لم يُكتب فيها حرفٌ بعدُ تُعرض عند «تحديث
+        # الأدبيات» — خطوةٌ تُقفز وخطوةٌ تُعلَن قبل أوانها.
+        drafted_out = bool(facts.sections_expected) and (
+            facts.sections_drafted >= facts.sections_expected)
+        if drafted_out:
+            # **والأدبياتُ حدٌّ حقيقيّ لا زينة**: مسوّدةٌ تمّت أقسامُها لا
+            # تُعلَن جاهزةً للاستوديو وسجلُّ الأدبيات لم يُراجَع بعد (§14).
+            return LITERATURE_PENDING if facts.literature_pending else READY_FOR_PAPER_STUDIO
         if facts.sections_drafted:
             return DRAFTING
         return MANUSCRIPT_CREATED
@@ -189,17 +199,54 @@ def reject_unresolvable(elements, known_ids, *, refs_of):
 # ═════════════════ ٤. الطبقةُ غير الصافية: قراءةُ الوقائع ═════════════════
 
 
+#: **قرارُ الباحث محلُّه `planning_status`** — وهو عمودٌ أُفرد عمدًا عن
+#: `status` (انظر `models/thesis.py`): الأوّل «أهذه هي الورقة التي أريدها؟»
+#: والثاني دورةُ إنتاج ورقة. وقراءةُ الاختيار من الثاني تخلطهما.
+SELECTED: Final = "selected"
+
+#: واعتمادُ الحقوق والتأليف (GT1) يستلزم الاختيار ولا يُناقضه: لا يعتمد
+#: باحثٌ تأليفَ ورقةٍ لم يخترها. فتُقبل شهادتُه على الاختيار للصفوف التي
+#: سبقت إفرادَ العمود — **ولا تُقرأ منها الحقوقُ**، تلك تُقرأ من ختمها.
+_ADVANCED: Final[frozenset[str]] = frozenset({"ready_to_submit", "converted"})
+
+
+def _is_selected(opportunity) -> bool:
+    return (opportunity.planning_status == SELECTED
+            or opportunity.status in _ADVANCED)
+
+
+def _rights_passed(opportunity) -> bool:
+    """**ختمُ البوّابة نفسه، لا حالٌ تُشبهه.**
+
+    `rights.approve_gate` هي الباب الوحيد، وهي تكتب الختمين معًا. فتُقرأ
+    الحقوقُ منهما — وكانت تُقرأ من `status in {ready_to_submit, converted}`،
+    وهو الشرطُ الذي يُقرأ منه الاختيارُ أيضًا. فصارت البوّابتان شرطًا
+    واحدًا: `rights_required` لا تقع أبدًا، وخطوةُ «الحقوق والتأليف» لا
+    تكون الخطوةَ الحاليّة في أيّ لحظة من الرحلة.
+    """
+    return (opportunity.rights_approved_at is not None
+            and opportunity.authorship_approved_at is not None)
+
+
 async def load_facts(session, *, tenant_id: uuid.UUID, thesis) -> JourneyFacts:
     """يقرأ صفوفَ الرحلة ويبني `JourneyFacts` — **قراءةٌ فقط**.
 
     ولا نداءَ نموذجٍ هنا ولا معاملةٌ تمتدّ عبره: القراءةُ تُغلق قبل أن
     يبدأ أيُّ عملٍ خارجيّ. (درسُ تخاصم سلسلة التدقيق.)
+
+    **وكلُّ حقلٍ في `JourneyFacts` يُملأ من صفّه.** حقلٌ يبقى على قيمته
+    الافتراضية يجعل كلَّ حالٍ تقوم عليه غيرَ بالغة: بقيت `thread_ready`
+    و`sections_drafted` و`sections_expected` و`literature_pending` فارغةً،
+    فتجمّدت الرحلةُ عند «أُنشئت المخطوطة» مهما كُتب فيها، وثلاثٌ من ستِّ
+    خطواتٍ لم تكن لتُضاء أبدًا.
     """
     from sqlalchemy import func, select
 
+    from ...models.golden_thread import ThreadElement
     from ...models.planning import ManuscriptOutline
-    from ...models.publishing import Manuscript
+    from ...models.publishing import Manuscript, ManuscriptSection, ManuscriptVersion
     from ...models.thesis import OpportunityOverlapScore, PublicationOpportunity
+    from ..publishing.drafting import policy
     from . import processing
 
     opportunities = (await session.execute(
@@ -208,9 +255,9 @@ async def load_facts(session, *, tenant_id: uuid.UUID, thesis) -> JourneyFacts:
                PublicationOpportunity.thesis_id == thesis.id)
     )).scalars().all()
 
-    selected = [o for o in opportunities
-                if o.status in {"ready_to_submit", "converted"} or o.project_id]
-    project_ids = [o.project_id for o in selected if o.project_id]
+    selected = [o for o in opportunities if _is_selected(o)]
+    project_ids = [o.project_id or o.converted_project_id for o in selected
+                   if (o.project_id or o.converted_project_id)]
 
     unresolved = 0
     if selected:
@@ -222,18 +269,57 @@ async def load_facts(session, *, tenant_id: uuid.UUID, thesis) -> JourneyFacts:
             )
         )).scalar_one()
 
-    outline_exists = manuscript_exists = False
+    thread_ready = outline_exists = False
+    manuscript = None
     if project_ids:
+        thread_ready = bool((await session.execute(
+            select(func.count(ThreadElement.id))
+            .where(ThreadElement.tenant_id == tenant_id,
+                   ThreadElement.project_id.in_(project_ids))
+        )).scalar_one())
         outline_exists = bool((await session.execute(
             select(func.count(ManuscriptOutline.id))
             .where(ManuscriptOutline.tenant_id == tenant_id,
                    ManuscriptOutline.project_id.in_(project_ids))
         )).scalar_one())
-        manuscript_exists = bool((await session.execute(
-            select(func.count(Manuscript.id))
+        manuscript = (await session.execute(
+            select(Manuscript)
             .where(Manuscript.tenant_id == tenant_id,
                    Manuscript.project_id.in_(project_ids))
-        )).scalar_one())
+            .order_by(Manuscript.created_at.desc()).limit(1)
+        )).scalar_one_or_none()
+
+    # ── ما كُتب فعلًا في المخطوطة، وما تنتظره ──
+    #
+    # **وسلطةُ الأقسام واحدة**: `drafting/policy.py` تقول ما هو مفعَّل،
+    # فيُسأل منها العددُ المنتظَر ولا يُكتب رقمٌ بجانبها ينحرف عنها.
+    sections_drafted = sections_expected = 0
+    if manuscript is not None:
+        sections_expected = len(policy.ENABLED_SECTIONS)
+        version_id = manuscript.current_version_id
+        if version_id is None:
+            version_id = (await session.execute(
+                select(ManuscriptVersion.id)
+                .where(ManuscriptVersion.tenant_id == tenant_id,
+                       ManuscriptVersion.manuscript_id == manuscript.id)
+                .order_by(ManuscriptVersion.created_at.desc()).limit(1)
+            )).scalar_one_or_none()
+        if version_id is not None:
+            sections_drafted = int((await session.execute(
+                select(func.count(ManuscriptSection.id))
+                .where(ManuscriptSection.tenant_id == tenant_id,
+                       ManuscriptSection.version_id == version_id,
+                       ManuscriptSection.section_key.in_(policy.ENABLED_SECTIONS))
+            )).scalar_one())
+
+    # ── الأدبيات: حالٌ في الصفّ، لا استنتاجٌ من السياسة ──
+    #
+    # سياسةُ الأقسام تقول إنّ المقدّمة والإطار والمناقشة تحتاج أدبيات، وذلك
+    # ثابتٌ لكلّ ورقة. فلو قامت الحالُ عليه لكانت «تحديثُ الأدبيات» قائمةً
+    # أبدًا وابتلعت ما بعدها. والصفُّ هو `literature_validation_status`
+    # على الفرصة المختارة — وهو ما يتحرّك حين يُفتح سجلّ الأدبيات (S5F).
+    literature_pending = any(
+        o.literature_validation_status == "pending" for o in selected)
 
     return JourneyFacts(
         processing_state=thesis.processing_state,
@@ -241,12 +327,17 @@ async def load_facts(session, *, tenant_id: uuid.UUID, thesis) -> JourneyFacts:
         opportunities=len(opportunities),
         selected_opportunity=bool(selected),
         overlap_unresolved=int(unresolved),
-        # **البوّابتان تُقرآن من صفوفهما، ولا تُفترض واحدةٌ منهما.**
-        rights_passed=any(o.status in {"ready_to_submit", "converted"} for o in selected),
+        # **البوّابتان تُقرآن من صفَّيهما، ولا تُفترض واحدةٌ منهما.**
+        rights_passed=any(_rights_passed(o) for o in selected),
         project_exists=bool(project_ids),
+        thread_ready=thread_ready,
         outline_exists=outline_exists,
-        manuscript_exists=manuscript_exists,
+        manuscript_exists=manuscript is not None,
+        sections_drafted=sections_drafted,
+        sections_expected=sections_expected,
+        literature_pending=literature_pending,
     )
+
 
 # ═════════════════ ٥. الأثرُ القائم: قرارُ إعادة الاستعمال ═════════════════
 
@@ -386,7 +477,7 @@ async def build_paper(session, *, tenant_id: uuid.UUID, actor_user_id,
     """
     from ...models.planning import ManuscriptOutline
     from ...models.portfolio import ResearchProject
-    from ...models.publishing import Manuscript
+    from ...models.publishing import Manuscript, ManuscriptVersion
     from .. import audit
 
     # ── ١ · المِلكيّة والنسب: الفرصةُ لهذه الرسالة ولهذا المستأجر ──
@@ -420,6 +511,10 @@ async def build_paper(session, *, tenant_id: uuid.UUID, actor_user_id,
         # **والرابطتان تُكتبان معًا** — كما في التحويل اليدويّ.
         opportunity.project_id = project_id
         opportunity.converted_project_id = project_id
+        # وهذا **هو** التحويل، فيُقال في دورة الإنتاج كما يقوله المسار
+        # اليدويّ. وتركُه عند `ready_to_submit` يُبقي الفرصةَ تقول إنّها
+        # تنتظر تحويلًا وقد صار لها مشروعٌ ومخطوطة.
+        opportunity.status = "converted"
         created.append("project")
 
     outline_id = existing.outline_id
@@ -445,6 +540,25 @@ async def build_paper(session, *, tenant_id: uuid.UUID, actor_user_id,
             opportunity_id=opportunity.id, outline_id=outline_id)
         session.add(manuscript)
         await session.flush()
+
+        # ── ونسخةٌ أولى معها، وإلّا فمخطوطةٌ لا يفتحها الاستوديو ──
+        #
+        # **`Manuscript → ManuscriptVersion → ManuscriptSection` سلسلةٌ لا
+        # تبدأ من وسطها.** كلُّ مدخل في استوديو الورقة — العرضُ العامّ،
+        # وقراءةُ قسم، وصياغتُه، واعتمادُه — يمرّ على `_current_version`،
+        # وهي ترفع `publishing.manuscript_not_found` حين لا نسخةَ هناك.
+        # فمخطوطةٌ بلا نسخة صفٌّ قائمٌ لا باب له: تُبنى الورقةُ، ويقول
+        # الزرُّ «افتح استوديو الورقة»، ويُجيب الاستوديو «غير موجودة».
+        # و`manuscript_from_opportunity` تكتبهما معًا منذ S5E — فيُكتبان
+        # معًا هنا كذلك، ولا يُترك الطريقان يفترقان.
+        version = ManuscriptVersion(
+            tenant_id=tenant_id, manuscript_id=manuscript.id, version_label="v1",
+            created_by=actor_user_id,
+            change_reason_ar="النسخة الأولى من الفرصة التي اختارها الباحث")
+        session.add(version)
+        await session.flush()
+        manuscript.current_version_id = version.id
+
         manuscript_id = manuscript.id
         created.append("manuscript")
 

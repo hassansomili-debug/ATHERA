@@ -76,9 +76,55 @@ def test_the_guard_would_catch_an_unscoped_call():
 # ══════════ ٢. الحالُ تُشتقّ من صفوف، ولا نسبةَ تُخترع ══════════
 
 
-def test_the_seventeen_states_are_declared():
-    assert len(journey.STATES) == 17
-    assert len(set(journey.STATES)) == 17
+def test_the_sixteen_states_are_declared():
+    assert len(journey.STATES) == 16
+    assert len(set(journey.STATES)) == 16
+
+
+def test_every_declared_state_is_actually_reachable():
+    """**والدعوى: لا مفردةَ ميّتة.**
+
+    كانت `draft_ready` معلَنةً في `STATES` ومرسومةً في خريطة الشاشة، ولا
+    فرعَ في `derive_state` يعيدها. ونجت لأنّ الفحص القائم يقارن مجموعتين
+    — الخادم والشاشة — وكلتاهما تحملها؛ فمفردةٌ ميّتة في الطرفين تمرّ.
+
+    فهذا فحصُ **بلوغ** لا تطابق: يمشي على فضاء الوقائع كلِّه ويجمع ما
+    تعيده الدالّةُ فعلًا، ثمّ يشترط أنّه `STATES` بلا زيادةٍ ولا نقصان.
+    """
+    import itertools
+
+    F = journey.JourneyFacts
+    reached = set()
+    space = itertools.product(
+        ("uploaded", "parsing", "ready_for_review", processing_failed()),
+        (False, True),   # extraction_failed
+        (0, 1),          # opportunities
+        (False, True),   # selected_opportunity
+        (0, 1),          # overlap_unresolved
+        (False, True),   # rights_passed
+        (False, True),   # ai_consent_granted
+        (False, True),   # project_exists
+        (False, True),   # thread_ready
+        (False, True),   # outline_exists
+        (False, True),   # manuscript_exists
+        (0, 1, 3),       # sections_drafted
+        (0, 3),          # sections_expected
+        (False, True),   # literature_pending
+    )
+    for row in space:
+        reached.add(journey.derive_state(F(*row)))
+
+    declared = set(journey.STATES)
+    assert declared - reached == set(), (
+        f"مفرداتٌ معلَنةٌ لا تعيدها الدالّةُ أبدًا: {sorted(declared - reached)}")
+    assert reached - declared == set(), (
+        f"حالٌ تُعاد ولم تُعلَن: {sorted(reached - declared)}")
+
+
+def processing_failed() -> str:
+    from athera_api.services.thesis import processing
+
+    return processing.FAILED
 
 
 def test_no_percentage_is_ever_produced():
@@ -164,9 +210,16 @@ def test_downstream_states_reflect_real_artefacts():
     assert journey.derive_state(
         F(**done, manuscript_exists=True, sections_drafted=3, sections_expected=3)
     ) == journey.READY_FOR_PAPER_STUDIO
+    # **وتحديثُ الأدبيات خطوةٌ بعد البناء لا قبله** (§14): مخطوطةٌ تمّت
+    # أقسامُها ولم يُراجَع سجلُّ أدبياتها تقف هنا — أمّا مخطوطةٌ لم يُكتب
+    # فيها حرفٌ بعدُ فحالُها أنّها أُنشئت، ولو كانت الأدبياتُ معلّقة.
+    assert journey.derive_state(
+        F(**done, manuscript_exists=True, sections_drafted=3, sections_expected=3,
+          literature_pending=True)
+    ) == journey.LITERATURE_PENDING
     assert journey.derive_state(
         F(**done, manuscript_exists=True, literature_pending=True)
-    ) == journey.LITERATURE_PENDING
+    ) == journey.MANUSCRIPT_CREATED
 
 
 # ══════════ ٣. الحدُّ الذي لا يلين: مرجعٌ لا يُحلّ يُرفض ══════════

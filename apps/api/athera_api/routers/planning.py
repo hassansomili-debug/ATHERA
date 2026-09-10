@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import datetime as dt
 import logging
 import uuid
 
@@ -43,6 +42,7 @@ from ..services import audit, consent
 from ..services.planning import context as ctx
 from ..services.planning import generate, outline, thread
 from ..services.planning.contracts import OpportunityBatch
+from ..services.thesis import selection
 
 logger = logging.getLogger("athera.planning")
 
@@ -372,24 +372,13 @@ async def decide_opportunity(
     await _project(session, principal, project_id)
     row = await _opportunity(session, principal, project_id, opportunity_id)
 
-    before = row.planning_status
-    row.planning_status = "selected" if payload.decision == "select" else "excluded"
-    row.planning_decided_by = principal.user_id
-    row.planning_decided_at = dt.datetime.now(dt.UTC)
-
-    await audit.record(
-        session, tenant_id=principal.tenant_id,
-        action=("planning.opportunity_selected" if payload.decision == "select"
-                else "planning.opportunity_excluded"),
-        object_type="publication_opportunity", object_id=row.id,
-        actor_user_id=principal.user_id,
-        state_before={"planning_status": before},
-        state_after={"planning_status": row.planning_status,
-                     # يُسجَّل أن دورة النشر لم تُمسّ.
-                     "publication_status_unchanged": row.status},
-        reason=(payload.reason or "")[:1000] or "researcher planning decision",
-        request_id=principal.request_id,
-    )
+    # **والكتابةُ في `services/thesis/selection.py` وحدها.** فرصةُ الرسالة
+    # تُختار من موجّه الرسائل ولا مشروعَ لها بعد، فلو بقيت الكتابةُ هنا
+    # لصار للقرار الواحد كاتبان يفترقان.
+    await selection.decide(
+        session, tenant_id=principal.tenant_id, opportunity=row,
+        actor_user_id=principal.user_id, decision=payload.decision,
+        reason=payload.reason, request_id=principal.request_id)
     return _view(row, principal.locale)
 
 

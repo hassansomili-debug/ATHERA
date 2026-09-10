@@ -346,3 +346,107 @@ persistence · the reviewer and revision workflow.
 **T0.1 governs what canonical thesis knowledge is safe to mine; T1 governs who
 starts the mining and what the researcher is shown.** Neither makes any claim
 about the published literature.
+
+---
+
+## 14. AI Journey V1 — who walks the path, and what each step costs
+
+T1 settled *who starts the mining*. AI Journey V1 settles *what happens after
+the researcher is shown opportunities*: the six-step path from a read thesis to
+a manuscript the Paper Studio can open.
+
+### 14.1 The six steps, and the sixteen states behind them
+
+    thesis analysis → paper opportunities → rights and authorship
+      → building the paper → literature update → Paper Studio
+
+**There is no percentage anywhere on this path.** "60% complete" is a number
+with no measurement behind it, and a researcher reads it as a promise. The
+journey reports a *named state*, and every state is a row that can be pointed
+at. `services/thesis/journey.py` holds the vocabulary; `derive_state` is a pure
+function over `JourneyFacts`, and `load_facts` is the only impure layer.
+
+`draft_ready` was retired. It was declared in the vocabulary and drawn on the
+screen, and no branch of `derive_state` ever returned it — dead vocabulary that
+survived because the guard compared two sets that both contained it. The guard
+is now a **reachability** test: every state in `STATES` is one the function
+actually returns.
+
+### 14.2 Every fact is loaded, or the state built on it cannot occur
+
+`JourneyFacts` has fourteen fields. Six were never populated —
+`thread_ready`, `sections_drafted`, `sections_expected`, `literature_pending`,
+and the two gate fields below. The consequence was not a wrong state but an
+**absent** one: the journey froze at `manuscript_created` however much was
+written into the manuscript, and three of the six steps could never become the
+current step. A defaulted fact is not a neutral omission; it silently deletes
+every state that depends on it.
+
+### 14.3 Selection and rights are two gates, not one
+
+`planning_status` is the researcher's decision — "is this the paper I want?" —
+and `status` is the paper-production lifecycle. `models/thesis.py` separates
+them deliberately, because merging them makes "rejected" mean two different
+judgements made by two different people at two different moments.
+
+The journey read **selection** out of the production lifecycle
+(`status in {ready_to_submit, converted}`), which is the same condition it read
+**rights** from. Two gates evaluating one condition are one gate:
+`rights_required` could not occur, and the "rights and authorship" step was
+never the current step at any moment of any journey.
+
+Selection is now read from `planning_status`, and rights from the GT1 stamps
+(`rights_approved_at` **and** `authorship_approved_at`) that
+`rights.approve_gate` writes — the gate's own mark, not a state that resembles
+it. An opportunity already advanced through GT1 still counts as selected: a
+researcher does not approve authorship for a paper they did not choose.
+
+### 14.4 The researcher could not select at all
+
+The only decision endpoint was `POST /planning/{project_id}/publication-opportunities/{id}/decide`,
+and it reads the opportunity with `project_id == project_id`. **A thesis-derived
+opportunity has no project until it is converted**, so the one action T1's
+contract ends on — "the researcher selects the scientific opportunity" — had no
+door. Every thesis on the golden path stopped at step two permanently, with the
+build control disabled forever because the server would never allow it.
+
+`POST /theses/{id}/opportunities/{oid}/select` is that door. The write itself
+lives in `services/thesis/selection.py` and **both** routers call it: two copies
+of one decision drift apart at the first edit, and one of them would stop
+recording what the other records.
+
+### 14.5 A built paper the Studio can open
+
+`Manuscript → ManuscriptVersion → ManuscriptSection` is a chain that does not
+start from its middle. Every entry to the Paper Studio — overview, reading a
+section, drafting it, approving it — resolves the current version first.
+`build_paper` created a `Manuscript` with no version, so the journey's terminal
+action offered "Open in Paper Studio" for a manuscript the Studio answered
+`publishing.manuscript_not_found` for. The version is written with the
+manuscript now, exactly as `manuscript_from_opportunity` has always written it.
+
+### 14.6 The golden thread is reachable
+
+`journey.build_thread` — the evidence-grounded model call whose unresolvable
+references are rejected outright, never repaired — was written, tested and
+called by nothing. It is now `POST /theses/{id}/opportunities/{oid}/thread`,
+and takes no request-scoped transaction: the read closes, the model call runs
+with no transaction open, and the write is its own.
+
+### 14.7 What still does not happen
+
+- **`ready_for_paper_studio` is not reachable from real rows yet.**
+  `literature_validation_status` defaults to `pending` and nothing moves it,
+  because the literature record is closed until S5F. So a completed draft
+  honestly stops at "literature update" and names what it waits for. This is
+  reported rather than hidden: the alternative — treating pending literature as
+  satisfied — would announce a paper ready that is not.
+- **The journey screen has no browser coverage.** Node is not available on this
+  machine, so no Playwright spec was written for it and none was run. The
+  Python-side checks pin the component's state map, its message keys, its
+  controls and its bilingual copy against the server vocabulary; everything
+  about its *behaviour in a browser* is unverified, and is stated so rather
+  than presented otherwise.
+- Literature federation and validation, novelty judgement, final ranking, the
+  Journey Orchestrator, G9 analysis provenance, and the reviewer workflow remain
+  outside this slice, as §13 says.

@@ -21,7 +21,7 @@ from athera_api.services.thesis import journey
 
 
 def _web() -> pathlib.Path:
-    return pathlib.Path(inspect.getfile(journey)).resolve().parents[4] / "apps/web"
+    return pathlib.Path(inspect.getfile(journey)).resolve().parents[5] / "apps/web"
 
 
 def _component() -> str:
@@ -145,6 +145,49 @@ def test_both_ctas_carry_the_required_wording():
     assert _messages("en")["journey"]["buildCta"] == "Build this paper with AI"
     assert _messages("ar")["journey"]["openStudio"] == "فتح في استوديو الورقة"
     assert _messages("en")["journey"]["openStudio"] == "Open in Paper Studio"
+
+
+def test_the_first_scientific_decision_has_a_control_of_its_own():
+    """**والرحلةُ كانت تطلب فعلًا لا زرَّ له.**
+
+    تقف عند «اختر الورقة التي تريد بناءها»، ولا شيءَ في الشاشة يختار —
+    وزرُّ البناء معطَّلٌ أبدًا لأنّ الخادمَ لن يأذن قبل الاختيار.
+    """
+    source = _component()
+    assert 'data-testid="journey-select-opportunity"' in source
+    assert "/select`" in source, "الزرُّ لا ينادي نقطةَ الاختيار"
+    assert 'opportunity.planning_status !== "selected"' in source, (
+        "الشاشةُ لا تقرأ قرارَ الباحث من عموده")
+    for locale in ("ar", "en"):
+        journey_copy = _messages(locale)["journey"]
+        assert journey_copy["selectCta"], f"{locale}: نصُّ الاختيار مفقود"
+        assert journey_copy["selecting"], f"{locale}: نصُّ الانتظار مفقود"
+
+
+def test_the_api_exposes_the_selection_the_card_reads():
+    """وحقلٌ تقرؤه الشاشةُ ولا يُصدره الخادمُ عمودٌ فارغٌ في البطاقة."""
+    from athera_api.schemas.thesis import OpportunityResponse
+
+    assert "planning_status" in OpportunityResponse.model_fields
+
+    from athera_api.routers import thesis as thesis_router
+
+    builder = inspect.getsource(thesis_router._opportunity_response)  # noqa: SLF001
+    assert "planning_status=row.planning_status" in builder
+
+
+def test_the_studio_link_belongs_to_its_own_card():
+    """**ما يخصّ بطاقةً يُعرض في بطاقتها** — درسُ مركز الرسائل نفسه.
+
+    كانت `manuscriptId` حالًا واحدةً للمكوّن، فبناءُ ورقةٍ من بطاقةٍ يجعل
+    **كلَّ** البطاقات تعرض «افتح في استوديو الورقة» مشيرةً إلى تلك
+    المخطوطة بعينها — فيفتح الباحثُ ورقةً غيرَ التي ضغط عليها.
+    """
+    source = _component()
+    assert "const [manuscripts, setManuscripts]" in source, (
+        "المخطوطةُ ما زالت حالًا واحدةً للصفحة")
+    assert "manuscriptOf(opportunity.id)" in source
+    assert "manuscripts[opportunityId]" in source
 
 
 def test_the_card_shows_a_real_count_not_a_score():

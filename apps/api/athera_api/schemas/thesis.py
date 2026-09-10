@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -302,6 +303,9 @@ class OpportunityResponse(BaseModel):
     readiness_outcome_label: str | None
     salami_alert: bool
     status: str
+    #: **قرارُ الباحث، لا دورةُ الإنتاج**: `proposed` · `selected` ·
+    #: `excluded`. والعمودان مُفرَدان عمدًا (§18)، ويُعرضان مفرَدَين.
+    planning_status: str = "proposed"
     rights_approved: bool
     authorship_approved: bool
     #: **عددُ المراجع الحقيقية** التي يقوم عليها المقترح — لا نسبةٌ ولا درجة.
@@ -428,3 +432,27 @@ class ThreadElementDraft(BaseModel):
 
 class ThreadDraft(BaseModel):
     elements: list[ThreadElementDraft] = []
+
+
+class SelectOpportunityRequest(BaseModel):
+    """قرارُ الباحث في فرصة — **ولا يُقبل قرارٌ ثالثٌ صامتًا**.
+
+    و`decision` لا قيمةَ افتراضية لها: اختيارٌ ضمنيّ ليس اختيارًا، وطلبٌ
+    بلا قرارٍ صريح خطأٌ في النداء لا رأيٌ يُخمَّن.
+    """
+
+    decision: Literal["select", "exclude"]
+    #: سببُ الباحث كما كتبه — يُحفظ في سلسلة التدقيق ولا يُعرض حكمًا.
+    reason: str | None = None
+
+
+class ThreadBuildResponse(BaseModel):
+    """حصيلةُ بناء الخيط الذهبيّ — **وما رُفض يُعدّ ولا يُخفى**."""
+
+    project_id: uuid.UUID
+    created: int
+    #: عقدٌ ردّها النظام لأنّ مراجعَ أدلّتها لا تردّ إلى صفوفٍ حقيقية.
+    #: **عددٌ لا متن**: متنُ المرفوض اختلاقٌ لا يُحفظ ولا يُعرض.
+    rejected: int
+    context_fingerprint: str
+    agent_run_id: uuid.UUID

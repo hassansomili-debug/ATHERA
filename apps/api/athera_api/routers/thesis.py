@@ -50,6 +50,8 @@ from ..schemas.thesis import (
     PublicationMapResponse,
     RemovalDependency,
     RemovalPreviewResponse,
+    SelectOpportunityRequest,
+    ThreadBuildResponse,
     ThesisCardActions,
     ThesisCreateRequest,
     ThesisResponse,
@@ -64,6 +66,7 @@ from ..services.thesis import (
     processing,
     removal,
     rights,
+    selection,
     vocab,
 )
 
@@ -152,6 +155,9 @@ def _opportunity_response(row: PublicationOpportunity, locale: str) -> Opportuni
         readiness_score=float(row.readiness_score) if row.readiness_score is not None else None,
         readiness_outcome=row.readiness_outcome, readiness_outcome_label=outcome_label,
         salami_alert=row.salami_alert, status=row.status,
+        # **قرارُ الباحث في عموده** — والشاشةُ تقرؤه لتعرف أتعرض «اختر
+        # هذه الورقة» أم «ابنِ هذه الورقة»، ولا تستنتجه من دورة الإنتاج.
+        planning_status=row.planning_status,
         rights_approved=row.rights_approved_at is not None,
         authorship_approved=row.authorship_approved_at is not None,
         # **ويُعدّ ما هو مكتوبٌ فعلًا.** ثلاثةُ حقولٍ تحمل مراجعَ حقائقَ
@@ -1015,6 +1021,101 @@ async def build_paper(
         manuscript_id=outcome.manuscript_id, thread_id=outcome.thread_id,
         created=list(outcome.created), reused=list(outcome.reused),
         pending=list(outcome.pending), state=outcome.state)
+
+
+async def _opportunity_of_thesis(
+    session: AsyncSession, principal: Principal, thesis: Thesis,
+    opportunity_id: uuid.UUID,
+) -> PublicationOpportunity:
+    """الفرصةُ **لهذه الرسالة ولهذا المستأجر** — والنسبُ يُفحص لا يُفترض."""
+    row = (
+        await session.execute(
+            select(PublicationOpportunity).where(
+                PublicationOpportunity.id == opportunity_id,
+                PublicationOpportunity.thesis_id == thesis.id,
+                PublicationOpportunity.tenant_id == principal.tenant_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise NotFound("thesis.opportunity_not_found")
+    return row
+
+
+@router.post("/theses/{thesis_id}/opportunities/{opportunity_id}/select",
+             response_model=OpportunityResponse)
+async def select_opportunity(
+    thesis_id: uuid.UUID,
+    opportunity_id: uuid.UUID,
+    payload: SelectOpportunityRequest,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> OpportunityResponse:
+    """قرارُ الباحث في فرصةِ رسالته — **وهو أوّلُ قرارٍ علميّ في الرحلة**.
+
+    وكان لا سبيلَ إليه: نقطةُ القرار الوحيدة في `routers/planning.py`
+    تقرأ الفرصةَ بشرط مشروعها، وفرصةُ الرسالة لا مشروعَ لها حتى تُحوَّل.
+    فتقف الرحلةُ عند «اختر الفرصة» وتطلب فعلًا لا بابَ له.
+
+    **والكتابةُ في `services/thesis/selection.py`** — لا نسخةَ ثانية هنا.
+    """
+    thesis = await _thesis_or_404(session, principal, thesis_id, action="write")
+    opportunity = await _opportunity_of_thesis(
+        session, principal, thesis, opportunity_id)
+    await selection.decide(
+        session, tenant_id=principal.tenant_id, opportunity=opportunity,
+        actor_user_id=principal.user_id, decision=payload.decision,
+        reason=payload.reason, request_id=principal.request_id)
+    return _opportunity_response(opportunity, principal.locale)
+
+
+@router.post("/theses/{thesis_id}/opportunities/{opportunity_id}/thread",
+             response_model=ThreadBuildResponse)
+async def build_thread(
+    thesis_id: uuid.UUID,
+    opportunity_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+) -> ThreadBuildResponse:
+    """يبني عقدَ الخيط الذهبيّ من الأدلّة الموثقة — **بإذنٍ صريح**.
+
+    **ولا تبعية `get_session` هنا، وذلك مقصود** — كما في صياغة الأقسام:
+    تلك تفتح معاملةً تبقى مفتوحةً طوال الطلب، ونحن ننتظر مزوّدًا خارجيًّا
+    داخلها. و`journey.build_thread` تملك معاملاتِها الثلاث: قراءةٌ تُغلق،
+    ثمّ نداءٌ بلا معاملة، ثمّ كتابة.
+
+    وكانت الدالّةُ مكتوبةً ومفحوصةً بلا نقطةِ نهايةٍ تناديها — فالخيطُ
+    الذهبيّ لا يُبنى في المنتج، و`thread_ready` لا تقع أبدًا.
+    """
+    from ..db import tenant_session  # noqa: PLC0415 — يتجنّب استيرادًا دائريًا
+
+    tenant_id, actor_id = principal.tenant_id, principal.user_id
+
+    def _maker():
+        return tenant_session(tenant_id, actor_id)
+
+    # ── معاملةٌ قصيرة: الإذنُ على الملفّ والنسبُ — ثمّ تُغلق قبل أيّ نداء ──
+    async with _maker() as opening:
+        thesis = await _thesis_or_404(opening, principal, thesis_id, action="write")
+        opportunity = await _opportunity_of_thesis(
+            opening, principal, thesis, opportunity_id)
+        project_id = opportunity.project_id or opportunity.converted_project_id
+        if project_id is None:
+            # **ولا خيطَ قبل مشروع**: الخيطُ يُعلَّق بمشروعٍ قائم، وبناؤه
+            # قبله يعني اختراعَ صاحبٍ له.
+            raise AtheraError("thesis.paper_not_built_yet", status_code=409,
+                              opportunity_id=str(opportunity_id))
+        file_id = thesis.file_id
+
+    try:
+        outcome = await journey.build_thread(
+            _maker, tenant_id=tenant_id, actor_user_id=actor_id,
+            file_id=file_id, project_id=project_id)
+    except journey.JourneyBlocked as blocked:
+        raise AtheraError("thesis.journey_blocked", status_code=422,
+                          reasons=",".join(blocked.reasons)) from blocked
+
+    return ThreadBuildResponse(
+        project_id=project_id, created=outcome.created, rejected=outcome.rejected,
+        context_fingerprint=outcome.fingerprint, agent_run_id=outcome.agent_run_id)
 
 
 # ═════════════════ قائمة الرسائل: صدقٌ، وهويّة، وحدٌّ ═════════════════

@@ -1812,6 +1812,8 @@
     "done": "Done",
     "waiting": "Not started yet",
     "buildCta": "Build this paper with AI",
+    "selectCta": "Choose this paper",
+    "selecting": "Choosing…",
     "openStudio": "Open in Paper Studio",
     "building": "Building…",
     "aiNotice": "An AI proposal, built from your thesis alone — you review it before any step.",

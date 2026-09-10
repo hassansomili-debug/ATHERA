@@ -49,7 +49,6 @@ const STEP_OF_STATE: Record<string, number> = {
   manuscript_created: 3,
   drafting: 3,
   literature_pending: 4,
-  draft_ready: 5,
   ready_for_paper_studio: 5,
 };
 
@@ -70,6 +69,8 @@ interface Opportunity {
   readiness_outcome_label: string | null;
   salami_alert: boolean;
   provenance_count: number;
+  /** قرارُ الباحث: `proposed` | `selected` | `excluded` — لا دورةُ الإنتاج. */
+  planning_status: string;
 }
 
 interface BuildResult {
@@ -92,7 +93,16 @@ export function ThesisJourney({
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [manuscriptId, setManuscriptId] = useState<string | null>(null);
+  /**
+   * **مخطوطةٌ لكلِّ فرصة، لا واحدةٌ للصفحة.**
+   *
+   * كانت `manuscriptId` واحدةً للمكوّن كلِّه، فبناءُ ورقةٍ من البطاقة
+   * الأولى يجعل **كلَّ** البطاقات تعرض «افتح في استوديو الورقة» وتشير
+   * كلُّها إلى تلك المخطوطة بعينها — وهو درسُ مركز الرسائل نفسه: ما يخصّ
+   * بطاقةً يُعرض في بطاقتها.
+   */
+  const [manuscripts, setManuscripts] =
+    useState<Record<string, string>>({});
 
   const load = useCallback(async (commit: Commit) => {
     try {
@@ -114,14 +124,11 @@ export function ThesisJourney({
 
   const refresh = useDeferredLoad(load);
 
-  async function build(opportunityId: string) {
+  async function act(opportunityId: string, run: () => Promise<void>) {
     setBusy(opportunityId);
     setError(null);
     try {
-      const result = await apiFetch<BuildResult>(
-        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/build-paper`,
-        { method: "POST", locale });
-      setManuscriptId(result.manuscript_id);
+      await run();
       await refresh();
     } catch (err) {
       setError(err instanceof AtheraApiError
@@ -130,6 +137,36 @@ export function ThesisJourney({
     } finally {
       setBusy(null);
     }
+  }
+
+  /**
+   * **قرارُ الباحث، وهو أوّلُ قرارٍ علميّ في الرحلة.**
+   *
+   * ولم يكن له زرٌّ ولا نقطةُ نهاية: تقف الرحلةُ عند «اختر الورقة التي
+   * تريد بناءها» وتطلب فعلًا لا سبيل إليه.
+   */
+  function select(opportunityId: string) {
+    return act(opportunityId, async () => {
+      await apiFetch(
+        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/select`,
+        { method: "POST", locale, body: JSON.stringify({ decision: "select" }) });
+    });
+  }
+
+  function build(opportunityId: string) {
+    return act(opportunityId, async () => {
+      const result = await apiFetch<BuildResult>(
+        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/build-paper`,
+        { method: "POST", locale });
+      setManuscripts((current) => ({
+        ...current, [opportunityId]: result.manuscript_id,
+      }));
+    });
+  }
+
+  /** مخطوطةُ **هذه** الفرصة — أو لا شيء. ولا تُقرأ مخطوطةُ جارتها. */
+  function manuscriptOf(opportunityId: string): string | undefined {
+    return manuscripts[opportunityId];
   }
 
   const current = journey ? (STEP_OF_STATE[journey.state] ?? 0) : 0;
@@ -198,7 +235,11 @@ export function ThesisJourney({
         <p data-testid="journey-error" className="metric-label">{error}</p>
       ) : null}
 
-      {opportunities.length === 0 ? (
+      {/* **الخلوّ والإخفاق حالان لا تُجمعان.**
+          «لا فرص أوراق بعد» دعوى معرفة، و«تعذّر التحميل» إعلانُ أنّ
+          المعرفة لم تُتَح. وقائمةٌ تبدأ فارغةً وتبقى فارغةً بعد الإخفاق
+          لا يفرّق شرطُها بينهما إلّا بذكر الخطأ صراحةً. */}
+      {opportunities.length === 0 && !error ? (
         <p data-testid="journey-empty" className="metric-label">
           {t("journey.empty")}
         </p>
@@ -251,10 +292,10 @@ export function ThesisJourney({
           <div
             style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockStart: 6 }}
           >
-            {manuscriptId ? (
+            {manuscriptOf(opportunity.id) ? (
               <a
                 data-testid="journey-open-studio"
-                href={`/${locale}/manuscripts/${manuscriptId}`}
+                href={`/${locale}/manuscripts/${manuscriptOf(opportunity.id)}`}
                 style={{
                   padding: "8px 16px", borderRadius: "var(--radius)",
                   background: "var(--athera-teal)", color: "#fff",
@@ -263,6 +304,26 @@ export function ThesisJourney({
               >
                 {t("journey.openStudio")}
               </a>
+            ) : opportunity.planning_status !== "selected" ? (
+              /* **أوّلُ قرارٍ علميّ في الرحلة، وله زرُّه.** والبناءُ لا
+                 يُعرض قبله: الخادمُ يردّه بـ«اختر الورقة»، وزرٌّ يَعِد بما
+                 يرفضه الخادمُ عطبٌ في المنتج. */
+              <button
+                type="button"
+                data-testid="journey-select-opportunity"
+                disabled={busy === opportunity.id}
+                onClick={() => void select(opportunity.id)}
+                style={{
+                  padding: "8px 16px", borderRadius: "var(--radius)", border: "none",
+                  background: "var(--athera-aqua, var(--athera-teal))",
+                  color: "#04302c", font: "inherit", fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                {busy === opportunity.id
+                  ? t("journey.selecting")
+                  : t("journey.selectCta")}
+              </button>
             ) : (
               <button
                 type="button"
