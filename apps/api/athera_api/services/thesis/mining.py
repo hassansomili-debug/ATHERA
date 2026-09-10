@@ -118,13 +118,14 @@ class MiningOutcome:
     withheld_for_missing_title: int
     evidence_basis: str
     outcome: str
-    #: سببُ تعذّر التكوين — `None` ما لم يكن `outcome` هو التعذّر.
-    blocked_reason: str | None = None
     mining_state: str
     kinds: list[str]
     aging: aging.AgingReport
     canonical: canonical_facts.CanonicalEvidence
     title_conflict: bool
+    #: سببُ تعذّر التكوين — `None` ما لم يكن `outcome` هو التعذّر. ويأتي
+    #: أخيرًا لأنّ حقلًا بقيمةٍ افتراضية لا يسبق حقلًا إلزاميًّا.
+    blocked_reason: str | None = None
 
 
 async def run(
