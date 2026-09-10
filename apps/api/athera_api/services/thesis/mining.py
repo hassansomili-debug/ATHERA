@@ -45,6 +45,15 @@ from . import aging, canonical_facts, miner
 NOT_STARTED: Final = "not_started"
 RUNNING: Final = "running"
 COMPLETED: Final = "completed"
+#: **حُجب — ومعناها أوسعُ ممّا كان، فليُقرأ الاتّساع هنا لا يُستنتج.**
+#:
+#: كانت تعني «لم يكن ثمّة دليلٌ مؤهَّل». وصارت تعني أيضًا: **جرت محاولةٌ
+#: حقيقية على دليلٍ حقيقيّ ولم تُكوّن فرصة**. والجامعُ بينهما أنّ الرسالة
+#: خرجت بلا فرصةٍ واحدة، وأنّ ذلك ليس اكتمالًا.
+#:
+#: و`COMPLETED` صارت تعني شيئًا واحدًا لا لبس فيه: **قامت فرصةٌ فعلًا**
+#: (أُنشئت الآن أو كانت قائمة). فلا تُكتب حالٌ تقول «اكتمل» بينما التدقيق
+#: يقول «تعذّر التكوين» — تناقضُ مصدرين هو ما نُزع من هذا الملفّ أصلًا.
 WITHHELD: Final = "withheld"
 FAILED: Final = "failed"
 
@@ -67,11 +76,13 @@ REAL_ATTEMPT: Final[frozenset[str]] = frozenset({"canonical", "legacy"})
 #     نجاحٌ يُعلَن — ومعها سببٌ يقرؤه الآلة.
 #
 # فالمِحكُّ واحد: **أفيه نتيجةٌ علمية أم لا؟**
-BLOCKED_NO_TITLE: Final = "no_canonical_title"
+#: **ولا عنوانَ في هذه الأسباب.** العنوانُ تسميةٌ لا أساسٌ علميّ، فغيابُه
+#: لا يمنع تكوينَ فرصة ولا يُعتذر به.
+BLOCKED_NO_SCIENTIFIC_BASIS: Final = "no_eligible_result_or_question"
 BLOCKED_NO_CONTEXT: Final = "no_construct_or_sample_context"
 BLOCKED_NO_SHAPE: Final = "no_opportunity_shape_matched"
 BLOCKED_REASONS: Final[tuple[str, ...]] = (
-    BLOCKED_NO_TITLE, BLOCKED_NO_CONTEXT, BLOCKED_NO_SHAPE,
+    BLOCKED_NO_SCIENTIFIC_BASIS, BLOCKED_NO_CONTEXT, BLOCKED_NO_SHAPE,
 )
 
 # ═════════ أسبابُ الأثر: تصف ما وقع، لا سياسةً سابقة ═════════
@@ -231,13 +242,13 @@ async def run(
     if evidence_basis in REAL_ATTEMPT:
         thesis.opportunities_mined_at = dt.datetime.now(dt.UTC)
 
-    # **والمِحكُّ نتيجةٌ علمية قائمة.** بلا نتيجةٍ لا يكون تعذّرًا: لا شيء
-    # كان يمكن أن يتكوّن، والاكتمالُ صادق.
+    # **والمِحكُّ أساسٌ علميّ قائم: نتيجةٌ أو سؤال.** وشرطا الطبقتين
+    # كلتيهما بناءٌ **وعيّنة** معًا، فيُقاسان كما يُشترطان.
     blocked_reason: str | None = None
-    if evidence_basis == "canonical" and not created and not already and facts.results:
-        if not facts.title:
-            blocked_reason = BLOCKED_NO_TITLE
-        elif not (facts.construct_refs or facts.sample_ids):
+    if evidence_basis == "canonical" and not created and not already:
+        if not (facts.results or facts.questions):
+            blocked_reason = BLOCKED_NO_SCIENTIFIC_BASIS
+        elif not (facts.construct_refs and facts.sample_ids):
             blocked_reason = BLOCKED_NO_CONTEXT
         else:
             blocked_reason = BLOCKED_NO_SHAPE
@@ -264,9 +275,14 @@ async def run(
 
     # **وحالُ التنقيب تصف التنقيب.** «حُجب» ليست «فشل»: الأولى قرارُ سياسةٍ
     # وقع كما يجب، والثانية عطبٌ يستدعي النظر.
-    if evidence_basis in REAL_ATTEMPT:
+    #
+    # **و«اكتمل» لقيام فرصةٍ وحده.** كانت تُكتب لكلّ محاولةٍ حقيقية ولو خرجت
+    # بصفر، فيقول الصفُّ «اكتمل» ويقول التدقيق «تعذّر التكوين» — مصدران
+    # يتناقضان، وهو ما نُزع من هذا الملفّ في موضعٍ آخر. فمحاولةٌ حقيقية بلا
+    # فرصةٍ تُكتب `WITHHELD`، ومعها في التدقيق سببُ التعذّر.
+    if created or already:
         thesis.mining_state = COMPLETED
-    elif canonical.has_canonical_footprint:
+    elif evidence_basis in REAL_ATTEMPT or canonical.has_canonical_footprint:
         thesis.mining_state = WITHHELD
     else:
         thesis.mining_state = NOT_STARTED

@@ -156,39 +156,72 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
     # فرضية، أو عيّنةٌ ومتغيّراتٌ ثلاثة. فبعنوانٍ وحده لا يقوم منها شيء.
     drafts += _titled_drafts(facts, unpublished)
     if not drafts:
-        drafts += _fallback_draft(facts, unpublished)
+        drafts += _fallback_drafts(facts, unpublished)
     return drafts
 
 
-def _fallback_draft(facts: ThesisFacts, unpublished: list[str]) -> list[OpportunityDraft]:
-    """مقترحٌ واحدٌ محافظ — **مشتقٌّ من أدلّةٍ قائمة، ولا يضيف دعوى**.
+def _fallback_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[OpportunityDraft]:
+    """مقترحٌ **واحد** مؤصَّل حين لا يقوم شكلٌ متخصّص — ولا يُشترط عنوان.
 
-    وشروطُه الثلاثة كلُّها لازمة:
+    **والعنوانُ تسميةٌ لا أساسٌ علميّ.** اشتراطُه هنا كان يردّ الرسالةَ التي
+    بُني هذا المسار لأجلها: أسئلةٌ وبُنًى وعيّنة، بلا عنوانٍ مستخرَج بعد.
+    فيُطلب الأساسُ العلميُّ وحده، ويُستعمل العنوانُ سياقًا إن وُجد.
 
-      ‏١ عنوانٌ كنسيٌّ يُسمّي المقترح — ولا يُخترع اسم.
-      ‏٢ **نتيجةٌ علمية واحدة على الأقلّ** غيرُ منشورة — وهي المُنشئ.
-      ‏٣ بناءٌ أو عيّنة تُعرّف الرسالة.
+    وطبقتان، **ولا تقعان معًا**:
 
-    **والعنوانُ وحده لا يُنتج شيئًا**: الشرطُ الثاني يمنعه. ولا نتيجةَ
-    تُختلق ولا سؤالَ جديد يُدّعى؛ والمراجعُ كلُّها معرّفاتُ حقائقَ حقيقية.
+      ‏(أ) استخلاصٌ مؤصَّل — نتيجةٌ غيرُ منشورة، وبناءٌ، وعيّنة.
+      ‏(ب) امتدادٌ مؤصَّل — سؤالٌ، وبناءٌ، وعيّنة. **بلا نتيجة**، ويُقال
+          ذلك في تسويغه صراحةً فلا يُقرأ ادّعاءَ نتيجةٍ لا وجود لها.
+
+    ولا واحدةَ منهما تقوم بعنوانٍ وحده: كلتاهما تشترط أساسًا علميًّا
+    (نتيجةً أو سؤالًا) **ومعه** بناءٌ وعيّنة. فالبابُ الذي أُغلق في
+    `_marker_haystack` يبقى مغلقًا من هذه الجهة أيضًا.
     """
-    if not facts.title or not unpublished:
+    constructs = list(facts.construct_refs)
+    samples = list(facts.sample_ids)
+    # سياقٌ لازمٌ للطبقتين: بناءٌ **وعيّنة** معًا — لا أحدهما.
+    if not constructs or not samples:
         return []
-    context = list(facts.construct_refs) or list(facts.sample_ids)
-    if not context:
+
+    # ── (أ) استخلاصٌ مؤصَّل: نتيجةٌ قائمة هي الأساس ──
+    if unpublished:
+        context = f": {facts.title[:60]}" if facts.title else " من نتائج الرسالة"
+        return [OpportunityDraft(
+            opportunity_kind="sub_model", paper_kind="extraction",
+            working_title_ar=f"نموذج فرعي قابل للنشر{context}",
+            # **ولا سؤالَ يُنسب إليها ما لم يُختَر سؤالٌ حقيقيّ بعينه.**
+            research_question_ar=None,
+            rationale_ar="مشتقّة من أدلّة قائمة في الرسالة: نتيجةٌ مستخرَجة "
+                         "ومعها بناءٌ وعيّنة. ولا سؤالَ جديدًا ولا نتيجةً مضافة.",
+            rationale_en="Derived from evidence already in the thesis: an extracted "
+                         "result together with a construct and a sample. It adds no "
+                         "new question and no new result.",
+            result_refs=list(unpublished),
+            variable_refs=constructs,
+            sample_refs=samples,
+        )]
+
+    # ── (ب) امتدادٌ مؤصَّل: سؤالٌ مستخرَجٌ هو الأساس، ولا نتيجةَ تُدَّعى ──
+    if not facts.questions:
         return []
+    question = facts.questions[0]
     return [OpportunityDraft(
-        opportunity_kind="secondary_analysis", paper_kind="extension",
-        working_title_ar=f"تحليل ثانوي على بيانات: {facts.title[:60]}",
-        research_question_ar=None,
-        rationale_ar="مشتقّة من أدلّة قائمة في الرسالة: نتيجةٌ مستخرَجة ومعها "
-                     "بناءٌ أو عيّنة. ولا سؤالَ جديدًا ولا نتيجةً مضافة.",
-        rationale_en="Derived from evidence already in the thesis: an extracted "
-                     "finding together with a construct or a sample. It adds no new "
-                     "question and no new result.",
-        result_refs=list(unpublished),
-        variable_refs=list(facts.construct_refs),
-        sample_refs=list(facts.sample_ids),
+        opportunity_kind="extension", paper_kind="extension",
+        working_title_ar=f"امتداد بحثي للسؤال: {question[:80]}",
+        research_question_ar=question,
+        # **وصدقُ هذا التسويغ هو ما يجعل فرصةً بلا نتيجةٍ مدافَعًا عنها.**
+        rationale_ar="فرصةُ امتدادٍ **مبدئية**، مؤصَّلة في سؤالٍ مستخرَج من "
+                     "الرسالة ومعه بُنًى وعيّنة. **ولا تدّعي أنّ الرسالة "
+                     "تحمل نتيجةً لهذا الامتداد**؛ وقد يلزمها تحقّقٌ من "
+                     "الأدب المنشور أو تحليلٌ إضافي.",
+        rationale_en="A preliminary extension opportunity, grounded in a question "
+                     "extracted from the thesis together with its constructs and "
+                     "sample. It does not claim the thesis already contains a result "
+                     "for this extension; literature validation or further analysis "
+                     "may be required.",
+        result_refs=[],
+        variable_refs=constructs,
+        sample_refs=samples,
     )]
 
 

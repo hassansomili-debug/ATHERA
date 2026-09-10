@@ -126,15 +126,23 @@ MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
     ),
     # **حُجب: سياسةٌ وقعت كما يجب، لا عطب.** ولا يُقال فيه «اعتمِدْ وقائعَ
     # قبل التنقيب» — تلك بوّابةٌ تقاعدت، والمراجعةُ هنا ضبطُ جودةٍ اختياريّ.
+    # **وهذه الحالُ تغطّي واقعتين، والنصُّ يصدق عليهما معًا:** أدلّةٌ حُجبت
+    # عن الاستعمال التلقائيّ، أو محاولةٌ حقيقية جرت ولم تُكوّن فرصة. والجامعُ
+    # أنّ الرسالة خرجت بلا فرصة، وأنّ ذلك ليس اكتمالًا ولا عطبًا.
     MINING_WITHHELD: (
-        "اكتمل فحصُ الرسالة، وفيها معرفةٌ مستخرَجة. وحُجب بعضُ الأدلّة عن "
-        "الاستعمال التلقائيّ لأسبابٍ تتعلّق بالثقة أو الاتّساق أو سلامة "
-        "الدليل. ولا يلزمك اعتمادُ شيءٍ لتعمل الأتمتة؛ ومراجعةُ ما استُخرج "
-        "ضبطُ جودةٍ اختياريّ، وقد تُتيح أدلّةً أكثر.",
-        "The thesis scan completed and extracted knowledge exists. Some evidence was "
-        "withheld from automatic use for confidence, consistency, or evidence-integrity "
-        "reasons. Nothing needs your approval for the automation to run; reviewing what "
-        "was extracted is optional quality control and may make more evidence usable.",
+        "لم تكتمل فرصُ النشر لهذه الرسالة بعد. فيها معرفةٌ مستخرَجة، ولم "
+        "يتكوّن منها مقترحٌ موثوق — إمّا لأنّ بعض الأدلّة حُجب عن الاستعمال "
+        "التلقائيّ لأسبابٍ تتعلّق بالثقة أو الاتّساق أو سلامة الدليل، وإمّا "
+        "لأنّ ما توفّر لم يكفِ لتكوين مقترح. ولا يلزمك اعتمادُ شيءٍ لتعمل "
+        "الأتمتة؛ ويمكنك استكمال المعالجة، ومراجعةُ ما استُخرج ضبطُ جودةٍ "
+        "اختياريّ قد يُتيح أدلّةً أكثر.",
+        "Publication opportunities for this thesis are not complete yet. Extracted "
+        "knowledge exists but no reliable proposal was formed from it — either because "
+        "some evidence was withheld from automatic use for confidence, consistency or "
+        "evidence-integrity reasons, or because what was available was not enough to "
+        "form one. Nothing needs your approval for the automation to run; you can "
+        "continue processing, and reviewing what was extracted is optional quality "
+        "control that may make more evidence usable.",
     ),
     # **ولا يُقال «لا فرصَ نشرٍ لهذه الرسالة».** تلك دعوى عن العالم لا نملك
     # سندَها؛ وما نملكه أنّ النظام لم يُكوّن واحدةً موثوقةً ممّا توفّر.
