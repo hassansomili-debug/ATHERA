@@ -413,3 +413,15 @@ class BuildPaperResponse(BaseModel):
     #: ما لم يُبنَ بعد ويملكه طَورٌ لاحق — يُعلَن ولا يُدَّعى اكتمالُه.
     pending: list[str] = []
     state: str
+
+
+class ThreadElementDraft(BaseModel):
+    """عقدةٌ يقترحها النموذج — **ولا تدخل القاعدة قبل أن تُحلَّ مراجعُها**."""
+
+    element_type: str
+    label_ar: str
+    evidence_refs: list[str] = []
+
+
+class ThreadDraft(BaseModel):
+    elements: list[ThreadElementDraft] = []

@@ -467,3 +467,134 @@ async def build_paper(session, *, tenant_id: uuid.UUID, actor_user_id,
         project_id=project_id, outline_id=outline_id, manuscript_id=manuscript_id,
         thread_id=existing.thread_id, created=tuple(created),
         reused=to_reuse(existing), pending=pending, state=derive_state(after))
+
+# ═════════════════ ٧. سلطةُ الأقسام: السياسةُ وحدها ═════════════════
+#
+# **ولا قائمةَ أقسامٍ ثانية في هذا الملفّ.** `drafting/policy.py` هي
+# السلطة؛ وما يُكتب هنا دالّةٌ تسأل تلك السلطةَ ولا تحلّ محلَّها. فحين
+# تُفتح `literature_review` يومًا بسياستها، تُفتح من موضعٍ واحد.
+
+
+def sections_allowed(candidates, *, enabled) -> tuple[str, ...]:
+    """ما يجوز صياغتُه — **بترتيب المُدخل، ومن المسموح وحده**."""
+    permitted = frozenset(enabled)
+    return tuple(key for key in candidates if key in permitted)
+
+
+def sections_refused(candidates, *, enabled) -> tuple[str, ...]:
+    """ما تمنعه السياسة — **يُقال ولا يُخفى**، فالباحثُ يعرف ما لم يُكتب."""
+    permitted = frozenset(enabled)
+    return tuple(key for key in candidates if key not in permitted)
+
+
+def draftable_sections() -> tuple[str, ...]:
+    """الأقسامُ المسموحة الآن، من السياسة مباشرةً وبترتيبها."""
+    from ..publishing.drafting import policy
+
+    return sections_allowed(policy.ordered_sections(), enabled=policy.ENABLED_SECTIONS)
+
+
+def blocked_sections() -> tuple[str, ...]:
+    from ..publishing.drafting import policy
+
+    return sections_refused(policy.ordered_sections(), enabled=policy.ENABLED_SECTIONS)
+
+
+# ═════════════════ ٨. الخيطُ الذهبيّ: نداءُ نموذجٍ بحدوده ═════════════════
+#
+# **وعقدُ المخرَج في وحدة العقود لا هنا.** رأسُ هذه الوحدة يبقى بلا
+# تبعيّة — لا pydantic ولا SQLAlchemy — فيُستورَد قلبُها الصافي ويُفحص
+# بلا قاعدةٍ ولا حزم. واستيرادُ عقدٍ في الرأس يقطع ذلك الفحصَ كلَّه.
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ThreadOutcome:
+    created: int
+    rejected: int
+    fingerprint: str
+    agent_run_id: uuid.UUID
+
+
+_THREAD_INSTRUCTION: Final = (
+    "استخرج عقد الخيط الذهبي من الأدلة الموثقة المرفقة وحدها. "
+    "ولكل عقدة `evidence_refs` من معرّفات الأدلة المرفقة — "
+    "ولا تُنشئ عقدة بلا مرجع، ولا تخترع معرّفًا لم يرد في المدخل."
+)
+
+
+async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
+                       file_id, project_id: uuid.UUID) -> ThreadOutcome:
+    """يبني عقدَ الخيط من الأدلّة الموثقة — **بثلاث خطواتٍ لا تتداخل**.
+
+    ‏(١) معاملةٌ قصيرة تقرأ الإذنَ والأدلّة ثمّ **تُغلق**.
+    ‏(٢) النداءُ الخارجيّ **بلا أيّ معاملة مفتوحة** — ودرسُ تخاصم سلسلة
+        التدقيق هو السبب: معاملةٌ تمتدّ عبر نداءٍ شبكيّ تُعلّق الحزمةَ كلَّها.
+    ‏(٣) معاملةٌ قصيرة ترفض ما لا يُحلّ وتكتب ما بقي.
+
+    **وسقوطُ النموذج لا يترك أثرًا نصفيًّا**: الخطوةُ الأولى قراءةٌ فقط،
+    والثالثةُ لا تُفتح أصلًا إن سقطت الثانية. فلا صفَّ يُكتب لمخطوطةٍ
+    نصفِ مبنيّة.
+
+    **والإذنُ لا يُمنح تلقائيًّا**: بلا إذنٍ لا يقع نداءٌ واحد.
+    """
+    import json
+
+    from ...brain.orchestrator import Orchestrator
+    from ...models.golden_thread import ThreadElement
+    from ...schemas.thesis import ThreadDraft
+    from .. import audit, consent
+    from ..planning import context as research_context
+
+    # ── (١) معاملةٌ قصيرة: الإذنُ والأدلّة، ثمّ تُغلق ──
+    async with session_maker() as session:
+        if not await consent_granted(session, tenant_id=tenant_id, file_id=file_id):
+            # **ولا نداءَ واحدًا بلا إذن.** يُرفع قبل أن يُبنى أيُّ حِمل.
+            raise JourneyBlocked((BLOCK_NO_CONSENT,))
+        grant = await consent.authorization_for(
+            session, tenant_id=tenant_id, file_id=file_id)
+        # **وحدُّ المصدر يُمرَّر**: أدلّةُ هذه الرسالة وحدها تصل النموذج.
+        evidence = await research_context.build(
+            session, tenant_id=tenant_id, project_id=project_id,
+            capability=consent.PLANNING_CAPABILITY, source_file_id=file_id)
+        known = frozenset(str(item.memory_id) for item in evidence.items)
+        payload = json.dumps(
+            [dict(item.as_model_view(), id=str(item.memory_id)) for item in evidence.items],
+            ensure_ascii=False)
+        fingerprint = evidence.fingerprint
+
+    # ── (٢) بلا معاملة: النداءُ الخارجيّ عبر البوّابة وحدها ──
+    draft, agent_run_id = await Orchestrator().run_structured_detached(
+        session_maker, tenant_id=tenant_id, actor_user_id=actor_user_id,
+        agent_key="golden_thread_agent", contract=ThreadDraft,
+        instruction=_THREAD_INSTRUCTION, payload=payload,
+        # §6 — معرفةٌ بحثية غير منشورة: C2. والقدرةُ تحكم، والإذنُ مقروء.
+        input_classification="C2", output_locale="ar", grant=grant,
+    )
+
+    # ── (٣) معاملةٌ قصيرة: الرفضُ أوّلًا، ثمّ الكتابة ──
+    kept, rejected = reject_unresolvable(
+        draft.elements, known, refs_of=lambda element: element.evidence_refs)
+
+    async with session_maker() as session:
+        for ordinal, element in enumerate(kept, start=1):
+            session.add(ThreadElement(
+                tenant_id=tenant_id, project_id=project_id,
+                element_type=element.element_type[:24],
+                label_ar=element.label_ar, ordinal=ordinal,
+                metadata_json={"evidence_refs": list(element.evidence_refs),
+                               "agent_run_id": str(agent_run_id)}))
+        await audit.record(
+            session, tenant_id=tenant_id, action="thesis.thread_built",
+            object_type="research_project", object_id=project_id,
+            actor_user_id=actor_user_id,
+            state_after={"created": len(kept), "rejected": len(rejected),
+                         "context_fingerprint": fingerprint,
+                         "agent_run_id": str(agent_run_id)},
+            # **والمرفوضُ يُعدّ ولا يُروى نصًّا**: عددُه معلومةٌ للتدقيق،
+            # ومتنُه اختلاقٌ لا يُحفظ.
+            reason="thread elements whose evidence references did not resolve to real "
+                   "rows were rejected outright, never repaired or substituted",
+        )
+
+    return ThreadOutcome(created=len(kept), rejected=len(rejected),
+                         fingerprint=fingerprint, agent_run_id=agent_run_id)

@@ -70,12 +70,24 @@ def test_the_thread_is_declared_pending_not_pretended_complete():
 # ══════════ ٢. حدودُ البناء: لا شبكة، ولا سلطةَ أقسامٍ ثانية ══════════
 
 
-def test_the_build_service_makes_no_network_call_at_all():
-    """**ولا شبكةَ داخل معاملة** — ودرسُ تخاصم سلسلة التدقيق محفوظ."""
+def test_building_a_paper_makes_no_network_call():
+    """**بناءُ الورقة حتميّ**، فلا نداءَ نموذجٍ فيه أصلًا.
+
+    وكان هذا الفحصُ يمسح الوحدةَ كلَّها؛ وقد صارت تنادي النموذجَ عمدًا في
+    `build_thread`. فيُضيَّق إلى ما يصدق: **هذه الدالّةُ** بلا شبكة.
+    """
+    source = inspect.getsource(journey.build_paper)
+    for symbol in ("Orchestrator", "run_structured_detached", "httpx",
+                   "openai", "anthropic"):
+        assert symbol not in source, f"نداءٌ خارجيّ في بناءٍ حتميّ: {symbol}"
+
+
+def test_no_provider_sdk_is_ever_imported_directly():
+    """**والبوّابةُ وحدها تنادي المزوّد.** لا SDK في هذه الوحدة بحال."""
     source = pathlib.Path(inspect.getfile(journey)).read_text(encoding="utf-8")
-    for symbol in ("Orchestrator", "ModelGateway", "run_structured_detached",
-                   "httpx", "openai", "anthropic"):
-        assert symbol not in source, f"نداءٌ خارجيّ في خدمةٍ تكتب في معاملة: {symbol}"
+    for banned in ("import openai", "import anthropic", "from openai",
+                   "from anthropic", "httpx."):
+        assert banned not in source, f"نداءُ مزوّدٍ مباشر: {banned}"
 
 
 def test_the_outline_carries_no_invented_sections():
