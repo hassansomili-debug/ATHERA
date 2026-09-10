@@ -892,6 +892,15 @@ async def convert_to_project(
     ).scalar_one_or_none()
     if opportunity is None:
         raise NotFound("thesis.opportunity_not_found")
+    # ── إعادةُ التحويل تُعيد ما وقع، ولا تُنشئ مشروعًا ثانيًا ──
+    #
+    # **والمعرّفان يبقيان معًا**: `converted_project_id` ختمُ الواقعة،
+    # و`project_id` الرابطةُ التي يقرؤها التخطيط. وكان الثاني لا يُكتب
+    # أصلًا، فتُحوَّل الفرصةُ ويبقى الجسرُ مقطوعًا من جهته.
+    if opportunity.converted_project_id is not None:
+        opportunity.project_id = opportunity.converted_project_id
+        return _opportunity_response(opportunity, principal.locale)
+
     if opportunity.status != "ready_to_submit":
         raise AtheraError("thesis.not_ready_to_convert", status_code=422,
                           status_value=opportunity.status)
@@ -924,7 +933,10 @@ async def convert_to_project(
     session.add(project)
     await session.flush()
 
+    # **ولا تُمسّ `thesis_id`**: الرسالةُ تبقى مصدرَ الفرصة بعد التحويل،
+    # وبها وحدها تُعرف رحلةُ الرسالة لاحقًا.
     opportunity.converted_project_id = project.id
+    opportunity.project_id = project.id
     opportunity.status = "converted"
 
     await audit.record(

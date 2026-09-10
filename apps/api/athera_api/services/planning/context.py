@@ -125,6 +125,39 @@ class EvidenceItem:
         }
 
 
+class EvidenceIsolationError(RuntimeError):
+    """صفٌّ أفلت من حدّ المصدر — **ويسقط الطلب، ولا يُصفّى بصمت**.
+
+    والتصفيةُ الصامتة هنا أسوأ من السقوط: تُخفي أنّ الحدَّ في الاستعلام
+    تعطّل، فتبقى العزلةُ قائمةً بالصدفة لا بالتصميم.
+    """
+
+
+def scoped_to_source(memory_source_file_id, *, source_file_id) -> bool:
+    """**حدُّ المصدر، دالّةً صافية.** لا جلسة فيها ولا ORM، فتُفحص كما هي.
+
+    بلا حدٍّ يمرّ كلُّ شيء (تخطيطُ مشروعٍ عاديّ). ومع حدٍّ لا يمرّ إلّا ما
+    جاء من ملفّ تلك الرسالة بعينه — **و`None` لا يتسلّل**: ذاكرةٌ لا مصدرَ
+    ملفٍّ لها ليست دليلًا لهذه الرسالة، وقبولُها يفتح البابَ الذي يُغلق هنا.
+    """
+    if source_file_id is None:
+        return True
+    return memory_source_file_id is not None and memory_source_file_id == source_file_id
+
+
+def enforce_source_scope(items, *, source_file_id):
+    """يسقط إن أفلت صفٌّ — **دفاعٌ في العمق خلف حدِّ الاستعلام**.
+
+    والحدُّ الحقيقيّ في SQL؛ وهذا يكشف تعطُّله بدل أن يستره.
+    """
+    escaped = [i.memory_id for i in items
+               if not scoped_to_source(i.source_file_id, source_file_id=source_file_id)]
+    if escaped:
+        raise EvidenceIsolationError(
+            f"{len(escaped)} evidence rows escaped the source-file scope")
+    return tuple(items)
+
+
 @dataclass(frozen=True, slots=True)
 class ResearchContext:
     """لقطة أدلة تشغيلة تخطيط واحدة."""
@@ -189,7 +222,7 @@ def _role_for(memory: ResearcherMemory, field_key: str | None = None) -> str:
 
 
 def fingerprint_of(memory_ids, *, capability: str, project_id: uuid.UUID,
-                   contents=()) -> str:
+                   contents=(), source_file_id: uuid.UUID | None = None) -> str:
     """بصمة ثابتة للقطة (§5).
 
     تُشتقّ من **مدخلات قانونية**: معرّفات الذاكرات مرتَّبة، ومحتوياتها،
@@ -200,6 +233,9 @@ def fingerprint_of(memory_ids, *, capability: str, project_id: uuid.UUID,
         {
             "capability": capability,
             "project": str(project_id),
+            # **والحدُّ جزءٌ من هويّة اللقطة.** لقطةٌ مقيَّدة برسالةٍ ليست
+            # اللقطةَ المفتوحة ولو تصادف تطابقُ ذاكراتها اليوم.
+            "source_file": str(source_file_id) if source_file_id else None,
             "memories": sorted(str(m) for m in memory_ids),
             "contents": sorted(contents),
         },
@@ -215,6 +251,7 @@ async def build(
     project_id: uuid.UUID,
     capability: str,
     constraints: dict | None = None,
+    source_file_id: uuid.UUID | None = None,
 ) -> ResearchContext:
     """يبني اللقطة من الذاكرة الموثقة وحدها — حتميًّا، وبلا نداء خارجي.
 
@@ -225,17 +262,28 @@ async def build(
     #
     # و`outerjoin` لا `join`: ذاكرةٌ لا مرشّح لها (أُدخلت بمسار آخر من مسارات
     # §7.4) تبقى مؤهَّلة، ويُحدَّد دورها بفئتها.
-    rows = (
-        await session.execute(
-            select(ResearcherMemory, FactCandidate.field_key)
-            .outerjoin(FactCandidate,
-                       FactCandidate.resulting_memory_id == ResearcherMemory.id)
-            .where(
-                ResearcherMemory.tenant_id == tenant_id,
-                # الحارس الأول: الموثق وحده.
-                ResearcherMemory.verification_status == "verified",
-            ).order_by(ResearcherMemory.created_at.asc())
+    statement = (
+        select(ResearcherMemory, FactCandidate.field_key)
+        .outerjoin(FactCandidate,
+                   FactCandidate.resulting_memory_id == ResearcherMemory.id)
+        .where(
+            ResearcherMemory.tenant_id == tenant_id,
+            # الحارس الأول: الموثق وحده.
+            ResearcherMemory.verification_status == "verified",
         )
+    )
+    if source_file_id is not None:
+        # ── الحارس الثاني: حدُّ المصدر، **في الاستعلام لا في التوجيه** ──
+        #
+        # **وتعليمةٌ للنموذج ليست عزلًا.** «لا تستعمل أدلّة رسالةٍ أخرى»
+        # جملةٌ في مُوجِّه، تُطاع أو لا تُطاع، ولا يُفحص أثرُها. والعزلُ
+        # حدٌّ يمنع الصفَّ من الوصول أصلًا: ما لم يُقرأ لا يُسرَّب.
+        #
+        # ورسالتان لباحثٍ واحد في مستأجرٍ واحد تمرّان حارسَ المستأجر معًا،
+        # فلا يفصلهما إلّا هذا السطر.
+        statement = statement.where(ResearcherMemory.source_file_id == source_file_id)
+    rows = (
+        await session.execute(statement.order_by(ResearcherMemory.created_at.asc()))
     ).all()
 
     items: list[EvidenceItem] = []
@@ -251,6 +299,9 @@ async def build(
             locator=memory.source_locator, quote=memory.source_quote,
         ))
 
+    # **ودفاعٌ في العمق**: إن أفلت صفٌّ سقط الطلبُ ولم يُصفَّ بصمت.
+    items = list(enforce_source_scope(items, source_file_id=source_file_id))
+
     present = {i.role for i in items}
     missing = tuple(
         "/".join(group) for group in REQUIRED_ROLE_GROUPS if not (present & set(group))
@@ -259,7 +310,8 @@ async def build(
         project_id=project_id, tenant_id=tenant_id, items=tuple(items),
         fingerprint=fingerprint_of([i.memory_id for i in items], capability=capability,
                                    project_id=project_id,
-                                   contents=[i.statement[:200] for i in items]),
+                                   contents=[i.statement[:200] for i in items],
+                                   source_file_id=source_file_id),
         missing_roles=missing,
         constraints=constraints or {},
     )
