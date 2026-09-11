@@ -929,7 +929,8 @@ test.describe("the brand sheet's own content, and the four things left out", () 
       "My Library",
       "Search & Reference Discovery",
       "Research Radar",
-      "Theses",
+      // والاسمُ المعتمد — وكان «Theses»، وهذه مطابقةٌ تامّة لا جزئية.
+      "Thesis Center",
       "Data & Analysis",
       "Manuscript Studio",
       "Peer Review",
