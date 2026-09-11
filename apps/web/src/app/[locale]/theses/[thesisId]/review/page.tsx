@@ -52,7 +52,8 @@ interface Review {
   source_filename: string | null;
   sections: SectionGroup[];
   total: number;
-  reviewable_total: number;
+  /** قد يغيب على خادمٍ أقدم — فيُشتقّ، ولا يُعرض `undefined`. */
+  reviewable_total?: number;
   approved: number;
   rejected: number;
   unknown: number;
@@ -151,6 +152,20 @@ export default function ReviewPage({
     unknown: t("thesisReview.statusUnknown"),
     unverified: t("thesisReview.statusPending"),
   };
+
+  /**
+   * إجماليُّ المراجعة — **ومن الخادم إن أرسله، وإلّا فمن فئاته الأربع**.
+   *
+   * **وعرضُ `undefined` أسوأ من عرض رقمٍ تقريبيّ.** الإنتاج أظهر «0 of
+   * undefined approved»: الوِب نُشر تلقائيًّا على Vercel عند دمج `main`،
+   * والـAPI يُنشر بمشغّلٍ يدويّ — فسبقَ العميلُ الخادمَ، وقرأ حقلًا لا
+   * يرسله بعد. والحقولُ الأربع موجودةٌ في العقد القديم، فيُجمعن.
+   *
+   * ولا يُخفى الفرق: هذا اشتقاقٌ عند غياب الحقل، لا بديلٌ عنه.
+   */
+  const reviewableTotal = review?.reviewable_total
+    ?? ((review?.approved ?? 0) + (review?.rejected ?? 0)
+        + (review?.unknown ?? 0) + (review?.pending ?? 0));
 
   // ═════ ما يُعرض وأين — مشتقًّا من `decidable` وحدها ═════
   //
@@ -263,12 +278,12 @@ export default function ReviewPage({
           <p
             className="metric-label"
             data-review-approved={review.approved}
-            data-review-total={review.reviewable_total}
+            data-review-total={reviewableTotal}
             style={{ marginBlockStart: 16 }}
           >
             {t("thesisReview.progress")
               .replace("{approved}", String(review.approved))
-              .replace("{total}", String(review.reviewable_total))
+              .replace("{total}", String(reviewableTotal))
               .replace("{pending}", String(review.pending))}
           </p>
           {/* الفئات الأربع مفصولة (§10): دمج «لا أعرف» في الرفض يضخّم عدّ
