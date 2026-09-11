@@ -1918,8 +1918,11 @@ def test_the_conservative_fallback_produces_exactly_one_grounded_opportunity():
     assert len(drafts) == 1, f"عددُ المقترحات {len(drafts)} لا واحد"
 
     draft = drafts[0]
-    assert draft.opportunity_kind == "secondary_analysis"
-    assert draft.paper_kind == "extension"
+    # **والطبقةُ (أ) هي التي تقوم هنا**: نتيجةٌ غيرُ منشورة ومعها بناءٌ
+    # وعيّنة ⇐ استخلاصٌ مؤصَّل. وكان الفحصُ يشترط «تحليلًا ثانويًّا»،
+    # وذاك شكلٌ يشترط ثلاثةَ متغيّرات فأكثر ولا متغيّرَ هنا أصلًا.
+    assert draft.opportunity_kind == "sub_model"
+    assert draft.paper_kind == "extraction"
     # **ولا مرجعَ مخترَع**: كلُّها معرّفاتٌ سُلّمت في المدخلات.
     known = {"res-1", "con-1", "con-2", "sam-1"}
     for refs in (draft.result_refs, draft.variable_refs, draft.sample_refs):
@@ -1952,14 +1955,19 @@ def test_the_blocked_and_completed_empty_boundary_is_declared():
     """**والحدُّ بينهما مكتوبٌ لا مفهومٌ ضمنًا.**"""
     from athera_api.services.thesis import mining
 
+    # **ولا عنوانَ في هذه الأسباب** — العنوانُ تسميةٌ لا أساسٌ علميّ،
+    # فغيابُه لا يمنع تكوينَ فرصة ولا يُعتذر به. وكان `no_canonical_title`
+    # سببًا هنا، فتقاعد مع تقاعد الاشتراط.
     assert set(mining.BLOCKED_REASONS) == {
-        "no_canonical_title", "no_construct_or_sample_context",
+        "no_eligible_result_or_question", "no_construct_or_sample_context",
         "no_opportunity_shape_matched",
     }
     source = inspect.getsource(mining)
     assert "opportunity_generation_blocked" in source
-    # المِحكُّ معلَنٌ في الشيفرة نفسها: نتيجةٌ علمية أم لا.
-    assert "and facts.results" in source
+    # المِحكُّ معلَنٌ في الشيفرة نفسها: **أساسٌ علميّ** — نتيجةٌ أو سؤال.
+    # وكان الفحصُ يُثبّت `"and facts.results"`، وهو شقُّ الشرط القديم الذي
+    # كان يشترط العنوانَ معها؛ فيُثبَّت الشرطُ القائم كما هو.
+    assert "if not (facts.results or facts.questions):" in source
 
 
 def test_the_researcher_never_reads_system_vocabulary():
