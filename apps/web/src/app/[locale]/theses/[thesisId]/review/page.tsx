@@ -48,6 +48,7 @@ interface Review {
   thesis_id: string;
   sections: SectionGroup[];
   total: number;
+  reviewable_total: number;
   approved: number;
   rejected: number;
   unknown: number;
@@ -181,12 +182,12 @@ export default function ReviewPage({
           <p
             className="metric-label"
             data-review-approved={review.approved}
-            data-review-total={review.total}
+            data-review-total={review.reviewable_total}
             style={{ marginBlockStart: 16 }}
           >
             {t("thesisReview.progress")
               .replace("{approved}", String(review.approved))
-              .replace("{total}", String(review.total))
+              .replace("{total}", String(review.reviewable_total))
               .replace("{pending}", String(review.pending))}
           </p>
           {/* الفئات الأربع مفصولة (§10): دمج «لا أعرف» في الرفض يضخّم عدّ
@@ -225,7 +226,14 @@ export default function ReviewPage({
                           // الحال القانونية بجانب نصّها المترجَم — كما في
                           // بطاقة المكتبة. والفرق بين «معتمَد» و«معتمَدة»
                           // فرقُ حرفٍ في ترجمة، لا فرقٌ في ما وقع.
-                          data-candidate-status={field.status}
+                          //
+                          // **ولا «بانتظار مراجعتك» على ما لا يُراجَع.**
+                          // الحقلُ الحتميّ حالُه `unverified` في القاعدة،
+                          // فكانت الشاشةُ تعرضه منتظِرًا قرارًا لا سبيل
+                          // إليه. فيُعلَن بما هو: معلومةٌ نظامية.
+                          data-candidate-status={
+                            field.decidable === false ? "system_metadata" : field.status
+                          }
                           style={
                             isUnknown
                               ? {
@@ -238,7 +246,9 @@ export default function ReviewPage({
                               : undefined
                           }
                         >
-                          {statusLabel[field.status] ?? field.status}
+                          {field.decidable === false
+                            ? t("thesisReview.systemMetadata")
+                            : statusLabel[field.status] ?? field.status}
                         </span>
                       </div>
                       {isUnknown ? (

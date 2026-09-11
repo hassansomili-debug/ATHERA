@@ -221,17 +221,6 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
   // فكانت تُقال قبل عودة الطلب — ومن رفع رسالته للتوّ يقرأ أنها ليست هناك.
   const [loaded, setLoaded] = useState(false);
 
-  const [titleAr, setTitleAr] = useState("");
-  const [titleEn, setTitleEn] = useState("");
-  const [degree, setDegree] = useState("masters");
-  const [defendedOn, setDefendedOn] = useState("");
-  const [dataCollectedOn, setDataCollectedOn] = useState("");
-  const [institutionAr, setInstitutionAr] = useState("");
-  const [rightsBasis, setRightsBasis] = useState("");
-  const [ownerName, setOwnerName] = useState("");
-  const [supervisorName, setSupervisorName] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
 
   const card = useCallback(
     (id: string): CardState => cardState[id] ?? EMPTY_CARD,
@@ -306,48 +295,7 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
   }
 
   /** خانة فارغة تُرسل `null` لا سلسلة فارغة: العقد يميّز «غير مذكور» عن «فارغ». */
-  function orNull(value: string): string | null {
-    return value.trim() === "" ? null : value.trim();
-  }
 
-  async function onRegister(event: React.FormEvent) {
-    event.preventDefault();
-    setSaving(true);
-    setFormError(null);
-    try {
-      await apiFetch("/api/v1/theses", {
-        method: "POST",
-        locale,
-        body: JSON.stringify({
-          title_ar: titleAr.trim(),
-          title_en: orNull(titleEn),
-          degree,
-          defended_on: orNull(defendedOn),
-          data_collected_on: orNull(dataCollectedOn),
-          institution_ar: orNull(institutionAr),
-          // §23.2 — الأساس ادعاء يُسجَّل، والاعتماد قرار مستقل عند GT1.
-          rights_basis: orNull(rightsBasis),
-          owner_name: orNull(ownerName),
-          supervisor_name: orNull(supervisorName),
-        }),
-      });
-      setTitleAr("");
-      setTitleEn("");
-      setDefendedOn("");
-      setDataCollectedOn("");
-      setInstitutionAr("");
-      setRightsBasis("");
-      setOwnerName("");
-      setSupervisorName("");
-      await refresh();
-    } catch (err) {
-      setFormError(
-        err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed"),
-      );
-    } finally {
-      setSaving(false);
-    }
-  }
 
   function say(err: unknown): string {
     return err instanceof AtheraApiError ? err.localized(locale) : t("common.loadFailed");
@@ -928,66 +876,6 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
         )
       ) : null}
 
-      <h2 style={{ marginBlockStart: "calc(var(--space) * 1.5)", fontSize: 18 }}>
-        {t("theses.addTitle")}
-      </h2>
-      <form className="form" onSubmit={onRegister}>
-        <label>
-          {t("theses.addTitleAr")}
-          <input value={titleAr} onChange={(e) => setTitleAr(e.target.value)} required minLength={3} />
-        </label>
-        <label>
-          {t("theses.addTitleEn")}
-          <input value={titleEn} onChange={(e) => setTitleEn(e.target.value)} />
-        </label>
-        <label>
-          {t("theses.addDegree")}
-          <select value={degree} onChange={(e) => setDegree(e.target.value)}>
-            <option value="masters">{t("theses.masters")}</option>
-            <option value="phd">{t("theses.phd")}</option>
-          </select>
-        </label>
-        <label>
-          {t("theses.addDefendedOn")}
-          <input type="date" value={defendedOn} onChange={(e) => setDefendedOn(e.target.value)} />
-        </label>
-        <label>
-          {t("theses.addDataCollectedOn")}
-          <input
-            type="date"
-            value={dataCollectedOn}
-            onChange={(e) => setDataCollectedOn(e.target.value)}
-          />
-        </label>
-        <label>
-          {t("theses.addInstitution")}
-          <input value={institutionAr} onChange={(e) => setInstitutionAr(e.target.value)} />
-        </label>
-        <label>
-          {t("theses.addRightsBasis")}
-          <select value={rightsBasis} onChange={(e) => setRightsBasis(e.target.value)}>
-            <option value="">{t("theses.noRights")}</option>
-            <option value="thesis_owner">{t("theses.basis.thesis_owner")}</option>
-            <option value="supervisor_with_consent">
-              {t("theses.basis.supervisor_with_consent")}
-            </option>
-            <option value="institution_policy">{t("theses.basis.institution_policy")}</option>
-          </select>
-        </label>
-        <label>
-          {t("theses.addOwner")}
-          <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} />
-        </label>
-        <label>
-          {t("theses.addSupervisor")}
-          <input value={supervisorName} onChange={(e) => setSupervisorName(e.target.value)} />
-        </label>
-        {formError ? <p className="error">{formError}</p> : null}
-        <button type="submit" disabled={saving}>
-          {saving ? t("app.loading") : t("theses.addSubmit")}
-        </button>
-      </form>
-      <p className="provenance-note">{t("theses.addNote")}</p>
     </>
   );
 }

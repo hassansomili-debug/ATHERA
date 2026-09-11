@@ -12,7 +12,7 @@
     "library": "My Library",
     "search": "Scientific Search",
     "references": "Search & Reference Discovery",
-    "theses": "Theses",
+    "theses": "Thesis Center",
     "analysis": "Data & Analysis",
     "manuscripts": "Manuscript Studio",
     "journals": "Journals & Publishing",
@@ -407,7 +407,7 @@
     "cleanPartial": "No defect was found among the recorded elements — what is not yet recorded was not checked, so this is not a certificate of consistency."
   },
   "theses": {
-    "title": "Thesis library",
+    "title": "Thesis Center",
     "subtitle": "Turn a thesis into independent, publication-ready research opportunities.",
     "empty": "No theses yet.",
     "degree": "Degree",
@@ -1041,7 +1041,7 @@
     "note": "Review proposes patches; it never edits an approved version."
   },
   "thesisReview": {
-    "title": "Review what PUBRIVA extracted",
+    "title": "Review Thesis Evidence",
     "subtitle": "These are proposals from your file, not approved facts. Only your approval makes them so.",
     "provenanceQuestion": "Where did PUBRIVA find this?",
     "quoteLabel": "Quote from the file",
@@ -1065,14 +1065,16 @@
     "conflictBody": "A later reading proposed a different value. Your approved value is unchanged.",
     "progress": "{approved} of {total} approved · {pending} awaiting you",
     "empty": "No proposals yet.",
-    "backToTheses": "Back to theses",
+    "backToTheses": "Back to Thesis Center",
     "cannotApproveAbsent": "A field absent from the file cannot be approved: approval needs a quote to ground it.",
     "reasonPlaceholder": "Reason for the decision (optional)",
     "valuePlaceholder": "Write the correct value",
     "statusUnknownHint": "You reviewed it without deciding — you can come back to it any time.",
     "revisit": "Revisit",
     "tallyLine": "{approved} approved · {rejected} rejected · {unknown} unknown · {pending} awaiting you",
-    "knownNotClaimed": "Read from the file's own metadata — a known value, not a claim awaiting your approval."
+    "knownNotClaimed": "Read from the file's own metadata — a known value, not a claim awaiting your approval.",
+    "systemMetadata": "System metadata — no approval required",
+    "fileMetadata": "File metadata"
   },
   "publicationPlanning": {
     "advisory": "Advisory",

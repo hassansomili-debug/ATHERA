@@ -513,6 +513,36 @@ async def extraction_state(
     )
 
 
+def review_tally(items) -> dict[str, int]:
+    """عدُّ المراجعة — **على ما يقبل قرارًا وحده**، دالّةٌ صافية.
+
+    والقاعدةُ الحاكمة `decidable`، لا اسمُ حقلٍ مكتوبٌ بيد: حقلٌ حتميّ
+    (`page_count`, `source_filename`) يُقرأ من بيانات الملفّ لا من متنه،
+    فلا اقتباسَ له، و`approve_candidate` تشترط التأصيل في النصّ. فعرضُ زرِّ
+    اعتمادٍ عليه وعدٌ لا ينجح، وعدُّه «بانتظار مراجعتك» عدّادٌ لا يبلغ صفرَه.
+
+        pending  = decidable ∧ unverified
+        approved = decidable ∧ approved
+        rejected = decidable ∧ rejected
+        unknown  = decidable ∧ unknown
+        reviewable_total = approved + rejected + unknown + pending
+
+    وتُعدّ **العناصرُ المعروضة** نفسُها لا صفوفُ القاعدة: حقلٌ قابلٌ للقرار
+    لم يُستخرَج له مرشّحٌ منتظِرٌ كغيره، وكان يسقط من الفئات ويظهر في الفرق.
+    """
+    tally = {"approved": 0, "rejected": 0, "unknown": 0, "unverified": 0}
+    for item in items:
+        if not getattr(item, "decidable", False):
+            continue
+        status = getattr(item, "status", None)
+        if status in tally:
+            tally[status] += 1
+    tally["pending"] = tally["unverified"]
+    tally["reviewable_total"] = (
+        tally["approved"] + tally["rejected"] + tally["unknown"] + tally["pending"])
+    return tally
+
+
 def _is_decidable(spec: object) -> bool:
     """**ما يعرفه الكود يقينًا لا يُصدَّق عليه.**
 
@@ -751,16 +781,27 @@ async def review(
     # عدّ المرفوضات ويخفي تردّدًا هو نفسه معلومة.
     #
     # وحقلٌ بلا مرشّح لا يُحسب محسومًا: غيابه عن الملف ليس قرارًا اتخذه أحد.
-    tally = {"approved": 0, "rejected": 0, "unknown": 0, "unverified": 0}
-    for row in chosen.values():
-        if row.status in tally:
-            tally[row.status] += 1
-    approved = tally["approved"]
-    decided = tally["approved"] + tally["rejected"] + tally["unknown"]
-    pending = len(catalogue.FIELD_CATALOGUE) - decided
+    # **ويُعدّ ما يقبل قرارًا وحده — ومن العناصر المعروضة نفسِها.**
+    #
+    # كان العدُّ `len(FIELD_CATALOGUE) - decided`، وفيه عطبان:
+    #
+    #   ١ يُحسب الحقلُ الحتميّ (`page_count`, `source_filename`) منتظِرًا
+    #     للمراجعة، وهو غيرُ قابلٍ للقرار أصلًا: يُقرأ من بيانات الملفّ لا
+    #     من متنه، فلا اقتباسَ له، و`approve_candidate` تشترط التأصيل في
+    #     النصّ. فكان العدّادُ لا يبلغ صفرَه أبدًا، ويُطلب من الباحث فعلٌ
+    #     لا سبيلَ إليه.
+    #
+    #   ٢ ويُحسب من `chosen` وحدها، وهي الصفوفُ القائمة؛ فحقلٌ قابلٌ للقرار
+    #     لم يُستخرَج له مرشّحٌ كان يسقط من الفئات الأربع ويظهر في الفرق.
+    #
+    # فالعدُّ يقع على **ما يُعرض فعلًا** (`groups`) مرشَّحًا بـ`decidable`:
+    # مصدرٌ واحد للشاشة وللعدّاد، فلا يفترقان.
+    tally = review_tally(item for fields in groups.values() for item in fields)
     return ReviewResponse(
         thesis_id=thesis_id, sections=ordered,
-        total=len(catalogue.FIELD_CATALOGUE), approved=approved, pending=pending,
+        total=len(catalogue.FIELD_CATALOGUE),
+        reviewable_total=tally["reviewable_total"],
+        approved=tally["approved"], pending=tally["pending"],
         rejected=tally["rejected"], unknown=tally["unknown"],
         note=_t(
             principal.locale,

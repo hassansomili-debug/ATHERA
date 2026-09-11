@@ -1582,7 +1582,19 @@ async def test_unknown_is_counted_apart_from_rejected(two_tenants):
         assert view.rejected == 0
         assert view.approved == 0
         # ولا تُحسب انتظارًا: الباحث راجعها.
-        assert view.pending == len(cat.FIELD_CATALOGUE) - 1
+        #
+        # **والمقامُ ما يقبل قرارًا، لا حجمُ الفهرس.** كان الفحصُ
+        # `len(FIELD_CATALOGUE) - 1`، وفي الفهرس حقلان حتميّان
+        # غيرُ قابلين للقرار — فكانا يُحسبان «بانتظار مراجعتك» ولا سبيل
+        # إلى مراجعتهما أبدًا. فالدعوى نفسُها («لا أعرف» ليست انتظارًا)
+        # تُقاس الآن على المقام الصحيح.
+        decidable_total = len([s for s in cat.FIELD_CATALOGUE
+                               if s.method is not cat.Method.DETERMINISTIC])
+        assert view.pending == decidable_total - 1
+        assert view.reviewable_total == decidable_total
+        # والحقلان النظاميّان معروضان، وخارج العدّ.
+        assert view.total == len(cat.FIELD_CATALOGUE)
+        assert view.total > view.reviewable_total
 
         shown = {f.field_key: f for g in view.sections for f in g.fields}
         assert shown["sample_size"].status == "unknown"
