@@ -46,12 +46,32 @@ RESPONSE_SCHEMA = {
                     "chunk_seq": {"type": "integer"},
                     "confidence": {"type": "number"},
                 },
-                "required": ["memory_category", "statement_ar", "quote", "chunk_seq"],
+                # **والثقةُ مشترَطة.** كانت اختيارية، فيعيد النموذجُ حقائقَ
+                # بلا ثقة، فتُحفظ `NULL`، فتستبعدها الأهليّة كلَّها —
+                # مخرَجٌ يبدو ناجحًا ولا ينتج دليلًا واحدًا مؤهَّلًا.
+                "required": [
+                    "memory_category", "statement_ar", "quote", "chunk_seq",
+                    "confidence",
+                ],
             },
         }
     },
     "required": ["facts"],
 }
+
+
+def _confidence(raw: dict) -> float:
+    """ثقةُ الاستخراج من مخرَج النموذج — **حضورًا ومدًى، لا صدقًا منطقيًّا**.
+
+    وترفع `KeyError` عند الغياب و`ValueError` خارج المدى، فيسقط المرشّحُ
+    المخالفُ للعقد حيث تسقط بقيةُ المخالفات — ولا تُخترع له قيمة.
+    """
+    if "confidence" not in raw or raw["confidence"] is None:
+        raise KeyError("confidence")
+    value = float(raw["confidence"])
+    if not (0.0 <= value <= 1.0):
+        raise ValueError(f"confidence out of range: {value}")
+    return value
 
 
 class ModelExtractor(Extractor):
@@ -104,7 +124,11 @@ class ModelExtractor(Extractor):
                         statement_en=raw.get("statement_en"),
                         quote=str(raw["quote"]),
                         chunk_seq=int(raw["chunk_seq"]),
-                        confidence=float(raw["confidence"]) if raw.get("confidence") else None,
+                        # **و`0.0` ثقةٌ قيلت، لا ثقةٌ غائبة.** كان الشرطُ
+                        # `if raw.get("confidence")` — صدقًا منطقيًّا — فتصير
+                        # الصفرُ `None`، فيُستبعد المرشّحُ بحجّة أنّ النموذج
+                        # لم يقل ثقته، وقد قالها صراحةً: صفرًا.
+                        confidence=_confidence(raw),
                     )
                 )
             except (KeyError, TypeError, ValueError):

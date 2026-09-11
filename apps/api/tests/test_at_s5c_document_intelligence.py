@@ -252,7 +252,15 @@ def test_contract_rejects_an_unknown_status():
 
 
 def test_contract_accepts_the_four_declared_statuses():
-    for status in (STATUS_EXTRACTED, STATUS_NOT_FOUND, STATUS_AMBIGUOUS, "needs_review"):
+    """والحالاتُ الأربع مقبولة — و`extracted` وحدها تُلزَم بثقتها.
+
+    كان الاختبارُ يبني `extracted` بلا ثقةٍ ويعدّه صحيحًا، فيوثّق العقدَ
+    المعطوب الذي أوقف رسالتين في الإنتاج. فما يحمل قيمةً يحمل ثقتَها،
+    وما لا يحمل قيمةً لا يُسأل عنها.
+    """
+    ExtractedField(field_key="title_ar", status=STATUS_EXTRACTED,
+                   extraction_confidence=0.9)
+    for status in (STATUS_NOT_FOUND, STATUS_AMBIGUOUS, "needs_review"):
         ExtractedField(field_key="title_ar", status=status)
 
 

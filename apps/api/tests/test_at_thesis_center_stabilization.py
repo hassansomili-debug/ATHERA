@@ -650,12 +650,19 @@ def test_migration_0030_belongs_to_this_wave_and_is_purely_additive():
     """
     versions = ROOT / "infra" / "db" / "migrations" / "versions"
     numbers = sorted(path.name.split("_", 1)[0] for path in versions.glob("0*.py"))
-    # **والرأسُ يتقدّم، وتوسعيّةُ 0030 لا تتغيّر.** أضافت T1 الترحيلَ
-    # `0031` (حالُ التنقيب)، فتثبيتُ «آخرُ ترحيلٍ 0030» تقادم — وليس هو ما
-    # يفحصه هذا الاختبار. والمفحوصُ باقٍ: أنّ 0030 واحدٌ وأنّه توسعةٌ محضة.
-    assert numbers[-1] == "0031", f"رأسُ السلسلة ليس 0031: {numbers[-1]}"
+    # **والرأسُ يتقدّم، وتوسعيّةُ 0030 لا تتغيّر — فلا يُثبَّت الرأسُ هنا.**
+    #
+    # كان السطرُ `numbers[-1] == "0031"`، وقد تقادم مرّتين: عند 0031 ثمّ عند
+    # 0032. وحاشيتُه نفسُها كانت تقرّ أنّه «ليس ما يفحصه هذا الاختبار» —
+    # فتثبيتٌ يُسقط اختبارًا لا يحرسه شيءٌ ممّا يحرسه.
+    #
+    # ورأسُ السلسلة محروسٌ فعلًا في
+    # `test_the_rc_head_pin_says_one_number_and_it_is_the_chain_head`،
+    # وهو يشتقّ الرأسَ من المستودع ويقابله بتثبيت رحلة المرشَّح. فيبقى هنا
+    # المفحوصُ وحده: أنّ 0030 واحدٌ وأنّه توسعةٌ محضة.
     assert numbers.count("0030") == 1, "ترحيلان يحملان الرقم 0030"
-    assert numbers.count("0031") == 1, "ترحيلان يحملان الرقم 0031"
+    # وتسلسلُ الأرقام بلا فجوةٍ ولا تكرار — حراسةٌ لا تتقادم برأسٍ جديد.
+    assert len(numbers) == len(set(numbers)), f"رقمُ ترحيلٍ مكرَّر: {numbers}"
 
     body = (versions / "0030_thesis_archive.py").read_text(encoding="utf-8")
     upgrade = body[body.index("def upgrade()"):body.index("def downgrade()")]

@@ -112,20 +112,20 @@ jobs:
       # فيُشتقّ الرأس. وهنا السؤال «أهذه بيئةُ الموجة الأولى؟» — وجوابه
       # رقمٌ بعينه اتُّفق عليه، لا «أيًّا كان رأسُ اليوم». ولو أُشتقّ لقال
       # الفحصُ «موافق» على أيّ رأسٍ كان، فلا يحرس شيئًا.
-      - name: Assert the schema head is exactly 0031
+      - name: Assert the schema head is exactly 0032
         env:
           PGPASSWORD: athera_owner_pw
         run: |
           head=$(psql -h localhost -U athera_owner -d athera -tAc \
             "SELECT version_num FROM alembic_version")
-          echo "database head: '$head' · required: '0031'"
-          if [ "$head" != "0031" ]; then
-            echo "::error::the RC database is at schema '$head', not 0031 —"
+          echo "database head: '$head' · required: '0032'"
+          if [ "$head" != "0032" ]; then
+            echo "::error::the RC database is at schema '$head', not 0032 —"
             echo "::error::this is NOT the expected environment, and any result from it"
             echo "::error::would describe version skew, not the product. Refusing to run."
             exit 1
           fi
-          echo "schema head verified: 0031"
+          echo "schema head verified: 0032"
 
       # ── الـAPI: شيفرةُ هذا الفرع، بلا نموذج وبلا سرّ ────────────────
       - name: Start the Wave 1 API (uvicorn, 127.0.0.1:8000)
