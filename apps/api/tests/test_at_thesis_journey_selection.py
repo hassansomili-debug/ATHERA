@@ -16,13 +16,12 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
-import uuid
 
 import pytest
 
 from athera_api.services.thesis import journey, selection
 
-from tests.conftest import requires_db
+from tests.conftest import requires_db, seed_file
 
 
 # ══════════ ١. قرارٌ واحد، وكاتبٌ واحد ══════════
@@ -200,7 +199,21 @@ async def test_selecting_advances_the_journey_to_the_rights_step(two_tenants):
 @requires_db
 @pytest.mark.asyncio
 async def test_the_rights_gate_is_not_satisfied_by_selection_alone(two_tenants):
-    """**بوّابتان لا واحدة.** كانتا تُقرآن من الشرط نفسه، فكانتا واحدة."""
+    """**بوّابتان لا واحدة.** كانتا تُقرآن من الشرط نفسه، فكانتا واحدة.
+
+    **والحالةُ الخطرةُ لا تُكتب أصلًا.** كان الفحصُ يدفع `status` إلى
+    `ready_to_submit` بلا ختمٍ ليُثبت أنّ الحالَ لا تُقرأ اعتمادًا — وذلك
+    صفٌّ **ترفضه القاعدة**: القيد
+    `ck_opportunity_ready_requires_rights_and_authorship` (0010، §23.9/TC-06)
+    يشترط الختمين مع تلك الحال. فكان الفحصُ يسقط عند الكتابة لا عند دعواه،
+    ولم يُرَ ذلك لأنّه لم يُشغَّل على قاعدةٍ حقيقية.
+
+    فتُفحص الدعوى من طرفَيها، وكلاهما أقوى من الأصل:
+      ‏(١) فرصةٌ **مختارةٌ وغيرُ مُجازة** لا تُقرأ حقوقُها مُجازة.
+      ‏(٢) والقاعدةُ نفسُها **تمنع** اجتماعَ `ready_to_submit` بلا ختم —
+          فالحالةُ التي كان العطبُ يقرؤها اعتمادًا لا وجودَ لها.
+    """
+    import sqlalchemy.exc
     from sqlalchemy import select as sa_select
 
     from athera_api.db import tenant_session
@@ -217,10 +230,8 @@ async def test_the_rights_gate_is_not_satisfied_by_selection_alone(two_tenants):
         await selection.decide(
             session, tenant_id=tid, opportunity=opportunity, actor_user_id=uid,
             decision=selection.SELECT)
-        # حالُ الإنتاج تتقدّم بلا ختمِ البوّابة — وهي الحالةُ التي كانت
-        # تُقرأ حقوقًا مُجازة.
-        opportunity.status = "ready_to_submit"
 
+    # ‏(١) مختارةٌ، ولا ختمَ حقوقٍ عليها — فالبوّابةُ مغلقة.
     async with tenant_session(tid, uid) as session:
         thesis = (await session.execute(
             sa_select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
@@ -229,6 +240,16 @@ async def test_the_rights_gate_is_not_satisfied_by_selection_alone(two_tenants):
     assert facts.selected_opportunity is True
     assert facts.rights_passed is False, (
         "حالُ الإنتاج قُرئت اعتمادًا للحقوق — والاعتمادُ ختمُه في عموده")
+
+    # ‏(٢) والقاعدةُ ترفض الحالةَ الخطرةَ نفسَها.
+    with pytest.raises(sqlalchemy.exc.IntegrityError) as refused:
+        async with tenant_session(tid, uid) as session:
+            opportunity = (await session.execute(
+                sa_select(PublicationOpportunity)
+                .where(PublicationOpportunity.id == opportunity_id))).scalar_one()
+            opportunity.status = "ready_to_submit"
+    assert "ready_requi" in str(refused.value), (
+        "القاعدةُ قبلت حالَ تقدّمٍ بلا ختمِ الحقوق — وهي البوّابةُ نفسُها")
 
 
 @requires_db
@@ -250,26 +271,34 @@ async def test_a_built_paper_can_actually_be_opened_in_the_studio(two_tenants):
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    file_id = uuid.uuid4()
 
     async with tenant_session(tid, uid) as session:
+        # **و`file_id` مفتاحٌ أجنبيّ** — معرّفٌ مُختلَقٌ يرفضه
+        # `fk_theses_file_id`، فالرسالةُ تُعلَّق بملفٍّ قائم لا بمعرّفٍ يُخترع.
+        file_id = await seed_file(session, tenant_id=tid, uploaded_by=uid)
         thesis = Thesis(tenant_id=tid, processing_state="ready_for_review",
                         file_id=file_id)
         session.add(thesis)
         await session.flush()
         thesis_id = thesis.id
+        # البوّابتان: ختمُ GT1 **في المُنشئ**، ثمّ الإذنُ الصريح.
+        #
+        # **والختمُ بعد `flush` يصل متأخّرًا.** القيد
+        # `ck_opportunity_ready_requires_rights_and_authorship` يُفحص عند
+        # الإدراج، فصفٌّ يُدرَج بحال `ready_to_submit` وأختامُه فارغة يُرفض
+        # قبل أن تُكتب. وكان الترتيبُ صحيحَ النيّة خاطئَ الموضع.
         opportunity = PublicationOpportunity(
             tenant_id=tid, thesis_id=thesis_id, opportunity_kind="sub_model",
             paper_kind="extraction", working_title_ar="ورقةٌ اصطناعية",
-            status="ready_to_submit", planning_status="selected")
+            status="ready_to_submit", planning_status="selected",
+            rights_approved_by=uid, rights_approved_at=func.now(),
+            authorship_approved_by=uid, authorship_approved_at=func.now(),
+            # **وقرارٌ بشريٌّ بلا فاعلٍ ووقتٍ لا يكون** — `planning_actor`
+            # (0017). و«مختارة» قرارُ الباحث، فله صاحبٌ وله لحظة.
+            planning_decided_by=uid, planning_decided_at=func.now())
         session.add(opportunity)
         await session.flush()
         opportunity_id = opportunity.id
-        # البوّابتان: ختمُ GT1، ثمّ الإذنُ الصريح.
-        opportunity.rights_approved_by = uid
-        opportunity.rights_approved_at = func.now()
-        opportunity.authorship_approved_by = uid
-        opportunity.authorship_approved_at = func.now()
         await consent.record_decision(
             session, tenant_id=tid, file_id=file_id, actor_user_id=uid,
             granted=True, provider="anthropic", model="m")

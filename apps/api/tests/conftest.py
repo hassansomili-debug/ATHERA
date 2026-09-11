@@ -239,3 +239,22 @@ async def two_tenants(db_ready):
             session.add(Membership(tenant_id=tenant.id, user_id=user.id, role_id=role.id))
             created[label] = {"tenant_id": tenant.id, "user_id": user.id, "email": user.email}
     return created
+
+
+async def seed_file(session, *, tenant_id, uploaded_by, name="رسالة.pdf"):
+    """صفُّ ملفٍّ حقيقيّ، ويُعاد معرّفُه | a real `files` row; returns its id.
+
+    **ومعرّفٌ مُختلَقٌ ليس صفًّا.** كانت تجهيزاتٌ تمرّر `uuid.uuid4()` حيث
+    ينتظر العمودُ مفتاحًا أجنبيًّا (`fk_researcher_memories_source_file_id`،
+    `fk_theses_file_id`)، فتمرّ على جهازٍ بلا قاعدة ويرفضها الإدراجُ في CI.
+    فمن يحتاج ملفًّا يطلب ملفًّا.
+    """
+    from athera_api.models.files import File
+
+    row = File(tenant_id=tenant_id, storage_key=f"tenants/{tenant_id}/{uuid.uuid4()}",
+               original_filename=name, content_type="application/pdf",
+               size_bytes=2048, classification="C2", status="stored",
+               uploaded_by=uploaded_by)
+    session.add(row)
+    await session.flush()
+    return row.id

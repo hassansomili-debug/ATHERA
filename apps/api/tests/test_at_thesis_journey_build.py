@@ -15,7 +15,7 @@ import uuid
 import pytest
 
 from athera_api.services.thesis import journey
-from tests.conftest import requires_db
+from tests.conftest import requires_db, seed_file
 
 
 def _client(tenant_id, user_id, locale="ar"):
@@ -119,19 +119,52 @@ def test_blocked_reasons_travel_as_codes():
 # **DB TESTS = NOT RUN على جهاز التطوير**: لا PostgreSQL. تُشغَّل في CI.
 
 
-async def _seed_thesis_and_opportunity(tid, uid, *, status="ready_to_submit"):
+async def _seed_thesis_and_opportunity(tid, uid, *, status="ready_to_submit",
+                                       with_consent=True):
+    """فرصةٌ في حالٍ **متّسقةٍ مع القاعدة**، لا حالٌ تُكتب وحدها.
+
+    **و`ready_to_submit` ليست مجرّد نصٍّ في عمود.** القيد
+    `ck_opportunity_ready_requires_rights_and_authorship` (الترحيل 0010،
+    §23.9/TC-06) يشترط ختمَي الحقوق والتأليف معها، وهو القيدُ الذي يحمل
+    بوّابةَ السبرنت. وكانت التجهيزةُ تكتب الحالَ وتترك الأختامَ فارغةً،
+    فيسقط الإدراجُ نفسُه في CI قبل أن يبدأ الفحصُ شيئًا.
+
+    فيُختمان **في المُنشئ** لا بعد `flush`: القيدُ يُفحص عند الإدراج، فختمٌ
+    يُكتب بعده يصل متأخّرًا.
+    """
+    from sqlalchemy import func
+
     from athera_api.db import tenant_session
     from athera_api.models.thesis import PublicationOpportunity, Thesis
+    from athera_api.services import consent
+
+    # ما تشترطه القاعدةُ لهذه الحال — ولا شيءَ لغيرها.
+    gates = {}
+    if status == "ready_to_submit":
+        gates = dict(rights_approved_by=uid, rights_approved_at=func.now(),
+                     authorship_approved_by=uid, authorship_approved_at=func.now())
 
     async with tenant_session(tid, uid) as session:
-        thesis = Thesis(tenant_id=tid, processing_state="ready_for_review")
+        # **ورسالةٌ بلا ملفٍّ لا إذنَ لها.** `build_paper` تقرأ الإذنَ عن
+        # `thesis.file_id`، فرسالةٌ بلا ملفّ تُردّ بـ`ai_consent_required`
+        # أبدًا — لا لأنّ البوّابةَ تعمل، بل لأنّ التجهيزةَ ناقصة.
+        file_id = await seed_file(session, tenant_id=tid, uploaded_by=uid)
+        thesis = Thesis(tenant_id=tid, processing_state="ready_for_review",
+                        file_id=file_id)
         session.add(thesis)
         await session.flush()
         opportunity = PublicationOpportunity(
             tenant_id=tid, thesis_id=thesis.id, opportunity_kind="sub_model",
-            paper_kind="extraction", working_title_ar="ورقةٌ اصطناعية", status=status)
+            paper_kind="extraction", working_title_ar="ورقةٌ اصطناعية",
+            status=status, **gates)
         session.add(opportunity)
         await session.flush()
+
+        # والإذنُ صريحٌ ومسجَّل — لا يُمنح تلقائيًّا، لا في الشيفرة ولا هنا.
+        if with_consent:
+            await consent.record_decision(
+                session, tenant_id=tid, file_id=file_id, actor_user_id=uid,
+                granted=True, provider="anthropic", model="m")
         return thesis.id, opportunity.id
 
 
@@ -230,7 +263,13 @@ async def test_building_without_consent_is_refused(two_tenants):
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    thesis_id, opportunity_id = await _seed_thesis_and_opportunity(tid, uid)
+    # **والإذنُ غائبٌ صراحةً، لا لأنّ التجهيزةَ ناقصة.**
+    #
+    # كانت الرسالةُ تُبنى بلا ملفٍّ أصلًا، فيُردّ البناءُ بـ«لا إذن» —
+    # ويمرّ الفحصُ لسببٍ غير الذي يدّعيه: لا ملفَّ يُسأل عنه، لا قرارَ
+    # رفضٍ يُقرأ. فالملفُّ قائمٌ الآن، والإذنُ وحده هو الغائب.
+    thesis_id, opportunity_id = await _seed_thesis_and_opportunity(
+        tid, uid, with_consent=False)
 
     async with tenant_session(tid, uid) as session:
         thesis = (await session.execute(
@@ -243,7 +282,7 @@ async def test_building_without_consent_is_refused(two_tenants):
                 session, tenant_id=tid, actor_user_id=uid, thesis=thesis,
                 opportunity=opportunity)
 
-    # رسالةٌ بلا ملفّ لا إذنَ لها، فالبوّابةُ تقف عندها باسمها.
+    # رسالةٌ لها ملفٌّ ولا إذنَ عليه — فالبوّابةُ تقف وتُسمّي ما ينقص.
     assert journey.BLOCK_NO_CONSENT in blocked.value.reasons
 
 
@@ -270,6 +309,12 @@ async def test_the_journey_endpoint_reports_state_without_a_percentage(two_tenan
     assert body["state"] == journey.UPLOADED
     assert body["can_build_paper"] is False
     assert journey.BLOCK_NO_OPPORTUNITY in body["blocking_reasons"]
-    assert len(body["states"]) == 17
+    # **والمفرداتُ تُقرأ من الخدمة لا تُعدّ بالرقم.**
+    #
+    # كان الفحصُ `== 17`، وكانت الحالاتُ سبعَ عشرة يومَ كُتب. ثمّ تقاعدت
+    # `draft_ready` — مفردةٌ معلَنةٌ لا تعيدها `derive_state` في أيّ فرع —
+    # فصارت ستَّ عشرة، وبقي الرقمُ المكتوبُ بيدٍ يشير إلى ماضٍ. ورقمٌ
+    # يُكتب بجانب سلطةٍ يفترق عنها بأوّل تعديل.
+    assert body["states"] == list(journey.STATES)
     # **ولا نسبةَ في العقد.**
     assert not any("percent" in key for key in body)

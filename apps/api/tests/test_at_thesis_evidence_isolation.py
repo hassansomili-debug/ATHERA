@@ -25,7 +25,7 @@ import uuid
 
 import pytest
 
-from tests.conftest import requires_db
+from tests.conftest import requires_db, seed_file
 
 
 def _client(tenant_id, user_id, locale="ar"):
@@ -155,16 +155,23 @@ def test_conversion_binds_project_id_and_keeps_both_links():
 @pytest.mark.asyncio
 async def test_a_journey_never_sees_another_thesis_evidence(two_tenants):
     """**الدعوى المركزية.** رسالتان في مستأجرٍ واحد، ولكلٍّ دليلُها الموثق."""
+    from sqlalchemy import func
+
     from athera_api.db import tenant_session
     from athera_api.models.research import ResearcherMemory
     from athera_api.services.planning import context as ctx
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    file_a, file_b = uuid.uuid4(), uuid.uuid4()
     project = uuid.uuid4()
 
     async with tenant_session(tid, uid) as session:
+        # **وملفّان حقيقيّان** — `source_file_id` مفتاحٌ أجنبيّ، ومعرّفٌ
+        # مُختلَقٌ يرفضه `fk_researcher_memories_source_file_id`.
+        file_a = await seed_file(session, tenant_id=tid, uploaded_by=uid,
+                                 name="رسالة-أ.pdf")
+        file_b = await seed_file(session, tenant_id=tid, uploaded_by=uid,
+                                 name="رسالة-ب.pdf")
         for file_id, statement in ((file_a, "دليلُ الرسالة أ"),
                                    (file_b, "دليلُ الرسالة ب")):
             session.add(ResearcherMemory(
@@ -172,7 +179,13 @@ async def test_a_journey_never_sees_another_thesis_evidence(two_tenants):
                 statement_ar=statement, value={"field_key": "sample_size"},
                 source_type="upload", source_file_id=file_id,
                 source_locator="§1 ¶1", source_quote=statement,
+                # **و«موثق» يحمل مُحقِّقَه وتاريخَه** — القيد
+                # `ck_memory_verified_requires_verifier` (الترحيل 0005، §7.4)
+                # يرفض غير ذلك، وهو محقّ: توثيقٌ بلا مُوثِّقٍ دعوى بلا صاحب.
+                # وكانت التجهيزةُ تكتب الحالَ وتترك العمودين فارغين، فلا
+                # يسقط شيءٌ على جهازٍ بلا قاعدة ويسقط الإدراجُ في CI.
                 verification_status="verified",
+                verified_by=uid, verified_at=func.now(),
             ))
 
     async with tenant_session(tid, uid) as session:
@@ -195,20 +208,26 @@ async def test_a_journey_never_sees_another_thesis_evidence(two_tenants):
 @pytest.mark.asyncio
 async def test_cross_tenant_isolation_is_preserved(two_tenants):
     """**والحارسُ الأقدم يبقى.** إضافةُ حدٍّ لا تُضعف الحدَّ القائم."""
+    from sqlalchemy import func
+
     from athera_api.db import tenant_session
     from athera_api.models.research import ResearcherMemory
     from athera_api.services.planning import context as ctx
 
     a, b = two_tenants["a"], two_tenants["b"]
-    shared_file = uuid.uuid4()
 
     async with tenant_session(b["tenant_id"], b["user_id"]) as session:
+        # الملفُّ صفٌّ حقيقيّ في مستأجر (ب) — و(أ) يطلب معرّفَه بعدُ.
+        shared_file = await seed_file(
+            session, tenant_id=b["tenant_id"], uploaded_by=b["user_id"])
         session.add(ResearcherMemory(
             tenant_id=b["tenant_id"], memory_category="project_decision",
             statement_ar="دليلُ الجار", value={"field_key": "sample_size"},
             source_type="upload", source_file_id=shared_file,
             source_locator="§1 ¶1", source_quote="دليلُ الجار",
+            # ومُحقِّقُ الجار من مستأجره — لا من (أ).
             verification_status="verified",
+            verified_by=b["user_id"], verified_at=func.now(),
         ))
 
     # المستأجر (أ) يطلب المعرّف نفسه — ولا يرى شيئًا.
@@ -228,15 +247,24 @@ async def test_converting_twice_creates_no_second_project(two_tenants):
 
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
-    from athera_api.models.thesis import PublicationOpportunity
+    from athera_api.models.thesis import PublicationOpportunity, Thesis
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
 
     async with tenant_session(tid, uid) as session:
+        # **ولا فرصةَ بلا مصدر** — `has_source` (0017) تشترط رسالةً أو
+        # مشروعًا، وهذه كانت بلا كليهما. والفرصةُ هنا من رسالة.
+        thesis = Thesis(tenant_id=tid, processing_state="ready_for_review")
+        session.add(thesis)
+        await session.flush()
+        # و`ready_to_submit` تشترط ختمَي الحقوق والتأليف في المُنشئ (0010).
         opportunity = PublicationOpportunity(
-            tenant_id=tid, opportunity_kind="sub_model", paper_kind="extraction",
-            working_title_ar="ورقةٌ اصطناعية", status="ready_to_submit")
+            tenant_id=tid, thesis_id=thesis.id,
+            opportunity_kind="sub_model", paper_kind="extraction",
+            working_title_ar="ورقةٌ اصطناعية", status="ready_to_submit",
+            rights_approved_by=uid, rights_approved_at=func.now(),
+            authorship_approved_by=uid, authorship_approved_at=func.now())
         session.add(opportunity)
         await session.flush()
         opportunity_id = opportunity.id

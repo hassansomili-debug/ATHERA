@@ -301,10 +301,13 @@ async def test_a_stale_fingerprint_makes_zero_external_calls(two_tenants, monkey
         await consent.record_decision(
             session, tenant_id=tid, file_id=file_id, actor_user_id=uid,
             granted=True, provider="anthropic", model="m")
+        # `evidence_count` معامَلٌ لازم — والنداءُ كان يسبق إضافتَه، فيسقط
+        # بـ`TypeError` قبل أن يبلغ الفحصُ دعواه. وصفرٌ هو عددُ أدلّة
+        # اللقطة البائتة نفسِها: أُذن لها ثمّ تغيّرت.
         await consent.record_planning_decision(
             session, tenant_id=tid, project_id=project_id, actor_user_id=uid,
             granted=True, context_fingerprint="a-fingerprint-from-an-older-snapshot",
-            provider="anthropic", model="m")
+            provider="anthropic", model="m", evidence_count=0)
 
     async with tenant_session(tid, uid) as session:
         live = await research_context.build(
@@ -368,14 +371,38 @@ async def test_building_the_thread_twice_creates_no_duplicate_elements(
 
     from athera_api.brain.orchestrator import Orchestrator
     from athera_api.db import tenant_session
+    from athera_api.models.files import File
     from athera_api.models.golden_thread import ThreadElement
+    from athera_api.models.portfolio import ResearchProject
+    from athera_api.services import consent
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    project_id = uuid.uuid4()
 
-    # عقدةٌ قائمةٌ تمثّل خيطًا مبنيًّا من قبل.
+    # ── صفوفٌ حقيقية: ملفٌّ ومشروعٌ وإذنٌ، ثمّ عقدةٌ قائمة ──
+    #
+    # **ومعرّفٌ مُختلَقٌ ليس صفًّا.** كان `project_id = uuid.uuid4()` فيرفضه
+    # `fk_thread_elements_project_id`، وكان الإخفاقُ يُبتلع في `pytest.skip`
+    # — فيمرّ الفحصُ أخضرَ وهو لم يفحص شيئًا. والتخطّي الذي يُخفي عطبًا
+    # أسوأ من الإخفاق.
     async with tenant_session(tid, uid) as session:
+        source = File(
+            tenant_id=tid, storage_key=f"tenants/{tid}/{uuid.uuid4()}",
+            original_filename="رسالة.pdf", content_type="application/pdf",
+            size_bytes=2048, classification="C2", status="stored", uploaded_by=uid)
+        project = ResearchProject(
+            tenant_id=tid, working_title_ar="مشروعٌ لخيطٍ قائم",
+            status="planned", current_gate="G1")
+        session.add_all([source, project])
+        await session.flush()
+        file_id, project_id = source.id, project.id
+
+        # الإذنُ صريحٌ ومسجَّل — ولا يُمنح تلقائيًّا في الشيفرة ولا هنا.
+        await consent.record_decision(
+            session, tenant_id=tid, file_id=file_id, actor_user_id=uid,
+            granted=True, provider="anthropic", model="m")
+
+        # عقدةٌ قائمةٌ تمثّل خيطًا مبنيًّا من قبل.
         session.add(ThreadElement(
             tenant_id=tid, project_id=project_id, element_type="construct",
             label_ar="عقدةٌ قائمة", ordinal=1, metadata_json={}))
@@ -388,12 +415,9 @@ async def test_building_the_thread_twice_creates_no_duplicate_elements(
 
     monkeypatch.setattr(Orchestrator, "run_structured_detached", _counted)
 
-    try:
-        outcome = await journey.build_thread(
-            lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
-            file_id=a.get("file_id") or uuid.uuid4(), project_id=project_id)
-    except journey.JourneyBlocked:
-        pytest.skip("الإذنُ غيرُ مهيَّإ في هذه التجهيزة — والتكرارُ مفحوصٌ بنيويًّا")
+    outcome = await journey.build_thread(
+        lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
+        file_id=file_id, project_id=project_id)
 
     assert outcome.reused is True, "خيطٌ قائمٌ أُعيد بناؤه"
     assert outcome.created == 0, "دعوى إنشاءٍ لم يقع"
