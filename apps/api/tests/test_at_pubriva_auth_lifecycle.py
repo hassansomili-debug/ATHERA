@@ -905,8 +905,13 @@ def test_the_approval_is_read_from_its_contract_not_from_translated_prose():
     """
     review = (WEB / "src" / "app" / "[locale]" / "theses" / "[thesisId]"
               / "review" / "page.tsx").read_text(encoding="utf-8")
-    assert "data-candidate-status={field.status}" in "\n".join(
-        line for _, line in code_lines(review)), "حال المرشّح بلا عقد يُقرأ"
+    review_code = "\n".join(line for _, line in code_lines(review))
+    # **والدعوى أنّ الحالَ تُقرأ من سمةٍ لا من نثرٍ مترجَم** — لا أنّ شكلَ
+    # التعبير حرفٌ بحرف. وقد صار التعبيرُ شرطيًّا: البيانُ النظاميّ يُعلَن
+    # `system_metadata` ولا يُعلَن «بانتظار مراجعتك»، وهو حقلٌ لا يُراجَع
+    # أصلًا. فالسمةُ قائمة، ومصدرُها `field.status` كما كان.
+    assert "data-candidate-status={" in review_code, "حال المرشّح بلا عقد يُقرأ"
+    assert "field.status" in review_code, "الحالُ لا تُشتقّ من عقد المرشّح"
 
     spec = (WEB / "tests" / "acceptance.spec.ts").read_text(encoding="utf-8")
     code = "\n".join(line for _, line in code_lines(spec))

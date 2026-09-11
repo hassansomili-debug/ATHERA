@@ -46,8 +46,13 @@ interface SectionGroup {
 
 interface Review {
   thesis_id: string;
+  /** عنوانُ الرسالة كما استُخرج — و`null` إن لم يُستخرَج بعد. */
+  thesis_title: string | null;
+  /** اسمُ الملفّ المرفوع — بديلُ العنوان حين لا عنوان. */
+  source_filename: string | null;
   sections: SectionGroup[];
   total: number;
+  reviewable_total: number;
   approved: number;
   rejected: number;
   unknown: number;
@@ -84,6 +89,8 @@ export default function ReviewPage({
   // «لا شيء يُعرض» — ولا تُفرَّق عن مراجعةٍ وصلت وهي خالية. والباحث جاء
   // ليراجع، فالصمت أوّل ما يقرؤه ولا يعرف أينتظر أم لا شيء هناك.
   const [loaded, setLoaded] = useState(false);
+  // المعتمَدُ مطويٌّ افتراضًا — عملٌ تمّ لا عملٌ ينتظر.
+  const [showApproved, setShowApproved] = useState(false);
 
   const load = useCallback(async (commit: Commit) => {
     try {
@@ -145,9 +152,84 @@ export default function ReviewPage({
     unverified: t("thesisReview.statusPending"),
   };
 
+  // ═════ ما يُعرض وأين — مشتقًّا من `decidable` وحدها ═════
+  //
+  // **والقاعدةُ من الخادم لا من اسم حقلٍ مكتوبٍ هنا.** `decidable=false`
+  // بيانٌ نظاميّ: يُعرض سطرًا موجزًا خارج بطاقات المراجعة، ولا يدخل عدّادًا.
+  // وما عداه دليلٌ علميّ يقبل قرارًا.
+  const allSections = review?.sections ?? [];
+  const metadataFields = allSections.flatMap(
+    (group) => group.fields.filter((field) => !field.decidable));
+  const approvedFields = allSections.flatMap(
+    (group) => group.fields.filter(
+      (field) => field.decidable && field.status === "approved"));
+  const pendingFields = allSections.flatMap(
+    (group) => group.fields.filter(
+      (field) => field.decidable && field.status === "unverified"));
+
+  // **والمنتظِرُ أوّلًا داخل كلِّ قسم.** كان مبثوثًا بين المحسوم، فيُقلّب
+  // الباحثُ الصفحةَ كلَّها ليجد ما ينتظر قرارَه.
+  const PENDING_FIRST: Record<string, number> = { unverified: 0, unknown: 1, rejected: 2 };
+  const researchSections: SectionGroup[] = allSections
+    .map((group) => ({
+      ...group,
+      fields: group.fields
+        .filter((field) => field.decidable && field.status !== "approved")
+        .slice()
+        .sort((a, b) => (PENDING_FIRST[a.status] ?? 9) - (PENDING_FIRST[b.status] ?? 9)),
+    }))
+    .filter((group) => group.fields.length > 0);
+
+  // والمعتمَدُ قسمٌ واحدٌ مطويّ: عملٌ تمّ، لا عملٌ ينتظر. ويمرّ على
+  // العارض نفسِه — فلا نسخةَ ثانية من بطاقة الدليل.
+  const approvedSection: SectionGroup = {
+    key: "__approved",
+    label: t("thesisReview.approvedSection").replace("{count}", String(approvedFields.length)),
+    fields: approvedFields,
+  };
+  const visibleSections = showApproved
+    ? [...researchSections, approvedSection]
+    : researchSections;
+
+  /**
+   * ينقل الباحثَ إلى أوّل حقلٍ ينتظره — **ويُسلّمه التركيز لا المنظرَ وحده**.
+   *
+   * فقارئُ الشاشة يبقى حيث كان لو نُقل المنظرُ فقط، ومن يعمل بلوحة المفاتيح
+   * يعود إلى أوّل الصفحة بعد كلِّ قرار.
+   */
+  function reviewNext() {
+    const next = pendingFields[0];
+    if (!next) return;
+    const node = document.querySelector<HTMLElement>(
+      `[data-field-card="${next.field_key}"]`);
+    if (!node) return;
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    node.focus();
+  }
+
   return (
     <>
       <h1>{t("thesisReview.title")}</h1>
+      {/* **وأيُّ رسالة؟** من رفع ثلاثًا لا يعرف أيَّها يقرأ. فالعنوانُ
+          هنا، وإن لم يُستخرَج بعد فاسمُ الملفّ بديلٌ يُقال إنّه بديل. */}
+      {review?.thesis_title ? (
+        <p
+          data-testid="review-thesis-name"
+          data-name-source="title"
+          style={{ fontWeight: 600, margin: "2px 0 0" }}
+        >
+          {review.thesis_title}
+        </p>
+      ) : review?.source_filename ? (
+        <p
+          data-testid="review-thesis-name"
+          data-name-source="filename"
+          style={{ margin: "2px 0 0" }}
+        >
+          <span style={{ fontWeight: 600 }}>{review.source_filename}</span>{" "}
+          <span className="metric-label">{t("thesisReview.titleFromFilename")}</span>
+        </p>
+      ) : null}
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("thesisReview.subtitle")}</p>
       <Link href={`/${locale}/theses`} style={{ color: "var(--athera-teal)" }}>
         {t("thesisReview.backToTheses")}
@@ -181,12 +263,12 @@ export default function ReviewPage({
           <p
             className="metric-label"
             data-review-approved={review.approved}
-            data-review-total={review.total}
+            data-review-total={review.reviewable_total}
             style={{ marginBlockStart: 16 }}
           >
             {t("thesisReview.progress")
               .replace("{approved}", String(review.approved))
-              .replace("{total}", String(review.total))
+              .replace("{total}", String(review.reviewable_total))
               .replace("{pending}", String(review.pending))}
           </p>
           {/* الفئات الأربع مفصولة (§10): دمج «لا أعرف» في الرفض يضخّم عدّ
@@ -199,9 +281,44 @@ export default function ReviewPage({
               .replace("{pending}", String(review.pending))}
           </p>
 
+          {pendingFields.length > 0 ? (
+            <button
+              type="button"
+              data-testid="review-next"
+              onClick={reviewNext}
+              style={{
+                border: "none", background: "var(--athera-aqua, var(--athera-teal))",
+                color: "#04302c", borderRadius: "var(--radius)", padding: "8px 16px",
+                font: "inherit", fontWeight: 600, cursor: "pointer", marginBlockStart: 10,
+              }}
+            >
+              {t("thesisReview.reviewNext")}
+            </button>
+          ) : null}
+
+          {approvedFields.length > 0 ? (
+            <p style={{ margin: "10px 0 0" }}>
+              <button
+                type="button"
+                data-testid="review-approved-toggle"
+                aria-expanded={showApproved}
+                onClick={() => setShowApproved((open) => !open)}
+                style={{
+                  border: "1px solid var(--border)", background: "transparent",
+                  color: "inherit", borderRadius: "var(--radius)", padding: "6px 12px",
+                  font: "inherit", cursor: "pointer",
+                }}
+              >
+                {showApproved ? "▾ " : "▸ "}
+                {t("thesisReview.approvedSection")
+                  .replace("{count}", String(approvedFields.length))}
+              </button>
+            </p>
+          ) : null}
+
           {review.sections.length === 0 ? <p>{t("thesisReview.empty")}</p> : null}
 
-          {review.sections.map((section) => (
+          {visibleSections.map((section) => (
             <section key={section.key} style={{ marginBlockStart: 24 }}>
               <h2 style={{ fontSize: 18 }}>{section.label}</h2>
               <div style={{ display: "grid", gap: 10 }}>
@@ -212,7 +329,13 @@ export default function ReviewPage({
                   // تُعامَل معاملة المحسوم نهائيًّا.
                   const settled = field.status === "approved" || field.status === "rejected";
                   return (
-                    <article className="card" key={field.id}>
+                    <article
+                      className="card"
+                      key={field.id}
+                      data-field-card={field.field_key}
+                      data-candidate-decidable={field.decidable ? "true" : "false"}
+                      tabIndex={-1}
+                    >
                       <div
                         style={{
                           display: "flex", justifyContent: "space-between",
@@ -225,7 +348,14 @@ export default function ReviewPage({
                           // الحال القانونية بجانب نصّها المترجَم — كما في
                           // بطاقة المكتبة. والفرق بين «معتمَد» و«معتمَدة»
                           // فرقُ حرفٍ في ترجمة، لا فرقٌ في ما وقع.
-                          data-candidate-status={field.status}
+                          //
+                          // **ولا «بانتظار مراجعتك» على ما لا يُراجَع.**
+                          // الحقلُ الحتميّ حالُه `unverified` في القاعدة،
+                          // فكانت الشاشةُ تعرضه منتظِرًا قرارًا لا سبيل
+                          // إليه. فيُعلَن بما هو: معلومةٌ نظامية.
+                          data-candidate-status={
+                            field.decidable === false ? "system_metadata" : field.status
+                          }
                           style={
                             isUnknown
                               ? {
@@ -238,7 +368,9 @@ export default function ReviewPage({
                               : undefined
                           }
                         >
-                          {statusLabel[field.status] ?? field.status}
+                          {field.decidable === false
+                            ? t("thesisReview.systemMetadata")
+                            : statusLabel[field.status] ?? field.status}
                         </span>
                       </div>
                       {isUnknown ? (
@@ -436,6 +568,42 @@ export default function ReviewPage({
               </div>
             </section>
           ))}
+
+          {/* ── بياناتُ الملفّ: مُوجَزةٌ، ولا بطاقةَ قرارٍ لها ──
+              **ما يعرفه الكودُ يقينًا لا يُصدَّق عليه.** تُقرأ من بيانات
+              الملفّ لا من متنه، فلا اقتباسَ لها ولا اعتمادٌ ينجح. فتُعرض
+              سطرًا موجزًا خارج بطاقات المراجعة، وخارج العدّاد. */}
+          {metadataFields.length > 0 ? (
+            <section style={{ marginBlockStart: 24 }} data-testid="review-file-metadata">
+              <h2 style={{ fontSize: 18, marginBlockEnd: 2 }}>
+                {t("thesisReview.fileMetadata")}
+              </h2>
+              <p className="provenance-note" style={{ margin: "0 0 8px" }}>
+                {t("thesisReview.systemMetadata")}
+              </p>
+              <dl
+                style={{
+                  display: "grid", gridTemplateColumns: "auto minmax(0, 1fr)",
+                  gap: "4px 12px", margin: 0,
+                }}
+              >
+                {metadataFields.map((field) => (
+                  <div
+                    key={field.id}
+                    data-testid={`review-metadata-${field.field_key}`}
+                    data-candidate-status="system_metadata"
+                    data-candidate-decidable="false"
+                    style={{ display: "contents" }}
+                  >
+                    <dt className="metric-label" style={{ margin: 0 }}>{field.label}</dt>
+                    <dd style={{ margin: 0, overflowWrap: "anywhere" }}>
+                      {asText(field.value) || t("thesisReview.notExtracted")}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ) : null}
 
           <p className="provenance-note" style={{ marginBlockStart: 24 }}>{review.note}</p>
         </>

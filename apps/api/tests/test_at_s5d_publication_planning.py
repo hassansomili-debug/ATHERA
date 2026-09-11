@@ -1164,11 +1164,22 @@ def test_every_planning_translation_key_resolves_in_both_languages():
 
 
 def test_the_existing_namespaces_are_untouched():
-    """§21 — `review` و`thesisReview` لم تُكتَبا فوقهما."""
+    """§21 — `review` و`thesisReview` لم تُكتَبا فوقهما.
+
+    **والدعوى فصلُ المجالات، لا نصُّ عنوانٍ بعينه.** كان الفحصُ يثبّت متنَ
+    `thesisReview.title` حرفًا («راجع ما استخرجته بُبريفا») نائبًا عن تلك
+    الدعوى، فصار يسقط بأوّل تغييرٍ في النصّ المعروض — وهو ملكُ المنتج لا
+    ملكُ هذا الفحص. فيُفحص ما يقصده: ثلاثةُ مجالاتٍ قائمة، ولا واحدٌ منها
+    كُتب فوق الآخر، ولكلٍّ عنوانُه غيرُ الفارغ وغيرُ المشترك.
+    """
     ar = json.loads((WEB / "messages" / "ar.json").read_text(encoding="utf-8"))
     assert ar["review"]["title"] == "المراجعة والتحكيم"
-    assert ar["thesisReview"]["title"] == "راجع ما استخرجته بُبريفا"
     assert "publicationPlanning" in ar and ar["publicationPlanning"]["title"] == "فرص النشر"
+
+    titles = {name: ar[name]["title"] for name in ("review", "thesisReview",
+                                                   "publicationPlanning")}
+    assert all(titles.values()), f"مجالٌ بعنوانٍ فارغ: {titles}"
+    assert len(set(titles.values())) == 3, f"عنوانٌ مشترك بين مجالين: {titles}"
 
 
 # ══════════ 12. الدور يُقرأ من المرشّح لا من `value` ══════════

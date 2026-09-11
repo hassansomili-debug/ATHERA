@@ -17,6 +17,7 @@
     "test:project-management": "playwright test tests/project-management.spec.ts",
     "test:brand": "playwright test tests/brand-experience.spec.ts",
     "test:thesis-center": "playwright test tests/thesis-center.spec.ts",
+    "test:thesis-closure": "playwright test tests/thesis-center-closure.spec.ts",
     "test:stale-load": "playwright test tests/stale-deferred-load.spec.ts --retries=0 --workers=1",
     "test:auto-journey": "playwright test tests/automatic-opportunity-journey.spec.ts --retries=0 --workers=1",
     "test:rc": "playwright test tests/rc-thesis-journey.spec.ts"

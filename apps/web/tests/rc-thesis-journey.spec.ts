@@ -79,8 +79,12 @@ const SIGN_IN_AR = "تسجيل الدخول";
 const SIGN_OUT_EN = "Sign out";
 const SIGN_OUT_AR = "تسجيل الخروج";
 
-const THESES_TITLE_EN = "Thesis library";
-const THESES_TITLE_AR = "مكتبة الرسائل";
+// **والاسمُ واحدٌ في المنتج وفي الفحص.** كان «Thesis library» /
+// «مكتبة الرسائل»، وقد تقاعدا: الشاشةُ والقائمةُ تقولان «مركز الرسائل».
+// وهذه الرقعةُ لا تعمل إلّا على المكدّس كاملًا، فلم يكشفها الفحصُ المحلّي —
+// كشفتها بوّابةُ المرشَّح، وهي موضعُ كشفها الصحيح.
+const THESES_TITLE_EN = "Thesis Center";
+const THESES_TITLE_AR = "مركز الرسائل";
 
 /** ما يقوله الخادم حين يُعرض اسمُ ملفٍّ لا عنوانًا (`theses.identifiedByFilename`). */
 const BY_FILENAME_EN = "Title not extracted yet · shown by file name";
@@ -543,21 +547,42 @@ test("٢·٣ · /en/theses تُحمَّل والجلسةُ متّسقة | loads,
 test.describe("رسالةٌ بلا ملفّ | a thesis with no file", () => {
 test.describe.configure({ mode: "serial" });
 
-test("٧أ · التسجيلُ اليدوي يقول «لم يبدأ» لا «٠» | manual registration says why, not zero",
-  async ({ page }) => {
+test("٧أ · رسالةٌ بلا ملفّ تقول «لم يبدأ» لا «٠» | a file-less thesis says why, not zero",
+  async ({ page, request }) => {
+    // **والدعوى عن البطاقة لا عن النموذج.** كان يُنشأ الصفُّ من نموذج
+    // التسجيل في الشاشة، وقد تقاعد ذلك النموذج: المدخلُ الوحيد للرسالة
+    // صار رفعَ ملفّ. ونقطةُ النهاية باقيةٌ ولها مستعملوها، فيُنشأ الصفُّ
+    // بها — وتبقى الدعوى كما هي كاملةً: **رسالةٌ بلا ملفّ تُسمّي سببَها
+    // ولا تعرض صفرًا صامتًا**. فما سقط هو وسيلةُ الإنشاء وحدها.
+    // **والإنشاءُ لا يُكرَّر عند إعادة المحاولة.** `retries: 1` في CI،
+    // والقاعدةُ تبقى بين المحاولتين: محاولةٌ تسقط بعد الإنشاء ثمّ تُعاد
+    // تُخلِّف صفَّين بالعنوان نفسه، فيصير `toHaveCount(1)` إخفاقًا دائمًا
+    // لا يُشفى — وهو ما وقع فعلًا. فيُسأل أوّلًا، ويُنشأ إن لم يكن.
+    const headers = {
+      Authorization: `Bearer ${sessions.a?.access}`,
+      "Accept-Language": EN,
+      "Content-Type": "application/json",
+    };
+    const listed = note(await request.get(`${API_ORIGIN}/api/v1/theses`, { headers }),
+                        "GET /api/v1/theses");
+    expect(listed.status(), "GET /api/v1/theses").toBe(200);
+    // و`title` مُنتقىً باللغة، و`title_ar` هو المكتوب — فيُقارَن الاثنان.
+    const already = ((await listed.json()) as
+        { title: string | null; title_ar: string | null }[])
+      .some((row) => row.title === MANUAL_TITLE_AR || row.title_ar === MANUAL_TITLE_AR);
+
+    if (!already) {
+      const created = note(await request.post(`${API_ORIGIN}/api/v1/theses`, {
+        headers,
+        // و`degree` مشترَطٌ في العقد (`^(masters|phd)$`) — يُرسل كما يشترطه.
+        data: { title_ar: MANUAL_TITLE_AR, degree: "masters" },
+      }), "POST /api/v1/theses");
+      expect(created.status(), "POST /api/v1/theses").toBe(201);
+    }
+
     await useSession(page, "a");
     await page.goto(`/${EN}/theses`);
     await expect(page.getByRole("heading", { name: THESES_TITLE_EN })).toBeVisible();
-
-    const registered = page.waitForResponse(
-      (r) => r.url() === `${API_ORIGIN}/api/v1/theses` && r.request().method() === "POST",
-      { timeout: 60_000 },
-    );
-    await page.getByLabel("Thesis title in Arabic").fill(MANUAL_TITLE_AR);
-    await page.getByRole("button", { name: "Register the thesis" }).click();
-    expect((await registered).status(), "POST /api/v1/theses").toBe(201);
-
-    await page.reload();
     const card = cardWith(page, MANUAL_TITLE_AR);
     await expect(card).toHaveCount(1);
 
