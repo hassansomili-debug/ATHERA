@@ -183,8 +183,6 @@ async def clients(two_tenants):
     yield made, two_tenants
     for http in made.values():
         await http.aclose()
-    from athera_api.db import engine
-    await engine.dispose()
 
 
 def _use_fake(monkeypatch, provider):

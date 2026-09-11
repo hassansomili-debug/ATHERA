@@ -797,7 +797,6 @@ async def test_the_assessment_route_answers_the_owner_and_hides_the_rest(two_ten
     """المسار: صاحبُه يراه، وغيره يُجاب 404 — لا 403 ولا 500."""
     import httpx
 
-    from athera_api.db import engine
     from athera_api.main import app
     from athera_api.security import issue_access_token
 
@@ -815,19 +814,16 @@ async def test_the_assessment_route_answers_the_owner_and_hides_the_rest(two_ten
             transport=httpx.ASGITransport(app=app), base_url="http://test",
             headers={"Authorization": f"Bearer {token}", "Accept-Language": "ar"})
 
-    try:
-        async with client(a) as http:
-            ok = await http.get(path)
-            malformed = await http.get("/api/v1/workspace/projects/not-a-uuid/assessment")
-            absent = await http.get(
-                f"/api/v1/workspace/projects/{uuid.uuid4()}/assessment")
-        async with client(b) as http:
-            theirs = await http.get(path)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as http:
-            anonymous = await http.get(path)
-    finally:
-        await engine.dispose()
+    async with client(a) as http:
+        ok = await http.get(path)
+        malformed = await http.get("/api/v1/workspace/projects/not-a-uuid/assessment")
+        absent = await http.get(
+            f"/api/v1/workspace/projects/{uuid.uuid4()}/assessment")
+    async with client(b) as http:
+        theirs = await http.get(path)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://test") as http:
+        anonymous = await http.get(path)
 
     assert ok.status_code == 200, ok.text
     body = ok.json()

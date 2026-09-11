@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -302,8 +303,14 @@ class OpportunityResponse(BaseModel):
     readiness_outcome_label: str | None
     salami_alert: bool
     status: str
+    #: **قرارُ الباحث، لا دورةُ الإنتاج**: `proposed` · `selected` ·
+    #: `excluded`. والعمودان مُفرَدان عمدًا (§18)، ويُعرضان مفرَدَين.
+    planning_status: str = "proposed"
     rights_approved: bool
     authorship_approved: bool
+    #: **عددُ المراجع الحقيقية** التي يقوم عليها المقترح — لا نسبةٌ ولا درجة.
+    #: يُعدّ ما هو مكتوبٌ في الصفّ، فصفرٌ هنا يعني مقترحًا بلا إسناد.
+    provenance_count: int = 0
 
 
 class DimensionResponse(BaseModel):
@@ -382,3 +389,76 @@ class PublicationMapResponse(BaseModel):
     opportunities: list[OpportunityResponse]
     overlap: OverlapMatrixResponse
     gate_summary: dict[str, int]
+
+
+class JourneyResponse(BaseModel):
+    """حالُ رحلة الرسالة — **حالٌ مسمّاة، ولا نسبةَ مئوية**.
+
+    «٦٠٪ مكتمل» رقمٌ بلا قياسٍ خلفه يقرؤه الباحثُ وعدًا. وكلُّ حالٍ هنا
+    واقعةٌ في القاعدة يمكن الإشارة إلى صفّها.
+    """
+
+    thesis_id: uuid.UUID
+    state: str
+    #: رموزٌ تقرؤها الآلةُ وتترجمها الشاشة — لا نثرٌ مترجَم في العقد.
+    blocking_reasons: list[str] = []
+    can_build_paper: bool = False
+    #: الخيطُ الذهبيّ: واقعتُه، والفعلُ المتاح عليها — **فتعرفه الشاشة**.
+    thread_ready: bool = False
+    can_build_thread: bool = False
+    opportunities: int = 0
+    #: المفرداتُ المعلَنة، فتعرف الشاشةُ ما قد يصلها.
+    states: list[str] = []
+
+
+class BuildPaperResponse(BaseModel):
+    """حصيلةُ بناء ورقة — **وما أُنشئ وما أُعيد استعمالُه، مسمَّيَين**."""
+
+    project_id: uuid.UUID
+    outline_id: uuid.UUID
+    manuscript_id: uuid.UUID
+    thread_id: uuid.UUID | None = None
+    created: list[str] = []
+    reused: list[str] = []
+    #: ما لم يُبنَ بعد ويملكه طَورٌ لاحق — يُعلَن ولا يُدَّعى اكتمالُه.
+    pending: list[str] = []
+    state: str
+
+
+class ThreadElementDraft(BaseModel):
+    """عقدةٌ يقترحها النموذج — **ولا تدخل القاعدة قبل أن تُحلَّ مراجعُها**."""
+
+    element_type: str
+    label_ar: str
+    evidence_refs: list[str] = []
+
+
+class ThreadDraft(BaseModel):
+    elements: list[ThreadElementDraft] = []
+
+
+class SelectOpportunityRequest(BaseModel):
+    """قرارُ الباحث في فرصة — **ولا يُقبل قرارٌ ثالثٌ صامتًا**.
+
+    و`decision` لا قيمةَ افتراضية لها: اختيارٌ ضمنيّ ليس اختيارًا، وطلبٌ
+    بلا قرارٍ صريح خطأٌ في النداء لا رأيٌ يُخمَّن.
+    """
+
+    decision: Literal["select", "exclude"]
+    #: سببُ الباحث كما كتبه — يُحفظ في سلسلة التدقيق ولا يُعرض حكمًا.
+    reason: str | None = None
+
+
+class ThreadBuildResponse(BaseModel):
+    """حصيلةُ بناء الخيط الذهبيّ — **وما رُفض يُعدّ ولا يُخفى**."""
+
+    project_id: uuid.UUID
+    created: int
+    #: عقدٌ ردّها النظام لأنّ مراجعَ أدلّتها لا تردّ إلى صفوفٍ حقيقية.
+    #: **عددٌ لا متن**: متنُ المرفوض اختلاقٌ لا يُحفظ ولا يُعرض.
+    rejected: int
+    context_fingerprint: str
+    #: لا مُعرِّفَ نداءٍ حين لا نداء — وإعادةُ الاستعمال لا تنادي نموذجًا.
+    agent_run_id: uuid.UUID | None = None
+    #: **أُعيد استعمالُ خيطٍ قائم؟** يُقال ولا يُعرض بناءً لم يقع.
+    reused: bool = False

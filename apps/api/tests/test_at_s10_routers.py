@@ -40,9 +40,6 @@ async def client(two_tenants):
         assert created.status_code == 201, created.text
         yield http, created.json()["id"], tenant
 
-    from athera_api.db import engine
-
-    await engine.dispose()
 
 
 async def _seed_approval(tenant, *, requested_by):

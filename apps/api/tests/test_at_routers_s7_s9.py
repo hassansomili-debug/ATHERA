@@ -70,9 +70,6 @@ async def client(two_tenants):
     ) as http:
         yield http, str(project_id), tenant
 
-    from athera_api.db import engine
-
-    await engine.dispose()
 
 
 async def test_analysis_run_refused_on_unfrozen_version(client):

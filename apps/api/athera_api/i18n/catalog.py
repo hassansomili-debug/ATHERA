@@ -496,6 +496,24 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "لا يمكن تحويل فرصة لم تجتز بوابة الحقوق والتأليف.",
         "en": "An opportunity cannot be converted before passing the rights and authorship gate.",
     },
+    # ── رحلةُ الرسالة إلى ورقة: أسبابٌ تُقال بلغة الباحث ──
+    #
+    # **و`thesis.journey_blocked` كانت تُرفع بلا مدخلٍ في الفهرس** — فيصل
+    # الباحثَ رمزٌ لا نصّ. والرموزُ التفصيلية تسافر في `reasons`، وتترجمها
+    # الشاشةُ واحدًا واحدًا؛ وهذا النصُّ هو الجملةُ الجامعة.
+    "thesis.journey_blocked": {
+        "ar": "لم تكتمل متطلبات بناء الورقة بعد؛ التفاصيل في أسباب التوقّف.",
+        "en": "The paper cannot be built yet; the blocking reasons list what is missing.",
+    },
+    "thesis.paper_not_built_yet": {
+        "ar": "لم تُبنَ الورقة بعد؛ يُبنى الخيط العلمي بعد إنشاء ورقة من الفرصة.",
+        "en": "The paper has not been built yet; the scientific thread is built after a "
+              "paper is created from the opportunity.",
+    },
+    "planning.unknown_decision": {
+        "ar": "قرار غير معروف؛ القرار إمّا اختيار الفرصة أو استبعادها.",
+        "en": "Unknown decision; an opportunity is either selected or excluded.",
+    },
     "thesis.overlap_unresolved": {
         "ar": "يوجد تنبيه تداخل لم يُحسم؛ يلزم الدمج أو تبرير معتمد.",
         "en": "An unresolved overlap alert exists; a merge or an approved justification is required.",

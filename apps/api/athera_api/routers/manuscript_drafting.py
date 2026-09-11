@@ -32,7 +32,7 @@ from ..models.publishing import (
     ManuscriptVersion,
 )
 from ..models.research import ResearcherMemory
-from ..models.thesis import PublicationOpportunity
+from ..models.thesis import PublicationOpportunity, Thesis
 from ..providers.gateway import active_model, provider_readiness
 from ..schemas.drafting import (
     AnalysisOutputRef,
@@ -147,14 +147,37 @@ async def _section(session: AsyncSession, principal: Principal, version_id: uuid
     ).scalar_one_or_none()
 
 
+async def _thesis_source_scope(session: AsyncSession, principal: Principal,
+                               opportunity_id: uuid.UUID) -> uuid.UUID | None:
+    """ملفُّ الرسالة التي جاءت منها الفرصة — أو `None` لفرصةٍ غيرِ مشتقّة.
+
+    **وهو حدُّ الأدلّة**: مخطوطةٌ مشتقّةٌ من رسالةٍ لا تُصاغ من أدلّة رسالةٍ
+    أخرى، ولو كانت الرسالتان لباحثٍ واحد في مستأجرٍ واحد. وحارسُ المستأجر
+    لا يفصل بينهما، فيُقرأ الحدُّ من الفرصة نفسها.
+
+    وقراءةٌ قصيرةٌ مغلقة قبل بناء اللقطة — **ولا معاملةَ تمتدّ عبر نداء**.
+    """
+    return (
+        await session.execute(
+            select(Thesis.file_id)
+            .join(PublicationOpportunity,
+                  PublicationOpportunity.thesis_id == Thesis.id)
+            .where(PublicationOpportunity.id == opportunity_id,
+                   PublicationOpportunity.tenant_id == principal.tenant_id,
+                   Thesis.tenant_id == principal.tenant_id)
+        )
+    ).scalar_one_or_none()
+
+
 async def _build_context(session: AsyncSession, principal: Principal,
                          record: Manuscript, section_key: str,
                          prior_text: str | None = None) -> draft_context.DraftingContext:
     if record.opportunity_id is None:
         raise AtheraError("drafting.manuscript_not_bound", status_code=409)
+    source_file_id = await _thesis_source_scope(session, principal, record.opportunity_id)
     research = await research_context.build(
         session, tenant_id=principal.tenant_id, project_id=record.project_id,
-        capability=consent.DRAFTING_CAPABILITY)
+        capability=consent.DRAFTING_CAPABILITY, source_file_id=source_file_id)
     return await draft_context.build(
         session, research=research, manuscript_id=record.id,
         opportunity_id=record.opportunity_id, outline_id=record.outline_id,
