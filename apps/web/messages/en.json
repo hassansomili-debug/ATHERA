@@ -1074,7 +1074,10 @@
     "tallyLine": "{approved} approved · {rejected} rejected · {unknown} unknown · {pending} awaiting you",
     "knownNotClaimed": "Read from the file's own metadata — a known value, not a claim awaiting your approval.",
     "systemMetadata": "System metadata — no approval required",
-    "fileMetadata": "File metadata"
+    "fileMetadata": "File metadata",
+    "approvedSection": "Approved ({count})",
+    "reviewNext": "Review next",
+    "titleFromFilename": "(filename — no title extracted yet)"
   },
   "publicationPlanning": {
     "advisory": "Advisory",

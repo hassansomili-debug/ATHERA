@@ -164,7 +164,13 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
     phase === "failed" || phase === "text_layer_missing";
 
   return (
-    <section className="card" style={{ display: "grid", gap: 10 }}>
+    // **والمدخلُ الوحيد للرسالة: رفعُ ملفّ.** ومعلَمٌ ثابتٌ يُلتمس به، فلا
+    // يُستدَلّ على وجوده بنصٍّ مترجَمٍ يتغيّر.
+    <section
+      className="card"
+      data-testid="thesis-intake"
+      style={{ display: "grid", gap: 10 }}
+    >
       <div>
         <strong style={{ fontSize: 17 }}>{t("theses.uploadTitle")}</strong>
         <p style={{ color: "var(--muted)", margin: "4px 0 0" }}>{t("theses.uploadHint")}</p>

@@ -275,6 +275,14 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
+      # إغلاقُ الواجهة: الاسمُ، وغيابُ النموذج القديم من الشجرة، وأنّ
+      # البيانَ النظاميّ لا يدخل عدّادَ المراجعة ولا يُصدِر `/decide`.
+      # وطبقتها نفسُها: بناءٌ محلّي وشبكةٌ معترَضة وبلا اعتماد.
+      - name: Thesis Center & Review closure (naming, intake, review counters)
+        run: cd apps/web && npm run test:thesis-closure
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
       # ── الردُّ البائت لا يكتب فوق شاشةٍ حاضرة ──
       #
       # عطبٌ رُصد في الإنتاج: طلبان يتسابقان حين يُبدَّل العرضُ قبل استقرار

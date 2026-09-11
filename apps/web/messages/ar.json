@@ -1074,7 +1074,10 @@
     "tallyLine": "معتمَد {approved} · مرفوض {rejected} · لا أعرف {unknown} · بانتظارك {pending}",
     "knownNotClaimed": "قرأها النظام من بيانات الملف نفسه — معلومة معروفة لا تحتاج تصديقك.",
     "systemMetadata": "معلومة نظامية — لا تحتاج اعتمادًا",
-    "fileMetadata": "بيانات الملف"
+    "fileMetadata": "بيانات الملف",
+    "approvedSection": "المعتمَد ({count})",
+    "reviewNext": "راجع التالي",
+    "titleFromFilename": "(اسم الملف — لم يُستخرَج عنوان بعد)"
   },
   "publicationPlanning": {
     "advisory": "للمراجعة",

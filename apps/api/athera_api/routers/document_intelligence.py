@@ -797,8 +797,21 @@ async def review(
     # فالعدُّ يقع على **ما يُعرض فعلًا** (`groups`) مرشَّحًا بـ`decidable`:
     # مصدرٌ واحد للشاشة وللعدّاد، فلا يفترقان.
     tally = review_tally(item for fields in groups.values() for item in fields)
+
+    # ── هويّةُ ما يُراجَع: عنوانٌ إن وُجد، وإلّا اسمُ الملفّ ──
+    #
+    # ولا يُختلق عنوانٌ من اسم الملفّ: يُرسل الاثنان، وتقول الشاشةُ صراحةً
+    # أيَّهما تعرض. فمن رفع ثلاث رسائل يعرف أيَّها يقرأ.
+    title = (thesis.title_ar or thesis.title_en or None)
+    filename = None
+    if thesis.file_id is not None:
+        filename = (await session.execute(
+            select(File.original_filename).where(File.id == thesis.file_id)
+        )).scalar_one_or_none()
+
     return ReviewResponse(
-        thesis_id=thesis_id, sections=ordered,
+        thesis_id=thesis_id, thesis_title=title, source_filename=filename,
+        sections=ordered,
         total=len(catalogue.FIELD_CATALOGUE),
         reviewable_total=tally["reviewable_total"],
         approved=tally["approved"], pending=tally["pending"],
