@@ -421,7 +421,7 @@
     "noRights": "Not set",
     "sections": "Sections extracted",
     "opportunities": "Opportunities found",
-    "mine": "Mine opportunities",
+    "mine": "Continue processing this thesis",
     "viewOpportunities": "View publication opportunities",
     "rightsNote": "The rights basis is a claim the researcher records; approval is a separate decision at gate GT1.",
     "basis": {
@@ -510,7 +510,7 @@
     "processCta": "Read the thesis",
     "busyLabel": "Working…",
     "readQueued": "Reading requested; the status changes when it starts.",
-    "mined": "The opportunity scan ran; its result is shown on this card.",
+    "mined": "Processing finished; the result is shown on this card.",
     "runningNote": "No action on it right now.",
     "trashFileCta": "Move source file to Trash",
     "trashConfirm": "Confirm moving the file to Trash",

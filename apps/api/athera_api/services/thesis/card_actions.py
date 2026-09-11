@@ -85,13 +85,17 @@ MINING_STATES: Final[tuple[str, ...]] = (
 )
 
 MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
+    # **ولا مفرداتِ نظامٍ في وجه الباحث.** «المنقّب» و«استخراج الفرص»
+    # اسمان داخليّان؛ والباحثُ يقرأ ما يعنيه هو: رسالتُه ومعالجتُها.
     MINING_AVAILABLE: (
-        "استخراج الفرص متاح: توجد عناصر مستخرجة يقرؤها المنقّب.",
-        "Opportunity mining is available: extracted elements exist for the miner to read.",
+        "يمكن استكمال معالجة الرسالة الآن — فيها عناصر تصلح أساسًا لفرص نشر.",
+        "This thesis can be processed further now: it holds elements that can support "
+        "publication opportunities.",
     ),
     MINING_IN_FLIGHT: (
-        "جارٍ استخراج فرص النشر من رسالتك — يبدأ تلقائيًّا بعد القراءة.",
-        "Scanning your thesis for publication opportunities; this starts automatically.",
+        "نعالج الرسالة ونستخرج فرص النشر — يبدأ ذلك تلقائيًّا ولا يلزمك تشغيله.",
+        "We are processing your thesis and preparing its publication opportunities; "
+        "this starts automatically and you do not need to trigger it.",
     ),
     MINING_FOUND: (
         # **ومبدئيّةٌ تُقال في متن العبارة، لا في حاشية.** الفرصُ مشتقّةٌ من
@@ -122,23 +126,32 @@ MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
     ),
     # **حُجب: سياسةٌ وقعت كما يجب، لا عطب.** ولا يُقال فيه «اعتمِدْ وقائعَ
     # قبل التنقيب» — تلك بوّابةٌ تقاعدت، والمراجعةُ هنا ضبطُ جودةٍ اختياريّ.
+    # **وهذه الحالُ تغطّي واقعتين، والنصُّ يصدق عليهما معًا:** أدلّةٌ حُجبت
+    # عن الاستعمال التلقائيّ، أو محاولةٌ حقيقية جرت ولم تُكوّن فرصة. والجامعُ
+    # أنّ الرسالة خرجت بلا فرصة، وأنّ ذلك ليس اكتمالًا ولا عطبًا.
     MINING_WITHHELD: (
-        "اكتمل فحصُ الرسالة، وفيها معرفةٌ مستخرَجة. وحُجب بعضُ الأدلّة عن "
-        "الاستعمال التلقائيّ لأسبابٍ تتعلّق بالثقة أو الاتّساق أو سلامة "
-        "الدليل. ولا يلزمك اعتمادُ شيءٍ لتعمل الأتمتة؛ ومراجعةُ ما استُخرج "
-        "ضبطُ جودةٍ اختياريّ، وقد تُتيح أدلّةً أكثر.",
-        "The thesis scan completed and extracted knowledge exists. Some evidence was "
-        "withheld from automatic use for confidence, consistency, or evidence-integrity "
-        "reasons. Nothing needs your approval for the automation to run; reviewing what "
-        "was extracted is optional quality control and may make more evidence usable.",
+        "لم تكتمل فرصُ النشر لهذه الرسالة بعد. فيها معرفةٌ مستخرَجة، ولم "
+        "يتكوّن منها مقترحٌ موثوق — إمّا لأنّ بعض الأدلّة حُجب عن الاستعمال "
+        "التلقائيّ لأسبابٍ تتعلّق بالثقة أو الاتّساق أو سلامة الدليل، وإمّا "
+        "لأنّ ما توفّر لم يكفِ لتكوين مقترح. ولا يلزمك اعتمادُ شيءٍ لتعمل "
+        "الأتمتة؛ ويمكنك استكمال المعالجة، ومراجعةُ ما استُخرج ضبطُ جودةٍ "
+        "اختياريّ قد يُتيح أدلّةً أكثر.",
+        "Publication opportunities for this thesis are not complete yet. Extracted "
+        "knowledge exists but no reliable proposal was formed from it — either because "
+        "some evidence was withheld from automatic use for confidence, consistency or "
+        "evidence-integrity reasons, or because what was available was not enough to "
+        "form one. Nothing needs your approval for the automation to run; you can "
+        "continue processing, and reviewing what was extracted is optional quality "
+        "control that may make more evidence usable.",
     ),
     # **ولا يُقال «لا فرصَ نشرٍ لهذه الرسالة».** تلك دعوى عن العالم لا نملك
     # سندَها؛ وما نملكه أنّ النظام لم يُكوّن واحدةً موثوقةً ممّا توفّر.
     MINING_COMPLETED_EMPTY: (
         "اكتمل فحص الرسالة، ولم يتمكن النظام من تكوين فرصة نشر موثوقة بما يكفي "
-        "من الأدلة المتاحة.",
+        "من الأدلة المتاحة. ويمكنك استكمال المعالجة للمحاولة من جديد.",
         "The thesis scan completed, but the available evidence was not sufficient to "
-        "form a reliable publication opportunity.",
+        "form a reliable publication opportunity. You can continue processing to try "
+        "again.",
     ),
 }
 
@@ -303,9 +316,15 @@ def compute(
     # فيبقى الفعلُ اليدويّ **إعادةَ محاولةٍ عند التعثّر وحده**، وللمسار
     # القديم الذي لا أتمتةَ له. وما عدا ذلك: تُفتح الفرصُ ولا تُشغَّل.
     can_mine = (
-        # و`completed_empty` ليست منها: جرى الفحصُ على دليلٍ مؤهَّل فلم
-        # يتكوّن شيء، وزرٌّ يَعِد بنتيجةٍ أخرى من المُدخل نفسه وعدٌ كاذب.
-        (mining in {MINING_FAILED, MINING_AVAILABLE, MINING_WITHHELD})
+        # **و`completed_empty` صارت منها — وهذا عكسُ قرارٍ سابق، بسببه.**
+        #
+        # كان الحجّة أنّ زرًّا يَعِد بنتيجةٍ أخرى من المُدخل نفسه وعدٌ كاذب.
+        # وقد كان ذلك صحيحًا يومَ كان التكوينُ ثابتًا. ثمّ صار المُدخل نفسُه
+        # يُنتج مقترحًا محافظًا لم يكن يُنتجه (`_fallback_draft`)، فرسالةٌ
+        # خُتمت بصفر قبل الإصلاح تُنتج اليوم فرصةً عند إعادة المحاولة.
+        # فمنعُ الاستكمال هنا يحبس الباحثَ في نتيجةٍ تجاوزها المنتج.
+        (mining in {MINING_FAILED, MINING_AVAILABLE, MINING_WITHHELD,
+                    MINING_COMPLETED_EMPTY})
         and not in_flight and not archived
     )
     can_view_opportunities = opportunities > 0 and not archived

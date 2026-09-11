@@ -47,7 +47,16 @@ from . import fact_eligibility as policy
 from . import miner
 
 #: مفاتيحُ الكتالوج المقروءة — من `services/document_intelligence/fields.py`.
-KEY_TITLE: Final = "title_ar"
+#:
+#: **والعنوانُ حقلٌ بلغتين.** كان هذا السطر `KEY_TITLE = "title_ar"` وحده،
+#: فكان الدليلُ الإنجليزيّ غيرَ مرئيٍّ للقرار الكنسيّ أصلًا: رسالةٌ
+#: إنجليزية عنوانُها معتمَدٌ ومتحقَّق تُقرأ «بلا عنوان»، فتُعلَّق مقترحاتُها
+#: المعنونة ويُختم التنقيبُ مكتملًا بصفر فرص. وهو صدقٌ في الوصف عن عطبٍ
+#: في القراءة — وهذا موضعُه.
+KEY_TITLE_AR: Final = "title_ar"
+KEY_TITLE_EN: Final = "title_en"
+TITLE_KEYS: Final[tuple[str, ...]] = (KEY_TITLE_AR, KEY_TITLE_EN)
+
 KEY_QUESTIONS: Final = "questions"
 KEY_HYPOTHESES: Final = "hypotheses"
 KEY_CONSTRUCTS: Final = "constructs"
@@ -62,9 +71,62 @@ RESULT_KEYS: Final[tuple[str, ...]] = (
 SAMPLE_KEYS: Final[tuple[str, ...]] = ("population", "sample_size", "sampling")
 
 READ_KEYS: Final[frozenset[str]] = frozenset(
-    (KEY_TITLE, KEY_QUESTIONS, KEY_HYPOTHESES, KEY_CONSTRUCTS, KEY_INSTRUMENTS)
+    TITLE_KEYS + (KEY_QUESTIONS, KEY_HYPOTHESES, KEY_CONSTRUCTS, KEY_INSTRUMENTS)
     + RESULT_KEYS + SAMPLE_KEYS
 )
+
+# ═════════ قناتان لا تُخلطان: ما يُنشئ فرصةً، وما يُسمّيها ═════════
+#
+# **هذا هو قلبُ الإصلاح، ويُكتب صريحًا لئلّا يذوب.**
+#
+# الدليلُ العلميّ (سؤالٌ، فرضية، بناء، أداة، نتيجة، عيّنة) هو **وحده** ما
+# يُنشئ فرصةَ نشر. والعنوانُ لا يُنشئ شيئًا أبدًا: هو تسميةٌ تُلصق بمقترحٍ
+# قام على دليلٍ آخر. فرسالةٌ لا يُعرف عنها إلّا عنوانُها ليست فرصةَ نشرٍ
+# مكتشَفة، مهما بلغت ثقةُ ذلك العنوان.
+#
+# ولذلك قناتان:
+#
+#   • **قناةُ الإنشاء** — حقائقُ `AUTO_ELIGIBLE` وحدها، وهي التي تُعدّ في
+#     `eligible_facts_used` فتفتح بابَ التنقيب أصلًا.
+#   • **قناةُ التسمية** — قد تصل إليها حقيقةٌ `SUPPORT_ONLY` مؤصَّلة. تُسمّي
+#     ولا تُعَدّ، فلا تفتح بابًا ولا تُحرّك ختمًا.
+#
+# ومن قرأ هذا الملفّ بعد سنة فليقرأ هذا الحدَّ قبل أن يوسّع القناة الثانية.
+
+#: لغةُ العنوان — **تُحفظ ولا تُترجم**، ولا يُكتب عنوانٌ في عمود لغةٍ أخرى.
+LANG_AR: Final = "ar"
+LANG_EN: Final = "en"
+
+_LANGUAGE_OF_KEY: Final[dict[str, str]] = {KEY_TITLE_AR: LANG_AR, KEY_TITLE_EN: LANG_EN}
+
+#: مصدرُ العنوان المختار — يُسجَّل في التدقيق كما هو.
+TITLE_SOURCE_NONE: Final = "none"
+TITLE_SOURCES: Final[tuple[str, ...]] = (
+    "approved_title_ar", "approved_title_en",
+    "auto_title_ar", "auto_title_en",
+    "support_context_title_ar", "support_context_title_en",
+    TITLE_SOURCE_NONE,
+)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class CanonicalTitle:
+    """العنوانُ المختار — **ومعه صراحةً: أيُنشئ فرصةً أم يُسمّيها فقط؟**"""
+
+    text: str
+    #: `ar` أو `en` — لغةُ الحقل الذي جاء منه، بلا ترجمة.
+    language: str
+    #: واحدٌ من `TITLE_SOURCES`.
+    source: str
+    fact_id: uuid.UUID | None
+    #: **`False` لعنوان السياق.** والاسمُ صريحٌ عمدًا: من يقلبه إلى `True`
+    #: يقلب معه حدًّا علميًّا، فليقلبه وهو يعلم.
+    is_scientific_evidence: bool
+
+    @property
+    def column(self) -> str:
+        """عمودُ الرسالة الذي يخصّ هذه اللغة — ولا يُكتب في سواه."""
+        return "title_ar" if self.language == LANG_AR else "title_en"
 
 # ═════════ النتائجُ السالبة: تصريحٌ لا استنتاج ═════════
 #
@@ -96,8 +158,8 @@ class CanonicalEvidence:
     eligible_facts_used: int
     #: منها ما اعتمده الباحثُ وتحقّقت ذاكرتُه — **أعلى الثقة**، ويُعدّ وحده.
     approved_verified_used: int
-    approved_title: str | None
-    approved_title_fact_id: uuid.UUID | None
+    #: العنوانُ الكنسيّ المختار بالأسبقيّة، أو `None`.
+    title: CanonicalTitle | None
     #: **أثرٌ حديثٌ للرسالة** — ولو كان كلُّه مستبعَدًا. وبه يُمنع الهروبُ
     #: إلى الجداول القديمة: الحجبُ المقصود لا يُنزَّل صامتًا.
     has_canonical_footprint: bool
@@ -111,8 +173,74 @@ class CanonicalEvidence:
 
     @property
     def has_evidence(self) -> bool:
-        """**وجودُ حقائقَ مؤهَّلة، لا وجودُ فرص.** والفرقُ بينهما خبران."""
+        """**وجودُ حقائقَ مؤهَّلة، لا وجودُ فرص.** والفرقُ بينهما خبران.
+
+        وعنوانُ السياق لا يُعَدّ هنا: `SUPPORT_ONLY` خارجُ `used` أصلًا،
+        فرسالةٌ لا دليلَ فيها إلّا عنوانٌ ضعيفُ الثقة لا تُنقَّب.
+        """
         return self.eligible_facts_used > 0
+
+    @property
+    def title_source(self) -> str:
+        return self.title.source if self.title else TITLE_SOURCE_NONE
+
+    # ── اسمان قديمان يبقيان للتوافق ──
+    #
+    # **ودلالتُهما كما كانت بالضبط**: عنوانٌ من قناة الإنشاء وحدها. فعنوانُ
+    # السياق لا يظهر فيهما، ولا يُقرأ أحدُهما «اعتمده الباحث» — لم يكن كذلك
+    # قطّ، وهو اسمٌ سبق دلالتَه.
+    @property
+    def approved_title(self) -> str | None:
+        return self.title.text if self.title and self.title.is_scientific_evidence else None
+
+    @property
+    def approved_title_fact_id(self) -> uuid.UUID | None:
+        return self.title.fact_id if self.title and self.title.is_scientific_evidence else None
+
+
+def _select_title(
+    verdicts: dict[uuid.UUID, "policy.Verdict"],
+    by_id: dict[uuid.UUID, FactCandidate],
+    texts_by_id: dict[uuid.UUID, list[str]],
+) -> CanonicalTitle | None:
+    """عنوانٌ واحد بأسبقيّةٍ حتميّة — **ولا يُترجَم ولا يُختلق**.
+
+    والترتيب:
+
+      ‏(أ) عنوانٌ اعتمده الباحثُ وتحقّقت ذاكرتُه — بأيّ لغة.
+      ‏(ب) عنوانٌ آليٌّ مؤهَّل (`AUTO_ELIGIBLE`) — بأيّ لغة.
+      ‏(ج) عنوانٌ `SUPPORT_ONLY` مؤصَّل — **للسياق والتسمية وحدهما**، ولا
+          يُنشئ فرصةً بحال.
+
+    وداخل الطبقة الواحدة تُقدَّم العربية ثمّ الإنجليزية: المنتجُ عربيُّ
+    الأصل، والترتيبُ يجب أن يكون حتميًّا لا رهنَ ترتيبِ صفوفٍ في استعلام.
+
+    و`SUPPORT_ONLY` لا تبلغ هذا الموضع إلّا مؤصَّلةً: التأصيلُ حدٌّ سابقٌ
+    على التصنيف، وغيرُ المؤصَّل يخرج `EXCLUDED` قبل أن يُصنَّف داعمًا.
+    """
+    def pick(match) -> CanonicalTitle | None:
+        for key in TITLE_KEYS:
+            for fact_id, verdict in verdicts.items():
+                candidate = by_id[fact_id]
+                if (candidate.field_key or "") != key or not match(verdict):
+                    continue
+                texts = texts_by_id[fact_id]
+                if not texts or not texts[0].strip():
+                    continue
+                language = _LANGUAGE_OF_KEY[key]
+                evidence = verdict.eligible
+                prefix = ("approved" if verdict.from_human
+                          else "auto" if evidence else "support_context")
+                return CanonicalTitle(
+                    text=texts[0], language=language,
+                    source=f"{prefix}_title_{language}", fact_id=candidate.id,
+                    is_scientific_evidence=evidence,
+                )
+        return None
+
+    return (pick(lambda v: v.eligible and v.from_human)
+            or pick(lambda v: v.eligible and not v.from_human)
+            or pick(lambda v: v.classification == policy.SUPPORT_ONLY))
 
 
 def _texts(candidate: FactCandidate) -> list[str]:
@@ -131,8 +259,7 @@ async def load(
     """يصنّف حقائقَ هذه الرسالة، ويبني `ThesisFacts` من المؤهَّل وحده."""
     empty = CanonicalEvidence(
         facts=miner.ThesisFacts(thesis_id=str(thesis_id)),
-        eligible_facts_used=0, approved_verified_used=0,
-        approved_title=None, approved_title_fact_id=None,
+        eligible_facts_used=0, approved_verified_used=0, title=None,
         has_canonical_footprint=False, processing_scope=policy.SCOPE_UNKNOWN,
         counts={}, conflicts_detected=0, facts_withheld_for_conflict=0, reasons={},
     )
@@ -244,11 +371,14 @@ async def load(
         if verdict.classification != policy.AUTO_ELIGIBLE:
             reasons[verdict.reason] = reasons.get(verdict.reason, 0) + 1
 
-    title: str | None = None
-    title_fact_id: uuid.UUID | None = None
+    # **والعنوانُ يُختار بقناته لا بحلقة الأدلّة.** التقاطُه من الحلقة كان
+    # يجعله دليلًا كسائر الأدلّة، وهو ليس كذلك.
+    title = _select_title(verdicts, by_id, texts_by_id)
+
     questions: list[str] = []
     hypotheses: list[str] = []
     variables: list[str] = []
+    construct_refs: list[str] = []
     instruments: list[tuple[str, str]] = []
     results: list[tuple[str, str]] = []
     sample_ids: list[str] = []
@@ -272,16 +402,19 @@ async def load(
         ref = str(candidate.id)
         key = candidate.field_key
 
-        if key == KEY_TITLE:
-            if title is None:
-                title = texts[0]
-                title_fact_id = candidate.id
-        elif key == KEY_QUESTIONS:
+        # **والعنوانُ لا يُجمع هنا**: قناتُه أعلاه، ودخولُه في الأدلّة يخلط
+        # ما يُسمّي بما يُنشئ.
+        if key in TITLE_KEYS:
+            continue
+        if key == KEY_QUESTIONS:
             questions.extend(texts)
         elif key == KEY_HYPOTHESES:
             hypotheses.extend(texts)
         elif key == KEY_CONSTRUCTS:
             variables.extend(texts)
+            # **ومعرّفُ الحقيقة يُحفظ إلى جانب نصّها** — فالمقترحُ يُسنَد
+            # إلى صفٍّ قائم لا إلى عبارةٍ منسوخة.
+            construct_refs.append(ref)
         elif key == KEY_INSTRUMENTS:
             instruments.extend((ref, text) for text in texts)
         elif key in RESULT_KEYS:
@@ -293,12 +426,14 @@ async def load(
 
     facts = miner.ThesisFacts(
         thesis_id=str(thesis_id),
-        title=title,
+        title=title.text if title else None,
+        title_is_scientific_evidence=bool(title and title.is_scientific_evidence),
         questions=tuple(dict.fromkeys(questions)),
         hypotheses=tuple(dict.fromkeys(hypotheses)),
         results=tuple(dict.fromkeys(results)),
         instruments=tuple(dict.fromkeys(instruments)),
         variables=tuple(dict.fromkeys(variables)),
+        construct_refs=tuple(dict.fromkeys(construct_refs)),
         sample_ids=tuple(dict.fromkeys(sample_ids)),
         # **الثيمةُ ليست مرحلةَ دراسة.** الثيماتُ تُغذّي النتائج أعلاه.
         qualitative_phases=(),
@@ -308,8 +443,7 @@ async def load(
     )
     return CanonicalEvidence(
         facts=facts, eligible_facts_used=used, approved_verified_used=approved_used,
-        approved_title=title, approved_title_fact_id=title_fact_id,
-        has_canonical_footprint=True, processing_scope=scope,
+        title=title, has_canonical_footprint=True, processing_scope=scope,
         counts=counts, conflicts_detected=conflicts,
         facts_withheld_for_conflict=withheld, reasons=reasons,
     )

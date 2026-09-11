@@ -27,11 +27,24 @@ class ThesisFacts:
     #: على أيّ حال — فيسقط `" ".join([...])` بـ`TypeError` ويُردّ الباحثُ
     #: بخمسمئة على مسارٍ صحيح تمامًا.
     title: str | None = None
+    #: **هل العنوانُ دليلٌ علميّ أم تسميةٌ للسياق؟**
+    #:
+    #: والعنوانُ لا يُنشئ مقترحًا في الحالين — انظر `_marker_haystack`. وهذه
+    #: الرايةُ للتدقيق والوضوح: عنوانُ سياقٍ مصدرُه حقيقةٌ `SUPPORT_ONLY`
+    #: يُسمّي مقترحًا قام على دليلٍ آخر، ولا يُقرأ شاهدًا على شيء.
+    title_is_scientific_evidence: bool = False
     questions: tuple[str, ...] = ()
     hypotheses: tuple[str, ...] = ()
     results: tuple[tuple[str, str], ...] = ()      # (result_id, label)
     instruments: tuple[tuple[str, str], ...] = ()  # (instrument_id, label)
     variables: tuple[str, ...] = ()
+    #: **معرّفاتُ حقائقِ البُنى الحقيقية** — لا نصوصُها.
+    #:
+    #: و`variables` أعلاه نصوصٌ تُعرض ويُعدّ بها؛ وهذه مراجعُ تُحفظ في
+    #: `PublicationOpportunity.variable_refs` فتُردّ إلى `FactCandidate`
+    #: قائم. والمساران القديمان يكتبان النصَّ هناك — عيبُ إسنادٍ سابقٌ
+    #: لهذا التغيير، ولم يُوسَّع إليه المدى.
+    construct_refs: tuple[str, ...] = ()
     sample_ids: tuple[str, ...] = ()
     qualitative_phases: tuple[str, ...] = ()
     null_result_ids: tuple[str, ...] = ()
@@ -124,12 +137,92 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
             result_refs=list(facts.null_result_ids), sample_refs=list(facts.sample_ids),
         ))
 
+    # ٩ب — **مقترحٌ محافظٌ واحد حين لا يقوم شكلٌ متخصّص.**
+    #
+    # رسالةٌ لها نتيجةٌ مستخرَجةٌ مؤهَّلة وعنوانٌ يُسمّيها وبناءٌ أو عيّنة
+    # تُعرّفها: عندها ما يكفي لمقترحٍ واحدٍ مؤصَّل، وردُّ صاحبها بصفر خبرٌ
+    # كاذب عن رسالةٍ فيها عمل. ويقع **بعد** الأشكال المتخصّصة فلا يزاحمها،
+    # و**لا يقع إن قام منها شيء** — فواحدٌ لا اثنان.
+    #
+    # ولا يقوم على عنوانٍ وحده أبدًا: النتيجةُ شرطٌ فيه. وهو البابُ نفسه
+    # الذي أُغلق في `_marker_haystack`، فلا يُفتح من الجهة الأخرى.
+    #
     # 5/6/7/9 — محددات، نتائج مترتبة، مقارنة، تحليل ثانوي.
     #
     # **وهذه الأربعة وحدها عنوانُها العامل مشتقٌّ من عنوان الرسالة**، فتُعلَّق
     # حين لا عنوان — ولا يُخترع لها واحد. انظر `_titled_drafts`.
+    #
+    # **والعنوانُ شرطٌ لتسميتها لا سببٌ لوجودها**: سببُها إشارةٌ في سؤالٍ أو
+    # فرضية، أو عيّنةٌ ومتغيّراتٌ ثلاثة. فبعنوانٍ وحده لا يقوم منها شيء.
     drafts += _titled_drafts(facts, unpublished)
+    if not drafts:
+        drafts += _fallback_drafts(facts, unpublished)
     return drafts
+
+
+def _fallback_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[OpportunityDraft]:
+    """مقترحٌ **واحد** مؤصَّل حين لا يقوم شكلٌ متخصّص — ولا يُشترط عنوان.
+
+    **والعنوانُ تسميةٌ لا أساسٌ علميّ.** اشتراطُه هنا كان يردّ الرسالةَ التي
+    بُني هذا المسار لأجلها: أسئلةٌ وبُنًى وعيّنة، بلا عنوانٍ مستخرَج بعد.
+    فيُطلب الأساسُ العلميُّ وحده، ويُستعمل العنوانُ سياقًا إن وُجد.
+
+    وطبقتان، **ولا تقعان معًا**:
+
+      ‏(أ) استخلاصٌ مؤصَّل — نتيجةٌ غيرُ منشورة، وبناءٌ، وعيّنة.
+      ‏(ب) امتدادٌ مؤصَّل — سؤالٌ، وبناءٌ، وعيّنة. **بلا نتيجة**، ويُقال
+          ذلك في تسويغه صراحةً فلا يُقرأ ادّعاءَ نتيجةٍ لا وجود لها.
+
+    ولا واحدةَ منهما تقوم بعنوانٍ وحده: كلتاهما تشترط أساسًا علميًّا
+    (نتيجةً أو سؤالًا) **ومعه** بناءٌ وعيّنة. فالبابُ الذي أُغلق في
+    `_marker_haystack` يبقى مغلقًا من هذه الجهة أيضًا.
+    """
+    constructs = list(facts.construct_refs)
+    samples = list(facts.sample_ids)
+    # سياقٌ لازمٌ للطبقتين: بناءٌ **وعيّنة** معًا — لا أحدهما.
+    if not constructs or not samples:
+        return []
+
+    # ── (أ) استخلاصٌ مؤصَّل: نتيجةٌ قائمة هي الأساس ──
+    if unpublished:
+        context = f": {facts.title[:60]}" if facts.title else " من نتائج الرسالة"
+        return [OpportunityDraft(
+            opportunity_kind="sub_model", paper_kind="extraction",
+            working_title_ar=f"نموذج فرعي قابل للنشر{context}",
+            # **ولا سؤالَ يُنسب إليها ما لم يُختَر سؤالٌ حقيقيّ بعينه.**
+            research_question_ar=None,
+            rationale_ar="مشتقّة من أدلّة قائمة في الرسالة: نتيجةٌ مستخرَجة "
+                         "ومعها بناءٌ وعيّنة. ولا سؤالَ جديدًا ولا نتيجةً مضافة.",
+            rationale_en="Derived from evidence already in the thesis: an extracted "
+                         "result together with a construct and a sample. It adds no "
+                         "new question and no new result.",
+            result_refs=list(unpublished),
+            variable_refs=constructs,
+            sample_refs=samples,
+        )]
+
+    # ── (ب) امتدادٌ مؤصَّل: سؤالٌ مستخرَجٌ هو الأساس، ولا نتيجةَ تُدَّعى ──
+    if not facts.questions:
+        return []
+    question = facts.questions[0]
+    return [OpportunityDraft(
+        opportunity_kind="extension", paper_kind="extension",
+        working_title_ar=f"امتداد بحثي للسؤال: {question[:80]}",
+        research_question_ar=question,
+        # **وصدقُ هذا التسويغ هو ما يجعل فرصةً بلا نتيجةٍ مدافَعًا عنها.**
+        rationale_ar="فرصةُ امتدادٍ **مبدئية**، مؤصَّلة في سؤالٍ مستخرَج من "
+                     "الرسالة ومعه بُنًى وعيّنة. **ولا تدّعي أنّ الرسالة "
+                     "تحمل نتيجةً لهذا الامتداد**؛ وقد يلزمها تحقّقٌ من "
+                     "الأدب المنشور أو تحليلٌ إضافي.",
+        rationale_en="A preliminary extension opportunity, grounded in a question "
+                     "extracted from the thesis together with its constructs and "
+                     "sample. It does not claim the thesis already contains a result "
+                     "for this extension; literature validation or further analysis "
+                     "may be required.",
+        result_refs=[],
+        variable_refs=constructs,
+        sample_refs=samples,
+    )]
 
 
 # ═════════ المقترحاتُ التي لا تقوم إلّا بعنوانٍ مستخرَج ═════════
@@ -152,9 +245,17 @@ _TITLED_KINDS: Final = (
 
 
 def _marker_haystack(facts: ThesisFacts) -> str:
-    """**والغائبُ لا يُضمّ إلى النصّ.** `" ".join` على `None` يسقط بـ`TypeError`."""
-    return " ".join(
-        part for part in (facts.title, *facts.questions, *facts.hypotheses) if part)
+    """الإشاراتُ تُقرأ من **الدليل العلميّ وحده** — لا من العنوان.
+
+    **وكان العنوانُ داخلًا فيه، فكان يُنشئ فرصةً بنفسه.** رسالةٌ عنوانُها
+    «أثر كذا في كذا» تحمل إشارةَ «المحدّدات» في عنوانها؛ فإن لم يكن معها
+    سؤالٌ ولا فرضية ولا نتيجة، خرج منها مقترحٌ كاملٌ مصدرُه اسمُها. وذاك
+    اكتشافُ فرصةٍ من لا شيء.
+
+    والعنوانُ يبقى تسميةً للمقترح — يُقتبس في `working_title_ar` — ولا يبقى
+    سببًا لوجوده. `" ".join` على `None` يسقط بـ`TypeError`، فيُصفّى الغائب.
+    """
+    return " ".join(part for part in (*facts.questions, *facts.hypotheses) if part)
 
 
 def _secondary_analysis_fits(facts: ThesisFacts) -> bool:

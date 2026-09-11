@@ -257,8 +257,21 @@ def display_title(title_ar: str | None, title_en: str | None,
     هو **حقلُ عرضٍ ثانٍ** ومعه رايةٌ صريحة `title_is_extracted`: فالشاشة
     تعرف أنّها تعرض اسم ملفّ وتقوله، والعقد لا يدّعي استخراجًا لم يقع.
     """
-    extracted = (title_en or title_ar) if locale == "en" else title_ar
+    # **وعنوانٌ مستخرَجٌ بلغةٍ أخرى خيرٌ من اسم ملفّ.** كانت الواجهةُ
+    # العربية تقرأ `title_ar` وحده، فرسالةٌ إنجليزيةٌ استُخرج عنوانُها
+    # فعلًا تُعرض باسم ملفّها ويُقال «العنوان لم يُستخرج بعد» — خبرٌ كاذب
+    # عن عملٍ وقع. فيُقبل ما وُجد بأيّ لغة، وتُقدَّم لغةُ الواجهة ترتيبًا.
+    #
+    # **والفراغُ ليس عنوانًا**: عمودٌ فيه مسافاتٌ وحدها يُعامَل معاملةَ
+    # الغائب، فلا يُعرض سطرٌ خالٍ ويُدَّعى أنّه عنوانُ الرسالة.
+    def meaningful(value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+    arabic, english = meaningful(title_ar), meaningful(title_en)
+    extracted = (english or arabic) if locale == "en" else (arabic or english)
     if extracted:
+        # **والرايةُ ترتفع متى وُجد عنوانٌ مستخرَجٌ بأيّ لغة** — لا بلغةِ
+        # الواجهة وحدها.
         return extracted, True
     name = (filename or "").strip()
     return (name or None), False

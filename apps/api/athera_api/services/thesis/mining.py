@@ -45,6 +45,15 @@ from . import aging, canonical_facts, miner
 NOT_STARTED: Final = "not_started"
 RUNNING: Final = "running"
 COMPLETED: Final = "completed"
+#: **حُجب — ومعناها أوسعُ ممّا كان، فليُقرأ الاتّساع هنا لا يُستنتج.**
+#:
+#: كانت تعني «لم يكن ثمّة دليلٌ مؤهَّل». وصارت تعني أيضًا: **جرت محاولةٌ
+#: حقيقية على دليلٍ حقيقيّ ولم تُكوّن فرصة**. والجامعُ بينهما أنّ الرسالة
+#: خرجت بلا فرصةٍ واحدة، وأنّ ذلك ليس اكتمالًا.
+#:
+#: و`COMPLETED` صارت تعني شيئًا واحدًا لا لبس فيه: **قامت فرصةٌ فعلًا**
+#: (أُنشئت الآن أو كانت قائمة). فلا تُكتب حالٌ تقول «اكتمل» بينما التدقيق
+#: يقول «تعذّر التكوين» — تناقضُ مصدرين هو ما نُزع من هذا الملفّ أصلًا.
 WITHHELD: Final = "withheld"
 FAILED: Final = "failed"
 
@@ -52,6 +61,29 @@ STATES: Final[tuple[str, ...]] = (NOT_STARTED, RUNNING, COMPLETED, WITHHELD, FAI
 
 #: أساسُ الدليل الذي يُعدّ محاولةً حقيقية — وبه يُختم ويُسجَّل «نُقِّب».
 REAL_ATTEMPT: Final[frozenset[str]] = frozenset({"canonical", "legacy"})
+
+# ═════════ «اكتمل بلا نتيجة» ≠ «تعذّر التكوين» ═════════
+#
+# **والفرقُ بينهما ليس تفصيلًا لغويًّا، فليُقرأ قبل أن يُطوى أحدُهما في الآخر:**
+#
+#   • `eligible_evidence_but_no_opportunity` — جرى التنقيبُ على دليلٍ
+#     مؤهَّل **لا نتيجةَ علمية فيه**. فلا شيءَ كان يمكن أن يتكوّن أصلًا،
+#     والاكتمالُ هنا صادقٌ ونهائيّ. وهو ما تعرضه البطاقةُ `completed_empty`.
+#
+#   • `opportunity_generation_blocked` — جرى التنقيبُ على دليلٍ مؤهَّل
+#     **فيه نتيجةٌ علمية واحدة على الأقلّ**، ثمّ لم يتكوّن شيء. أي أنّ
+#     المُدخل كان كافيًا في ظاهره وتعثّر التكوين. وهذه حالٌ تُستأنف، لا
+#     نجاحٌ يُعلَن — ومعها سببٌ يقرؤه الآلة.
+#
+# فالمِحكُّ واحد: **أفيه نتيجةٌ علمية أم لا؟**
+#: **ولا عنوانَ في هذه الأسباب.** العنوانُ تسميةٌ لا أساسٌ علميّ، فغيابُه
+#: لا يمنع تكوينَ فرصة ولا يُعتذر به.
+BLOCKED_NO_SCIENTIFIC_BASIS: Final = "no_eligible_result_or_question"
+BLOCKED_NO_CONTEXT: Final = "no_construct_or_sample_context"
+BLOCKED_NO_SHAPE: Final = "no_opportunity_shape_matched"
+BLOCKED_REASONS: Final[tuple[str, ...]] = (
+    BLOCKED_NO_SCIENTIFIC_BASIS, BLOCKED_NO_CONTEXT, BLOCKED_NO_SHAPE,
+)
 
 # ═════════ أسبابُ الأثر: تصف ما وقع، لا سياسةً سابقة ═════════
 
@@ -91,6 +123,9 @@ class MiningOutcome:
     aging: aging.AgingReport
     canonical: canonical_facts.CanonicalEvidence
     title_conflict: bool
+    #: سببُ تعذّر التكوين — `None` ما لم يكن `outcome` هو التعذّر. ويأتي
+    #: أخيرًا لأنّ حقلًا بقيمةٍ افتراضية لا يسبق حقلًا إلزاميًّا.
+    blocked_reason: str | None = None
 
 
 async def run(
@@ -111,13 +146,31 @@ async def run(
 
     title_conflict = False
     if canonical.has_evidence:
-        # **وما كتبه الباحثُ بيده لا يُستبدل باستخراجٍ اعتُمد.**
-        if canonical.approved_title:
-            if thesis.title_ar is None:
-                thesis.title_ar = canonical.approved_title
-            elif thesis.title_ar.strip() != canonical.approved_title.strip():
+        # ── العنوانُ: لغتُه تُحفظ، وعمودُه يخصّها وحدها ──
+        #
+        # **وكان يُقرأ من `thesis.title_ar` وحده.** فرسالةٌ إنجليزية عنوانُها
+        # معتمَدٌ ومتحقَّق في `title_en` تصل إلى هنا بلا عنوان، فتُعلَّق
+        # مقترحاتُها المعنونة ويُختم التنقيبُ مكتملًا بصفر فرص — وهو ما رصده
+        # قبولُ الإنتاج.
+        #
+        # **وما كتبه الباحثُ بيده لا يُستبدل باستخراجٍ اعتُمد**: التعارضُ
+        # يُسجَّل، والقائمُ يبقى.
+        chosen = canonical.title
+        if chosen is None:
+            # لا عنوانَ كنسيًّا. والتسميةُ حينئذٍ ممّا كتبه الباحثُ على الصفّ
+            # إن كتب — ولا يُخترع شيء.
+            naming = thesis.title_ar or thesis.title_en
+        else:
+            existing = getattr(thesis, chosen.column)
+            if existing is None:
+                setattr(thesis, chosen.column, chosen.text)
+                naming = chosen.text
+            elif existing.strip() != chosen.text.strip():
                 title_conflict = True
-        facts = replace(canonical.facts, title=thesis.title_ar)
+                naming = existing
+            else:
+                naming = existing
+        facts = replace(canonical.facts, title=naming)
         evidence_basis = "canonical"
     elif canonical.has_canonical_footprint:
         # **ولا هروبَ إلى القديم حين يُحجب الحديث.**
@@ -190,6 +243,30 @@ async def run(
     if evidence_basis in REAL_ATTEMPT:
         thesis.opportunities_mined_at = dt.datetime.now(dt.UTC)
 
+    # **والمِحكُّ أساسٌ علميّ قائم: نتيجةٌ أو سؤال.** وشرطا الطبقتين
+    # كلتيهما بناءٌ **وعيّنة** معًا، فيُقاسان كما يُشترطان.
+    blocked_reason: str | None = None
+    if evidence_basis == "canonical" and not created and not already:
+        if not (facts.results or facts.questions):
+            # **ولا أساسَ علميّ أصلًا — فهذا اكتمالٌ صادق، لا تعثُّر.**
+            #
+            # كان يُكتب هنا `BLOCKED_NO_SCIENTIFIC_BASIS`، فتسبق بوّابةُ
+            # `blocked_reason is not None` أدناه فرعَ «اكتمل بلا نتيجة»،
+            # فيخرج `opportunity_generation_blocked`. وذلك **عكسُ العقد
+            # المكتوب في رأس هذا الملفّ**: «تعذّر التكوين» وصفُ دليلٍ فيه
+            # نتيجةٌ علمية واحدة على الأقلّ ثمّ لم يتكوّن شيء — حالٌ
+            # تُستأنف. وهذه ليست تلك: لا نتيجةَ ولا سؤال، فلا شيءَ كان
+            # يمكن أن يتكوّن.
+            #
+            # والفرقُ يصل الباحثَ: «لم نتمكّن من التكوين» تَعِده بأنّ مُدخله
+            # كان كافيًا وأنّ الإعادةَ قد تُجدي، وليس كذلك. فيُترك السببُ
+            # فارغًا ليبلغ الفرعَ الصادق: `eligible_evidence_but_no_opportunity`.
+            blocked_reason = None
+        elif not (facts.construct_refs and facts.sample_ids):
+            blocked_reason = BLOCKED_NO_CONTEXT
+        else:
+            blocked_reason = BLOCKED_NO_SHAPE
+
     if created:
         outcome = "opportunities_created"
     elif already:
@@ -198,6 +275,11 @@ async def run(
         outcome = "evidence_withheld_for_conflict"
     elif evidence_basis in {"none", "canonical_withheld"}:
         outcome = "no_eligible_evidence"
+    elif blocked_reason is not None:
+        # **ولا يُقال «اكتمل» عن تعذّر.** يسبق `withheld_for_missing_title`
+        # لأنّه يحمل السببَ نفسَه وزيادة: عددُ المعلَّق وصفُ عَرَض، والسببُ
+        # وصفُ علّة.
+        outcome = "opportunity_generation_blocked"
     elif withheld:
         outcome = "withheld_for_missing_title"
     elif evidence_basis == "legacy":
@@ -207,9 +289,14 @@ async def run(
 
     # **وحالُ التنقيب تصف التنقيب.** «حُجب» ليست «فشل»: الأولى قرارُ سياسةٍ
     # وقع كما يجب، والثانية عطبٌ يستدعي النظر.
-    if evidence_basis in REAL_ATTEMPT:
+    #
+    # **و«اكتمل» لقيام فرصةٍ وحده.** كانت تُكتب لكلّ محاولةٍ حقيقية ولو خرجت
+    # بصفر، فيقول الصفُّ «اكتمل» ويقول التدقيق «تعذّر التكوين» — مصدران
+    # يتناقضان، وهو ما نُزع من هذا الملفّ في موضعٍ آخر. فمحاولةٌ حقيقية بلا
+    # فرصةٍ تُكتب `WITHHELD`، ومعها في التدقيق سببُ التعذّر.
+    if created or already:
         thesis.mining_state = COMPLETED
-    elif canonical.has_canonical_footprint:
+    elif evidence_basis in REAL_ATTEMPT or canonical.has_canonical_footprint:
         thesis.mining_state = WITHHELD
     else:
         thesis.mining_state = NOT_STARTED
@@ -235,6 +322,14 @@ async def run(
             "conflicts_detected": canonical.conflicts_detected,
             "facts_withheld_for_conflict": canonical.facts_withheld_for_conflict,
             "exclusion_reasons": canonical.reasons,
+            # **ومصدرُ العنوان يُسمّى.** ‏«اكتمل بصفر» عن رسالةٍ لها عنوانٌ
+            # إنجليزيّ معتمَد كان خبرًا صادقًا عن قراءةٍ عمياء؛ فيُقال من أين
+            # جاء العنوان، أو أنّه لم يُوجد.
+            "blocked_reason": blocked_reason,
+            "title_source": canonical.title_source,
+            "title_language": canonical.title.language if canonical.title else None,
+            "title_is_scientific_evidence": bool(
+                canonical.title and canonical.title.is_scientific_evidence),
             "outcome": outcome,
             "mining_state": thesis.mining_state,
         },
@@ -249,6 +344,8 @@ async def run(
             state_after={
                 "existing_title_preserved": True,
                 "approved_title_fact_id": str(canonical.approved_title_fact_id),
+                "title_source": canonical.title_source,
+                "title_column": canonical.title.column if canonical.title else None,
             },
             reason="an approved extracted title differs from the title already on the "
                    "thesis; the existing title is kept and never silently replaced",
@@ -256,7 +353,7 @@ async def run(
 
     return MiningOutcome(
         created=created, already_present=already, withheld_for_missing_title=withheld,
-        evidence_basis=evidence_basis, outcome=outcome,
+        evidence_basis=evidence_basis, outcome=outcome, blocked_reason=blocked_reason,
         mining_state=thesis.mining_state,
         kinds=sorted({d.opportunity_kind for d in drafts}),
         aging=report, canonical=canonical, title_conflict=title_conflict,
