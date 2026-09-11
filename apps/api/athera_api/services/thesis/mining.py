@@ -248,7 +248,20 @@ async def run(
     blocked_reason: str | None = None
     if evidence_basis == "canonical" and not created and not already:
         if not (facts.results or facts.questions):
-            blocked_reason = BLOCKED_NO_SCIENTIFIC_BASIS
+            # **ولا أساسَ علميّ أصلًا — فهذا اكتمالٌ صادق، لا تعثُّر.**
+            #
+            # كان يُكتب هنا `BLOCKED_NO_SCIENTIFIC_BASIS`، فتسبق بوّابةُ
+            # `blocked_reason is not None` أدناه فرعَ «اكتمل بلا نتيجة»،
+            # فيخرج `opportunity_generation_blocked`. وذلك **عكسُ العقد
+            # المكتوب في رأس هذا الملفّ**: «تعذّر التكوين» وصفُ دليلٍ فيه
+            # نتيجةٌ علمية واحدة على الأقلّ ثمّ لم يتكوّن شيء — حالٌ
+            # تُستأنف. وهذه ليست تلك: لا نتيجةَ ولا سؤال، فلا شيءَ كان
+            # يمكن أن يتكوّن.
+            #
+            # والفرقُ يصل الباحثَ: «لم نتمكّن من التكوين» تَعِده بأنّ مُدخله
+            # كان كافيًا وأنّ الإعادةَ قد تُجدي، وليس كذلك. فيُترك السببُ
+            # فارغًا ليبلغ الفرعَ الصادق: `eligible_evidence_but_no_opportunity`.
+            blocked_reason = None
         elif not (facts.construct_refs and facts.sample_ids):
             blocked_reason = BLOCKED_NO_CONTEXT
         else:
