@@ -62,6 +62,11 @@ from ..schemas.workspace import (
     ProjectSummary,
     SourceUseRequest,
 )
+from ..schemas.research_brain import (
+    CapabilityView,
+    JourneyActionView,
+    ProjectJourneyView,
+)
 from ..services import (
     audit,
     matrix_extraction,
@@ -69,6 +74,7 @@ from ..services import (
     screening,
     workspace,
 )
+from ..services.research_assessment import orchestrator
 
 router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
 
@@ -1123,3 +1129,89 @@ async def verify_matrix_cell(
                      "verification_status": cell.verification_status},
         reason="an extracted value becomes knowledge only by a named human review")
     return _cell_view(cell)
+
+
+# ═══════════════ الذكاء البحثيّ — أين يقف البحث وما التالي ═══════════════
+
+#: ما لا تعرفه هذه القراءة — ويُقال للباحث بجانب الجواب لا في وثيقةٍ بعيدة.
+_JOURNEY_LIMITS_AR = (
+    "هذه قراءةٌ لما سُجِّل في هذا البحث داخل PUBRIVA وحدَه. وما أنجزتَه "
+    "خارج المنصّة لا تراه، فقد تقترح خطوةً قطعتَها فعلًا."
+)
+_JOURNEY_LIMITS_EN = (
+    "This reads only what is recorded for this project inside PUBRIVA. Work done "
+    "outside the platform is invisible to it, so it may suggest a step you already took."
+)
+
+#: ولا نسبةَ جاهزية — القرارُ نفسُه المتَّخذ في `ProjectOverview` و«التقييم».
+_JOURNEY_NOTE_AR = (
+    "لا تُعرض نسبةُ إنجاز: الحالاتُ المسمّاة أعلاه هي الحقيقة، والنسبةُ "
+    "تُخفي الفرقَ بين بحثٍ ينقصه سطرٌ وبحثٍ ينقصه منهج."
+)
+_JOURNEY_NOTE_EN = (
+    "No completion percentage is shown: the named states above are the truth, and a "
+    "percentage hides the difference between a project missing a line and one missing a method."
+)
+
+
+@router.get("/projects/{project_id}/journey", response_model=ProjectJourneyView)
+async def project_journey(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ProjectJourneyView:
+    """أين يقف هذا البحث، وما الخطوةُ التالية، ولماذا.
+
+    **وما يمكن فعلُه مفصولٌ عمّا يُستحسن فعلُه** (§24): `capabilities`
+    بوّاباتٌ حتمية تُقرأ من الصفوف — «لا تحليلَ بلا بيانات» — و`actions`
+    رأيٌ في الترتيب. ودمجُهما يُنتج إمّا رأيًا يحجب، وإمّا واقعةً تُتجاوَز.
+
+    **ولا نموذجَ يُستدعى هنا** (§30). فلو سقط المزوّدُ كلُّه لبقي هذا
+    الجوابُ صحيحًا: القواعدُ حتمية، والبصمةُ تُحسب، والتاريخُ يُحفظ.
+
+    ولا تُعاد كتابةُ بحثٍ من هذا المسار: يُكتب في جدولَي العقل وحدَهما —
+    بصمةٌ رُصدت وتوصيةٌ قيلت — والوحداتُ الأصلية تبقى صاحبةَ الحقيقة.
+    """
+    await _project(session, principal, project_id)
+    snapshot = await research_assessment.build_project_assessment(
+        session, tenant_id=principal.tenant_id, project_id=project_id)
+    if snapshot is None:  # pragma: no cover - `_project` سبق أن أثبت وجوده
+        raise NotFound("workspace.project_not_found")
+
+    outcome = await orchestrator.advance(
+        session, tenant_id=principal.tenant_id, snapshot=snapshot)
+    _rules, report = research_assessment.assess(snapshot)
+    arabic = principal.locale == "ar"
+
+    def _action(row) -> JourneyActionView:
+        return JourneyActionView(
+            action_key=row.action_key, category=row.category.value,
+            status=row.status.value,
+            title=row.title_ar if arabic else row.title_en,
+            reason=row.reason_ar if arabic else row.reason_en,
+            # **المسارُ بلا لغة** — تُركّبها الواجهةُ من موضعها، فلا يُكتب
+            # هنا رابطٌ عربيٌّ يُفتح لقارئٍ إنجليزيّ.
+            route=(row.route.replace("{project_id}", str(project_id))
+                   if row.route else None),
+            blocking_reasons=list(row.blocking_reasons),
+            requirements=list(row.requirements),
+            evidence_refs=list(row.evidence_refs))
+
+    recommended = outcome.decision.recommended
+    return ProjectJourneyView(
+        project_id=project_id, title=snapshot.title_ar,
+        context_fingerprint=outcome.context_fingerprint,
+        fingerprint_schema=outcome.snapshot_row.fingerprint_schema,
+        first_seen_at=outcome.snapshot_row.first_seen_at,
+        last_seen_at=outcome.snapshot_row.last_seen_at,
+        recommended=_action(recommended) if recommended else None,
+        actions=[_action(row) for row in outcome.decision.actions],
+        capabilities=[CapabilityView(key=row.key, allowed=row.allowed,
+                                     blocking_reasons=list(row.blocking_reasons))
+                      for row in outcome.decision.capabilities],
+        known_count=len(report.known), missing_count=len(report.missing),
+        needs_review_count=len(report.needs_review),
+        conflict_count=len(report.conflicts),
+        superseded_now=outcome.expired,
+        limitations=_JOURNEY_LIMITS_AR if arabic else _JOURNEY_LIMITS_EN,
+        note=_JOURNEY_NOTE_AR if arabic else _JOURNEY_NOTE_EN)
