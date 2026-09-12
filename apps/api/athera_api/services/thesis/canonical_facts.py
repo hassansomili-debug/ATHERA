@@ -394,18 +394,32 @@ async def load(
         texts = texts_by_id[fact_id]
         if not texts:
             continue
-        used += 1
-        if verdict.reason == "approved_and_verified_by_researcher":
-            approved_used += 1
         # **معرّفُ الحقيقة هو المرجع** — ولا يُصنع معرّفٌ دلاليّ. وقيمٌ عدّة
         # من حقيقةٍ واحدة تتشارك معرّفَها، وذلك صدقٌ لا نقص.
         ref = str(candidate.id)
         key = candidate.field_key
 
-        # **والعنوانُ لا يُجمع هنا**: قناتُه أعلاه، ودخولُه في الأدلّة يخلط
-        # ما يُسمّي بما يُنشئ.
+        # ── العنوانُ يُسمّي ولا يُنشئ — **والعدُّ يقع بعد هذا الشرط لا قبله** ──
+        #
+        # كان `used += 1` يسبق هذا الاستمرار، فيُعَدّ العنوانُ المؤهَّلُ آليًّا
+        # دليلًا علميًّا. وأثرُه ليس عدًّا زائدًا وحده: `has_evidence` هي
+        # `eligible_facts_used > 0`، فرسالةٌ لا شيءَ فيها إلّا عنوانٌ عاليُ
+        # الثقة كانت تُعلن أنّ لديها دليلًا علميًّا كنسيًّا — ويمضي التنقيبُ
+        # على `evidence_basis="canonical"` بلا نتيجةٍ ولا سؤالٍ ولا بناء.
+        #
+        # وحاشيةُ `has_evidence` كانت تقول إنّ «عنوانَ السياق لا يُعَدّ هنا»،
+        # وهي صادقةٌ في `SUPPORT_ONLY` وحده — أمّا العنوانُ المؤهَّلُ آليًّا
+        # فكان يُعَدّ. فالقاعدةُ المكتوبة في المنتج — **العنوانُ يسمّي الفرصةَ
+        # ولا يُنشئ دليلًا علميًّا** — كانت مخروقةً في هذا السطر بعينه.
+        #
+        # واختيارُ العنوان لا يُمسّ: قناتُه `_select_title` أعلاه، و`title`
+        # يخرج في `CanonicalEvidence` كما كان، ويُسمّي ويُحفظ كما كان.
         if key in TITLE_KEYS:
             continue
+
+        used += 1
+        if verdict.reason == "approved_and_verified_by_researcher":
+            approved_used += 1
         if key == KEY_QUESTIONS:
             questions.extend(texts)
         elif key == KEY_HYPOTHESES:

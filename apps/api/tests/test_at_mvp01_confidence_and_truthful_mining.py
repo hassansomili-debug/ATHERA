@@ -766,3 +766,184 @@ async def test_a_thesis_whose_confidence_was_never_stored_yields_no_opportunity(
     assert body["outcome"] == mining.OUTCOME_NO_ELIGIBLE_EVIDENCE
     assert await _mining_state(tid, uid, thesis_id) == mining.NO_ELIGIBLE_EVIDENCE
     assert await _mining_state(tid, uid, thesis_id) != mining.NOT_STARTED
+
+
+# ═══════════ ٨ · العنوانُ يُسمّي الفرصةَ ولا يُنشئ دليلًا علميًّا ═══════════
+#
+# **قاعدةُ منتجٍ مكتوبة، كانت مخروقةً بسطرٍ واحد.** `used += 1` كان يسبق
+# استمرارَ `TITLE_KEYS`، فيُعَدّ العنوانُ المؤهَّلُ آليًّا دليلًا علميًّا.
+# و`has_evidence` هي `eligible_facts_used > 0` — فرسالةٌ لا شيءَ فيها إلّا
+# عنوانٌ عاليُ الثقة كانت تُعلن دليلًا كنسيًّا لا وجود له.
+
+
+async def _title_only(tid, uid, *, confidence=0.95, filename="عنوانٌ-وحده.pdf"):
+    """رسالةٌ لا حقيقةَ فيها إلّا عنوانٌ مؤهَّلٌ آليًّا — ولا حقلَ علميًّا واحدًا."""
+    from athera_api.db import tenant_session
+
+    thesis_id, file_id, run_id = await _seed(tid, uid, filename=filename)
+    async with tenant_session(tid, uid) as session:
+        chunk = await _chunk(session, tid, file_id, CHUNK_TEXT)
+        await _candidate(session, tid, run_id=run_id, file_id=file_id,
+                         chunk=chunk, field_key="title_ar", value=TITLE,
+                         category="researcher_fact", confidence=confidence,
+                         quote=TITLE)
+    return thesis_id, file_id, run_id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_auto_eligible_title_alone_is_not_scientific_evidence(two_tenants):
+    """**عنوانٌ مؤهَّلٌ آليًّا وحده: صفرُ أدلّةٍ علمية، ولا `has_evidence`.**"""
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import canonical_facts
+    from athera_api.services.thesis import fact_eligibility as policy
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _run = await _title_only(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        canonical = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+
+    # العنوانُ **مؤهَّلٌ فعلًا** — فالفحصُ يقيس العدَّ لا التصنيف.
+    assert canonical.counts.get(policy.AUTO_ELIGIBLE) == 1
+    assert canonical.eligible_facts_used == 0, "عُدَّ العنوانُ دليلًا علميًّا"
+    assert canonical.has_evidence is False
+    assert canonical.approved_verified_used == 0
+    # ولا شيءَ علميٌّ بلغ المنقّب.
+    assert not canonical.facts.questions
+    assert not canonical.facts.results
+    assert not canonical.facts.construct_refs
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_title_only_thesis_never_claims_canonical_scientific_evidence(two_tenants):
+    """**ولا يُعلَن أساسٌ كنسيٌّ علميّ لرسالةٍ ليس فيها إلّا اسمُها.**
+
+    فيخرج التنقيبُ بـ`canonical_withheld` لا بـ`canonical`، وبحالٍ تقول
+    «لا دليلَ مؤهَّل» — لا «اكتمل» ولا «حُجب» عن دليلٍ لا وجود له.
+    """
+    from athera_api.services.thesis import mining
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _f, _r = await _title_only(tid, uid, filename="اسمٌ-فقط.pdf")
+
+    async with _client(tid, uid) as client:
+        body = (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).json()
+
+    assert body["evidence_basis"] == "canonical_withheld", (
+        f"ادُّعي أساسٌ علميّ من عنوانٍ وحده: {body['evidence_basis']}")
+    assert body["eligible_facts_used"] == 0
+    assert body["opportunities_created"] == 0
+    assert body["outcome"] == mining.OUTCOME_NO_ELIGIBLE_EVIDENCE
+    assert await _mining_state(tid, uid, thesis_id) == mining.NO_ELIGIBLE_EVIDENCE
+    # ولا يُختم فحصٌ على دليلٍ مؤهَّل — إذ لم يكن ثمّة واحد.
+    assert await _mined_at(tid, uid, thesis_id) is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_only_scientific_facts_are_counted_when_a_title_sits_beside_them(
+        two_tenants):
+    """**والعلميُّ وحده يُعَدّ حين يجاوره عنوان.**
+
+    ورسالةُ `_machine_thesis` فيها أربعُ حقائق: عنوانٌ وأسئلةٌ وبناءاتٌ
+    ونتيجة. فالمعدودُ ثلاثٌ — والعنوانُ مؤهَّلٌ ولا يُعَدّ.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import canonical_facts
+    from athera_api.services.thesis import fact_eligibility as policy
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _run = await _machine_thesis(tid, uid, title_ar=TITLE)
+
+    async with tenant_session(tid, uid) as session:
+        canonical = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+
+    auto = canonical.counts.get(policy.AUTO_ELIGIBLE, 0)
+    assert auto == 4, f"تغيّرت التجهيزة: {canonical.counts}"
+    # **المؤهَّلُ أربعةٌ، والمعدودُ علميًّا ثلاثة** — والفرقُ هو العنوان.
+    assert canonical.eligible_facts_used == auto - 1 == 3
+    assert canonical.has_evidence
+    # والعلميُّ بلغ المنقّبَ كاملًا.
+    assert canonical.facts.questions and canonical.facts.results
+    assert canonical.facts.construct_refs
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_title_still_names_the_thesis_and_its_opportunities(two_tenants):
+    """**والعنوانُ يُسمّي كما كان** — الإصلاحُ نزع عدًّا، لا قناةَ تسمية.
+
+    فيُفحص الأمران معًا: أنّ العنوان المختار يخرج في `CanonicalEvidence`
+    كما كان، وأنّه يُكتب في عمود الرسالة عند التنقيب فتحمله البطاقة.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+    from athera_api.services.thesis import canonical_facts
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    # **بلا عنوانٍ على الصفّ** — فالاسمُ إن ظهر فمن الاستخراج الكنسيّ.
+    thesis_id, file_id, _run = await _machine_thesis(tid, uid, title_ar=None,
+                                                     filename="بلا-اسم.pdf")
+
+    async with tenant_session(tid, uid) as session:
+        canonical = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+
+    assert canonical.title is not None, "ضاع اختيارُ العنوان"
+    assert canonical.title.text == TITLE
+    assert canonical.title.column == "title_ar"
+    assert canonical.approved_title == TITLE
+
+    async with _client(tid, uid) as client:
+        assert (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).status_code == 202
+
+    async with tenant_session(tid, uid) as session:
+        stored = (await session.execute(
+            select(Thesis.title_ar).where(Thesis.id == thesis_id))).scalar_one()
+    assert stored == TITLE, "العنوانُ لم يُكتب على الرسالة بعد التنقيب"
+
+    card = await _card(tid, uid, thesis_id)
+    assert card["title_ar"] == TITLE
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_title_only_thesis_is_still_named_even_though_it_is_not_mined(
+        two_tenants):
+    """**والتسميةُ ليست مشروطةً بوجود دليلٍ علميّ.**
+
+    وهذه هي الحافّةُ التي يحرّكها إصلاحُ العدّ: رسالةٌ لا شيءَ فيها إلّا
+    عنوانٌ مؤهَّل لم تعد `has_evidence`. وكان فرعُ التسمية داخل ذلك الشرط
+    وحده، فكانت تفقد اسمَها — فتُعرض للباحث باسم ملفّها وله عنوانٌ مستخرَجٌ
+    مؤصَّل. فنُقل فرعُ التسمية خارج الشرط: **الاسمُ يُكتب متى وُجد، والدليلُ
+    يُعَدّ متى كان علميًّا**، وهما سؤالان لا سؤال.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _f, _r = await _title_only(tid, uid, filename="اسمٌ-بلا-دليل.pdf")
+
+    async with _client(tid, uid) as client:
+        assert (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).status_code == 202
+
+    async with tenant_session(tid, uid) as session:
+        stored = (await session.execute(
+            select(Thesis.title_ar).where(Thesis.id == thesis_id))).scalar_one()
+    assert stored == TITLE, "رسالةٌ لها عنوانٌ مستخرَجٌ مؤصَّل بقيت بلا اسم"

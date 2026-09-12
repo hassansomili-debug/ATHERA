@@ -161,37 +161,48 @@ async def run(
     canonical = await canonical_facts.load(
         session, tenant_id=tenant_id, thesis_id=thesis_id, file_id=thesis.file_id)
 
+    # ── التسميةُ سؤال، والدليلُ سؤالٌ آخر — ولا يُشترط أحدُهما بالآخر ──
+    #
+    # **وكان فرعُ التسمية داخل `has_evidence`.** وذلك مقبولٌ ما دام العنوانُ
+    # المؤهَّلُ يُعَدّ دليلًا — وقد كان يُعَدّ خطأً. فلمّا صار العنوانُ لا
+    # يُنشئ دليلًا (وهي القاعدةُ المكتوبة في المنتج) صارت رسالةٌ لا شيءَ
+    # فيها إلّا عنوانٌ مؤهَّلٌ مؤصَّل **تفقد اسمَها**: تُعرض للباحث باسم
+    # ملفّها وفي القاعدة عنوانٌ مستخرَجٌ صالح.
+    #
+    # فالتسميةُ تخرج إلى هنا: تقع لكلِّ بصمةٍ كنسيّة، بدليلٍ علميٍّ أو بغيره.
+    # **العنوانُ يُسمّي متى وُجد، والدليلُ يُعَدّ متى كان علميًّا.**
     title_conflict = False
-    if canonical.has_evidence:
-        # ── العنوانُ: لغتُه تُحفظ، وعمودُه يخصّها وحدها ──
-        #
-        # **وكان يُقرأ من `thesis.title_ar` وحده.** فرسالةٌ إنجليزية عنوانُها
-        # معتمَدٌ ومتحقَّق في `title_en` تصل إلى هنا بلا عنوان، فتُعلَّق
-        # مقترحاتُها المعنونة ويُختم التنقيبُ مكتملًا بصفر فرص — وهو ما رصده
-        # قبولُ الإنتاج.
-        #
-        # **وما كتبه الباحثُ بيده لا يُستبدل باستخراجٍ اعتُمد**: التعارضُ
-        # يُسجَّل، والقائمُ يبقى.
-        chosen = canonical.title
-        if chosen is None:
-            # لا عنوانَ كنسيًّا. والتسميةُ حينئذٍ ممّا كتبه الباحثُ على الصفّ
-            # إن كتب — ولا يُخترع شيء.
-            naming = thesis.title_ar or thesis.title_en
+    naming: str | None = thesis.title_ar or thesis.title_en
+
+    # ── العنوانُ: لغتُه تُحفظ، وعمودُه يخصّها وحدها ──
+    #
+    # **وكان يُقرأ من `thesis.title_ar` وحده.** فرسالةٌ إنجليزية عنوانُها
+    # معتمَدٌ ومتحقَّق في `title_en` تصل إلى هنا بلا عنوان، فتُعلَّق
+    # مقترحاتُها المعنونة ويُختم التنقيبُ مكتملًا بصفر فرص — وهو ما رصده
+    # قبولُ الإنتاج.
+    #
+    # **وما كتبه الباحثُ بيده لا يُستبدل باستخراجٍ اعتُمد**: التعارضُ
+    # يُسجَّل، والقائمُ يبقى.
+    chosen = canonical.title
+    if chosen is not None:
+        existing = getattr(thesis, chosen.column)
+        if existing is None:
+            setattr(thesis, chosen.column, chosen.text)
+            naming = chosen.text
+        elif existing.strip() != chosen.text.strip():
+            title_conflict = True
+            naming = existing
         else:
-            existing = getattr(thesis, chosen.column)
-            if existing is None:
-                setattr(thesis, chosen.column, chosen.text)
-                naming = chosen.text
-            elif existing.strip() != chosen.text.strip():
-                title_conflict = True
-                naming = existing
-            else:
-                naming = existing
+            naming = existing
+
+    if canonical.has_evidence:
         facts = replace(canonical.facts, title=naming)
         evidence_basis = "canonical"
     elif canonical.has_canonical_footprint:
-        # **ولا هروبَ إلى القديم حين يُحجب الحديث.**
-        facts = miner.ThesisFacts(thesis_id=str(thesis_id), title=thesis.title_ar)
+        # **ولا هروبَ إلى القديم حين يُحجب الحديث.** والاسمُ هو المحسوبُ
+        # أعلاه: عنوانٌ كنسيٌّ إن وُجد، وإلّا ما كتبه الباحث — لا `title_ar`
+        # وحده، فرسالةٌ إنجليزيةٌ كانت تصل بلا اسم.
+        facts = miner.ThesisFacts(thesis_id=str(thesis_id), title=naming)
         evidence_basis = "canonical_withheld"
     else:
         sections = (
