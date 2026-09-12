@@ -102,7 +102,7 @@ class ResearcherReport:
 
 # حقول «ما نعرفه» بأسمائها العربية — تُقرأ من الكتالوج القائم لا تُكتب هنا.
 def _field_labels() -> dict[str, tuple[str, str]]:
-    from ..workspace import BRAIN_FIELDS
+    from .vocab import BRAIN_FIELDS
 
     return {key: (label_ar, label_en) for key, label_ar, label_en, _roles in BRAIN_FIELDS}
 

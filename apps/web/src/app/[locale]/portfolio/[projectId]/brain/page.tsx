@@ -9,9 +9,13 @@ import {
   ASSESSMENT_CATEGORIES,
   type AssessmentCategory,
   type AssessmentItem,
+  type JourneyAction,
   type ProjectAssessment,
+  type ProjectJourney,
   type ScientificRule,
+  localeRoute,
   projectAssessment,
+  projectJourney,
   ruleIndex,
   scientificRules,
   totalItems,
@@ -106,6 +110,17 @@ function actionKey(rule: ScientificRule | undefined): string {
     : "brain.action_default";
 }
 
+/**
+ * الخطواتُ الأخرى — **بلا تكرارِ الموصى بها**.
+ *
+ * وهذا ترشيحٌ للعرض لا حكم: الترتيبُ والحالُ يأتيان من الخادم كما هما،
+ * ولا يُعاد حسابُ أيّها الأولى في المتصفّح.
+ */
+function otherSteps(journey: ProjectJourney): JourneyAction[] {
+  const first = journey.recommended?.action_key;
+  return journey.actions.filter((row) => row.action_key !== first);
+}
+
 export default function ResearchBrainPage({
   params,
 }: {
@@ -128,6 +143,10 @@ export default function ResearchBrainPage({
   const [actions, setActions] = useState<SuggestedAction[]>([]);
   const [actionsLoad, setActionsLoad] = useState<Load>("loading");
   // المعاينة المفتوحة — واحدةٌ في كل مرّة، بمفتاح اقتراحها.
+  // **والرحلة رايةٌ رابعة مستقلّة.** التقييمُ قد يصل وهي تسقط، فيُقال ذلك
+  // بنصّه بدل أن تُقرأ شاشةٌ بلا خطوةٍ تالية «لا خطوةَ مطلوبة».
+  const [journey, setJourney] = useState<ProjectJourney | null>(null);
+  const [journeyLoad, setJourneyLoad] = useState<Load>("loading");
   const [openPreview, setOpenPreview] = useState<string | null>(null);
   const [preview, setPreview] = useState<TaskPreview | null>(null);
   const [previewLoad, setPreviewLoad] = useState<Load>("ready");
@@ -142,6 +161,7 @@ export default function ResearchBrainPage({
     setLoad("loading");
     setRulesLoad("loading");
     setActionsLoad("loading");
+    setJourneyLoad("loading");
     setError(null);
     setOpenPreview(null);
     setPreview(null);
@@ -166,7 +186,13 @@ export default function ResearchBrainPage({
         setActionsLoad("ready");
       })
       .catch(() => setActionsLoad("failed"));
-    return Promise.all([one, two, three]);
+    const four = projectJourney(locale, projectId)
+      .then((view) => {
+        setJourney(view);
+        setJourneyLoad("ready");
+      })
+      .catch(() => setJourneyLoad("failed"));
+    return Promise.all([one, two, three, four]);
   }, [locale, projectId, say]);
 
   /**
@@ -492,6 +518,110 @@ export default function ResearchBrainPage({
                 {t("brain.actionsHint")}
               </p>
             ) : null}
+          </section>
+
+          {/* ═══════════ الذكاء البحثيّ: أين يقف البحث وما التالي ═══════════
+
+              **ولا منطقَ رحلةٍ يُبنى هنا** (§80). الحالُ والسببُ والفعل
+              تأتي من الخادم كما هي؛ وكلُّ شرطٍ يُكتب في هذه الشاشة نسخةٌ
+              ثانية من قاعدةٍ تفترق عن أصلها بأول تعديل، ثمّ تعرض الشاشةُ
+              حكمًا لا يقوله الخادم.
+
+              **ولا بصمةَ في وجه الباحث** (§84): `context_fingerprint` أداةُ
+              تشخيصٍ لا معلومةٌ بحثية، وعرضُها يُشغل القارئ بما لا يعنيه. */}
+          <section aria-labelledby="brain-journey" style={{ marginBlockEnd: 16 }}
+                   data-testid="brain-journey">
+            <h2 id="brain-journey">{t("brain.journeyTitle")}</h2>
+            <p className="metric-label">{t("brain.journeyLead")}</p>
+
+            {journeyLoad === "loading" ? (
+              <p data-testid="journey-loading" style={{ color: "var(--muted)" }}>
+                {t("brain.journeyLoading")}
+              </p>
+            ) : journeyLoad === "failed" || journey === null ? (
+              // **السقوط يُقال.** وشاشةٌ بلا خطوةٍ تالية تُقرأ «لا شيء مطلوب».
+              <p data-testid="journey-failed" className="gate">{t("brain.journeyFailed")}</p>
+            ) : (
+              <>
+                <div className="note" data-testid="journey-next">
+                  <p style={{ margin: 0, fontWeight: 560 }}>{t("brain.nextStepTitle")}</p>
+                  {journey.recommended === null ? (
+                    <p style={{ margin: "4px 0 0" }} data-testid="journey-next-none">
+                      {t("brain.nextStepNone")}
+                    </p>
+                  ) : (
+                    <>
+                      <p style={{ margin: "4px 0 0", fontSize: "1.05em" }}
+                         data-testid="journey-next-title">
+                        {journey.recommended.title}
+                      </p>
+                      {/* **والسببُ يُعرض مع الفعل لا في حاشية** (§26). */}
+                      <p style={{ margin: "4px 0 0" }} data-testid="journey-next-why">
+                        <span className="metric-label">{t("brain.nextStepWhy")}: </span>
+                        {journey.recommended.reason}
+                      </p>
+                      {localeRoute(locale, journey.recommended.route) ? (
+                        <p style={{ margin: "6px 0 0" }}>
+                          <Link data-testid="journey-next-route"
+                                href={localeRoute(locale, journey.recommended.route)!}>
+                            {t("brain.nextStepOpen")}
+                          </Link>
+                        </p>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+
+                {/* **البوّاباتُ الحتمية مفصولةٌ عن الرأي** (§24): هذه وقائعُ
+                    تُقرأ من البحث، لا ترتيبٌ مقترح. */}
+                <div style={{ marginBlockStart: 12 }} data-testid="journey-cannot">
+                  <p style={{ margin: 0, fontWeight: 560 }}>{t("brain.cannotTitle")}</p>
+                  <p className="metric-label" style={{ margin: "2px 0 0" }}>
+                    {t("brain.cannotHint")}
+                  </p>
+                  {journey.capabilities.filter((row) => !row.allowed).length === 0 ? (
+                    <p style={{ margin: "4px 0 0" }} data-testid="journey-cannot-none">
+                      {t("brain.cannotNone")}
+                    </p>
+                  ) : (
+                    <ul style={{ margin: "6px 0 0" }}>
+                      {journey.capabilities
+                        .filter((row) => !row.allowed)
+                        .map((row) => (
+                          <li key={row.key} data-testid={`journey-gate-${row.key}`}>
+                            {t(`capability.${row.key}`)}
+                            {" — "}
+                            {/* **ولا منعَ بلا سببٍ مكتوب.** والرمزُ يُترجَم
+                                هنا لا يُرسل مترجَمًا في العقد (§81). */}
+                            {row.blocking_reasons
+                              .map((code) => t(`blocker.${code}`))
+                              .join(" ")}
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                </div>
+
+                {otherSteps(journey).length > 0 ? (
+                  <div style={{ marginBlockStart: 12 }} data-testid="journey-more">
+                    <p style={{ margin: 0, fontWeight: 560 }}>{t("brain.moreStepsTitle")}</p>
+                    <ul style={{ margin: "6px 0 0" }}>
+                      {otherSteps(journey).map((row) => (
+                        <li key={row.action_key} data-testid={`journey-step-${row.action_key}`}>
+                          {row.title} <span className="metric-label">— {row.reason}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {/* **وما لا تعرفه هذه القراءة يُقال** (§28) — لا في وثيقةٍ بعيدة. */}
+                <p className="metric-label" style={{ marginBlockStart: 10 }}
+                   data-testid="journey-limits">
+                  {t("brain.journeyLimits")}: {journey.limitations}
+                </p>
+              </>
+            )}
           </section>
 
           <section aria-labelledby="brain-read-notes" style={{ marginBlockEnd: 14 }}>
