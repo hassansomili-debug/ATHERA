@@ -229,8 +229,34 @@ const PREVIEW = {
   pending_contract_note: "عقد إنشاء المهام لم يصل بعد، فزرّ القبول غير مفعَّل.",
 };
 
+/**
+ * الرحلةُ — مسارٌ أضافته الموجة 2-A إلى هذه الشاشة نفسها.
+ *
+ * وبلا جسمٍ له تردّ التجهيزةُ `[]` على ما لا تعرفه، فتُقرأ الشاشةُ قراءةً
+ * ناقصة. وتُذكر هنا ليُفحص السطحُ كما هو لا كما كان.
+ */
+const JOURNEY = {
+  project_id: PROJECT,
+  title: "بحثٌ تحت الفحص",
+  context_fingerprint: "b".repeat(64),
+  fingerprint_schema: "pubriva.brain.context.v1",
+  first_seen_at: "2026-09-13T00:00:00Z",
+  last_seen_at: "2026-09-13T00:00:00Z",
+  recommended: null,
+  actions: [],
+  capabilities: [],
+  known_count: 0,
+  missing_count: 0,
+  needs_review_count: 0,
+  conflict_count: 0,
+  superseded_now: 0,
+  limitations: "قراءةٌ لما سُجِّل في هذا البحث داخل PUBRIVA وحدَه.",
+  note: "لا تُعرض نسبةُ إنجاز.",
+};
+
 const BODIES = new Map<string, unknown>([
   [`/api/v1/workspace/projects/${PROJECT}/assessment`, ASSESSMENT],
+  [`/api/v1/workspace/projects/${PROJECT}/journey`, JOURNEY],
   ["/api/v1/brain/rules", RULES],
   [`/api/v1/projects/${PROJECT}/thread/golden-view`, THREAD_VIEW],
   [`/api/v1/projects/${PROJECT}/brain/suggested-actions`, ACTIONS],

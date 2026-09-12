@@ -148,11 +148,39 @@ export interface ProjectJourney {
   note: string;
 }
 
+/**
+ * جوابٌ مشوَّهٌ **قراءةٌ لم تصل**، لا شاشةٌ تنهار.
+ *
+ * و`apiFetch` تُرجع ما وصل كما هو: ردٌّ بحالة 200 وجسمٍ غيرِ متوقَّع يمرّ
+ * بلا خطأ، فتقرأ الشاشةُ `undefined.filter` وتسقط الشجرةُ كلُّها — ويقرأ
+ * الباحثُ صفحةً بيضاء عن بحثٍ لا عيب فيه.
+ *
+ * وهذا وقع فعلًا: تجهيزةُ فحصٍ قائمة تردّ `[]` على ما لا تعرفه، فأسقطت
+ * شاشةَ العقل بأكملها عند إضافة هذه اللوحة. والعلاجُ أن يُفحص الشكل، لا
+ * أن تُعدَّل التجهيزة وحدها — فالإنتاج قد يردّ مشوَّهًا كما ردّت هي.
+ */
+function isJourney(value: unknown): value is ProjectJourney {
+  const row = value as ProjectJourney | null;
+  return (
+    !!row &&
+    typeof row === "object" &&
+    !Array.isArray(row) &&
+    Array.isArray(row.actions) &&
+    Array.isArray(row.capabilities) &&
+    typeof row.context_fingerprint === "string"
+  );
+}
+
 export const projectJourney = (locale: Locale, projectId: string) =>
-  apiFetch<ProjectJourney>(
+  apiFetch<unknown>(
     `/api/v1/workspace/projects/${projectId}/journey`,
     { locale },
-  );
+  ).then((body) => {
+    if (!isJourney(body)) {
+      throw new Error("journey payload is not shaped like a journey");
+    }
+    return body;
+  });
 
 /**
  * مسارُ الفعل موصولًا بلغة القارئ.
