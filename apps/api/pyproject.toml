@@ -152,3 +152,32 @@ forbidden_modules = ["openai", "anthropic"]
 # مستعملة. والحدّ الذي يفرضه ADR-0003 باقٍ كما هو: أول `import anthropic`
 # يُكتب داخل موجّه أو خدمة أو نموذج أو عقد يكسر العقد فورًا.
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+# ═══ عقدُ الموجة 2-A: العقلُ لا يستهلك مركزَ الرسائل ═══
+#
+# **الاتجاهُ هو كلُّ المسألة.** مركزُ الرسائل مؤجَّل ومحفوظ
+# (`docs/roadmap/THESIS_CENTER_DEFERRED.md`)، وموجةُ استرجاعه — لاحقًا —
+# هي التي تستهلك العقل. فلو استورد العقلُ منه اليوم لَورِث مفرداتِه
+# وحالاتِه، ولَصار أساسُ المنصّة مملوكًا لوحدةٍ واحدة — وهو بالضبط ما
+# تقوم هذه الموجة على فكّه.
+#
+# ويُحرس بنيويًّا لا اتفاقًا: أولُ `from ...services.thesis import` يُكتب
+# في حزمة العقل يكسر هذا العقد في CI.
+#
+# **ولا `allow_indirect_imports` هنا** — بخلاف عقدَي ADR-0003 أعلاه.
+# هناك كانت السلسلةُ غيرُ المباشرة حتميةً بحكم وجود البوابة، فكان العقدُ
+# بلا المفتاح غيرَ قابلٍ للتحقق أصلًا. وهنا لا بوابةَ ولا وسيط: العقلُ
+# لا يمرّ إلى الرسالة بطريقٍ مشروع، لا مباشرٍ ولا غيرِ مباشر. فتُمنع
+# السلسلةُ كاملةً — وذاك هو المقصود.
+name = "PUBRIVA Brain V1 must never depend on the Thesis Center (Wave 2-A §79)"
+type = "forbidden"
+source_modules = [
+  "athera_api.research_brain",
+  "athera_api.services.research_assessment",
+]
+forbidden_modules = [
+  "athera_api.services.thesis",
+  "athera_api.routers.thesis",
+  "athera_api.models.thesis",
+]

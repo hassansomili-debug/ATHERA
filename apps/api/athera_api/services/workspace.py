@@ -19,7 +19,7 @@ from sqlalchemy.sql import ColumnElement
 from ..models.analysis import AnalysisOutputRow, AnalysisRun, Dataset
 from ..models.files import File
 from ..models.literature import Claim, ClaimEvidenceLink, EvidenceExcerpt
-from ..models.portfolio import ProjectFile, ResearchProject
+from ..models.portfolio import ProjectFile
 from ..models.publishing import (
     ClaimMemoryLink,
     Manuscript,
@@ -29,6 +29,8 @@ from ..models.publishing import (
 )
 from ..models.research import FactCandidate, ResearcherMemory
 from ..models.thesis import PublicationOpportunity
+from .project_scope import live_project as _live_project
+from .research_assessment.vocab import BRAIN_FIELDS as _BRAIN_FIELDS
 
 
 @dataclass(slots=True)
@@ -422,17 +424,12 @@ class BrainEntry:
 # `ROLE_BY_FIELD`. فكان العنصران يظهران «ناقصَين» أبدًا مهما وثّق الباحث —
 # لا لأن المعرفة غائبة، بل لأن الاسم المكتوب لا يقابل شيئًا. وهو الخطأ
 # نفسه المتكرر: معرّفٌ يُكتب بجانب سجلّه بدل أن يُشتقّ منه. فيُتحقَّق أدناه.
-BRAIN_FIELDS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
-    ("problem", "مشكلة البحث", "Research problem", ("problem",)),
-    ("question", "سؤال البحث", "Research question", ("question",)),
-    ("objective", "الأهداف", "Objectives", ("objective",)),
-    ("theory", "الإطار النظري", "Theory", ("theory",)),
-    ("method", "المنهج وأداة القياس", "Method and instrument", ("methodology",)),
-    ("sample", "العيّنة", "Sample", ("sample",)),
-    ("data", "التحليل", "Analysis", ("analysis",)),
-    ("results", "النتائج", "Results", ("result",)),
-    ("limitations", "حدود الدراسة", "Limitations", ("limitation",)),
-)
+#: **الجدولُ انتقل، والاسمُ بقي.** تسعُ الحقول تسكن الآن في
+#: `research_assessment/vocab.py` — بيانٌ خالص لا يعرف مركزَ الرسائل —
+#: لأنّ استيرادَها من هنا كان يجرّ `models.thesis` إلى أساس العقل، وأمسكه
+#: عقدُ الاستيراد في `pyproject.toml`. والاتجاهُ الصحيح هذا: الوحدةُ
+#: المجالية تعتمد على مفردات العقل لا العكس.
+BRAIN_FIELDS = _BRAIN_FIELDS
 
 
 def _assert_roles_exist() -> None:
@@ -561,15 +558,12 @@ async def next_action(session: AsyncSession, *, tenant_id: uuid.UUID,
     return None
 
 
-async def live_project(session: AsyncSession, *, tenant_id: uuid.UUID,
-                       project_id: uuid.UUID) -> ResearchProject | None:
-    """بحثٌ قائم — **وما في السلّة ليس قائمًا**."""
-    return (await session.execute(
-        select(ResearchProject).where(
-            ResearchProject.id == project_id,
-            ResearchProject.tenant_id == tenant_id,
-            ResearchProject.deleted_at.is_(None))
-    )).scalar_one_or_none()
+#: **التعريفُ انتقل، والاسمُ بقي.** `live_project` تسكن الآن في
+#: `services/project_scope.py` — وحدةٌ لا تعرف مركزَ الرسائل — لأنّ كلَّ
+#: من سأل «أهذا بحثٌ قائم؟» من هنا كان يرث معه `models.thesis`. وأمسكه
+#: عقدُ الاستيراد في `pyproject.toml`. وإعادةُ التصدير تُبقي كلَّ نداءٍ
+#: قائمٍ يعمل كما كان، ولا تُنشئ تعريفًا ثانيًا.
+live_project = _live_project
 
 
 __all__ = ["BRAIN_FIELDS", "BrainEntry", "Consequence", "Impact", "dataset_impact",
