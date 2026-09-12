@@ -17,12 +17,23 @@ import { type Commit, useDeferredLoad } from "@/lib/useDeferredLoad";
  * «استخراج» ولا «كنسيّ». الباحثُ يقرأ عن رسالته وورقته وحدهما.
  */
 
+/**
+ * **أربعُ خطواتٍ يقرؤها الباحث** — ورحلةُ MVP هي هذه وحدها:
+ *
+ *     رفعُ الرسالة → أفكارُ الأوراق → بناءُ الورقة → استوديو الورقة
+ *
+ * **ولا خطوةَ حقوقٍ وتأليف** (قرارُ منتج): لم تكن خطوةً في الرحلة، بل
+ * حدًّا للإرسال عُرض في طريقها — فوقف الباحثُ أمام «أنت هنا» لا فعلَ
+ * تحتها. وحارسُها باقٍ في القاعدة عند `ready_to_submit`، والإرسالُ ليس
+ * من هذه الرحلة.
+ *
+ * **وتحديثُ الأدبيات خرج من الشريط أيضًا**: حدٌّ يقع داخل «بناء الورقة»
+ * ويُقال في موضعه، لا خطوةٌ سادسة يعدّها الباحثُ ولا يفعل فيها شيئًا.
+ */
 const STEP_KEYS = [
   "analysis",
-  "opportunities",
-  "rights",
+  "ideas",
   "build",
-  "literature",
   "studio",
 ] as const;
 
@@ -40,14 +51,13 @@ const STEP_OF_STATE: Record<string, number> = {
   failed: 0,
   opportunities_ready: 1,
   researcher_decision_required: 1,
-  overlap_review_required: 2,
-  rights_required: 2,
-  awaiting_ai_consent: 3,
-  project_created: 3,
-  thread_ready: 3,
-  outline_ready: 3,
-  manuscript_created: 3,
-  drafting: 3,
+  overlap_review_required: 1,
+  awaiting_ai_consent: 2,
+  project_created: 2,
+  thread_ready: 2,
+  outline_ready: 2,
+  manuscript_created: 2,
+  drafting: 2,
   literature_pending: 4,
   ready_for_paper_studio: 5,
 };
@@ -56,6 +66,8 @@ interface Journey {
   thesis_id: string;
   state: string;
   blocking_reasons: string[];
+  /** ما يمنع الخطوةَ التالية بعينها — يحسبه الخادمُ ولا تشتقّه الشاشة. */
+  current_blocking_reasons: string[];
   can_build_paper: boolean;
   /**
    * **الخيطُ الذهبيّ خطوةٌ في الرحلة، لا نقطةُ نهايةٍ تُكتشف.**
@@ -166,31 +178,6 @@ export function ThesisJourney({
   }
 
   /**
-   * **قرارُ الباحث، وهو أوّلُ قرارٍ علميّ في الرحلة.**
-   *
-   * ولم يكن له زرٌّ ولا نقطةُ نهاية: تقف الرحلةُ عند «اختر الورقة التي
-   * تريد بناءها» وتطلب فعلًا لا سبيل إليه.
-   */
-  function select(opportunityId: string) {
-    return act(opportunityId, async () => {
-      await apiFetch(
-        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/select`,
-        { method: "POST", locale, body: JSON.stringify({ decision: "select" }) });
-    });
-  }
-
-  function build(opportunityId: string) {
-    return act(opportunityId, async () => {
-      const result = await apiFetch<BuildResult>(
-        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/build-paper`,
-        { method: "POST", locale });
-      setManuscripts((current) => ({
-        ...current, [opportunityId]: result.manuscript_id,
-      }));
-    });
-  }
-
-  /**
    * بناءُ الخيط الذهبيّ — **بنقطةِ النهاية القائمة، ولا منطقَ يُعاد هنا**.
    *
    * والباحثُ لا يُطلب منه أن يزور شاشةَ الخيط بنفسه ويجمع مشروعَه: الفعلُ
@@ -205,13 +192,50 @@ export function ThesisJourney({
     });
   }
 
+  /**
+   * **ابدأ هذه الورقة — فعلٌ واحد يقطع الطريقَ المسدود.**
+   *
+   * وكان على الباحث أن يختار، ثمّ يعود إلى لوحةِ الرحلة، ثمّ يجد زرَّ
+   * البناء معطّلًا يقول «استكمل الحقوق والتأليف» — ولا مخرجَ منه. وذاك
+   * حدٌّ في غير موضعه: الهيكلُ حتميّ، ولا يُرسل حرفًا ولا يُعلن جاهزيةً.
+   *
+   * فالنقرةُ الواحدة تفعل ما كان يُطلب في ثلاث: تختار إن لم تكن مختارة،
+   * ثمّ تبني. **ولا يُفترض قرارٌ علميّ**: الاختيارُ يُسجَّل كما يسجّله
+   * المسارُ الصريح، بفاعله وسببه، ويبقى قرارَ الباحث لأنّه هو من نقر.
+   */
+  function startPaper(opportunityId: string, alreadySelected: boolean) {
+    return act(opportunityId, async () => {
+      // **والقرارُ العلميُّ يُسجَّل كما يسجّله المسارُ الصريح** — نقطةُ
+      // النهاية نفسُها، بفاعلها وقرارها. ولا يُفترض: الباحثُ هو من نقر.
+      if (!alreadySelected) {
+        await apiFetch(
+          `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/select`,
+          { method: "POST", locale, body: JSON.stringify({ decision: "select" }) });
+      }
+      const result = await apiFetch<BuildResult>(
+        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/build-paper`,
+        { method: "POST", locale });
+      setManuscripts((current) => ({
+        ...current, [opportunityId]: result.manuscript_id,
+      }));
+    });
+  }
+
   /** مخطوطةُ **هذه** الفرصة — أو لا شيء. ولا تُقرأ مخطوطةُ جارتها. */
   function manuscriptOf(opportunityId: string): string | undefined {
     return manuscripts[opportunityId];
   }
 
   const current = journey ? (STEP_OF_STATE[journey.state] ?? 0) : 0;
-  const canBuild = journey?.can_build_paper === true;
+  // ── ما يمنع الآن: **يقوله الخادمُ، ولا تستنتجه الشاشة** ──
+  //
+  // وكانت الشاشةُ تحمل قائمةَ بوّاباتٍ «لاحقة» ترشّح بها القائمةَ العامّة —
+  // أي أنّها تقرّر أيُّ حدٍّ يسري الآن. فتصير سياسةُ البوّابات في طرفين
+  // يفترقان يومًا، ويسري في وجه الباحث ما لم يقرّره الخادم.
+  //
+  // فالقرارُ صار حقلًا في العقد: `current_blocking_reasons`.
+  const blockingNow = journey?.current_blocking_reasons ?? [];
+
   const canBuildThread = journey?.can_build_thread === true;
   const threadReady = journey?.thread_ready === true;
 
@@ -261,14 +285,17 @@ export function ThesisJourney({
         })}
       </ol>
 
-      {/* ── ما ينتظر الآن: رمزُ الخادم يُترجَم إلى لغة الباحث ── */}
-      {journey && journey.blocking_reasons.length > 0 ? (
+      {/* ── ما ينتظر **الآن**: رمزُ الخادم يُترجَم إلى لغة الباحث ──
+          **وقائمةٌ تقول «استكمل الحقوق أولًا» فوق زرٍّ يعمل تناقض.**
+          فالحقوقُ والإذنُ لا يمنعان الفعلَ الرئيس، وموضعُهما أدناه مع
+          سببِ لزومهما ووقتِه. ويبقى هنا ما يمنع الآن فعلًا. */}
+      {blockingNow.length > 0 ? (
         <ul
           data-testid="journey-blocked"
           className="metric-label"
           style={{ margin: 0, paddingInlineStart: 18 }}
         >
-          {journey.blocking_reasons.map((reason) => (
+          {blockingNow.map((reason) => (
             <li key={reason}>{t(`journey.blocked.${reason}`)}</li>
           ))}
         </ul>
@@ -369,30 +396,39 @@ export function ThesisJourney({
                   </button>
                 )}
 
-                {/* **والمسارُ يقصد الاستوديو بعينه.** كان يقصد
+                {/* **والاستوديو بعد الخيط، لا بجواره.**
+                    كانت الحاشيةُ تقول «الخيطُ الذهبيّ قبل الاستوديو»
+                    ويُعرض الزرّان معًا — فيصيران فعلين متكافئين، ويمضي
+                    الباحثُ إلى الاستوديو ببنيةٍ بحثيّةٍ لم تُبنَ.
+
+                    **والمسارُ يقصد الاستوديو بعينه.** كان يقصد
                     `‎/manuscripts/<id>` ولا صفحةَ هناك — فيبلغ الباحثُ
                     ٤٠٤ بأوّلِ زرٍّ بعد بناء ورقته. */}
-                <a
-                  data-testid="journey-open-studio"
-                  href={`/${locale}/manuscripts/${manuscriptOf(opportunity.id)}/studio`}
-                  style={{
-                    padding: "8px 16px", borderRadius: "var(--radius)",
-                    background: "var(--athera-teal)", color: "#fff",
-                    textDecoration: "none",
-                  }}
-                >
-                  {t("journey.openStudio")}
-                </a>
+                {threadReady ? (
+                  <a
+                    data-testid="journey-open-studio"
+                    href={`/${locale}/manuscripts/${manuscriptOf(opportunity.id)}/studio`}
+                    style={{
+                      padding: "8px 16px", borderRadius: "var(--radius)",
+                      background: "var(--athera-teal)", color: "#fff",
+                      textDecoration: "none",
+                    }}
+                  >
+                    {t("journey.openStudio")}
+                  </a>
+                ) : null}
               </>
-            ) : opportunity.planning_status !== "selected" ? (
-              /* **أوّلُ قرارٍ علميّ في الرحلة، وله زرُّه.** والبناءُ لا
-                 يُعرض قبله: الخادمُ يردّه بـ«اختر الورقة»، وزرٌّ يَعِد بما
-                 يرفضه الخادمُ عطبٌ في المنتج. */
+            ) : (
+              /* **فعلٌ رئيسٌ واحد: «ابدأ هذه الورقة».**
+                 يختار إن لم تكن مختارة، ثمّ يبني الهيكلَ الحتميّ. ولا
+                 لوحةَ وسيطةٍ يُطلب المرورُ بها، ولا زرَّ معطّلًا يقف
+                 أمام الباحث بلا فعلٍ يُنقر. */
               <button
                 type="button"
-                data-testid="journey-select-opportunity"
+                data-testid="journey-start-paper"
                 disabled={busy === opportunity.id}
-                onClick={() => void select(opportunity.id)}
+                onClick={() => void startPaper(
+                  opportunity.id, opportunity.planning_status === "selected")}
                 style={{
                   padding: "8px 16px", borderRadius: "var(--radius)", border: "none",
                   background: "var(--athera-aqua, var(--athera-teal))",
@@ -401,26 +437,8 @@ export function ThesisJourney({
                 }}
               >
                 {busy === opportunity.id
-                  ? t("journey.selecting")
-                  : t("journey.selectCta")}
-              </button>
-            ) : (
-              <button
-                type="button"
-                data-testid="journey-build-paper"
-                disabled={!canBuild || busy === opportunity.id}
-                onClick={() => void build(opportunity.id)}
-                style={{
-                  padding: "8px 16px", borderRadius: "var(--radius)", border: "none",
-                  background: "var(--athera-aqua, var(--athera-teal))",
-                  color: "#04302c", font: "inherit", fontWeight: 600,
-                  cursor: canBuild ? "pointer" : "not-allowed",
-                  opacity: canBuild ? 1 : 0.5,
-                }}
-              >
-                {busy === opportunity.id
-                  ? t("journey.building")
-                  : t("journey.buildCta")}
+                  ? t("journey.starting")
+                  : t("journey.startPaper")}
               </button>
             )}
           </div>

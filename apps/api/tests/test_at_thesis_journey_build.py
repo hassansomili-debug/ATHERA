@@ -110,8 +110,9 @@ def test_the_router_does_not_re_implement_the_gates():
 
 
 def test_blocked_reasons_travel_as_codes():
-    blocked = journey.JourneyBlocked((journey.BLOCK_OVERLAP, journey.BLOCK_RIGHTS))
-    assert blocked.reasons == (journey.BLOCK_OVERLAP, journey.BLOCK_RIGHTS)
+    blocked = journey.JourneyBlocked(
+        (journey.BLOCK_OVERLAP, journey.BLOCK_NO_CONSENT))
+    assert blocked.reasons == (journey.BLOCK_OVERLAP, journey.BLOCK_NO_CONSENT)
 
 
 # ══════════ ٣. ما يحتاج قاعدةً — مكتوبٌ ولم يُشغَّل هنا ══════════
@@ -254,8 +255,15 @@ async def test_an_opportunity_of_another_thesis_is_refused(two_tenants):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_building_without_consent_is_refused(two_tenants):
-    """**ولا يُمنح الإذنُ تلقائيًّا** — والبناءُ يقف ويُسمّي ما ينقصه."""
+async def test_building_the_shell_without_consent_is_allowed_but_ai_is_not(two_tenants):
+    """**ولا يُمنح الإذنُ تلقائيًّا** — وموضعُ وقوفه انتقل إلى ما يمسّه.
+
+    ‏`build_paper` لا تُنادي نموذجًا ولا تُرسل حرفًا: تُنشئ مشروعًا وهيكلًا
+    ومخطوطةً — صفوفًا حتميّة. فاشتراطُ الإذن عليها كان يحبس الباحثَ خلف
+    إذنٍ لفعلٍ لا يقع، ويعرض زرًّا معطّلًا بلا مخرج.
+
+    **والإذنُ باقٍ حدًّا**: يُسمّى فيما يمنع، ويقف عند أوّل نداءِ نموذج.
+    """
     from sqlalchemy import select
 
     from athera_api.db import tenant_session
@@ -277,13 +285,23 @@ async def test_building_without_consent_is_refused(two_tenants):
         opportunity = (await session.execute(
             select(PublicationOpportunity)
             .where(PublicationOpportunity.id == opportunity_id))).scalar_one()
-        with pytest.raises(journey.JourneyBlocked) as blocked:
-            await journey.build_paper(
-                session, tenant_id=tid, actor_user_id=uid, thesis=thesis,
-                opportunity=opportunity)
+        # **والهيكلُ يُبنى** — ولا نموذجَ استُدعي ولا حرفَ خرج.
+        outcome = await journey.build_paper(
+            session, tenant_id=tid, actor_user_id=uid, thesis=thesis,
+            opportunity=opportunity)
 
-    # رسالةٌ لها ملفٌّ ولا إذنَ عليه — فالبوّابةُ تقف وتُسمّي ما ينقص.
-    assert journey.BLOCK_NO_CONSENT in blocked.value.reasons
+    assert outcome.project_id is not None
+    assert outcome.outline_id is not None
+    assert outcome.manuscript_id is not None
+
+    # **والإذنُ لم يُمنح ولم يُفترض** — ويُسمّى فيما يمنع ما هو أبعد.
+    async with tenant_session(tid, uid) as session:
+        thesis = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        view = await journey.view(session, tenant_id=tid, thesis=thesis)
+    assert journey.BLOCK_NO_CONSENT in view["blocking_reasons"]
+    assert await journey.consent_granted(
+        session, tenant_id=tid, file_id=thesis.file_id) is False
 
 
 @requires_db
@@ -318,3 +336,107 @@ async def test_the_journey_endpoint_reports_state_without_a_percentage(two_tenan
     assert body["states"] == list(journey.STATES)
     # **ولا نسبةَ في العقد.**
     assert not any("percent" in key for key in body)
+
+
+# ═════════ وما نُقل بقي حدًّا، وما حرس بقي حارسًا ═════════
+#
+# **فصلُ بوّابة الهيكل عن بوّابات النشر يُقاس من الجهتين:** أنّ الهيكل
+# صار يُبنى، وأنّ ما كان يحرس لم يسقط معه.
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_unresolved_overlap_still_blocks_the_shell(two_tenants):
+    """**والتداخلُ غيرُ المحسوم يمنع البناء** — حدٌّ يمسّ الهيكلَ فعلًا.
+
+    ولا ينبغي أن يسقط مع الحقوق والإذن: ورقتان تُبنيان على تداخلٍ لم
+    يُحسم تجزئةُ نشرٍ، وذاك قرارٌ علميٌّ لا شكليّ.
+    """
+    facts = journey.JourneyFacts(
+        processing_state="ready_for_review", opportunities=1,
+        selected_opportunity=True, overlap_unresolved=1)
+
+    assert journey.BLOCK_OVERLAP in journey.shell_blocking_reasons(facts)
+    assert journey.can_build_paper(facts) is False
+    assert journey.derive_state(facts) == journey.OVERLAP_REVIEW_REQUIRED
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_building_twice_creates_nothing_twice(two_tenants):
+    """**وإعادةُ المحاولة تُعيد الاستعمال ولا تُضاعف.**
+
+    والفعلُ الرئيسُ صار نقرةً واحدة، فنقرتان متتاليتان واردتان جدًّا —
+    ومشروعان لفرصةٍ واحدة عطبٌ يراه الباحثُ في محفظته.
+    """
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.planning import ManuscriptOutline
+    from athera_api.models.portfolio import ResearchProject
+    from athera_api.models.publishing import Manuscript
+    from athera_api.models.thesis import PublicationOpportunity, Thesis
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, opportunity_id = await _seed_thesis_and_opportunity(tid, uid)
+
+    outcomes = []
+    for _ in range(2):
+        async with tenant_session(tid, uid) as session:
+            thesis = (await session.execute(
+                select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+            opportunity = (await session.execute(
+                select(PublicationOpportunity)
+                .where(PublicationOpportunity.id == opportunity_id))).scalar_one()
+            outcomes.append(await journey.build_paper(
+                session, tenant_id=tid, actor_user_id=uid, thesis=thesis,
+                opportunity=opportunity))
+
+    first, second = outcomes
+    # **والثانيةُ لم تُنشئ شيئًا** — أعادت استعمالَ ما بنته الأولى.
+    assert first.project_id == second.project_id
+    assert first.outline_id == second.outline_id
+    assert first.manuscript_id == second.manuscript_id
+    assert not second.created, f"أُنشئ شيءٌ في المحاولة الثانية: {second.created}"
+
+    async with tenant_session(tid, uid) as session:
+        projects = (await session.execute(
+            select(func.count(ResearchProject.id))
+            .where(ResearchProject.id == first.project_id))).scalar_one()
+        outlines = (await session.execute(
+            select(func.count(ManuscriptOutline.id))
+            .where(ManuscriptOutline.opportunity_id == opportunity_id))).scalar_one()
+        manuscripts = (await session.execute(
+            select(func.count(Manuscript.id))
+            .where(Manuscript.id == first.manuscript_id))).scalar_one()
+    assert (projects, outlines, manuscripts) == (1, 1, 1)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_neighbour_can_never_build_on_another_tenants_opportunity(two_tenants):
+    """**والعزلُ قبل البوّابات كلِّها** — ولم يُمسّ بهذا الفصل."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import PublicationOpportunity, Thesis
+
+    a, b = two_tenants["a"], two_tenants["b"]
+    thesis_id, opportunity_id = await _seed_thesis_and_opportunity(
+        a["tenant_id"], a["user_id"])
+
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        thesis = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        opportunity = (await session.execute(
+            select(PublicationOpportunity)
+            .where(PublicationOpportunity.id == opportunity_id))).scalar_one()
+
+        with pytest.raises(journey.JourneyBlocked) as blocked:
+            await journey.build_paper(
+                session, tenant_id=b["tenant_id"], actor_user_id=b["user_id"],
+                thesis=thesis, opportunity=opportunity)
+
+    assert "opportunity_not_of_this_thesis" in blocked.value.reasons
+

@@ -306,6 +306,10 @@ jobs:
         run: cd apps/web && npm run test:auto-journey
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+      - name: Thesis final mile (real browser)
+        run: cd apps/web && npm run test:final-mile
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
       # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
       #

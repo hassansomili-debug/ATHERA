@@ -53,12 +53,23 @@ def test_every_server_state_is_mapped_to_a_step():
         f"حالاتٌ في الشاشة لا يُصدرها الخادم: {sorted(mapped - declared)}")
 
 
-def test_the_six_steps_are_declared_once():
+def test_the_four_steps_are_declared_once():
+    """**أربعُ خطواتٍ يقرؤها الباحث** — ورحلةُ MVP هي هذه وحدها.
+
+    وخرجت «الحقوق والتأليف» (قرارُ منتج): لم تكن خطوةً في الرحلة بل حدَّ
+    إرسالٍ عُرض في طريقها. وخرج «تحديثُ الأدبيات»: حدٌّ يقع داخل البناء
+    ويُقال في موضعه، لا خطوةٌ يعدّها الباحثُ ولا يفعل فيها شيئًا.
+    """
     source = _component()
     block = source[source.index("const STEP_KEYS"):source.index("] as const")]
     keys = re.findall(r'"([a-z]+)"', block)
-    assert keys == ["analysis", "opportunities", "rights", "build",
-                    "literature", "studio"], keys
+    assert keys == ["analysis", "ideas", "build", "studio"], keys
+    assert "rights" not in keys
+    # **والعنوانُ الفرعيّ يعدّها كما هي** — «ستّ خطوات» فوق أربعٍ خبرٌ كاذب.
+    for locale in ("ar", "en"):
+        subtitle = _messages(locale)["journey"]["subtitle"]
+        assert ("Four" in subtitle) or ("أربع" in subtitle), (
+            f"{locale}: العنوانُ الفرعيّ يعدّ خطواتٍ غيرَ المعروضة — {subtitle}")
 
 
 def test_every_blocking_reason_has_researcher_facing_copy():
@@ -66,8 +77,7 @@ def test_every_blocking_reason_has_researcher_facing_copy():
     declared = {
         journey.BLOCK_NO_CONSENT, journey.BLOCK_STALE_CONSENT,
         journey.BLOCK_NO_SELECTION, journey.BLOCK_OVERLAP,
-        journey.BLOCK_RIGHTS, journey.BLOCK_NO_OPPORTUNITY,
-        journey.BLOCK_EXTRACTION_FAILED,
+        journey.BLOCK_NO_OPPORTUNITY, journey.BLOCK_EXTRACTION_FAILED,
     }
     for locale in ("ar", "en"):
         blocked = _messages(locale)["journey"]["blocked"]
@@ -150,18 +160,23 @@ def test_both_ctas_carry_the_required_wording():
 def test_the_first_scientific_decision_has_a_control_of_its_own():
     """**والرحلةُ كانت تطلب فعلًا لا زرَّ له.**
 
-    تقف عند «اختر الورقة التي تريد بناءها»، ولا شيءَ في الشاشة يختار —
-    وزرُّ البناء معطَّلٌ أبدًا لأنّ الخادمَ لن يأذن قبل الاختيار.
+    كانت تقف عند «اختر الورقة التي تريد بناءها» ولا شيءَ في الشاشة يختار.
+    ثمّ صار للاختيار زرٌّ وللبناء زرٌّ آخر، فيمرّ الباحثُ بلوحةٍ وسيطة.
+
+    **والفعلُ الرئيسُ واحدٌ الآن: «ابدأ هذه الورقة».** يختار إن لم تكن
+    مختارة، ثمّ يبني. والقرارُ العلميُّ يُسجَّل بنقطة النهاية نفسِها —
+    ولا يُفترض: الباحثُ هو من نقر.
     """
     source = _component()
-    assert 'data-testid="journey-select-opportunity"' in source
-    assert "/select`" in source, "الزرُّ لا ينادي نقطةَ الاختيار"
-    assert 'opportunity.planning_status !== "selected"' in source, (
+    assert 'data-testid="journey-start-paper"' in source
+    assert "/select`" in source, "الفعلُ لا ينادي نقطةَ الاختيار"
+    assert "/build-paper`" in source, "الفعلُ لا ينادي نقطةَ البناء"
+    assert 'opportunity.planning_status === "selected"' in source, (
         "الشاشةُ لا تقرأ قرارَ الباحث من عموده")
     for locale in ("ar", "en"):
         journey_copy = _messages(locale)["journey"]
-        assert journey_copy["selectCta"], f"{locale}: نصُّ الاختيار مفقود"
-        assert journey_copy["selecting"], f"{locale}: نصُّ الانتظار مفقود"
+        assert journey_copy["startPaper"], f"{locale}: نصُّ الفعل الرئيس مفقود"
+        assert journey_copy["starting"], f"{locale}: نصُّ الانتظار مفقود"
 
 
 def test_the_api_exposes_the_selection_the_card_reads():
@@ -197,13 +212,36 @@ def test_the_card_shows_a_real_count_not_a_score():
     assert 'data-testid="opportunity-provenance"' in source
 
 
-def test_the_build_cta_is_disabled_until_the_server_allows_it():
-    """**والزرُّ يتبع الخادم** — لا تجتهد الشاشةُ في البوّابات."""
+def test_the_screen_never_recomputes_a_gate_the_server_owns():
+    """**والشاشةُ تتبع الخادم** — لا تجتهد في البوّابات.
+
+    **وقد سقط شطرٌ منها عمدًا**: كان الفعلُ الرئيسُ يُعطَّل بـ`!canBuild`،
+    فيقف الباحثُ أمام زرٍّ مطفأٍ بلا مخرج. ثمّ صارت الشاشةُ ترشّح قائمةَ
+    الخادم بقائمةِ بوّاباتٍ «لاحقة» مكتوبةٍ فيها — أي تقرّر أيُّ حدٍّ
+    يسري الآن، فتصير السياسةُ في طرفين يفترقان.
+
+    **فالقرارُ صار حقلًا في العقد**: `current_blocking_reasons`.
+    """
     source = _component()
-    assert "journey?.can_build_paper === true" in source
-    assert "disabled={!canBuild" in source
+    assert "journey?.current_blocking_reasons" in source, (
+        "الشاشةُ لا تقرأ ما يمنع الآن من الخادم")
+    # **ولا قائمةَ بوّاباتٍ مكتوبةً في الشاشة** تقرّر ما يسري.
+    assert "LATER_GATES" not in source
+    # **ولا منطقَ بوّابةٍ يُعاد** — وهذا ما لم يتغيّر.
     for gate in ("overlap_unresolved", "rights_passed", "ai_consent_granted"):
         assert gate not in source, f"منطقُ بوّابةٍ أُعيد في الشاشة: {gate}"
+
+
+def test_no_rights_copy_reaches_the_researcher_on_this_journey():
+    """**ولا نصَّ حقوقٍ في رحلة «رسالة ← ورقة»** (قرارُ منتج)."""
+    source = _component()
+    assert "rights" not in source.lower(), "أثرُ حقوقٍ بقي في شاشة الرحلة"
+    for locale in ("ar", "en"):
+        journey_copy = _messages(locale)["journey"]
+        assert "rightsCta" not in journey_copy
+        assert "rightsWhy" not in journey_copy
+        assert "rights_gate_not_passed" not in journey_copy["blocked"]
+        assert "rights" not in journey_copy["steps"]
 
 
 def test_the_component_parses_as_balanced_source():
