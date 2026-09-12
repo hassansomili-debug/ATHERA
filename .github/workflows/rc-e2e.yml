@@ -105,27 +105,27 @@ jobs:
       # كُتبت حين كان الإنتاج متأخّرًا عن المستودع بترحيلاتٍ عدّة وواجهةُ
       # الموجة تطلب عقودًا أحدث منه؛ فلو أقلعت هذه المهمّة على قاعدةٍ أقدم
       # لأعادت إنتاج العَرَض نفسه، **ولنُسب إلى المنتج ظلمًا**. والحاجةُ
-      # قائمةٌ اليوم كما كانت: الإنتاج عند `0029` وهذا الفرع يطلب `0030`.
+      # قائمةٌ اليوم كما كانت: الإنتاج عند `0032` وهذا الفرع يطلب `0033`.
       #
       # والرقمُ مثبَّتٌ نصًّا هنا **عن قصد**، خلافًا لتدريب الترحيل في
       # `ci.yml` حيث يُشتقّ: هناك السؤال «أوصل التدريبُ إلى رأس المستودع؟»
       # فيُشتقّ الرأس. وهنا السؤال «أهذه بيئةُ الموجة الأولى؟» — وجوابه
       # رقمٌ بعينه اتُّفق عليه، لا «أيًّا كان رأسُ اليوم». ولو أُشتقّ لقال
       # الفحصُ «موافق» على أيّ رأسٍ كان، فلا يحرس شيئًا.
-      - name: Assert the schema head is exactly 0032
+      - name: Assert the schema head is exactly 0033
         env:
           PGPASSWORD: athera_owner_pw
         run: |
           head=$(psql -h localhost -U athera_owner -d athera -tAc \
             "SELECT version_num FROM alembic_version")
-          echo "database head: '$head' · required: '0032'"
-          if [ "$head" != "0032" ]; then
-            echo "::error::the RC database is at schema '$head', not 0032 —"
+          echo "database head: '$head' · required: '0033'"
+          if [ "$head" != "0033" ]; then
+            echo "::error::the RC database is at schema '$head', not 0033 —"
             echo "::error::this is NOT the expected environment, and any result from it"
             echo "::error::would describe version skew, not the product. Refusing to run."
             exit 1
           fi
-          echo "schema head verified: 0032"
+          echo "schema head verified: 0033"
 
       # ── الـAPI: شيفرةُ هذا الفرع، بلا نموذج وبلا سرّ ────────────────
       - name: Start the Wave 1 API (uvicorn, 127.0.0.1:8000)
