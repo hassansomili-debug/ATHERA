@@ -377,6 +377,11 @@ async def load(
 
     questions: list[str] = []
     hypotheses: list[str] = []
+    # **ومعرّفُ الحقيقة يُحفظ إلى جانب نصّها** — كما تفعل النتائجُ منذ
+    # البداية. وبدونه لا تعرف فكرةٌ قامت على سؤالٍ أيَّ `FactCandidate`
+    # سوّغها، فتنقطع سلسلةُ الإسناد عند النصّ المنسوخ.
+    question_refs: list[tuple[str, str]] = []
+    hypothesis_refs: list[tuple[str, str]] = []
     variables: list[str] = []
     construct_refs: list[str] = []
     instruments: list[tuple[str, str]] = []
@@ -422,8 +427,10 @@ async def load(
             approved_used += 1
         if key == KEY_QUESTIONS:
             questions.extend(texts)
+            question_refs.extend((ref, text) for text in texts)
         elif key == KEY_HYPOTHESES:
             hypotheses.extend(texts)
+            hypothesis_refs.extend((ref, text) for text in texts)
         elif key == KEY_CONSTRUCTS:
             variables.extend(texts)
             # **ومعرّفُ الحقيقة يُحفظ إلى جانب نصّها** — فالمقترحُ يُسنَد
@@ -444,6 +451,8 @@ async def load(
         title_is_scientific_evidence=bool(title and title.is_scientific_evidence),
         questions=tuple(dict.fromkeys(questions)),
         hypotheses=tuple(dict.fromkeys(hypotheses)),
+        question_refs=tuple(dict.fromkeys(question_refs)),
+        hypothesis_refs=tuple(dict.fromkeys(hypothesis_refs)),
         results=tuple(dict.fromkeys(results)),
         instruments=tuple(dict.fromkeys(instruments)),
         variables=tuple(dict.fromkeys(variables)),

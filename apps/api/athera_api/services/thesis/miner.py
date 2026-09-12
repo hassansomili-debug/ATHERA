@@ -15,6 +15,46 @@ from typing import Final
 from .vocab import OPPORTUNITY_KINDS, PAPER_KINDS
 
 
+# ═════════ الاكتشافُ طبقة، والاكتمالُ طبقةٌ أخرى ═════════
+#
+# **سؤالان لا سؤال، وخلطُهما هو ما ردّ الباحثَ بصفر.**
+#
+#   ‏«اقرأ رسالتي وقل لي أيَّ الأوراق يمكن أن تُشتقّ منها؟»
+#   ‏«هل لهذه الورقة من الأدلّة ما يكفي للصياغة الآمنة؟»
+#
+# والثاني قرارٌ **لاحق**. وكان شرطُ الثاني — بناءٌ وعيّنةٌ معًا — مفروضًا
+# على الأول، فرسالةٌ فيها نتيجةٌ قويّةٌ مؤصَّلة بلا وصفِ عيّنةٍ مستخرَج
+# تخرج بصفرِ أفكار. وغيابُ السياق لا يمحو الفكرة؛ يجعلها **ناقصةً معلنةً**.
+#
+# فالمستوى يُقال في البيانات، ولا يُترك للقارئ يستنتجه.
+
+#: **فكرةٌ مؤصَّلة، وسياقُها ناقص** — تُعرض ولا يُدَّعى أنّها جاهزة.
+LEVEL_IDEA_ONLY: Final = "idea_only"
+#: **مؤصَّلةٌ ومعها سياقُ التطوير**: بناءٌ وعيّنة.
+LEVEL_CONTEXT_COMPLETE: Final = "context_complete"
+DISCOVERY_LEVELS: Final = (LEVEL_IDEA_ONLY, LEVEL_CONTEXT_COMPLETE)
+
+#: المرتكزُ العلميّ الذي قامت عليه الفكرة — **واحدٌ منها لازم**.
+BASIS_RESULT: Final = "primary_finding"
+BASIS_QUESTION: Final = "research_question"
+BASIS_INSTRUMENT: Final = "instrument"
+BASIS_QUALITATIVE: Final = "qualitative_theme"
+BASIS_NULL_RESULT: Final = "null_or_unexpected_result"
+DISCOVERY_BASES: Final = (
+    BASIS_RESULT, BASIS_QUESTION, BASIS_INSTRUMENT,
+    BASIS_QUALITATIVE, BASIS_NULL_RESULT,
+)
+
+#: ما ينقص **من سياق التطوير** — لا من المرتكز.
+#:
+#: والمرتكزُ يُقال في `basis` لا هنا: فكرةٌ قامت على سؤالٍ ليست «ناقصةَ
+#: سؤال». وهذه القائمةُ تصف ما يلزم لتطويرها بأمان، وهو ما عرّفته الطبقةُ
+#: الثانية: بناءٌ وعيّنة.
+MISSING_CONSTRUCTS: Final = "constructs"
+MISSING_SAMPLE: Final = "sample"
+MISSING_CONTEXT_KINDS: Final = (MISSING_CONSTRUCTS, MISSING_SAMPLE)
+
+
 @dataclass(frozen=True, slots=True)
 class ThesisFacts:
     """ما استُخرج من الرسالة — مدخل المنقّب."""
@@ -35,6 +75,17 @@ class ThesisFacts:
     title_is_scientific_evidence: bool = False
     questions: tuple[str, ...] = ()
     hypotheses: tuple[str, ...] = ()
+    #: ‏**(معرّف الحقيقة، النصّ)** للأسئلة والفرضيات — تتبُّعُ المصدر.
+    #:
+    #: و`questions` أعلاه نصوصٌ وحدها، فكانت الفكرةُ القائمةُ على سؤالٍ
+    #: **لا تعرف أيَّ `FactCandidate` سوّغها** — بينما النتائجُ تحفظ
+    #: معرّفاتِها منذ البداية. وفقدُ المعرّف فقدُ سلسلةِ الإسناد: لا اقتباسَ
+    #: يُعاد إليه، ولا موضعَ يُفتح للباحث.
+    #:
+    #: **ولا يُحشر معرّفُ سؤالٍ في `result_refs`**: ذاك عمودُ نتائج، وخلطُه
+    #: يجعل فكرةً بلا نتيجةٍ تبدو كأنّ لها واحدة.
+    question_refs: tuple[tuple[str, str], ...] = ()
+    hypothesis_refs: tuple[tuple[str, str], ...] = ()
     results: tuple[tuple[str, str], ...] = ()      # (result_id, label)
     instruments: tuple[tuple[str, str], ...] = ()  # (instrument_id, label)
     variables: tuple[str, ...] = ()
@@ -49,6 +100,18 @@ class ThesisFacts:
     qualitative_phases: tuple[str, ...] = ()
     null_result_ids: tuple[str, ...] = ()
     published_result_ids: tuple[str, ...] = ()
+    #: **أمراجعُ هذه الوقائع `FactCandidate` كنسيّة؟**
+    #:
+    #: والمسارُ القديم (`ThesisSection`/`ThesisResult`) يُمرّر معرّفاتِ صفوفه
+    #: هو، وهي ليست حقائقَ مرشّحة: لا اقتباسَ لها ولا موضعَ ولا مقطع. ففكرةُ
+    #: اكتشافٍ مبنيّةٌ عليها **لا تستطيع أن تُثبت إسنادها** — وإثباتُ الإسناد
+    #: شرطُ الاكتشاف لا زينتُه.
+    #:
+    #: **وفيه عيبٌ آخر أقدم:** المسارُ القديم يكتب `sample_ids={thesis_id}`،
+    #: أي يجعل معرّفَ الرسالة عيّنةً لها. فلو جرى الاكتشافُ عليه لقال
+    #: «سياقُ العيّنة مكتمل» عن عيّنةٍ لا وجود لها. ولا يُصلَح ذاك هنا —
+    #: يُحاط: الاكتشافُ للكنسيّ وحده، والقديمُ يبقى كما كان بلا زيادة.
+    evidence_is_canonical: bool = True
 
 
 @dataclass(slots=True)
@@ -63,12 +126,41 @@ class OpportunityDraft:
     variable_refs: list[str] = field(default_factory=list)
     sample_refs: list[str] = field(default_factory=list)
     published_output_refs: list[str] = field(default_factory=list)
+    #: **معرّفاتُ الحقائق التي سوّغت هذه الفكرة** — أيًّا كان حقلُها.
+    #:
+    #: و`result_refs` عمودُ نتائجَ بعينها، فلا يُحشر فيه معرّفُ سؤال. وهذا
+    #: عامٌّ: به تُردّ كلُّ فكرةٍ إلى `FactCandidate` قائم، ومنه إلى مقطعه
+    #: واقتباسِه وموضعه.
+    source_fact_refs: list[str] = field(default_factory=list)
+    #: مستوى الاكتشاف ومرتكزُه وما ينقص من سياقه — تُقال، ولا تُستنتج.
+    discovery_level: str = LEVEL_CONTEXT_COMPLETE
+    discovery_basis: str = BASIS_RESULT
+    missing_context: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.opportunity_kind not in OPPORTUNITY_KINDS:
             raise ValueError(f"unknown opportunity kind: {self.opportunity_kind}")
         if self.paper_kind not in PAPER_KINDS:
             raise ValueError(f"unknown paper kind: {self.paper_kind}")
+        if self.discovery_level not in DISCOVERY_LEVELS:
+            raise ValueError(f"unknown discovery level: {self.discovery_level}")
+        if self.discovery_basis not in DISCOVERY_BASES:
+            raise ValueError(f"unknown discovery basis: {self.discovery_basis}")
+        for gap in self.missing_context:
+            if gap not in MISSING_CONTEXT_KINDS:
+                raise ValueError(f"unknown missing-context kind: {gap}")
+        # **ولا فكرةَ بلا مصدر.** فكرةٌ لا تعرف ما سوّغها لا تُثبت إسنادها،
+        # ولا يستطيع الباحثُ أن يسألها: «من أين جئتِ؟»
+        if not self.source_fact_refs:
+            raise ValueError(
+                f"an opportunity draft must name the facts that justify it "
+                f"(kind={self.opportunity_kind!r})")
+        # واتّساقُ المستوى مع ما ينقص — فلا «مكتملة» ومعها نقص.
+        complete = not self.missing_context
+        if complete != (self.discovery_level == LEVEL_CONTEXT_COMPLETE):
+            raise ValueError(
+                f"discovery level {self.discovery_level!r} contradicts "
+                f"missing_context {self.missing_context!r}")
 
 
 _SCALE_MARKERS = re.compile(r"(مقياس|استبانة جديدة|أداة مطورة|scale|instrument development)",
@@ -81,10 +173,32 @@ _COMPARATIVE_MARKERS = re.compile(r"(مقارنة|الفروق بين|comparativ
                                   re.IGNORECASE)
 
 
+def context_gaps(facts: ThesisFacts) -> list[str]:
+    """ما ينقص من **سياق التطوير** — بناءٌ وعيّنة، لا المرتكز.
+
+    وهو شرطُ الطبقة الثانية بعينه، مقروءًا نقصًا بدل أن يكون بوّابةً صامتة.
+    """
+    gaps: list[str] = []
+    if not facts.construct_refs:
+        gaps.append(MISSING_CONSTRUCTS)
+    if not facts.sample_ids:
+        gaps.append(MISSING_SAMPLE)
+    return gaps
+
+
+def _level_for(gaps: list[str]) -> str:
+    return LEVEL_CONTEXT_COMPLETE if not gaps else LEVEL_IDEA_ONLY
+
+
 def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
     """يقترح فرصًا مؤصَّلة في عناصر الرسالة. القائمة الفارغة نتيجة صحيحة."""
     drafts: list[OpportunityDraft] = []
     unpublished = [rid for rid, _ in facts.results if rid not in facts.published_result_ids]
+    # **ونقصُ السياق يُقاس مرّةً على الرسالة**، ثمّ يُنسَب إلى كلّ مقترح:
+    # فهو وصفُ ما استُخرج من الرسالة، لا وصفُ المقترح وحده.
+    gaps = context_gaps(facts)
+    level = _level_for(gaps)
+    questions_by_text = {text: fid for fid, text in facts.question_refs}
 
     # 1. سؤال مستقل — لكل سؤال بحثي له نتائج غير منشورة.
     for index, question in enumerate(facts.questions, start=1):
@@ -100,6 +214,13 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
             result_refs=list(related), variable_refs=list(facts.variables),
             sample_refs=list(facts.sample_ids),
             published_output_refs=list(facts.published_result_ids),
+            # مصدرُه السؤالُ **ونتيجتُه** — ومعرّفُ السؤال من `question_refs`
+            # لا من `result_refs`.
+            source_fact_refs=(
+                ([questions_by_text[question]] if question in questions_by_text else [])
+                + list(related)),
+            discovery_level=level, discovery_basis=BASIS_QUESTION,
+            missing_context=list(gaps),
         ))
 
     # 4. ورقة بناء مقياس — إن طُوِّرت أداة داخل الرسالة.
@@ -113,6 +234,9 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
                 rationale_en="A measurement instrument developed in the thesis merits its own paper.",
                 variable_refs=list(facts.variables), sample_refs=list(facts.sample_ids),
                 result_refs=[instrument_id],
+                source_fact_refs=[instrument_id],
+                discovery_level=level, discovery_basis=BASIS_INSTRUMENT,
+                missing_context=list(gaps),
             ))
 
     # 3. مرحلة كيفية مستقلة.
@@ -124,6 +248,9 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
             rationale_ar="مرحلة كيفية لها سؤالها ومنهجها وتصلح ورقة قائمة بذاتها.",
             rationale_en="A qualitative phase with its own question and method can stand alone.",
             sample_refs=list(facts.sample_ids),
+            source_fact_refs=[phase],
+            discovery_level=level, discovery_basis=BASIS_QUALITATIVE,
+            missing_context=list(gaps),
         ))
 
     # 8. نتائج سالبة أو غير متوقعة — قيمتها العلمية أن تُنشر لا أن تُهمل.
@@ -135,6 +262,9 @@ def mine(facts: ThesisFacts) -> list[OpportunityDraft]:
             rationale_ar="نتائج غير دالة أو مخالفة للتوقع، ونشرها يقلل انحياز النشر.",
             rationale_en="Null or unexpected results; publishing them reduces publication bias.",
             result_refs=list(facts.null_result_ids), sample_refs=list(facts.sample_ids),
+            source_fact_refs=list(facts.null_result_ids),
+            discovery_level=level, discovery_basis=BASIS_NULL_RESULT,
+            missing_context=list(gaps),
         ))
 
     # ٩ب — **مقترحٌ محافظٌ واحد حين لا يقوم شكلٌ متخصّص.**
@@ -179,9 +309,23 @@ def _fallback_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[Opportu
     """
     constructs = list(facts.construct_refs)
     samples = list(facts.sample_ids)
-    # سياقٌ لازمٌ للطبقتين: بناءٌ **وعيّنة** معًا — لا أحدهما.
-    if not constructs or not samples:
-        return []
+    gaps = context_gaps(facts)
+
+    # ── والسياقُ الناقص لم يعد يمحو الفكرة ──
+    #
+    # **كان هذا السطرُ `return []`.** بناءٌ وعيّنةٌ معًا شرطًا للوجود، لا
+    # للاكتمال. فرسالةٌ فيها نتيجةٌ قويّةٌ مؤصَّلةٌ مؤهَّلةٌ آليًّا، ولم
+    # يُستخرَج منها وصفُ عيّنة، كانت تُردّ بصفرِ أفكار — والباحثُ سأل
+    # «أيَّ الأوراق يمكن أن تُشتقّ من رسالتي؟» لا «أيُّها جاهزٌ للصياغة؟».
+    #
+    # فالشرطُ باقٍ **بمعناه في موضعه**: هو ما يفصل `context_complete` عن
+    # `idea_only`، لا ما يفصل الوجودَ عن العدم.
+    if gaps:
+        # **وللكنسيّ وحده**: القديمُ لا يحمل إسنادًا يُثبَت، وعيّنتُه
+        # مصطنَعة. فيبقى على ما كان — صفرٌ صادقٌ عنه، لا فكرةٌ لا تُسنَد.
+        if not facts.evidence_is_canonical:
+            return []
+        return _preliminary_draft(facts, unpublished, gaps)
 
     # ── (أ) استخلاصٌ مؤصَّل: نتيجةٌ قائمة هي الأساس ──
     if unpublished:
@@ -199,12 +343,15 @@ def _fallback_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[Opportu
             result_refs=list(unpublished),
             variable_refs=constructs,
             sample_refs=samples,
+            source_fact_refs=list(unpublished),
+            discovery_level=LEVEL_CONTEXT_COMPLETE, discovery_basis=BASIS_RESULT,
+            missing_context=[],
         )]
 
     # ── (ب) امتدادٌ مؤصَّل: سؤالٌ مستخرَجٌ هو الأساس، ولا نتيجةَ تُدَّعى ──
-    if not facts.questions:
+    if not facts.question_refs:
         return []
-    question = facts.questions[0]
+    question_id, question = facts.question_refs[0]
     return [OpportunityDraft(
         opportunity_kind="extension", paper_kind="extension",
         working_title_ar=f"امتداد بحثي للسؤال: {question[:80]}",
@@ -219,9 +366,73 @@ def _fallback_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[Opportu
                      "sample. It does not claim the thesis already contains a result "
                      "for this extension; literature validation or further analysis "
                      "may be required.",
+        # **ولا نتيجةَ تُدَّعى**: العمودُ فارغٌ صدقًا، والمصدرُ هو السؤال.
         result_refs=[],
         variable_refs=constructs,
         sample_refs=samples,
+        source_fact_refs=[question_id],
+        discovery_level=LEVEL_CONTEXT_COMPLETE, discovery_basis=BASIS_QUESTION,
+        missing_context=[],
+    )]
+
+
+def _preliminary_draft(
+    facts: ThesisFacts, unpublished: list[str], gaps: list[str],
+) -> list[OpportunityDraft]:
+    """**فكرةٌ واحدةٌ محافظة حين يقوم المرتكزُ وينقص السياق.**
+
+    وواحدةٌ لا أكثر: بابُ الاكتشاف ليس بابَ توليدٍ تخميني. وتقع بعد كلّ
+    شكلٍ متخصّص ولا تقع إن قام منها شيء — فلا تُكرَّر فكرةٌ قائمة.
+
+    ومفرداتُها `extension` لا `sub_model`: الثانيةُ تَعِد بنموذجٍ فرعيٍّ
+    مكتمل، وهذه مبدئيّةٌ بإقرارها. والنقصُ يُقال في `missing_context`
+    ويُكتب في بيانات الفرصة، فلا يُقرأ اكتمالًا.
+    """
+    if unpublished:
+        # ‏(ج١) نتيجةٌ مؤهَّلةٌ قائمة — والسياقُ وحده ناقص.
+        anchor = facts.title[:60] if facts.title else "نتيجةٍ مستخرَجة"
+        return [OpportunityDraft(
+            opportunity_kind="extension", paper_kind="extension",
+            working_title_ar=f"فكرة ورقة مبدئية من {anchor}",
+            research_question_ar=None,
+            rationale_ar="فكرةُ ورقةٍ **مبدئية**، مؤصَّلةٌ في نتيجةٍ مستخرَجة "
+                         "من الرسالة. **وسياقُها غيرُ مكتمل**: يلزم تأكيدُ "
+                         "العيّنة أو البُنى قبل التطوير، ولم يُفترض منها شيء.",
+            rationale_en="A preliminary paper idea, grounded in a finding extracted "
+                         "from the thesis. Its context is incomplete: the sample or "
+                         "constructs need confirmation before development, and "
+                         "nothing about them has been assumed.",
+            result_refs=list(unpublished),
+            variable_refs=list(facts.construct_refs),
+            sample_refs=list(facts.sample_ids),
+            source_fact_refs=list(unpublished),
+            discovery_level=LEVEL_IDEA_ONLY, discovery_basis=BASIS_RESULT,
+            missing_context=list(gaps),
+        )]
+
+    # ‏(ج٢) سؤالٌ مؤهَّلٌ قائم، ولا نتيجةَ — ويُقال ذلك صراحةً.
+    if not facts.question_refs:
+        return []
+    question_id, question = facts.question_refs[0]
+    return [OpportunityDraft(
+        opportunity_kind="extension", paper_kind="extension",
+        working_title_ar=f"فكرة امتداد مبدئية للسؤال: {question[:70]}",
+        research_question_ar=question,
+        rationale_ar="فكرةُ امتدادٍ **مبدئية**، مؤصَّلةٌ في سؤالٍ مستخرَج من "
+                     "الرسالة. **ولا تدّعي أنّ الرسالة تحمل نتيجةً لهذا "
+                     "السؤال** — ولا نتيجةَ مؤهَّلةً استُخرجت أصلًا. "
+                     "**وسياقُها غيرُ مكتمل**: يلزم تأكيدُ العيّنة أو البُنى.",
+        rationale_en="A preliminary extension idea, grounded in a question extracted "
+                     "from the thesis. It does not claim the thesis holds a result "
+                     "for this question — no eligible result was extracted at all. "
+                     "Its context is incomplete: the sample or constructs need "
+                     "confirmation.",
+        result_refs=[],
+        variable_refs=list(facts.construct_refs),
+        sample_refs=list(facts.sample_ids),
+        source_fact_refs=[question_id],
+        discovery_level=LEVEL_IDEA_ONLY, discovery_basis=BASIS_QUESTION,
+        missing_context=list(gaps),
     )]
 
 
@@ -266,6 +477,14 @@ def _titled_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[Opportuni
     if not facts.title:
         return []
     haystack = _marker_haystack(facts)
+    gaps = context_gaps(facts)
+    level = _level_for(gaps)
+    # **ومرتكزُ هذه الأربعة إشارةٌ في سؤالٍ أو فرضية، أو بُنًى وعيّنة** —
+    # لا العنوان. فمصدرُها ما قام عليه فعلًا: نتائجُها إن وُجدت، وإلّا
+    # أسئلتُها وفرضياتُها. ولا تقوم على عنوانٍ وحده (انظر `_marker_haystack`).
+    anchors = list(unpublished) or [fid for fid, _ in facts.question_refs] \
+        or [fid for fid, _ in facts.hypothesis_refs]
+    basis = BASIS_RESULT if unpublished else BASIS_QUESTION
     drafts = [
         OpportunityDraft(
             opportunity_kind=kind, paper_kind="extraction",
@@ -275,10 +494,14 @@ def _titled_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[Opportuni
             rationale_en="The thesis explicitly signals this line of enquiry.",
             result_refs=list(unpublished), variable_refs=list(facts.variables),
             sample_refs=list(facts.sample_ids),
+            source_fact_refs=list(anchors),
+            discovery_level=level, discovery_basis=basis,
+            missing_context=list(gaps),
         )
-        for pattern, kind, label in _TITLED_KINDS if pattern.search(haystack)
+        for pattern, kind, label in _TITLED_KINDS
+        if pattern.search(haystack) and anchors
     ]
-    if _secondary_analysis_fits(facts):
+    if _secondary_analysis_fits(facts) and anchors:
         drafts.append(OpportunityDraft(
             opportunity_kind="secondary_analysis", paper_kind="extension",
             working_title_ar=f"تحليل ثانوي على بيانات: {facts.title[:60]}",
@@ -286,6 +509,9 @@ def _titled_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[Opportuni
             rationale_ar="تسمح البيانات بسؤال جديد لم تختبره الرسالة.",
             rationale_en="The data supports a new question the thesis did not test.",
             variable_refs=list(facts.variables), sample_refs=list(facts.sample_ids),
+            source_fact_refs=list(anchors),
+            discovery_level=level, discovery_basis=basis,
+            missing_context=list(gaps),
         ))
     return drafts
 

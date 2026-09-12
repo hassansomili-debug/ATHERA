@@ -1910,25 +1910,48 @@ async def test_a_support_only_title_alone_mines_nothing(two_tenants):
 
 
 def test_the_conservative_fallback_needs_a_real_result_not_a_title():
-    """**٧ · لا اختلاق.** العنوانُ لا يكفي، والنتيجةُ هي المُنشئ.
+    """**٧ · لا اختلاق.** العنوانُ لا يكفي، والمرتكزُ العلميُّ هو المُنشئ.
 
     وهو البابُ نفسه الذي أُغلق في `_marker_haystack`؛ فلو فُتح من جهة
     المقترح المحافظ لعاد العطبُ بابًا آخر.
+
+    **وقد تغيّر شطرٌ من هذا العقد عمدًا** (فصلُ الاكتشاف عن الاكتمال):
+    نقصُ السياق لم يعد يمحو الفكرة، بل يصفها `idea_only` ويُسمّي ما ينقص.
+    والذي **لم** يتغيّر هو ما يحرسه هذا الفحصُ أصلًا: لا فكرةَ بلا مرتكزٍ
+    علميّ، ولا عنوانَ يُختلق لتسمية واحدة.
     """
     from athera_api.services.thesis import miner
 
     title = "Determinants of brand trust in digital services"
+    # ‏(أ) عنوانٌ وسياقٌ كاملان بلا مرتكزٍ علميّ — **صفرٌ كما كان وكما يبقى**.
     only_title = miner.ThesisFacts(thesis_id=str(uuid.uuid4()), title=title,
                                    construct_refs=("c1",), sample_ids=("s1",))
-    assert miner.mine(only_title) == [], "عنوانٌ وسياقٌ بلا نتيجة أنتج مقترحًا"
+    assert miner.mine(only_title) == [], "عنوانٌ وسياقٌ بلا مرتكزٍ أنتج مقترحًا"
 
+    # ‏(ب) نتيجةٌ مؤهَّلة بلا عيّنة: **فكرةٌ واحدةٌ مبدئية، لا صفر**.
     only_result = miner.ThesisFacts(thesis_id=str(uuid.uuid4()),
                                     results=(("r1", "نتيجة"),), construct_refs=("c1",))
-    assert miner.mine(only_result) == [], "نتيجةٌ بلا عنوان أنتجت مقترحًا يُسمّى باختلاق"
+    drafts = miner.mine(only_result)
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft.discovery_level == miner.LEVEL_IDEA_ONLY
+    assert draft.discovery_basis == miner.BASIS_RESULT
+    assert draft.missing_context == [miner.MISSING_SAMPLE]
+    assert draft.source_fact_refs == ["r1"]
+    # **ولا عنوانَ يُختلق** — وهذه هي دعوى هذا الفحص الأصلية، باقيةً.
+    assert title not in draft.working_title_ar
+    assert "نتيجةٍ مستخرَجة" in draft.working_title_ar
+    # ولا عيّنةَ تُصطنع لتملأ الفراغ.
+    assert draft.sample_refs == []
 
+    # ‏(ج) نتيجةٌ وعنوانٌ بلا بناءٍ ولا عيّنة: فكرةٌ مبدئيةٌ تُسمّي النقصين.
     no_context = miner.ThesisFacts(thesis_id=str(uuid.uuid4()), title=title,
                                    results=(("r1", "نتيجة"),))
-    assert miner.mine(no_context) == [], "بلا بناءٍ ولا عيّنة تكوّن مقترح"
+    drafts = miner.mine(no_context)
+    assert len(drafts) == 1
+    assert drafts[0].discovery_level == miner.LEVEL_IDEA_ONLY
+    assert drafts[0].missing_context == [miner.MISSING_CONSTRUCTS, miner.MISSING_SAMPLE]
+    assert drafts[0].variable_refs == [] and drafts[0].sample_refs == []
 
 
 def test_the_conservative_fallback_produces_exactly_one_grounded_opportunity():
