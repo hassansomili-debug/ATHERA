@@ -82,14 +82,24 @@ FIELD_CATALOGUE: Final[tuple[FieldSpec, ...]] = (
     _f("objectives", Section.PROBLEM, "أهداف الدراسة", "Objectives", Method.MODEL,
        ("أهداف الدراسة", "تهدف الدراسة"), ("objectives", "aims"), multi=True),
     _f("questions", Section.QUESTIONS, "أسئلة الدراسة", "Research questions", Method.MODEL,
-       ("أسئلة الدراسة", "تساؤلات"), ("research questions",), multi=True),
+       ("أسئلة الدراسة", "تساؤلات", "سؤال الدراسة"),
+       # **المفردُ يلتقط الجمعَ ولا عكس.** «research questions» يحوي
+       # «research question»، فالمفردُ أوسعُ تغطيةً بحرفٍ واحد أقلّ. وقد
+       # كان الدليلُ الإنجليزيّ الوحيد هو الجمع، والرسالةُ الحقيقية تقول
+       # «research question» ثلاثَ مرّات ولا تقول الجمعَ مرّةً واحدة —
+       # فخرجت أسئلةُ الدراسة بصفرِ مقاطع، ولم يرَ النموذجُ منها شيئًا.
+       ("research question", "study question"), multi=True),
     _f("hypotheses", Section.QUESTIONS, "الفروض", "Hypotheses", Method.MODEL,
        ("فرضيات", "فروض الدراسة"), ("hypotheses", "hypothesis"), multi=True),
     _f("theoretical_framework", Section.THEORY, "الإطار النظري", "Theoretical framework", Method.MODEL,
        ("الإطار النظري", "نظرية"), ("theoretical framework", "theory")),
     _f("constructs", Section.THEORY, "المتغيرات والبناءات", "Constructs and variables", Method.MODEL,
-       ("المتغيرات", "المتغير المستقل", "المتغير التابع"),
-       ("variables", "independent variable", "dependent variable"), multi=True),
+       ("المتغيرات", "المتغير المستقل", "المتغير التابع", "البناء النظري"),
+       # **و«construct» لم يكن دليلًا قطّ** — والرسالةُ الحقيقية تقوله
+       # أربعَ عشرةَ مرّة ولا تقول «constructs» مرّةً واحدة. والمفردُ
+       # يلتقط الجمعَ، و«variable» تلتقط «variables» وأختيها.
+       ("construct", "variable", "latent", "moderating", "mediating"),
+       multi=True),
 
     # ── §12 المنهجية ──
     _f("design", Section.METHODOLOGY, "تصميم الدراسة", "Research design", Method.MODEL,
@@ -97,11 +107,17 @@ FIELD_CATALOGUE: Final[tuple[FieldSpec, ...]] = (
     _f("approach", Section.METHODOLOGY, "النوع (كمي/كيفي/مختلط)", "Approach", Method.MODEL,
        ("كمي", "كيفي", "مختلط"), ("quantitative", "qualitative", "mixed methods")),
     _f("population", Section.METHODOLOGY, "مجتمع الدراسة", "Population", Method.MODEL,
-       ("مجتمع الدراسة",), ("population",)),
+       ("مجتمع الدراسة",), ("population", "target group")),
     _f("sample_size", Section.METHODOLOGY, "حجم العينة", "Sample size", Method.MODEL,
-       ("حجم العينة", "بلغ عدد"), ("sample size", "n =")),
+       ("حجم العينة", "بلغ عدد"),
+       # و«participants» و«respondents» وصفُ عيّنةٍ قياسيّ، والرسالةُ
+       # الحقيقية تقول الأولى خمسَ مرّات ولا تقول «sample size» قطّ.
+       ("sample size", "n =", "participants", "respondents", "sample of")),
     _f("sampling", Section.METHODOLOGY, "أسلوب المعاينة", "Sampling technique", Method.MODEL,
-       ("أسلوب العينة", "العينة العشوائية"), ("sampling technique", "random sample")),
+       ("أسلوب العينة", "العينة العشوائية", "المعاينة"),
+       # و«sampling» مفردةً تلتقط «purposive sampling» و«sampling procedure»
+       # وأخواتِها — وكان الدليلُ مقيَّدًا بعبارتين بعينهما لا تردان كثيرًا.
+       ("sampling", "purposive", "convenience sample", "snowball")),
     _f("instruments", Section.METHODOLOGY, "أدوات جمع البيانات", "Instruments", Method.MODEL,
        ("الاستبانة", "أداة الدراسة", "المقابلة"), ("questionnaire", "instrument", "interview"), multi=True),
     _f("validity", Section.METHODOLOGY, "إجراءات الصدق", "Validity procedures", Method.MODEL,
@@ -119,7 +135,9 @@ FIELD_CATALOGUE: Final[tuple[FieldSpec, ...]] = (
     _f("hypothesis_results", Section.FINDINGS, "نتائج الفروض", "Hypothesis results", Method.MODEL,
        ("قبول الفرض", "رفض الفرض"), ("supported", "rejected hypothesis"), multi=True),
     _f("qualitative_themes", Section.FINDINGS, "الثيمات الكيفية", "Qualitative themes", Method.MODEL,
-       ("الثيمات", "المحاور"), ("themes",), multi=True),
+       ("الثيمات", "المحاور"),
+       # المفردُ «theme» يلتقط «themes» — والرسالةُ تقول المفردَ سبعًا.
+       ("theme", "thematic"), multi=True),
 
     # ── §14 الحدود والتوصيات ──
     _f("limitations", Section.LIMITS, "حدود الدراسة", "Limitations", Method.MODEL,
