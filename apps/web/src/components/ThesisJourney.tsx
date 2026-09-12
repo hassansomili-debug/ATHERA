@@ -166,31 +166,6 @@ export function ThesisJourney({
   }
 
   /**
-   * **قرارُ الباحث، وهو أوّلُ قرارٍ علميّ في الرحلة.**
-   *
-   * ولم يكن له زرٌّ ولا نقطةُ نهاية: تقف الرحلةُ عند «اختر الورقة التي
-   * تريد بناءها» وتطلب فعلًا لا سبيل إليه.
-   */
-  function select(opportunityId: string) {
-    return act(opportunityId, async () => {
-      await apiFetch(
-        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/select`,
-        { method: "POST", locale, body: JSON.stringify({ decision: "select" }) });
-    });
-  }
-
-  function build(opportunityId: string) {
-    return act(opportunityId, async () => {
-      const result = await apiFetch<BuildResult>(
-        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/build-paper`,
-        { method: "POST", locale });
-      setManuscripts((current) => ({
-        ...current, [opportunityId]: result.manuscript_id,
-      }));
-    });
-  }
-
-  /**
    * بناءُ الخيط الذهبيّ — **بنقطةِ النهاية القائمة، ولا منطقَ يُعاد هنا**.
    *
    * والباحثُ لا يُطلب منه أن يزور شاشةَ الخيط بنفسه ويجمع مشروعَه: الفعلُ
@@ -205,13 +180,51 @@ export function ThesisJourney({
     });
   }
 
+  /**
+   * **ابدأ هذه الورقة — فعلٌ واحد يقطع الطريقَ المسدود.**
+   *
+   * وكان على الباحث أن يختار، ثمّ يعود إلى لوحةِ الرحلة، ثمّ يجد زرَّ
+   * البناء معطّلًا يقول «استكمل الحقوق والتأليف» — ولا مخرجَ منه. وذاك
+   * حدٌّ في غير موضعه: الهيكلُ حتميّ، ولا يُرسل حرفًا ولا يُعلن جاهزيةً.
+   *
+   * فالنقرةُ الواحدة تفعل ما كان يُطلب في ثلاث: تختار إن لم تكن مختارة،
+   * ثمّ تبني. **ولا يُفترض قرارٌ علميّ**: الاختيارُ يُسجَّل كما يسجّله
+   * المسارُ الصريح، بفاعله وسببه، ويبقى قرارَ الباحث لأنّه هو من نقر.
+   */
+  function startPaper(opportunityId: string, alreadySelected: boolean) {
+    return act(opportunityId, async () => {
+      // **والقرارُ العلميُّ يُسجَّل كما يسجّله المسارُ الصريح** — نقطةُ
+      // النهاية نفسُها، بفاعلها وقرارها. ولا يُفترض: الباحثُ هو من نقر.
+      if (!alreadySelected) {
+        await apiFetch(
+          `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/select`,
+          { method: "POST", locale, body: JSON.stringify({ decision: "select" }) });
+      }
+      const result = await apiFetch<BuildResult>(
+        `/api/v1/theses/${thesisId}/opportunities/${opportunityId}/build-paper`,
+        { method: "POST", locale });
+      setManuscripts((current) => ({
+        ...current, [opportunityId]: result.manuscript_id,
+      }));
+    });
+  }
+
   /** مخطوطةُ **هذه** الفرصة — أو لا شيء. ولا تُقرأ مخطوطةُ جارتها. */
   function manuscriptOf(opportunityId: string): string | undefined {
     return manuscripts[opportunityId];
   }
 
   const current = journey ? (STEP_OF_STATE[journey.state] ?? 0) : 0;
-  const canBuild = journey?.can_build_paper === true;
+  // **والحقوقُ حين تلزم، يُعرض لها فعلٌ يُنقر.** وزرٌّ معطّلٌ بلا مخرج
+  // يترك الباحثَ يبحث في وحدةٍ أخرى عمّا يفتح له الطريق.
+  const rightsRequired = journey?.blocking_reasons.includes(
+    "rights_gate_not_passed") === true;
+  // **وما يمنع الآن وحده**: الحقوقُ والإذنُ حدّان لخطوةٍ قادمة، لا لهذه.
+  // ولا تُعاد حسابُهما في الشاشة — تُرشَّح رموزُ الخادم كما أرسلها.
+  const LATER_GATES = ["rights_gate_not_passed", "ai_consent_required",
+                       "ai_consent_stale"];
+  const blockingNow = (journey?.blocking_reasons ?? [])
+    .filter((reason) => !LATER_GATES.includes(reason));
   const canBuildThread = journey?.can_build_thread === true;
   const threadReady = journey?.thread_ready === true;
 
@@ -261,14 +274,17 @@ export function ThesisJourney({
         })}
       </ol>
 
-      {/* ── ما ينتظر الآن: رمزُ الخادم يُترجَم إلى لغة الباحث ── */}
-      {journey && journey.blocking_reasons.length > 0 ? (
+      {/* ── ما ينتظر **الآن**: رمزُ الخادم يُترجَم إلى لغة الباحث ──
+          **وقائمةٌ تقول «استكمل الحقوق أولًا» فوق زرٍّ يعمل تناقض.**
+          فالحقوقُ والإذنُ لا يمنعان الفعلَ الرئيس، وموضعُهما أدناه مع
+          سببِ لزومهما ووقتِه. ويبقى هنا ما يمنع الآن فعلًا. */}
+      {blockingNow.length > 0 ? (
         <ul
           data-testid="journey-blocked"
           className="metric-label"
           style={{ margin: 0, paddingInlineStart: 18 }}
         >
-          {journey.blocking_reasons.map((reason) => (
+          {blockingNow.map((reason) => (
             <li key={reason}>{t(`journey.blocked.${reason}`)}</li>
           ))}
         </ul>
@@ -282,6 +298,30 @@ export function ThesisJourney({
           «لا فرص أوراق بعد» دعوى معرفة، و«تعذّر التحميل» إعلانُ أنّ
           المعرفة لم تُتَح. وقائمةٌ تبدأ فارغةً وتبقى فارغةً بعد الإخفاق
           لا يفرّق شرطُها بينهما إلّا بذكر الخطأ صراحةً. */}
+      {/* ── الحقوقُ حين تلزم: تُقال ولا تُعرض زرًّا معطّلًا ──
+          **وهي لا تمنع بناءَ الورقة** — تمنع إعلانَها جاهزةً للإرسال،
+          وذاك حدٌّ يفرضه قيدُ القاعدة. فيُقال للباحث ما يلزم ومتى يلزم،
+          بدل زرٍّ مطفأٍ يقف أمامه بلا سبب.
+
+          **ولا يُعرض هنا فعلٌ ينوب عنه**: إقرارُ التأليف قرارٌ يقوله
+          الباحثُ عن مؤلّفين بأعيانهم، وزرٌّ واحد يقرّه نيابةً عنه اختلاقُ
+          موافقةٍ لم تُعطَ. وشاشةُ استكمال الحقوق والتأليف غيرُ قائمةٍ في
+          الوِب بعد، فلا يُشار إلى بابٍ لا يفتح. */}
+      {rightsRequired ? (
+        <p
+          data-testid="journey-rights-required"
+          className="metric-label"
+          style={{
+            borderInlineStart: "3px solid var(--athera-amber, #F59E0B)",
+            paddingInlineStart: 12, margin: 0,
+          }}
+        >
+          <strong>{t("journey.rightsCta")}</strong>
+          {" — "}
+          {t("journey.rightsWhy")}
+        </p>
+      ) : null}
+
       {opportunities.length === 0 && !error ? (
         <p data-testid="journey-empty" className="metric-label">
           {t("journey.empty")}
@@ -384,15 +424,17 @@ export function ThesisJourney({
                   {t("journey.openStudio")}
                 </a>
               </>
-            ) : opportunity.planning_status !== "selected" ? (
-              /* **أوّلُ قرارٍ علميّ في الرحلة، وله زرُّه.** والبناءُ لا
-                 يُعرض قبله: الخادمُ يردّه بـ«اختر الورقة»، وزرٌّ يَعِد بما
-                 يرفضه الخادمُ عطبٌ في المنتج. */
+            ) : (
+              /* **فعلٌ رئيسٌ واحد: «ابدأ هذه الورقة».**
+                 يختار إن لم تكن مختارة، ثمّ يبني الهيكلَ الحتميّ. ولا
+                 لوحةَ وسيطةٍ يُطلب المرورُ بها، ولا زرَّ معطّلًا يقف
+                 أمام الباحث بلا فعلٍ يُنقر. */
               <button
                 type="button"
-                data-testid="journey-select-opportunity"
+                data-testid="journey-start-paper"
                 disabled={busy === opportunity.id}
-                onClick={() => void select(opportunity.id)}
+                onClick={() => void startPaper(
+                  opportunity.id, opportunity.planning_status === "selected")}
                 style={{
                   padding: "8px 16px", borderRadius: "var(--radius)", border: "none",
                   background: "var(--athera-aqua, var(--athera-teal))",
@@ -401,26 +443,8 @@ export function ThesisJourney({
                 }}
               >
                 {busy === opportunity.id
-                  ? t("journey.selecting")
-                  : t("journey.selectCta")}
-              </button>
-            ) : (
-              <button
-                type="button"
-                data-testid="journey-build-paper"
-                disabled={!canBuild || busy === opportunity.id}
-                onClick={() => void build(opportunity.id)}
-                style={{
-                  padding: "8px 16px", borderRadius: "var(--radius)", border: "none",
-                  background: "var(--athera-aqua, var(--athera-teal))",
-                  color: "#04302c", font: "inherit", fontWeight: 600,
-                  cursor: canBuild ? "pointer" : "not-allowed",
-                  opacity: canBuild ? 1 : 0.5,
-                }}
-              >
-                {busy === opportunity.id
-                  ? t("journey.building")
-                  : t("journey.buildCta")}
+                  ? t("journey.starting")
+                  : t("journey.startPaper")}
               </button>
             )}
           </div>

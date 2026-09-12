@@ -114,9 +114,20 @@ def derive_state(facts: JourneyFacts) -> str:
         if drafted_out:
             # **والأدبياتُ حدٌّ حقيقيّ لا زينة**: مسوّدةٌ تمّت أقسامُها لا
             # تُعلَن جاهزةً للاستوديو وسجلُّ الأدبيات لم يُراجَع بعد (§14).
-            return LITERATURE_PENDING if facts.literature_pending else READY_FOR_PAPER_STUDIO
+            if facts.literature_pending:
+                return LITERATURE_PENDING
+            # **والحقوقُ هنا تمنع فعلًا قادمًا**: الانتقالُ إلى «جاهزةٌ
+            # للإرسال» يفرضه قيدُ القاعدة. فتُقال في موضعها، ومعها فعلٌ
+            # يُنقر — لا قبل أن تُكتب كلمةٌ واحدة في المخطوطة.
+            if not facts.rights_passed:
+                return RIGHTS_REQUIRED
+            return READY_FOR_PAPER_STUDIO
         if facts.sections_drafted:
             return DRAFTING
+        # **والإذنُ يلزم للصياغة** — وهي الخطوةُ التالية من هنا، وفيها
+        # نداءُ نموذجٍ حقيقيّ. ولا يُمنح تلقائيًّا بحال.
+        if not facts.ai_consent_granted:
+            return AWAITING_AI_CONSENT
         return MANUSCRIPT_CREATED
     if facts.outline_exists:
         return OUTLINE_READY
@@ -125,16 +136,22 @@ def derive_state(facts: JourneyFacts) -> str:
     if facts.project_exists:
         return PROJECT_CREATED
 
-    # ── ما قبل المشروع: بوّاباتٌ تُقرأ بترتيبها ──
+    # ── ما قبل المشروع: ما يمنع **بناءَ الهيكل** وحده ──
+    #
+    # **وكانت الحقوقُ والإذنُ يقفان هنا، وهذا هو الطريقُ المسدود.**
+    #
+    # ‏`build_paper` لا تُنادي نموذجًا ولا شبكة: تُنشئ مشروعًا وهيكلًا
+    # ومخطوطةً — صفوفًا حتميّة. فوقوفُ الحقوق والإذن قبلها كان يمنع ما لا
+    # يمسّانه، ويعرض للباحث «أنت هنا: الحقوق والتأليف» وزرَّ البناء معطّلًا
+    # بلا مخرج. وقد رآه الباحثُ في الإنتاج بعد أن صار التنقيبُ يعمل.
+    #
+    # **وما نُقل هو موضعُ الحدّ لا الحدُّ نفسه**: الحقوقُ تلزم عند الانتقال
+    # إلى «جاهزةٌ للإرسال» (وقيدُ القاعدة يفرضه)، والإذنُ يلزم عند أوّل
+    # نداءِ نموذجٍ حقيقيّ. وكلاهما يظهر أدناه حيث يمنع فعلًا قادمًا — ومعه
+    # فعلٌ يُنقر، لا زرٌّ معطّل.
     if facts.selected_opportunity:
         if facts.overlap_unresolved:
             return OVERLAP_REVIEW_REQUIRED
-        if not facts.rights_passed:
-            return RIGHTS_REQUIRED
-        # **والإذنُ لا يُمنح تلقائيًّا.** بلا إذنٍ تقف الرحلةُ هنا وتُسمّي
-        # ما ينقصها، ولا يُستدعى نموذجٌ أصلًا.
-        if not facts.ai_consent_granted:
-            return AWAITING_AI_CONSENT
         return OPPORTUNITIES_READY
     if facts.opportunities:
         return RESEARCHER_DECISION_REQUIRED
@@ -145,8 +162,24 @@ def derive_state(facts: JourneyFacts) -> str:
     return UPLOADED
 
 
-def blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
-    """ما يمنع التقدّم الآن — **رموزٌ لا نثر**، وقد تجتمع."""
+def shell_blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
+    """ما يمنع **بناءَ الهيكل الحتميّ** — مشروعٌ وهيكلٌ ومخطوطة.
+
+    **وهذه هي البوّاباتُ التي يمسّها ذلك البناءُ فعلًا:** فرصةٌ قائمة،
+    اختارها الباحثُ، بلا تداخلٍ غيرِ محسوم، واستخراجٌ لم يفشل. وكلُّها
+    وقائعُ في القاعدة تخصّ هذه الرسالةَ وهذا المستأجر.
+
+    **وليست فيها الحقوقُ ولا الإذن** — وذاك نقلُ موضعٍ لا إسقاطُ حدّ:
+
+      • **الحقوقُ والتأليف** يمنعان ما هو خارجيُّ الأثر: الانتقالَ إلى
+        «جاهزةٌ للإرسال» (وقيدُ القاعدة يفرضه)، والإرسالَ والتصدير.
+        وصفُّ مخطوطةٍ فارغةٍ في قاعدتنا ليس منها.
+      • **وإذنُ الذكاء الاصطناعي** يمنع نداءَ النموذج. و`build_paper` لا
+        تُنادي نموذجًا ولا تُرسل حرفًا خارج القاعدة — فاشتراطُه عليها
+        كان يحبس الباحثَ خلف إذنٍ لفعلٍ لا يقع.
+
+    ولا تُمنح الحقوقُ ولا الإذنُ ولا يُفترضان هنا ولا في أيّ موضع.
+    """
     reasons: list[str] = []
     if facts.extraction_failed:
         reasons.append(BLOCK_EXTRACTION_FAILED)
@@ -156,6 +189,16 @@ def blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
         reasons.append(BLOCK_NO_SELECTION)
     if facts.selected_opportunity and facts.overlap_unresolved:
         reasons.append(BLOCK_OVERLAP)
+    return tuple(reasons)
+
+
+def blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
+    """ما يمنع التقدّم **إلى ما يُرسَل أو يُنشَر** — رموزٌ لا نثر، وقد تجتمع.
+
+    وهي بوّاباتُ الهيكل وزيادةً: الحقوقُ والإذن. ويقرؤها الخيطُ الذهبيّ
+    (يُرسل دليلًا خارجًا) والشاشةُ حين تُسمّي ما يلزم الخطوةَ القادمة.
+    """
+    reasons = list(shell_blocking_reasons(facts))
     if facts.selected_opportunity and not facts.rights_passed:
         reasons.append(BLOCK_RIGHTS)
     if facts.selected_opportunity and not facts.ai_consent_granted:
@@ -164,8 +207,8 @@ def blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
 
 
 def can_build_paper(facts: JourneyFacts) -> bool:
-    """**البوّاباتُ كلُّها، ولا واحدةَ تُتخطّى.**"""
-    return not blocking_reasons(facts)
+    """**بوّاباتُ الهيكل وحدها** — وما عداها يقف حيث يمنع فعلًا يقع."""
+    return not shell_blocking_reasons(facts)
 
 
 def can_build_thread(facts: JourneyFacts) -> bool:
@@ -511,7 +554,10 @@ async def build_paper(session, *, tenant_id: uuid.UUID, actor_user_id,
         ai_consent_granted=await consent_granted(
             session, tenant_id=tenant_id, file_id=thesis.file_id),
     )
-    reasons = blocking_reasons(facts)
+    # **وبوّاباتُ الهيكل وحدها**: ما تبنيه هذه الشريحةُ حتميٌّ داخليّ، ولا
+    # يُرسل حرفًا ولا يُعلن جاهزيةَ نشر. والحقوقُ والإذنُ محفوظان في
+    # `blocking_reasons`، ويقفان حيث يمنعان فعلًا خارجيَّ الأثر.
+    reasons = shell_blocking_reasons(facts)
     if reasons:
         raise JourneyBlocked(reasons)
 

@@ -150,18 +150,23 @@ def test_both_ctas_carry_the_required_wording():
 def test_the_first_scientific_decision_has_a_control_of_its_own():
     """**والرحلةُ كانت تطلب فعلًا لا زرَّ له.**
 
-    تقف عند «اختر الورقة التي تريد بناءها»، ولا شيءَ في الشاشة يختار —
-    وزرُّ البناء معطَّلٌ أبدًا لأنّ الخادمَ لن يأذن قبل الاختيار.
+    كانت تقف عند «اختر الورقة التي تريد بناءها» ولا شيءَ في الشاشة يختار.
+    ثمّ صار للاختيار زرٌّ وللبناء زرٌّ آخر، فيمرّ الباحثُ بلوحةٍ وسيطة.
+
+    **والفعلُ الرئيسُ واحدٌ الآن: «ابدأ هذه الورقة».** يختار إن لم تكن
+    مختارة، ثمّ يبني. والقرارُ العلميُّ يُسجَّل بنقطة النهاية نفسِها —
+    ولا يُفترض: الباحثُ هو من نقر.
     """
     source = _component()
-    assert 'data-testid="journey-select-opportunity"' in source
-    assert "/select`" in source, "الزرُّ لا ينادي نقطةَ الاختيار"
-    assert 'opportunity.planning_status !== "selected"' in source, (
+    assert 'data-testid="journey-start-paper"' in source
+    assert "/select`" in source, "الفعلُ لا ينادي نقطةَ الاختيار"
+    assert "/build-paper`" in source, "الفعلُ لا ينادي نقطةَ البناء"
+    assert 'opportunity.planning_status === "selected"' in source, (
         "الشاشةُ لا تقرأ قرارَ الباحث من عموده")
     for locale in ("ar", "en"):
         journey_copy = _messages(locale)["journey"]
-        assert journey_copy["selectCta"], f"{locale}: نصُّ الاختيار مفقود"
-        assert journey_copy["selecting"], f"{locale}: نصُّ الانتظار مفقود"
+        assert journey_copy["startPaper"], f"{locale}: نصُّ الفعل الرئيس مفقود"
+        assert journey_copy["starting"], f"{locale}: نصُّ الانتظار مفقود"
 
 
 def test_the_api_exposes_the_selection_the_card_reads():
@@ -197,13 +202,28 @@ def test_the_card_shows_a_real_count_not_a_score():
     assert 'data-testid="opportunity-provenance"' in source
 
 
-def test_the_build_cta_is_disabled_until_the_server_allows_it():
-    """**والزرُّ يتبع الخادم** — لا تجتهد الشاشةُ في البوّابات."""
+def test_the_screen_never_recomputes_a_gate_the_server_owns():
+    """**والشاشةُ تتبع الخادم** — لا تجتهد في البوّابات.
+
+    وهذه هي الدعوى الباقية. **وقد سقط شطرٌ منها عمدًا**: كان الفعلُ
+    الرئيسُ يُعطَّل بـ`!canBuild`، فيقف الباحثُ أمام زرٍّ مطفأٍ بلا مخرج
+    — والحقوقُ والإذنُ كانا يطفئانه وهما لا يمسّان ما يفعله.
+
+    فصار ما يلزم لما هو أبعد يُقال نصًّا ومعه سببُه، **ورمزُه يُقرأ من
+    الخادم** (`blocking_reasons`) لا يُعاد حسابُه من الوقائع.
+    """
     source = _component()
-    assert "journey?.can_build_paper === true" in source
-    assert "disabled={!canBuild" in source
+    # الرمزُ يُقرأ من الخادم كما أرسله.
+    assert 'blocking_reasons.includes(\n    "rights_gate_not_passed")' in source \
+        or '"rights_gate_not_passed"' in source
+    assert "journey?.blocking_reasons" in source
+    # **ولا منطقَ بوّابةٍ يُعاد في الشاشة** — وهذا ما لم يتغيّر.
     for gate in ("overlap_unresolved", "rights_passed", "ai_consent_granted"):
         assert gate not in source, f"منطقُ بوّابةٍ أُعيد في الشاشة: {gate}"
+    for locale in ("ar", "en"):
+        journey_copy = _messages(locale)["journey"]
+        assert journey_copy["rightsCta"], f"{locale}: نصُّ استكمال الحقوق مفقود"
+        assert journey_copy["rightsWhy"], f"{locale}: سببُ لزوم الحقوق مفقود"
 
 
 def test_the_component_parses_as_balanced_source():

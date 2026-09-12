@@ -146,45 +146,102 @@ def test_state_is_derived_from_real_rows_across_the_journey():
         F(processing_state="ready_for_review", extraction_failed=True)) == journey.FAILED
 
 
-def test_the_gates_are_read_in_order_and_none_is_skipped():
-    """التداخلُ قبل الحقوق، والحقوقُ قبل الإذن — **ولا بوّابةَ تُقفز**."""
+def test_the_shell_gates_are_read_in_order_and_none_is_skipped():
+    """**بوّاباتُ الهيكل بترتيبها** — ولا واحدةَ تُقفز.
+
+    **وقد نُقلت الحقوقُ والإذنُ من هنا عمدًا.** كانتا تقفان قبل بناءِ
+    مشروعٍ وهيكلٍ ومخطوطة — وهي صفوفٌ حتميّة لا تُرسل حرفًا ولا تُعلن
+    جاهزيةَ نشر. فكان الباحثُ يُعرض عليه «أنت هنا: الحقوق والتأليف» وزرُّ
+    البناء معطّلٌ بلا مخرج. والحدّان باقيان حيث يمنعان فعلًا خارجيَّ الأثر.
+    """
     F = journey.JourneyFacts
     base = dict(processing_state="ready_for_review", opportunities=1,
                 selected_opportunity=True)
 
     assert journey.derive_state(F(**base, overlap_unresolved=1)) == (
         journey.OVERLAP_REVIEW_REQUIRED)
-    assert journey.derive_state(F(**base)) == journey.RIGHTS_REQUIRED
-    assert journey.derive_state(F(**base, rights_passed=True)) == (
-        journey.AWAITING_AI_CONSENT)
-    assert journey.derive_state(
-        F(**base, rights_passed=True, ai_consent_granted=True)
-    ) == journey.OPPORTUNITIES_READY
+    # **ولا حقوقَ ولا إذنَ يقفان قبل الهيكل** — الفرصةُ مختارةٌ فيُبنى.
+    assert journey.derive_state(F(**base)) == journey.OPPORTUNITIES_READY
+    assert journey.can_build_paper(F(**base)) is True
 
 
 def test_consent_is_never_assumed():
-    """**ولا يُمنح الإذنُ تلقائيًّا.** بلا إذنٍ تقف الرحلةُ وتُسمّي ما ينقصها."""
+    """**ولا يُمنح الإذنُ تلقائيًّا** — ولا يُفترض في أيّ موضع.
+
+    وموضعُ وقوفه انتقل: لا يقف قبل الهيكل الحتميّ (ولا نداءَ نموذجٍ فيه)،
+    ويقف قبل أوّل صياغةٍ حقيقية — وهي الخطوةُ التالية بعد المخطوطة.
+    """
     F = journey.JourneyFacts
     facts = F(processing_state="ready_for_review", opportunities=1,
               selected_opportunity=True, rights_passed=True)
-    assert journey.derive_state(facts) == journey.AWAITING_AI_CONSENT
+
+    # ولا يُمنح من نفسه: القيمةُ الافتراضية «لا إذن»، ولا شيءَ يقلبها.
+    assert facts.ai_consent_granted is False
+    # **ويُسمّى ما ينقص** — رمزًا يقرؤه الخادمُ والشاشة.
     assert journey.BLOCK_NO_CONSENT in journey.blocking_reasons(facts)
-    assert journey.can_build_paper(facts) is False
+    # **ويمنع ما يُرسل خارجًا**: الخيطُ الذهبيّ لا يُبنى بلا إذن.
+    assert journey.can_build_thread(
+        dataclasses_replace(facts, project_exists=True)) is False
+    # **ويقف قبل الصياغة** — الخطوةُ التالية من المخطوطة، وفيها نداءُ نموذج.
+    assert journey.derive_state(dataclasses_replace(
+        facts, project_exists=True, outline_exists=True,
+        manuscript_exists=True)) == journey.AWAITING_AI_CONSENT
+    # ولا يمنع الهيكلَ الحتميّ — ولا نموذجَ فيه يُستدعى.
+    assert journey.can_build_paper(facts) is True
 
 
-def test_build_is_refused_until_every_gate_passes():
+def test_the_deterministic_shell_is_refused_only_by_its_own_gates():
+    """**ما يمنع الهيكلَ هو ما يمسّه** — لا أكثر ولا أقلّ."""
     F = journey.JourneyFacts
     ready = F(processing_state="ready_for_review", opportunities=1,
-              selected_opportunity=True, rights_passed=True, ai_consent_granted=True)
+              selected_opportunity=True)
     assert journey.can_build_paper(ready) is True
 
+    # ── ما يمنعه: وقائعُ تخصّ الهيكلَ نفسَه ──
     for broken in (
         dataclasses_replace(ready, overlap_unresolved=1),
-        dataclasses_replace(ready, rights_passed=False),
-        dataclasses_replace(ready, ai_consent_granted=False),
         dataclasses_replace(ready, opportunities=0, selected_opportunity=False),
+        dataclasses_replace(ready, selected_opportunity=False),
+        dataclasses_replace(ready, extraction_failed=True),
     ):
         assert journey.can_build_paper(broken) is False
+
+    # ── وما لا يمنعه: الحقوقُ والإذن — **وكلاهما باقٍ حدًّا في موضعه** ──
+    for allowed in (
+        dataclasses_replace(ready, rights_passed=False),
+        dataclasses_replace(ready, ai_consent_granted=False),
+        dataclasses_replace(ready, rights_passed=False, ai_consent_granted=False),
+    ):
+        assert journey.can_build_paper(allowed) is True
+        # ويبقيان مذكورين فيما يمنع ما هو أبعد.
+        full = journey.blocking_reasons(allowed)
+        if not allowed.rights_passed:
+            assert journey.BLOCK_RIGHTS in full
+        if not allowed.ai_consent_granted:
+            assert journey.BLOCK_NO_CONSENT in full
+
+
+def test_rights_still_stand_before_the_studio_and_submission():
+    """**والحقوقُ حدٌّ باقٍ** — تقف حيث تمنع فعلًا خارجيَّ الأثر.
+
+    ومسوّدةٌ تمّت أقسامُها وسجلُّ أدبياتها مراجَع لا تُعلَن «جاهزةً
+    للاستوديو» وحقوقُها لم تُستكمل: الخطوةُ التالية إرسالٌ، وقيدُ القاعدة
+    يفرض الحقوقَ عند `ready_to_submit`.
+    """
+    F = journey.JourneyFacts
+    drafted = dict(processing_state="ready_for_review", opportunities=1,
+                   selected_opportunity=True, ai_consent_granted=True,
+                   project_exists=True, outline_exists=True, manuscript_exists=True,
+                   sections_drafted=3, sections_expected=3)
+
+    assert journey.derive_state(F(**drafted, rights_passed=False)) == (
+        journey.RIGHTS_REQUIRED)
+    assert journey.derive_state(F(**drafted, rights_passed=True)) == (
+        journey.READY_FOR_PAPER_STUDIO)
+    # والأدبياتُ تسبقهما — حدٌّ لم يُمَسّ.
+    assert journey.derive_state(
+        F(**drafted, rights_passed=True, literature_pending=True)) == (
+        journey.LITERATURE_PENDING)
 
 
 def dataclasses_replace(obj, **kw):
