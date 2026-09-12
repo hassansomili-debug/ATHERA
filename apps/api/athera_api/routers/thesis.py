@@ -138,6 +138,22 @@ def _fingerprint(row: PublicationOpportunity) -> overlap.OpportunityFingerprint:
     )
 
 
+def _discovery_fields(row: PublicationOpportunity) -> dict:
+    """حقولُ الاكتشاف من `readiness_components["thesis_discovery"]`.
+
+    ويُقرأ المجالُ باسمه ولا يُمسّ ما جاوره؛ وغيابُه يعني «لم يُسجَّل»،
+    فتخرج `None` ولا يُخترع حكم.
+    """
+    discovery = (row.readiness_components or {}).get(mining.DISCOVERY_NAMESPACE)
+    if not isinstance(discovery, dict):
+        return {}
+    missing = discovery.get("missing_context")
+    return {
+        "context_complete": discovery.get("context_complete"),
+        "missing_context": list(missing) if isinstance(missing, list) else [],
+    }
+
+
 def _opportunity_response(row: PublicationOpportunity, locale: str) -> OpportunityResponse:
     kind_ar, kind_en = vocab.OPPORTUNITY_KINDS[row.opportunity_kind]
     paper_ar, paper_en = vocab.PAPER_KINDS[row.paper_kind]
@@ -165,6 +181,12 @@ def _opportunity_response(row: PublicationOpportunity, locale: str) -> Opportuni
         provenance_count=sum(
             len(refs or []) for refs in
             (row.result_refs, row.sample_refs, row.variable_refs)),
+        # ── اكتمالُ السياق من مجال الاكتشاف، لا مشتقًّا من الأعمدة ──
+        #
+        # **وغيابُ المجال يُقال `None` لا `False`.** فرصةٌ من قبل ترحيل
+        # الاكتشاف لم يُسجَّل لها مستوًى، و«ناقصةُ السياق» عنها حكمٌ لم
+        # يُحسب. والفرقُ بين «ناقصة» و«لا أعرف» خبران للباحث.
+        **_discovery_fields(row),
     )
 
 

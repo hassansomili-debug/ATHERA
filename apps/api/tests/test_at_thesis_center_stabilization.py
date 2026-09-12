@@ -550,10 +550,23 @@ def test_the_screen_asks_the_server_and_does_not_rebuild_the_rules_itself():
     والخادم لا يقيس الإتاحة بذلك أصلًا.
     """
     page = PAGE.read_text(encoding="utf-8")
-    assert "actions.can_mine" in page, "الشاشة لا تقرأ إتاحة التنقيب من الخادم"
     assert "actions.primary" in page, "الشاشة لا تقرأ الفعل الأوّل من الخادم"
     assert "!thesis.parsed_at" not in page, (
         "الشاشة ما زالت تحكم على التنقيب بـ`parsed_at` — ختمِ المسار القديم")
+
+    # **وزرُّ التنقيب سقط من الشاشة كلِّها** (تبسيطُ السطح، قرارُ منتج):
+    # الأتمتةُ تملك الفحص، فلا يُطلب من الباحث تشغيلُ محرّكٍ يعمل وحده.
+    # فلم تعد الشاشةُ تقرأ `can_mine` — لأنّها لا تعرض ما يتوقّف عليه، لا
+    # لأنّها تجتهد في شرطه. والدعوى الباقيةُ هي هي: **ما تعرضه مشروطٌ بما
+    # يقوله الخادم، لا بما تستنبطه الشاشة.**
+    assert "actions.can_mine" not in page
+    assert "data-testid=\"card-mine\"" not in page
+
+    # وما تعرضه من أفعالٍ أخرى ما زال مشروطًا بأعلام الخادم وحدها.
+    for flag in ("actions.can_review", "actions.can_reprocess",
+                 "actions.can_attach_file", "actions.can_archive",
+                 "actions.can_restore", "actions.is_running"):
+        assert flag in page, f"الشاشة لا تقرأ {flag} من الخادم"
 
 
 def test_the_screen_never_dispatches_the_legacy_parse_action():

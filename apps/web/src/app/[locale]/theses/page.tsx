@@ -398,7 +398,6 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       <div style={{ marginBlock: "18px 24px" }}>
         <ThesisIntake locale={locale} messages={getMessages(locale)} />
       </div>
-      <p className="provenance-note">{t("theses.rightsNote")}</p>
       {/* §23 — الفرص مرشَّحات، ويُقال ذلك حيث تُعدّ لا في حاشيةٍ بعيدة. */}
       <p className="provenance-note">{t("theses.candidatesOnly")}</p>
 
@@ -461,6 +460,14 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
           const actions = thesis.actions;
           // **فعلٌ يجري يُعطّل ما يتعارض معه** — لا ما لا علاقة له به.
           const busy = state.busy !== null;
+          // **«أخفق» = رمزُ إخفاقٍ أو مستندٌ لا طبقةَ نصٍّ فيه.** والثاني
+          // لا يحمل رمزًا، وهو أشيعُ ما يوقف رسالةً في الإنتاج.
+          const failed = thesis.failure_code !== null
+            || thesis.processing_state === "text_layer_missing";
+          // وسببُه للباحث: رسالةُ الإخفاق تُعرض أعلاه أصلًا، فلا تُكرَّر —
+          // وهذا **بديلٌ** عنها حين تغيب، لا صيغةٌ ثانية لها.
+          const failureWhy = thesis.failure_message
+            ? null : thesis.retry_blocked_reason;
           // **أيُّ الأفعال هو الأوّل قرارُ الخادم لا اجتهادُ الشاشة.** فلو
           // تغيّرت القاعدة يومًا — أن تسبق إعادةُ القراءة المراجعةَ في حالٍ
           // ما — تغيّرت في `card_actions.compute` وحدها، ولا يبقى هنا ترتيبٌ
@@ -468,7 +475,13 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
           const lead = (name: string) =>
             actions.primary === name ? PRIMARY : BUTTON;
           return (
-            <article className="card" key={thesis.id} data-testid={`thesis-card-${thesis.id}`}>
+            /* **وحالُ خطِّ المعالجة تبقى مقروءةً آليًّا، غيرَ معروضة.**
+               نُزعت من السطح لأنّها بنيةُ نظامٍ لا تعني الباحث؛ ونزعُها
+               أعمى الفحوصَ التي تنتظر استقرارَ الحال. فتُكتب سمةً على
+               البطاقة: يقرؤها المتصفّحُ ولا يقرؤها إنسان. */
+            <article className="card" key={thesis.id}
+                     data-testid={`thesis-card-${thesis.id}`}
+                     data-processing-state={thesis.processing_state}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                 {/* **هويّةٌ لا تضيع.** العنوان المستخرَج، وإلّا اسمُ الملفّ. */}
                 <strong>
@@ -502,52 +515,149 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                 </div>
               ) : null}
 
-              {/* ── الحال: محفوظةٌ في القاعدة، ونصُّها من الخادم بلغة الباحث ── */}
-              <div className="metric-label" style={{ marginBlockStart: 6 }}>
-                {t("theses.stateLabel")}: {thesis.processing_state_label}
-                {thesis.processing_attempts > 1
-                  ? ` · ${t("theses.attemptsLabel")}: ${thesis.processing_attempts}`
-                  : ""}
-              </div>
-
-              {/* **وما يجري الآن يُقال، ولا يُترك زرًّا مطفأً بلا خبر.** */}
-              {actions.is_running ? (
-                <p
-                  className="provenance-note"
-                  role="status"
-                  data-testid="card-running"
-                  style={{ margin: "6px 0 0" }}
-                >
-                  {actions.blocked_reason} · {t("theses.runningNote")}
-                </p>
-              ) : null}
-
-              {/* **الفشل يُقال بسببه — ولا يُعرض صفرًا صامتًا.** */}
+              {/* **وحالُ خطِّ المعالجة وعددُ المحاولات خرجا عن السطح.**
+                  ‏«الحال: جاهزة لمراجعتك · المحاولات: ٢» بنيةُ نظامٍ يقرؤها
+                  الباحثُ ولا تعنيه؛ وصدرُ البطاقة يقول ما يعنيه في جملة.
+                  وتشخيصُها في «تفاصيل الاستخراج». */}
+              {/* **و«ما يجري الآن» صار جملةَ الصدر وحدها.** كانت تُعرض
+                  معها `blocked_reason` — سببُ منعٍ تقنيّ يقرؤه الباحثُ
+                  أثناء عملٍ يجري ولا فعلَ له فيه. */}
               {thesis.failure_message ? (
                 <p className="error" style={{ margin: "6px 0 0" }}>
                   {thesis.failure_message}
                 </p>
               ) : null}
 
-              <div className="metric-label" style={{ marginBlockStart: 6 }}>
-                {t("theses.rightsBasis")}:{" "}
-                {thesis.rights_basis ? t(`theses.basis.${thesis.rights_basis}`) : t("theses.noRights")}
-                {thesis.defended_on ? ` · ${t("theses.defended")}: ${thesis.defended_on}` : ""}
+              {/* ═══ ما يقرؤه الباحثُ أوّلًا: جملةٌ واحدة وفعلٌ واحد ═══
+                  **وثلاثُ حالاتٍ لا أكثر** في المسار السويّ: نحلّل الآن،
+                  أو وجدنا أفكارًا، أو تعذّر التحليل.
+
+                  وكانت البطاقةُ تعرض عليه عدَّ الأقسام وعدَّ الفرص وأساسَ
+                  الحقوق وتاريخَ المناقشة وحالَ التنقيب — مفرداتِ نظامٍ
+                  يقرؤها من بنى النظام، لا من رفع رسالته. وتفاصيلُها باقيةٌ
+                  كاملةً تحت «تفاصيل الاستخراج» لمن أرادها. */}
+              {/* ── **«أخفق» أوسعُ من `failure_code`** ──
+                  مستندٌ ممسوحٌ ضوئيًّا يقف عند `text_layer_missing` بلا رمز
+                  إخفاق، فكان يسقط إلى فرع «لا أفكار بعد» ويُعرض عليه سببُ
+                  الفرص — وهو خبرٌ عن محرّكٍ لم يُشغَّل، لا عن مستندٍ لا
+                  يُقرأ. فيُقرأ الحالان معًا.
+
+                  **والسببُ يُقال تحت الجملة** — «عُرض عليه لا شيءٌ ولم
+                  يُقَل له لماذا» أسوأُ ممّا كان. و`failure_message` أوّلًا،
+                  فإن غابت فسببُ تعذُّرِ الإعادة: ونصُّه للباحث لا للمطوِّر
+                  («ممسوحٌ ضوئيًّا ولا OCR بعد»). */}
+              <div
+                data-testid="card-headline"
+                style={{ marginBlockStart: 8, display: "grid", gap: 8 }}
+              >
+                <strong style={{ fontSize: 16 }}>
+                  {actions.is_running
+                    ? t("theses.simpleAnalyzing")
+                    : failed
+                      ? t("theses.simpleFailed")
+                      : thesis.opportunities_found > 0
+                        ? t("theses.simpleReady").replace(
+                            "{count}", String(thesis.opportunities_found))
+                        // **والصفرُ يقوله الخادمُ بسببه، ولا تخترع الشاشةُ له
+                        //   جملة.** كتبتُ هنا «اكتمل التحليل، ولا أفكارَ بعد»
+                        //   فقالتها البطاقةُ عن رسالةٍ رُفعت ولم تُقرأ بعدُ
+                        //   أصلًا — اختلاقٌ صغير في الموضع الذي بُنيت هذه
+                        //   الشاشةُ كلُّها لمنعه. والسببُ محسوبٌ في الخادم
+                        //   لستّ حالاتٍ مختلفة، فيُعرض كما قاله.
+                        : thesis.opportunities_outcome_label}
+                </strong>
+
+                {/* **فعلٌ رئيسٌ واحد** — ولا زرَّ معطّلًا ولا مفردةَ نظام.
+                    و«جارٍ التحليل» بلا فعل: لا شيءَ يفعله الباحثُ الآن،
+                    وزرٌّ يُعرض له إمّا يكذب وإمّا يُقاطع عملًا يجري. */}
+                {actions.is_running ? null
+                  : failed ? (
+                    actions.can_reprocess || actions.can_process ? (
+                      <div>
+                        <button
+                          type="button"
+                          data-testid="card-try-again"
+                          onClick={() =>
+                            void run(thesis.id, "reprocess", "theses.readQueued")}
+                          disabled={busy}
+                          style={{ ...lead("reprocess"), opacity: busy ? 0.6 : 1 }}
+                        >
+                          {state.busy === "reprocess"
+                            ? t("theses.busyLabel")
+                            : t("theses.retryCta")}
+                        </button>
+                      </div>
+                    ) : null
+                  ) : thesis.opportunities_found > 0 ? (
+                    <div>
+                      <Link
+                        href={`/${locale}/theses/${thesis.id}/journey`}
+                        data-testid="card-view-paper-ideas"
+                        style={lead("review")}
+                      >
+                        {t("theses.viewPaperIdeas")}
+                      </Link>
+                    </div>
+                  ) : null}
+
+                {/* **وسببُ الإخفاق نصًّا، تحت جملته.** */}
+                {failed && failureWhy ? (
+                  <p className="metric-label" data-testid="card-failure-why"
+                     style={{ margin: 0 }}>
+                    {failureWhy}
+                  </p>
+                ) : null}
               </div>
 
-              {/* ── الرقمُ مع سببه، أو السببُ وحده ──
-                  «٠ أقسام» بلا سبب جملةٌ تُقال في ستّ حالاتٍ معناها مختلف؛
-                  فالرقم لا يُعرض إلّا حين يكون العدُّ قد وقع فعلًا. */}
-              <div className="metric-label">
-                {thesis.sections_outcome === "found"
-                  ? `${t("theses.sections")}: ${thesis.sections_extracted}`
-                  : thesis.sections_outcome_label}
-              </div>
-              <div className="metric-label">
-                {thesis.opportunities_outcome === "found"
-                  ? `${t("theses.opportunities")}: ${thesis.opportunities_found}`
-                  : thesis.opportunities_outcome_label}
-              </div>
+              {/* ── وتفاصيلُ الاستخراج تُطوى ولا تُحذف ──
+                  من أرادها وجدها كاملةً: أساسُ الحقوق، وتاريخُ المناقشة،
+                  وعدُّ الأقسام بسببه، وسببُ عدد الفرص. */}
+              <details data-testid="card-advanced" style={{ marginBlockStart: 8 }}>
+                <summary className="metric-label" style={{ cursor: "pointer" }}>
+                  {t("theses.extractionDetails")}
+                </summary>
+
+                {/* **ولا أساسَ حقوقٍ هنا ولا في أيّ موضعٍ من هذه الشاشة**
+                    (قرارُ منتج): الحقوقُ خرجت من رحلة MVP، وعرضُها — ولو
+                    مطويّةً — يُبقي في وجه الباحث حقلًا لا خطوةَ له فيه.
+                    والعمودُ باقٍ في القاعدة لم يُمَسّ.
+
+                    **وتاريخُ المناقشة يبقى وصفًا للرسالة** لا قرينةَ حقوق. */}
+                {thesis.defended_on ? (
+                  <div className="metric-label" style={{ marginBlockStart: 6 }}>
+                    {t("theses.defended")}: {thesis.defended_on}
+                  </div>
+                ) : null}
+
+                {/* ── الرقمُ مع سببه، أو السببُ وحده ──
+                    «٠ أقسام» بلا سبب جملةٌ تُقال في ستّ حالاتٍ معناها مختلف؛
+                    فالرقم لا يُعرض إلّا حين يكون العدُّ قد وقع فعلًا. */}
+                <div className="metric-label">
+                  {thesis.sections_outcome === "found"
+                    ? `${t("theses.sections")}: ${thesis.sections_extracted}`
+                    : thesis.sections_outcome_label}
+                </div>
+                <div className="metric-label">
+                  {thesis.opportunities_outcome === "found"
+                    ? `${t("theses.opportunities")}: ${thesis.opportunities_found}`
+                    : thesis.opportunities_outcome_label}
+                </div>
+
+                {/* **ومراجعةُ ما استُخرج تسكن هنا** — لا فعلًا رئيسًا.
+                    الباحثُ لم يرفع رسالته ليراجع استخراجًا آليًّا؛ رفعها
+                    ليعرف أيَّ الأوراق تُشتقّ منها. والمراجعةُ ضبطُ جودةٍ
+                    اختياريّ، وبابُها مفتوحٌ لمن أراده. */}
+                {actions.can_review ? (
+                  <div style={{ marginBlockStart: 8 }}>
+                    <Link
+                      href={`/${locale}/theses/${thesis.id}/review`}
+                      data-testid="card-review"
+                    >
+                      {t("theses.reviewCta")}
+                    </Link>
+                  </div>
+                ) : null}
+              </details>
 
               {/* ── الأفعال: ما يقوله الخادم، لا ما تجتهد فيه الشاشة ── */}
               <div style={{ display: "flex", gap: 8, marginBlockStart: 12, flexWrap: "wrap" }}>
@@ -565,16 +675,6 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                   </button>
                 ) : null}
 
-                {actions.can_review ? (
-                  <Link
-                    href={`/${locale}/theses/${thesis.id}/review`}
-                    data-testid="card-review"
-                    style={lead("review")}
-                  >
-                    {t("theses.reviewCta")}
-                  </Link>
-                ) : null}
-
                 {/* **أرفق ملفًّا** بدل «فكّك» التي تردّ `thesis.no_file`. */}
                 {actions.can_attach_file ? (
                   <Link
@@ -586,77 +686,12 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                   </Link>
                 ) : null}
 
-                {/* **أوّلُ قراءةٍ ليست إعادة** — والاسمُ يقول أيُّهما. */}
-                {actions.can_process ? (
-                  <button
-                    type="button"
-                    data-testid="card-process"
-                    onClick={() => void run(thesis.id, "reprocess", "theses.readQueued")}
-                    disabled={busy}
-                    style={{ ...lead("process"), opacity: busy ? 0.6 : 1 }}
-                  >
-                    {state.busy === "reprocess" ? t("theses.busyLabel") : t("theses.processCta")}
-                  </button>
-                ) : null}
-
-                {actions.can_reprocess ? (
-                  <button
-                    type="button"
-                    data-testid="card-reprocess"
-                    onClick={() => void run(thesis.id, "reprocess", "theses.readQueued")}
-                    disabled={busy}
-                    style={{ ...lead("reprocess"), opacity: busy ? 0.6 : 1 }}
-                  >
-                    {state.busy === "reprocess"
-                      ? t("theses.busyLabel")
-                      : thesis.failure_code
-                        ? t("theses.retryCta")
-                        : t("theses.reprocessCta")}
-                  </button>
-                ) : null}
-
-                {/* ── وجهةُ الرحلة: فرصٌ قائمةٌ تُفتح ──
-
-                    **والتنقيبُ يبدأ من نفسه بعد القراءة**، فلا يُطلب من
-                    الباحث تشغيلُ ما يعمل وحده. وهذا رابطٌ إلى رسالته
-                    بعينها، لا شاشةٌ يُعيد فيها اختيارها. */}
-                {actions.can_view_opportunities ? (
-                  <Link
-                    href={`/${locale}/opportunities?thesis_id=${thesis.id}`}
-                    data-testid="card-view-opportunities"
-                    style={lead("view_opportunities")}
-                  >
-                    {t("theses.viewOpportunities")}
-                  </Link>
-                ) : null}
-
-                {/* **ورحلةُ هذه الرسالة إلى ورقة** — ستُّ خطواتٍ تقول ما تمّ
-                    وما ينتظر. ولا شرطَ عليها: الصفحةُ نفسُها تعرض الحالَ
-                    كما هي، ورابطٌ يظهر ويختفي يُخفي الرحلةَ عمّن يحتاجها. */}
-                <Link
-                  href={`/${locale}/theses/${thesis.id}/journey`}
-                  data-testid="card-journey"
-                  style={BUTTON}
-                >
-                  {t("journey.cardLink")}
-                </Link>
-
-                {/* **ولا زرَّ تنقيبٍ إلّا حين تعثّر التنقيب أو كان المسارُ
-                    قديمًا بلا أتمتة** — وما عداه يعمل من نفسه. */}
-                {actions.can_mine ? (
-                  <button
-                    type="button"
-                    data-testid="card-mine"
-                    onClick={() => void run(thesis.id, "mine-opportunities", "theses.mined")}
-                    disabled={busy}
-                    style={{ ...BUTTON, opacity: busy ? 0.6 : 1 }}
-                  >
-                    {state.busy === "mine-opportunities"
-                      ? t("theses.busyLabel")
-                      : t("theses.mine")}
-                  </button>
-                ) : null}
-
+                {/* ── وأربعةُ أفعالٍ خرجت من السطح إلى «⋯» ──
+                    **«اقرأ الرسالة» و«أعد القراءة» و«رحلة الورقة» و«استخرج
+                    الفرص»** — أربعةُ أزرارٍ متجاورةٍ تجعل الباحثَ يختار بين
+                    أفعالِ خطِّ معالجةٍ لا يعرفه، وسؤالُه واحد. وإعادةُ
+                    القراءة باقيةٌ في القائمة، و«أعد المحاولة» يظهر تحت
+                    جملة الإخفاق وحدها حيث ينفع. */}
                 {actions.can_archive || actions.can_restore
                   || actions.can_trash_file || actions.lifecycle_blocked_reason ? (
                   <button
@@ -676,19 +711,10 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                   الشاشة. وتُقال أيضًا حين توجد فرص: هناك تحمل التحفّظ،
                   أنّها مبدئيّةٌ من عناصر الرسالة قبل أيّ مقابلةٍ بالأدب
                   المنشور أو حكمٍ على جِدّتها. */}
-              {actions.mining_reason ? (
-                <p className="provenance-note" data-testid="card-mining-note"
-                   style={{ marginBlockStart: 8 }}>
-                  {actions.mining_reason}
-                </p>
-              ) : null}
-
-              {/* **ومنعُ إعادة القراءة يُقال حيث يقع** — لا زرٌّ مطفأ بلا تفسير. */}
-              {!thesis.can_retry && thesis.retry_blocked_reason && !actions.is_running ? (
-                <p className="provenance-note" data-testid="card-retry-blocked">
-                  {thesis.retry_blocked_reason}
-                </p>
-              ) : null}
+              {/* **وحاشيتا «سببِ التنقيب» و«تعذُّرِ الإعادة» خرجتا.**
+                  الأولى تشرح حالَ منقّبٍ لا يعرفه الباحث، والثانية سببٌ
+                  تقنيٌّ لمنعٍ لا فعلَ له تحته. وتشخيصُهما في «تفاصيل
+                  الاستخراج»، وما يعنيه الباحثُ في صدر البطاقة. */}
 
               {/* ── قائمةُ «⋯» ──
                   **مجموعةُ أزرارٍ مسمّاة، لا `role="menu"`.** ودورُ القائمة
