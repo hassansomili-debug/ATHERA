@@ -287,18 +287,31 @@ async def run(
             # تُحسب مدخلاتُه صدقًا، ولا يُملأ برقمٍ يُقرأ وعدًا.
             status="discovered",
             planning_status="proposed",
-            readiness_components={
-                # **مجالٌ مُسمّى، ولا يُمسّ ما جاوره.** `proposal` و
-                # `evidence_readiness` يكتبهما مسارُ التخطيط، ويُقرآن
-                # بـ`.get(...)` — فإضافةُ مجالٍ ثالث توسعةٌ لا إتلاف.
-                DISCOVERY_NAMESPACE: {
+            # ── ولا يُوسَم مرجعٌ قديم بأنّه إسنادٌ كنسيّ ──
+            #
+            # **`thesis_discovery` عقدٌ كنسيّ، ويَعِد بما يُفحص**: كلُّ
+            # مرجعٍ فيه يُردّ إلى `FactCandidate` قائم، ومنه إلى مقطعه
+            # واقتباسِه وموضعه. والمسارُ القديم يُمرّر معرّفاتِ
+            # ‏`ThesisSection`/`ThesisResult`، وهي صفوفُ جداولٍ أخرى: لا
+            # ‏`FactCandidate` لها، ولا اقتباسَ ولا مقطع.
+            #
+            # والأشكالُ المتخصّصة تسبق المقترحَ المبدئيّ وتعمل على القديم
+            # أيضًا، فحظرُ المبدئيّ وحده (`evidence_is_canonical`) لم يكن
+            # يكفي: كانت فرصةٌ قديمة تُكتب ومعها `source_fact_refs` تُقرأ
+            # إسنادًا كنسيًّا فلا يُردّ إلى شيء.
+            #
+            # فالمجالُ يُكتب للكنسيّ وحده. والقديمُ يبقى كما كان قبل هذا
+            # العمل — بلا `readiness_components` — ولا صفَّ يُختلق له،
+            # ولا بياناتٌ قديمة تُرحَّل هنا.
+            readiness_components=(
+                {DISCOVERY_NAMESPACE: {
                     "level": draft.discovery_level,
                     "basis": draft.discovery_basis,
                     "source_fact_refs": list(draft.source_fact_refs),
                     "missing_context": list(draft.missing_context),
                     "context_complete": not draft.missing_context,
-                },
-            },
+                }}
+                if evidence_basis == "canonical" else None),
         ))
         created += 1
 

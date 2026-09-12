@@ -482,3 +482,251 @@ def test_the_legacy_path_gains_no_discovery_ideas():
     canonical = miner.ThesisFacts(
         thesis_id=str(uuid.uuid4()), results=(("r1", FINDING),))
     assert len(miner.mine(canonical)) == 1
+
+
+# ═════════ الفرضيةُ مرتكزٌ ثالث — والعقدُ المُعلَن يلزم التنفيذَ ═════════
+#
+# **وثيقةُ هذا العمل تعدّ `hypotheses` مرتكزًا صالحًا للاكتشاف**، والتنفيذُ
+# كان يعرف النتيجةَ والسؤالَ وحدهما. فرسالةٌ فرضياتُها مستخرَجةٌ مؤهَّلة،
+# ولا سؤالَ صريحٌ فيها ولا نتيجةٌ بلغت العتبة، تخرج بصفرِ أفكار بينما
+# الوثيقةُ تقول غيرَ ذلك. فيُقاس هنا أنّ التنفيذَ لحق بالعقد.
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_hypothesis_alone_with_incomplete_context_yields_one_idea(two_tenants):
+    """**(أ) فرضيةٌ وحدها وسياقٌ ناقص ← فكرةٌ واحدةٌ مبدئية.**"""
+    from athera_api.services.thesis import mining
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    hypothesis = "توجد علاقة دالة بين القيادة التحويلية والرضا الوظيفي"
+    thesis_id, _f, _r = await _build(
+        tid, uid, scientific=(("hypotheses", [hypothesis], 0.94),))
+
+    body = await _mine(tid, uid, thesis_id)
+    assert body["opportunities_created"] == 1, f"فرضيةٌ مؤهَّلةٌ لم تُنتج فكرة: {body}"
+
+    opportunity = (await _opportunities(tid, uid, thesis_id))[0]
+    discovery = _discovery(opportunity)
+    assert discovery["basis"] == mining.miner.BASIS_HYPOTHESIS == "hypothesis"
+    assert discovery["level"] == mining.miner.LEVEL_IDEA_ONLY
+    assert set(discovery["missing_context"]) == {"constructs", "sample"}
+    assert opportunity.opportunity_kind == "extension"
+    assert opportunity.paper_kind == "extension"
+
+    # **ولا تُقلب الفرضيةُ نتيجةً، ولا تُعاد صياغتُها سؤالًا.**
+    assert (opportunity.result_refs or []) == []
+    assert opportunity.research_question_ar is None
+    assert discovery["basis"] != mining.miner.BASIS_QUESTION
+    assert discovery["basis"] != mining.miner.BASIS_RESULT
+
+    # ومعرّفُ الفرضية هو المصدر.
+    assert len(discovery["source_fact_refs"]) == 1
+    assert discovery["source_fact_refs"][0] not in (opportunity.result_refs or [])
+
+
+def test_the_hypothesis_rationale_denies_a_result_in_both_languages():
+    """**والنفيُ في نصّ التسويغ** — يقرؤه الباحثُ لا المطوِّرُ وحده."""
+    from athera_api.services.thesis import miner
+
+    facts = miner.ThesisFacts(
+        thesis_id=str(uuid.uuid4()),
+        hypotheses=("فرضية",), hypothesis_refs=(("h-1", "فرضية"),))
+    drafts = miner.mine(facts)
+    assert len(drafts) == 1
+    assert "فرضيةٍ" in drafts[0].rationale_ar
+    assert "لا تدّعي" in drafts[0].rationale_ar
+    assert "hypothesis" in drafts[0].rationale_en
+    assert "does not claim" in drafts[0].rationale_en
+    assert drafts[0].result_refs == []
+    assert drafts[0].research_question_ar is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_hypothesis_with_complete_context_is_context_complete(two_tenants):
+    """**(ب) فرضيةٌ ومعها بناءٌ وعيّنة ← مكتملةُ السياق.**"""
+    from athera_api.services.thesis import mining
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    hypothesis = "توجد علاقة دالة بين القيادة التحويلية والرضا الوظيفي"
+    thesis_id, _f, _r = await _build(tid, uid, scientific=(
+        ("hypotheses", [hypothesis], 0.94),
+        ("constructs", [CONSTRUCT_ONE, CONSTRUCT_TWO], 0.93),
+        ("population", [POPULATION], 0.94),
+    ))
+
+    body = await _mine(tid, uid, thesis_id)
+    assert body["opportunities_created"] >= 1
+
+    opportunities = await _opportunities(tid, uid, thesis_id)
+    discoveries = [_discovery(o) for o in opportunities]
+    assert any(d["basis"] == mining.miner.BASIS_HYPOTHESIS for d in discoveries)
+    for discovery in discoveries:
+        assert discovery["level"] == mining.miner.LEVEL_CONTEXT_COMPLETE
+        assert discovery["missing_context"] == []
+        assert discovery["context_complete"] is True
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_low_confidence_hypothesis_creates_nothing(two_tenants):
+    """**(ج) فرضيةٌ دون العتبة ← صفر.** ولا تُخفَّض العتبةُ لمرتكزٍ جديد."""
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _f, _r = await _build(
+        tid, uid, scientific=(("hypotheses", ["فرضيةٌ ضعيفةُ الثقة"], 0.50),))
+
+    body = await _mine(tid, uid, thesis_id)
+    assert body["opportunities_created"] == 0
+    assert body["eligible_facts_used"] == 0
+    assert await _opportunities(tid, uid, thesis_id) == []
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_ungrounded_high_confidence_hypothesis_creates_nothing(two_tenants):
+    """**(د) `0.99` مع فرضيةٍ غير مؤصَّلة ← صفر.** والتأصيلُ لا يُشترى."""
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import canonical_facts
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, run_id = await _seed(tid, uid, filename="فرضيةٌ-مختلَقة.pdf")
+    async with tenant_session(tid, uid) as session:
+        chunk = await _chunk(session, tid, file_id, BODY)
+        await _candidate(
+            session, tid, run_id=run_id, file_id=file_id, chunk=chunk,
+            field_key="hypotheses", value=["فرضيةٌ لا توجد في المقطع"],
+            confidence=0.99, quote="اقتباسٌ لم يُكتب في هذا المستند قطّ")
+
+    async with tenant_session(tid, uid) as session:
+        canonical = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+    assert canonical.reasons.get("quote_not_grounded") == 1
+
+    body = await _mine(tid, uid, thesis_id)
+    assert body["opportunities_created"] == 0
+    assert await _opportunities(tid, uid, thesis_id) == []
+
+
+def test_the_result_basis_does_not_mislabel_a_theme_or_a_hypothesis_result():
+    """**و«نتيجة» لا «نتيجةٌ رئيسة».**
+
+    ‏`results` الكنسيّة تُغذّيها ثلاثةُ حقول — `primary_findings` و
+    `hypothesis_results` و`qualitative_themes` — فوسمُها جميعًا
+    `primary_finding` خبرٌ خاطئٌ في اثنتين من ثلاث.
+    """
+    from athera_api.services.thesis import miner
+    from athera_api.services.thesis.canonical_facts import RESULT_KEYS
+
+    assert miner.BASIS_RESULT == "result"
+    assert len(RESULT_KEYS) == 3
+    assert "primary_finding" not in miner.DISCOVERY_BASES
+
+
+# ═════════ الإسنادُ الكنسيّ لا يُدَّعى لمرجعٍ قديم ═════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_canonical_opportunity_exposes_resolvable_fact_provenance(two_tenants):
+    """**(١) الكنسيّةُ تحمل المجالَ، وكلُّ مرجعٍ فيه يُردّ إلى حقيقةٍ قائمة.**"""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import FactCandidate
+    from athera_api.services.thesis.mining import DISCOVERY_NAMESPACE
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, _r = await _build(
+        tid, uid, scientific=(("primary_findings", [FINDING], 0.95),))
+    await _mine(tid, uid, thesis_id)
+
+    for opportunity in await _opportunities(tid, uid, thesis_id):
+        assert DISCOVERY_NAMESPACE in (opportunity.readiness_components or {})
+        refs = _discovery(opportunity)["source_fact_refs"]
+        assert refs
+        async with tenant_session(tid, uid) as session:
+            for ref in refs:
+                fact = (await session.execute(
+                    select(FactCandidate)
+                    .where(FactCandidate.id == uuid.UUID(ref)))).scalar_one_or_none()
+                assert fact is not None, f"مرجعٌ لا يُردّ إلى حقيقة: {ref}"
+                assert fact.file_id == file_id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_legacy_opportunity_never_claims_canonical_fact_provenance(two_tenants):
+    """**(٢) والقديمةُ لا تحمل المجالَ أصلًا.**
+
+    فالمسارُ القديم يُمرّر معرّفاتِ `ThesisSection`/`ThesisResult`، وهي
+    ليست حقائقَ مرشّحة. ولو كُتبت `source_fact_refs` لصارت وعدًا لا يُفحص:
+    مرجعٌ يُقرأ إسنادًا كنسيًّا ولا يُردّ إلى شيء.
+
+    **والأشكالُ المتخصّصة تسبق المقترحَ المبدئيّ وتعمل على القديم أيضًا** —
+    فحظرُ المبدئيّ وحده لم يكن يكفي، وهذا الفحصُ يعضّ على الفرق.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import FactCandidate
+    from athera_api.models.thesis import ThesisResult, ThesisSection
+    from athera_api.services.thesis.mining import DISCOVERY_NAMESPACE
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _file_id, _run = await _seed(tid, uid, title_ar=TITLE,
+                                            filename="قديمة.pdf")
+    async with tenant_session(tid, uid) as session:
+        session.add(ThesisSection(tenant_id=tid, thesis_id=thesis_id,
+                                  section_key="questions", content_ar=QUESTION_ONE))
+        session.add(ThesisResult(tenant_id=tid, thesis_id=thesis_id,
+                                 label_ar=FINDING,
+                                 variables=[CONSTRUCT_ONE, CONSTRUCT_TWO],
+                                 is_published=False))
+
+    body = await _mine(tid, uid, thesis_id)
+    assert body["evidence_basis"] == "legacy"
+
+    opportunities = await _opportunities(tid, uid, thesis_id)
+    assert opportunities, "المسارُ القديم لم يُنتج شيئًا — فالفحصُ لا يقيس شيئًا"
+
+    async with tenant_session(tid, uid) as session:
+        for opportunity in opportunities:
+            components = opportunity.readiness_components or {}
+            assert DISCOVERY_NAMESPACE not in components, (
+                "فرصةٌ قديمة كُتب لها إسنادٌ كنسيّ")
+            # وأيُّ مرجعٍ فيها ليس `FactCandidate` — وهذا سببُ المنع.
+            for ref in (opportunity.result_refs or []):
+                fact = (await session.execute(
+                    select(FactCandidate)
+                    .where(FactCandidate.id == uuid.UUID(ref)))).scalar_one_or_none()
+                assert fact is None, "مرجعٌ قديمٌ صادف حقيقةً — التجهيزةُ ملتبسة"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_canonical_fresh_upload_path_is_unchanged(two_tenants):
+    """**(٣) ومسارُ الرفع الكنسيّ كما كان** — لم يُمسّ بهذا الحدّ."""
+    from athera_api.services.thesis import mining
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, _f, _r = await _build(tid, uid, scientific=(
+        ("primary_findings", [FINDING], 0.95),
+        ("constructs", [CONSTRUCT_ONE, CONSTRUCT_TWO], 0.93),
+        ("population", [POPULATION], 0.94),
+    ))
+
+    body = await _mine(tid, uid, thesis_id)
+    assert body["evidence_basis"] == "canonical"
+    assert body["opportunities_created"] >= 1
+    assert body["mining_state"] == mining.COMPLETED
+    for opportunity in await _opportunities(tid, uid, thesis_id):
+        assert _discovery(opportunity)["context_complete"] is True
+

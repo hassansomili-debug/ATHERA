@@ -35,13 +35,20 @@ LEVEL_CONTEXT_COMPLETE: Final = "context_complete"
 DISCOVERY_LEVELS: Final = (LEVEL_IDEA_ONLY, LEVEL_CONTEXT_COMPLETE)
 
 #: المرتكزُ العلميّ الذي قامت عليه الفكرة — **واحدٌ منها لازم**.
-BASIS_RESULT: Final = "primary_finding"
+#:
+#: **و«نتيجة» لا «نتيجةٌ رئيسة».** كانت القيمة `primary_finding`، و`results`
+#: الكنسيّة تُغذّيها ثلاثةُ حقول: `primary_findings` و`hypothesis_results`
+#: و`qualitative_themes`. فثيمةٌ كيفيةٌ كانت تُوسَم «نتيجةً رئيسة» — وسمٌ
+#: يقرؤه الباحثُ خبرًا عن نوع دليله، وهو خطأ في اثنتين من ثلاث.
+BASIS_RESULT: Final = "result"
 BASIS_QUESTION: Final = "research_question"
+#: **والفرضيةُ مرتكزٌ قائمٌ بذاته** — لا تُقلب نتيجةً ولا تُعاد صياغتها سؤالًا.
+BASIS_HYPOTHESIS: Final = "hypothesis"
 BASIS_INSTRUMENT: Final = "instrument"
 BASIS_QUALITATIVE: Final = "qualitative_theme"
 BASIS_NULL_RESULT: Final = "null_or_unexpected_result"
 DISCOVERY_BASES: Final = (
-    BASIS_RESULT, BASIS_QUESTION, BASIS_INSTRUMENT,
+    BASIS_RESULT, BASIS_QUESTION, BASIS_HYPOTHESIS, BASIS_INSTRUMENT,
     BASIS_QUALITATIVE, BASIS_NULL_RESULT,
 )
 
@@ -350,7 +357,7 @@ def _fallback_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[Opportu
 
     # ── (ب) امتدادٌ مؤصَّل: سؤالٌ مستخرَجٌ هو الأساس، ولا نتيجةَ تُدَّعى ──
     if not facts.question_refs:
-        return []
+        return _hypothesis_draft(facts, gaps=[])
     question_id, question = facts.question_refs[0]
     return [OpportunityDraft(
         opportunity_kind="extension", paper_kind="extension",
@@ -373,6 +380,53 @@ def _fallback_drafts(facts: ThesisFacts, unpublished: list[str]) -> list[Opportu
         source_fact_refs=[question_id],
         discovery_level=LEVEL_CONTEXT_COMPLETE, discovery_basis=BASIS_QUESTION,
         missing_context=[],
+    )]
+
+
+def _hypothesis_draft(
+    facts: ThesisFacts, gaps: list[str],
+) -> list[OpportunityDraft]:
+    """**الفرضيةُ مرتكزٌ علميٌّ قائمٌ بذاته** — حين لا نتيجةَ ولا سؤال.
+
+    وكان العقدُ المُعلَن يعدّها مرتكزًا صالحًا، والتنفيذُ لا يعرف إلّا
+    النتيجةَ والسؤال. فرسالةٌ فرضياتُها مستخرَجةٌ مؤهَّلةٌ مؤصَّلة — ولا
+    سؤالَ صريحٌ فيها ولا نتيجةٌ بلغت العتبة — تخرج بصفرِ أفكار بينما
+    الوثيقةُ تقول إنّها لا تخرج. فالتنفيذُ يلحق بالعقد.
+
+    **ولا تُقلب الفرضيةُ نتيجةً**: `result_refs` يبقى فارغًا، والتسويغُ
+    ينفي ادّعاءَ نتيجةٍ صراحةً. **ولا تُعاد صياغتُها سؤالًا**: نصُّها كما
+    استُخرج، ومرتكزُها `hypothesis` لا `research_question` — فالوسمُ خبرٌ
+    عن نوع الدليل، ومَن قرأ «سؤال» ظنّ أنّ الرسالة سألته.
+    """
+    if not facts.hypothesis_refs:
+        return []
+    hypothesis_id, hypothesis = facts.hypothesis_refs[0]
+    level = _level_for(gaps)
+    incomplete = (
+        " **وسياقُها غيرُ مكتمل**: يلزم تأكيدُ العيّنة أو البُنى." if gaps else "")
+    incomplete_en = (
+        " Its context is incomplete: the sample or constructs need confirmation."
+        if gaps else "")
+    return [OpportunityDraft(
+        opportunity_kind="extension", paper_kind="extension",
+        working_title_ar=f"فكرة امتداد مبدئية من فرضية: {hypothesis[:70]}",
+        # **ولا تُكتب الفرضيةُ في خانة السؤال**: الرسالةُ لم تسألها سؤالًا.
+        research_question_ar=None,
+        rationale_ar="فكرةُ ورقةٍ **مبدئية**، مؤصَّلةٌ في **فرضيةٍ** مستخرَجة "
+                     "من الرسالة. **ولا تدّعي أنّ الرسالة تحمل نتيجةً مؤهَّلةً "
+                     "لهذه الفرضية** — ولا نتيجةَ مؤهَّلةً استُخرجت أصلًا، ولا "
+                     "سؤالَ بحثيٍّ صريح." + incomplete,
+        rationale_en="A preliminary paper idea, grounded in a hypothesis extracted "
+                     "from the thesis. It does not claim the thesis holds an eligible "
+                     "result for this hypothesis — no eligible result was extracted "
+                     "at all, and no explicit research question either." + incomplete_en,
+        # **ولا نتيجةَ تُدَّعى.**
+        result_refs=[],
+        variable_refs=list(facts.construct_refs),
+        sample_refs=list(facts.sample_ids),
+        source_fact_refs=[hypothesis_id],
+        discovery_level=level, discovery_basis=BASIS_HYPOTHESIS,
+        missing_context=list(gaps),
     )]
 
 
@@ -412,7 +466,8 @@ def _preliminary_draft(
 
     # ‏(ج٢) سؤالٌ مؤهَّلٌ قائم، ولا نتيجةَ — ويُقال ذلك صراحةً.
     if not facts.question_refs:
-        return []
+        # ‏(ج٣) ولا سؤالَ كذلك — فالفرضيةُ مرتكزٌ ثالث.
+        return _hypothesis_draft(facts, gaps)
     question_id, question = facts.question_refs[0]
     return [OpportunityDraft(
         opportunity_kind="extension", paper_kind="extension",
