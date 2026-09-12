@@ -117,6 +117,16 @@ export function ThesisJourney({
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // ── **قفلٌ أثناء العمل، لا منعٌ من ورقةٍ ثانية** ──
+  //
+  // كان التعطيلُ مقصورًا على البطاقة العاملة (`busy === opportunity.id`)،
+  // فتُعرض الشاشةُ وفيها بطاقةٌ تقول «نبني الخيط الذهبيّ…» وأخرى زرُّها
+  // «ابدأ هذه الورقة» مضيءٌ يُنقر. فيبدأ الباحثُ ورقتين معًا بلا قصد،
+  // ويرى نتيجتين متداخلتين لا يعرف أيَّهما لأيّ.
+  //
+  // **وهو قفلُ لحظةٍ لا سياسة**: ينتهي بانتهاء الطلب، ولا يمنع إنشاء
+  // ورقةٍ أخرى بعده.
+  const anyInFlight = busy !== null;
   /**
    * **مخطوطةٌ لكلِّ فرصة، لا واحدةٌ للصفحة.**
    *
@@ -406,7 +416,7 @@ export function ThesisJourney({
                   <button
                     type="button"
                     data-testid="journey-build-thread"
-                    disabled={!canBuildThread || busy === opportunity.id}
+                    disabled={!canBuildThread || anyInFlight}
                     onClick={() => void buildThread(opportunity.id)}
                     style={{
                       padding: "8px 16px", borderRadius: "var(--radius)",
@@ -453,7 +463,7 @@ export function ThesisJourney({
               <button
                 type="button"
                 data-testid="journey-start-paper"
-                disabled={busy === opportunity.id}
+                disabled={anyInFlight}
                 onClick={() => void startPaper(
                   opportunity.id, opportunity.planning_status === "selected")}
                 style={{

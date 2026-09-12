@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
@@ -99,7 +100,6 @@ export default function ManuscriptsPage({ params }: { params: Promise<{ locale: 
     <>
       <h1>{t("manuscripts.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("manuscripts.subtitle")}</p>
-      <p className="provenance-note">{t("manuscripts.gateNote")}</p>
       {error ? <p className="error">{error}</p> : null}
       {!loaded ? (
         <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
@@ -123,13 +123,46 @@ export default function ManuscriptsPage({ params }: { params: Promise<{ locale: 
                 {item.language}
               </p>
 
-              {item.g9_approved_at ? (
-                <p className="badge-ok">{t("manuscripts.g9Approved")}</p>
-              ) : (
-                <p className="metric-label">{t("manuscripts.g9Pending")}</p>
-              )}
+              {/* ── **المدخلُ الرئيس: استوديو الورقة** ──
+                  وكانت هذه الشاشةُ تعرض بوّابةَ G9 وحدها: «افحص الجاهزية»
+                  و«اعتمد G9» — فيقف من بنى ورقته أمام فحصِ جاهزيةٍ لا
+                  أمام ورقته. والاستوديو قائمٌ في `/{id}/studio` منذ حين،
+                  ولا رابطَ إليه من هنا. */}
+              <div style={{ marginBlockStart: 8 }}>
+                <Link
+                  href={`/${locale}/manuscripts/${item.id}/studio`}
+                  data-testid={`manuscript-open-studio-${item.id}`}
+                  style={{
+                    display: "inline-block",
+                    padding: "8px 16px", borderRadius: "var(--radius)",
+                    background: "var(--athera-aqua, var(--athera-teal))",
+                    color: "#04302c", fontWeight: 600, textDecoration: "none",
+                  }}
+                >
+                  {t("manuscripts.openStudio")}
+                </Link>
+              </div>
 
-              {state ? (
+              {/* ── وجاهزيةُ النشر تُطوى ولا تُحذف ──
+                  **وG9 حدٌّ قائم**: منطقُه ونقاطُ نهايته لم تُمسّ. وموضعُه
+                  هنا: بعد أن تُكتب الورقة، لا قبل أن تُفتح. */}
+              <details data-testid={`manuscript-advanced-${item.id}`}
+                       style={{ marginBlockStart: 8 }}>
+                <summary className="metric-label" style={{ cursor: "pointer" }}>
+                  {t("manuscripts.advancedReadiness")}
+                </summary>
+
+                <p className="provenance-note" style={{ marginBlockStart: 6 }}>
+                  {t("manuscripts.gateNote")}
+                </p>
+
+                {item.g9_approved_at ? (
+                  <p className="badge-ok">{t("manuscripts.g9Approved")}</p>
+                ) : (
+                  <p className="metric-label">{t("manuscripts.g9Pending")}</p>
+                )}
+
+                {state ? (
                 <div style={{ marginBlockStart: 8 }}>
                   <p className="metric-label">
                     {t("manuscripts.sectionsChecked")}: {state.sections_checked}
@@ -151,18 +184,23 @@ export default function ManuscriptsPage({ params }: { params: Promise<{ locale: 
                 </div>
               ) : null}
 
-              <div style={{ display: "flex", gap: 8, marginBlockStart: 8, flexWrap: "wrap" }}>
-                <button type="button" disabled={busyId === item.id} onClick={() => void check(item.id)}>
-                  {t("manuscripts.checkReadiness")}
-                </button>
-                <button
-                  type="button"
-                  disabled={busyId === item.id || !state?.can_pass_g9 || Boolean(item.g9_approved_at)}
-                  onClick={() => void approve(item.id)}
-                >
-                  {t("manuscripts.approveG9")}
-                </button>
-              </div>
+                <div style={{ display: "flex", gap: 8, marginBlockStart: 8, flexWrap: "wrap" }}>
+                  <button type="button" data-testid={`manuscript-check-${item.id}`}
+                          disabled={busyId === item.id}
+                          onClick={() => void check(item.id)}>
+                    {t("manuscripts.checkReadiness")}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid={`manuscript-approve-g9-${item.id}`}
+                    disabled={busyId === item.id || !state?.can_pass_g9
+                              || Boolean(item.g9_approved_at)}
+                    onClick={() => void approve(item.id)}
+                  >
+                    {t("manuscripts.approveG9")}
+                  </button>
+                </div>
+              </details>
             </article>
           );
         })}
