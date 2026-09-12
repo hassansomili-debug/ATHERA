@@ -22,7 +22,8 @@
     "test:auto-journey": "playwright test tests/automatic-opportunity-journey.spec.ts --retries=0 --workers=1",
     "test:rc": "playwright test tests/rc-thesis-journey.spec.ts",
     "test:final-mile": "playwright test tests/thesis-final-mile.spec.ts",
-    "test:simple-surface": "playwright test tests/thesis-simple-surface.spec.ts"
+    "test:simple-surface": "playwright test tests/thesis-simple-surface.spec.ts",
+    "test:brain-v1": "playwright test tests/brain-v1-journey.spec.ts"
   },
   "dependencies": {
     "next": "^16.0.0",

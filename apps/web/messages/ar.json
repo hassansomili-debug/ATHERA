@@ -1522,7 +1522,20 @@
     "state_known": "معلوم",
     "state_missing": "ناقص",
     "state_needs_review": "يحتاج مراجعة",
-    "state_conflicting": "متعارض"
+    "state_conflicting": "متعارض",
+    "journeyTitle": "الذكاء البحثيّ",
+    "journeyLead": "أين يقف هذا البحث، وما الخطوة التالية، ولماذا.",
+    "journeyLoading": "نقرأ حال البحث…",
+    "journeyFailed": "تعذّر قراءة حال البحث الآن. والخانات أدناه لا تعوّض عنها.",
+    "nextStepTitle": "الخطوة التالية المقترحة",
+    "nextStepWhy": "لماذا",
+    "nextStepNone": "لا خطوةَ مقترحةً الآن — وما سُجِّل في هذا البحث يكفي لما بعده.",
+    "nextStepOpen": "افتح",
+    "cannotTitle": "ما لا يمكن الآن",
+    "cannotHint": "هذه وقائع تُقرأ من بحثك، لا رأيًا في الترتيب.",
+    "cannotNone": "لا شيء ممنوعًا الآن.",
+    "moreStepsTitle": "خطواتٌ أخرى",
+    "journeyLimits": "حدود هذه القراءة"
   },
   "goldenThread": {
     "title": "الخيط الذهبي",
@@ -1851,5 +1864,19 @@
     "threadReady": "الخيط الذهبي مبنيّ لهذه الورقة.",
     "title": "رحلة رسالتك إلى ورقة منشورة",
     "waiting": "لم تبدأ بعد"
+  },
+  "capability": {
+    "run_analysis": "تشغيل تحليل",
+    "record_finding": "تسجيل نتيجة",
+    "support_claim": "إسناد ادّعاء بمصدر",
+    "draft_results": "صياغة قسم النتائج"
+  },
+  "blocker": {
+    "dataset_missing": "لا مجموعةَ بيانات في هذا البحث.",
+    "analysis_not_run": "لم تجرِ تشغيلةُ تحليلٍ بعد.",
+    "no_sources_linked": "لا مصدرَ مربوطًا بهذا البحث.",
+    "no_findings_recorded": "لا نتيجةَ مسجَّلة بعد.",
+    "research_question_missing": "لا سؤالَ بحثٍ مسجَّلًا.",
+    "method_not_selected": "لم يُختَر المنهج بعد."
   }
 }

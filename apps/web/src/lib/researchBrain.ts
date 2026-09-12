@@ -93,3 +93,74 @@ export function totalItems(assessment: ProjectAssessment): number {
     0,
   );
 }
+
+/* ═══════════ الذكاء البحثيّ: أين يقف البحث وما الخطوة التالية ═══════════
+ *
+ * **ولا منطقَ رحلةٍ يُعاد بناؤه هنا** (§80). الخادمُ يقول الحال والسبب
+ * والفعل، والشاشةُ تعرض. وكلُّ شرطٍ يُكتب في React نسخةٌ ثانية من قاعدةٍ
+ * تفترق عن أصلها بأول تعديل — ثمّ تعرض الشاشةُ حكمًا لا يقوله الخادم.
+ */
+
+/** حالُ الفعل كما يقولها الخادم — لا تُشتقّ في المتصفّح. */
+export type ActionStatus =
+  | "recommended"
+  | "available"
+  | "blocked"
+  | "optional"
+  | "completed";
+
+export interface JourneyAction {
+  action_key: string;
+  category: string;
+  status: ActionStatus;
+  title: string;
+  reason: string;
+  route: string | null;
+  blocking_reasons: string[];
+  requirements: string[];
+  evidence_refs: string[];
+}
+
+/** بوّابةٌ حتمية — ما **يمكن** الآن، مفصولًا عمّا يُستحسن. */
+export interface JourneyCapability {
+  key: string;
+  allowed: boolean;
+  blocking_reasons: string[];
+}
+
+export interface ProjectJourney {
+  project_id: string;
+  title: string;
+  /** بصمةُ الحال — **لا تُعرض للباحث العاديّ** (§84)، وتُقرأ في التشخيص. */
+  context_fingerprint: string;
+  fingerprint_schema: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  recommended: JourneyAction | null;
+  actions: JourneyAction[];
+  capabilities: JourneyCapability[];
+  known_count: number;
+  missing_count: number;
+  needs_review_count: number;
+  conflict_count: number;
+  superseded_now: number;
+  limitations: string;
+  note: string;
+}
+
+export const projectJourney = (locale: Locale, projectId: string) =>
+  apiFetch<ProjectJourney>(
+    `/api/v1/workspace/projects/${projectId}/journey`,
+    { locale },
+  );
+
+/**
+ * مسارُ الفعل موصولًا بلغة القارئ.
+ *
+ * والخادمُ يرسله بلا لغة عمدًا: رابطٌ عربيٌّ يُفتح لقارئٍ إنجليزيّ يخرجه
+ * من لغته بلا أن يطلب.
+ */
+export function localeRoute(locale: Locale, route: string | null): string | null {
+  if (!route) return null;
+  return `/${locale}${route}`;
+}
