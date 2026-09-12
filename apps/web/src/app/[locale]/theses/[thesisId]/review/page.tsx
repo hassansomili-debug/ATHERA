@@ -225,6 +225,28 @@ export default function ReviewPage({
   return (
     <>
       <h1>{t("thesisReview.title")}</h1>
+
+      {/* ── **اختياريّة، وتُقال في صدر الشاشة لا في حاشية** ──
+          البطاقةُ كانت تقول «٣٤ بانتظارك» و«راجِعْ التالي»، فيقرؤها من رفع
+          رسالته بوّابةً يجب أن يعبُرها قبل أن تتكوّن فكرةُ ورقة. وليست
+          كذلك: التنقيبُ يعمل على الاستخراج الآليّ المؤهَّل، بلا قرارٍ
+          لكلّ حقل.
+
+          **والوظيفةُ تبقى كاملة** لمن أرادها ضبطَ جودة — تُصحَّح بها
+          بياناتٌ استُخرجت خطأً، وقد تُتيح أدلّةً أكثر. */}
+      <div
+        data-testid="review-optional-banner"
+        role="note"
+        style={{
+          borderInlineStart: "3px solid var(--athera-teal)",
+          paddingInlineStart: 12, marginBlock: "10px 14px",
+        }}
+      >
+        <strong>{t("review.optionalTitle")}</strong>
+        <p className="metric-label" style={{ margin: "2px 0 0" }}>
+          {t("review.optionalBody")}
+        </p>
+      </div>
       {/* **وأيُّ رسالة؟** من رفع ثلاثًا لا يعرف أيَّها يقرأ. فالعنوانُ
           هنا، وإن لم يُستخرَج بعد فاسمُ الملفّ بديلٌ يُقال إنّه بديل. */}
       {review?.thesis_title ? (

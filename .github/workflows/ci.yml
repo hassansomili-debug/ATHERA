@@ -314,6 +314,10 @@ jobs:
         run: cd apps/web && npm run test:simple-surface
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+      - name: MVP UX closure (real browser)
+        run: cd apps/web && npm run test:ux-closure
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
       # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
       #

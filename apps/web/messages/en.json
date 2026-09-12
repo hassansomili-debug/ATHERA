@@ -564,19 +564,21 @@
     "chooseThesis": "Choose a thesis"
   },
   "manuscripts": {
-    "title": "Manuscript Studio",
-    "subtitle": "Build the manuscript section by section, tying every result to an analysis run.",
-    "gateNote": "Gate G9 does not open by clicking: every unsupported claim, and every result with no analysis run, stays a blocker. The server enforces it; this screen only explains it.",
+    "advancedReadiness": "Advanced / Publication readiness",
+    "approveG9": "Approve at G9",
+    "checkReadiness": "Check readiness",
     "empty": "No manuscripts yet.",
-    "version": "Version",
     "g9Approved": "Approved at G9",
     "g9Pending": "Awaiting G9 approval",
-    "checkReadiness": "Check readiness",
-    "approveG9": "Approve at G9",
-    "status": "Status",
+    "gateNote": "Gate G9 does not open by clicking: every unsupported claim, and every result with no analysis run, stays a blocker. The server enforces it; this screen only explains it.",
     "language": "Language",
+    "missingSections": "Missing sections",
+    "openStudio": "Open Paper Studio",
     "sectionsChecked": "Sections checked",
-    "missingSections": "Missing sections"
+    "status": "Status",
+    "subtitle": "Build the manuscript section by section, tying every result to an analysis run.",
+    "title": "Manuscript Studio",
+    "version": "Version"
   },
   "analysis": {
     "title": "Data & Analysis",
@@ -1031,18 +1033,20 @@
     "keepOpen": "Keep this page open until the upload finishes."
   },
   "review": {
-    "title": "Peer Review",
-    "subtitle": "Review your paper before an editor does.",
-    "scientific": "Scientific Review",
-    "scientificHint": "Claims, their support, and the contribution.",
-    "method": "Methodology Review",
-    "methodHint": "Design, sample, and instrument.",
-    "statistical": "Statistical Review",
-    "statisticalHint": "Tests, assumptions, and runs.",
     "editorial": "Editorial Review",
     "editorialHint": "Structure, language, and completeness.",
+    "method": "Methodology Review",
+    "methodHint": "Design, sample, and instrument.",
+    "note": "Review proposes patches; it never edits an approved version.",
     "open": "Open the review council",
-    "note": "Review proposes patches; it never edits an approved version."
+    "optionalBody": "You can review or correct extracted thesis details for quality control. This is not required to generate paper ideas or build your paper.",
+    "optionalTitle": "Optional evidence review",
+    "scientific": "Scientific Review",
+    "scientificHint": "Claims, their support, and the contribution.",
+    "statistical": "Statistical Review",
+    "statisticalHint": "Tests, assumptions, and runs.",
+    "subtitle": "Review your paper before an editor does.",
+    "title": "Peer Review"
   },
   "thesisReview": {
     "title": "Review Thesis Evidence",
