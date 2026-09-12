@@ -192,9 +192,10 @@ async def test_selecting_advances_the_journey_to_the_build_step(two_tenants):
     # **الخطوةُ الثانية صارت بالغة** — وكانت خطوةً ميّتة في الخريطة.
     assert after["state"] == journey.OPPORTUNITIES_READY
     assert journey.BLOCK_NO_SELECTION not in after["blocking_reasons"]
-    # **والحقوقُ تبقى مذكورةً فيما يلزم لما هو أبعد** — ولا تمنع البناء.
-    assert journey.BLOCK_RIGHTS in after["blocking_reasons"]
     assert after["can_build_paper"] is True
+    # **ولا حقوقَ في الرحلة** (قرارُ منتج) — لا فيما يمنع ولا فيما سيلزم.
+    assert not any("rights" in r for r in after["blocking_reasons"])
+    assert not any("rights" in r for r in after["current_blocking_reasons"])
     # **ودورةُ الإنتاج لم تُمسّ.**
     assert opportunity.status == "discovered"
     assert opportunity.planning_status == "selected"

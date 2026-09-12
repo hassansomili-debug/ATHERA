@@ -88,12 +88,13 @@ function opportunity(planningStatus: string) {
  * الاختيارُ ثمّ البناء — بلا مرورٍ بشاشة مراجعةِ الأدلّة.
  */
 async function serve(page: Page, opts: {
-  rightsPassed: boolean;
   consentGranted: boolean;
   calls: string[];
+  threadReady?: boolean;
 }) {
   let selected = false;
   let built = false;
+  let thread = opts.threadReady ?? false;
 
   await page.route("**/api/v1/**", async (route) => {
     const url = new URL(route.request().url());
@@ -115,21 +116,32 @@ async function serve(page: Page, opts: {
         reused: [],
       });
     }
+    if (path.endsWith("/thread") && method === "POST") {
+      thread = true;
+      return json(route, 201, { thread_id: "th-1", created: 1 });
+    }
     if (path.endsWith("/journey")) {
-      // **الحقوقُ والإذنُ يُذكران فيما يلزم لما هو أبعد، ولا يمنعان البناء.**
+      // **ولا حقوقَ في هذه الرحلة أصلًا** (قرارُ منتج): لا فيما يمنع الآن
+      // ولا فيما سيلزم. والإذنُ يمنع نداءَ النموذج وحده.
       const blocking: string[] = [];
       if (!selected) blocking.push("researcher_selection_required");
-      if (!opts.rightsPassed) blocking.push("rights_gate_not_passed");
       if (!opts.consentGranted) blocking.push("ai_consent_required");
-      return json(route, 200, journeyView({
-        state: built
-          ? "manuscript_created"
-          : selected ? "opportunities_ready" : "researcher_decision_required",
-        // بوّابةُ الهيكل: فرصةٌ قائمة وبلا تداخل — لا الحقوقُ ولا الإذن.
-        canBuild: true,
-        blocking,
-        built,
-      }));
+      const currentBlocking = built
+        ? blocking.filter((r) => r !== "researcher_selection_required")
+        : blocking.filter((r) => r === "researcher_selection_required");
+      return json(route, 200, {
+        ...journeyView({
+          state: built
+            ? "manuscript_created"
+            : selected ? "opportunities_ready" : "researcher_decision_required",
+          canBuild: true,
+          blocking,
+          built,
+        }),
+        current_blocking_reasons: currentBlocking,
+        thread_ready: thread,
+        can_build_thread: built && !thread && opts.consentGranted,
+      });
     }
     if (path.endsWith("/publication-map")) {
       return json(route, 200, {
@@ -152,7 +164,7 @@ for (const locale of [AR, EN]) {
       const calls: string[] = [];
       await seedSession(page);
       // **بلا حقوقٍ وبلا إذن** — وهما بالضبط ما كان يسدّ الطريق.
-      await serve(page, { rightsPassed: false, consentGranted: false, calls });
+      await serve(page, { consentGranted: false, calls });
       await page.goto(`/${locale}/theses/${THESIS}/journey`);
 
       const start = page.getByTestId("journey-start-paper");
@@ -175,30 +187,43 @@ for (const locale of [AR, EN]) {
 
 // ═══════════ ٢ · وما نُقل بقي حدًّا ═══════════
 
-test("الحقوقُ تُقال حيث تلزم، ومعها سببُها | rights are stated where they bind",
+test("ولا خطوةَ حقوقٍ في الرحلة | no rights step anywhere on this journey",
   async ({ page }) => {
     const calls: string[] = [];
     await seedSession(page);
-    await serve(page, { rightsPassed: false, consentGranted: true, calls });
+    await serve(page, { consentGranted: true, calls });
     await page.goto(`/${AR}/theses/${THESIS}/journey`);
 
-    const note = page.getByTestId("journey-rights-required");
-    await expect(note).toBeVisible();
-    // **ومعها سببُها**: تمنع إعلانَ الجاهزية للإرسال، لا بناءَ الورقة.
-    await expect(note).toContainText("الحقوق");
-    // ولا تمنع الفعلَ الرئيس.
     await expect(page.getByTestId("journey-start-paper")).toBeEnabled();
+    // **ولا نصَّ حقوقٍ ولا خطوةً في الشريط** — باللغتين.
+    for (const locale of [AR, EN]) {
+      await page.goto(`/${locale}/theses/${THESIS}/journey`);
+      await expect(page.getByTestId("journey-start-paper")).toBeVisible();
+      const body = (await page.locator("body").innerText()).toLowerCase();
+      for (const word of ["rights", "authorship", "gt1", "الحقوق", "التأليف"]) {
+        expect(body, `نصُّ حقوقٍ عُرض: ${word}`).not.toContain(word);
+      }
+    }
+    await expect(page.getByTestId("journey-rights-required")).toHaveCount(0);
   });
 
-test("والحقوقُ لا تُعرض حين لا تلزم | no rights prompt once they pass",
+test("الاستوديو بعد الخيط لا بجواره | the studio waits for the golden thread",
   async ({ page }) => {
     const calls: string[] = [];
     await seedSession(page);
-    await serve(page, { rightsPassed: true, consentGranted: true, calls });
+    // مخطوطةٌ قائمة، ولا خيطَ بعد.
+    await serve(page, { consentGranted: true, calls, threadReady: false });
     await page.goto(`/${AR}/theses/${THESIS}/journey`);
+    await page.getByTestId("journey-start-paper").click();
 
-    await expect(page.getByTestId("journey-start-paper")).toBeVisible();
-    await expect(page.getByTestId("journey-rights-required")).toHaveCount(0);
+    // **الخيطُ أوّلًا، ولا استوديو يُعرض فعلًا مكافئًا.**
+    await expect(page.getByTestId("journey-build-thread")).toBeVisible();
+    await expect(page.getByTestId("journey-open-studio")).toHaveCount(0);
+
+    await page.getByTestId("journey-build-thread").click();
+    // وبعده يُفتح الاستوديو.
+    await expect(page.getByTestId("journey-open-studio")).toBeVisible();
+    expect(calls.some((c) => c.endsWith("/thread"))).toBe(true);
   });
 
 // ═══════════ ٣ · ولا مفرداتِ نظامٍ في وجه الباحث ═══════════
@@ -207,7 +232,7 @@ test("لا مفرداتِ تنقيبٍ ولا مقاطعَ في شاشة الأ�
   async ({ page }) => {
     const calls: string[] = [];
     await seedSession(page);
-    await serve(page, { rightsPassed: false, consentGranted: false, calls });
+    await serve(page, { consentGranted: false, calls });
     await page.goto(`/${EN}/theses/${THESIS}/journey`);
 
     await expect(page.getByTestId("journey-start-paper")).toBeVisible();

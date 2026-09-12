@@ -17,12 +17,23 @@ import { type Commit, useDeferredLoad } from "@/lib/useDeferredLoad";
  * «استخراج» ولا «كنسيّ». الباحثُ يقرأ عن رسالته وورقته وحدهما.
  */
 
+/**
+ * **أربعُ خطواتٍ يقرؤها الباحث** — ورحلةُ MVP هي هذه وحدها:
+ *
+ *     رفعُ الرسالة → أفكارُ الأوراق → بناءُ الورقة → استوديو الورقة
+ *
+ * **ولا خطوةَ حقوقٍ وتأليف** (قرارُ منتج): لم تكن خطوةً في الرحلة، بل
+ * حدًّا للإرسال عُرض في طريقها — فوقف الباحثُ أمام «أنت هنا» لا فعلَ
+ * تحتها. وحارسُها باقٍ في القاعدة عند `ready_to_submit`، والإرسالُ ليس
+ * من هذه الرحلة.
+ *
+ * **وتحديثُ الأدبيات خرج من الشريط أيضًا**: حدٌّ يقع داخل «بناء الورقة»
+ * ويُقال في موضعه، لا خطوةٌ سادسة يعدّها الباحثُ ولا يفعل فيها شيئًا.
+ */
 const STEP_KEYS = [
   "analysis",
-  "opportunities",
-  "rights",
+  "ideas",
   "build",
-  "literature",
   "studio",
 ] as const;
 
@@ -40,14 +51,13 @@ const STEP_OF_STATE: Record<string, number> = {
   failed: 0,
   opportunities_ready: 1,
   researcher_decision_required: 1,
-  overlap_review_required: 2,
-  rights_required: 2,
-  awaiting_ai_consent: 3,
-  project_created: 3,
-  thread_ready: 3,
-  outline_ready: 3,
-  manuscript_created: 3,
-  drafting: 3,
+  overlap_review_required: 1,
+  awaiting_ai_consent: 2,
+  project_created: 2,
+  thread_ready: 2,
+  outline_ready: 2,
+  manuscript_created: 2,
+  drafting: 2,
   literature_pending: 4,
   ready_for_paper_studio: 5,
 };
@@ -56,6 +66,8 @@ interface Journey {
   thesis_id: string;
   state: string;
   blocking_reasons: string[];
+  /** ما يمنع الخطوةَ التالية بعينها — يحسبه الخادمُ ولا تشتقّه الشاشة. */
+  current_blocking_reasons: string[];
   can_build_paper: boolean;
   /**
    * **الخيطُ الذهبيّ خطوةٌ في الرحلة، لا نقطةُ نهايةٍ تُكتشف.**
@@ -215,16 +227,15 @@ export function ThesisJourney({
   }
 
   const current = journey ? (STEP_OF_STATE[journey.state] ?? 0) : 0;
-  // **والحقوقُ حين تلزم، يُعرض لها فعلٌ يُنقر.** وزرٌّ معطّلٌ بلا مخرج
-  // يترك الباحثَ يبحث في وحدةٍ أخرى عمّا يفتح له الطريق.
-  const rightsRequired = journey?.blocking_reasons.includes(
-    "rights_gate_not_passed") === true;
-  // **وما يمنع الآن وحده**: الحقوقُ والإذنُ حدّان لخطوةٍ قادمة، لا لهذه.
-  // ولا تُعاد حسابُهما في الشاشة — تُرشَّح رموزُ الخادم كما أرسلها.
-  const LATER_GATES = ["rights_gate_not_passed", "ai_consent_required",
-                       "ai_consent_stale"];
-  const blockingNow = (journey?.blocking_reasons ?? [])
-    .filter((reason) => !LATER_GATES.includes(reason));
+  // ── ما يمنع الآن: **يقوله الخادمُ، ولا تستنتجه الشاشة** ──
+  //
+  // وكانت الشاشةُ تحمل قائمةَ بوّاباتٍ «لاحقة» ترشّح بها القائمةَ العامّة —
+  // أي أنّها تقرّر أيُّ حدٍّ يسري الآن. فتصير سياسةُ البوّابات في طرفين
+  // يفترقان يومًا، ويسري في وجه الباحث ما لم يقرّره الخادم.
+  //
+  // فالقرارُ صار حقلًا في العقد: `current_blocking_reasons`.
+  const blockingNow = journey?.current_blocking_reasons ?? [];
+
   const canBuildThread = journey?.can_build_thread === true;
   const threadReady = journey?.thread_ready === true;
 
@@ -298,30 +309,6 @@ export function ThesisJourney({
           «لا فرص أوراق بعد» دعوى معرفة، و«تعذّر التحميل» إعلانُ أنّ
           المعرفة لم تُتَح. وقائمةٌ تبدأ فارغةً وتبقى فارغةً بعد الإخفاق
           لا يفرّق شرطُها بينهما إلّا بذكر الخطأ صراحةً. */}
-      {/* ── الحقوقُ حين تلزم: تُقال ولا تُعرض زرًّا معطّلًا ──
-          **وهي لا تمنع بناءَ الورقة** — تمنع إعلانَها جاهزةً للإرسال،
-          وذاك حدٌّ يفرضه قيدُ القاعدة. فيُقال للباحث ما يلزم ومتى يلزم،
-          بدل زرٍّ مطفأٍ يقف أمامه بلا سبب.
-
-          **ولا يُعرض هنا فعلٌ ينوب عنه**: إقرارُ التأليف قرارٌ يقوله
-          الباحثُ عن مؤلّفين بأعيانهم، وزرٌّ واحد يقرّه نيابةً عنه اختلاقُ
-          موافقةٍ لم تُعطَ. وشاشةُ استكمال الحقوق والتأليف غيرُ قائمةٍ في
-          الوِب بعد، فلا يُشار إلى بابٍ لا يفتح. */}
-      {rightsRequired ? (
-        <p
-          data-testid="journey-rights-required"
-          className="metric-label"
-          style={{
-            borderInlineStart: "3px solid var(--athera-amber, #F59E0B)",
-            paddingInlineStart: 12, margin: 0,
-          }}
-        >
-          <strong>{t("journey.rightsCta")}</strong>
-          {" — "}
-          {t("journey.rightsWhy")}
-        </p>
-      ) : null}
-
       {opportunities.length === 0 && !error ? (
         <p data-testid="journey-empty" className="metric-label">
           {t("journey.empty")}
@@ -409,20 +396,27 @@ export function ThesisJourney({
                   </button>
                 )}
 
-                {/* **والمسارُ يقصد الاستوديو بعينه.** كان يقصد
+                {/* **والاستوديو بعد الخيط، لا بجواره.**
+                    كانت الحاشيةُ تقول «الخيطُ الذهبيّ قبل الاستوديو»
+                    ويُعرض الزرّان معًا — فيصيران فعلين متكافئين، ويمضي
+                    الباحثُ إلى الاستوديو ببنيةٍ بحثيّةٍ لم تُبنَ.
+
+                    **والمسارُ يقصد الاستوديو بعينه.** كان يقصد
                     `‎/manuscripts/<id>` ولا صفحةَ هناك — فيبلغ الباحثُ
                     ٤٠٤ بأوّلِ زرٍّ بعد بناء ورقته. */}
-                <a
-                  data-testid="journey-open-studio"
-                  href={`/${locale}/manuscripts/${manuscriptOf(opportunity.id)}/studio`}
-                  style={{
-                    padding: "8px 16px", borderRadius: "var(--radius)",
-                    background: "var(--athera-teal)", color: "#fff",
-                    textDecoration: "none",
-                  }}
-                >
-                  {t("journey.openStudio")}
-                </a>
+                {threadReady ? (
+                  <a
+                    data-testid="journey-open-studio"
+                    href={`/${locale}/manuscripts/${manuscriptOf(opportunity.id)}/studio`}
+                    style={{
+                      padding: "8px 16px", borderRadius: "var(--radius)",
+                      background: "var(--athera-teal)", color: "#fff",
+                      textDecoration: "none",
+                    }}
+                  >
+                    {t("journey.openStudio")}
+                  </a>
+                ) : null}
               </>
             ) : (
               /* **فعلٌ رئيسٌ واحد: «ابدأ هذه الورقة».**

@@ -110,8 +110,9 @@ def test_the_router_does_not_re_implement_the_gates():
 
 
 def test_blocked_reasons_travel_as_codes():
-    blocked = journey.JourneyBlocked((journey.BLOCK_OVERLAP, journey.BLOCK_RIGHTS))
-    assert blocked.reasons == (journey.BLOCK_OVERLAP, journey.BLOCK_RIGHTS)
+    blocked = journey.JourneyBlocked(
+        (journey.BLOCK_OVERLAP, journey.BLOCK_NO_CONSENT))
+    assert blocked.reasons == (journey.BLOCK_OVERLAP, journey.BLOCK_NO_CONSENT)
 
 
 # ══════════ ٣. ما يحتاج قاعدةً — مكتوبٌ ولم يُشغَّل هنا ══════════

@@ -35,7 +35,6 @@ EXTRACTING: Final = "extracting"
 ANALYSED: Final = "analysed"
 OPPORTUNITIES_READY: Final = "opportunities_ready"
 RESEARCHER_DECISION_REQUIRED: Final = "researcher_decision_required"
-RIGHTS_REQUIRED: Final = "rights_required"
 OVERLAP_REVIEW_REQUIRED: Final = "overlap_review_required"
 PROJECT_CREATED: Final = "project_created"
 THREAD_READY: Final = "thread_ready"
@@ -49,7 +48,9 @@ FAILED: Final = "failed"
 
 STATES: Final[tuple[str, ...]] = (
     UPLOADED, EXTRACTING, ANALYSED, OPPORTUNITIES_READY,
-    RESEARCHER_DECISION_REQUIRED, RIGHTS_REQUIRED, OVERLAP_REVIEW_REQUIRED,
+    # **ولا `RIGHTS_REQUIRED` بينها** — لا تُشتقّ في هذه الرحلة، وحالٌ
+    # معلَنةٌ لا تقع تُغري الشاشةَ بخطوةٍ لا وجود لها.
+    RESEARCHER_DECISION_REQUIRED, OVERLAP_REVIEW_REQUIRED,
     PROJECT_CREATED, THREAD_READY, OUTLINE_READY, MANUSCRIPT_CREATED,
     DRAFTING, LITERATURE_PENDING, READY_FOR_PAPER_STUDIO,
     AWAITING_AI_CONSENT, FAILED,
@@ -63,7 +64,6 @@ BLOCK_NO_CONSENT: Final = "ai_consent_required"
 BLOCK_STALE_CONSENT: Final = "ai_consent_stale"
 BLOCK_NO_SELECTION: Final = "researcher_selection_required"
 BLOCK_OVERLAP: Final = "overlap_unresolved"
-BLOCK_RIGHTS: Final = "rights_gate_not_passed"
 BLOCK_NO_OPPORTUNITY: Final = "no_opportunity_yet"
 BLOCK_EXTRACTION_FAILED: Final = "extraction_failed"
 
@@ -80,6 +80,11 @@ class JourneyFacts:
     opportunities: int = 0
     selected_opportunity: bool = False
     overlap_unresolved: int = 0
+    #: **واقعةٌ محفوظةٌ لا بوّابةَ في هذه الرحلة** (قرارُ منتج).
+    #:
+    #: تُحمَّل لأنّها صادقةٌ ويقرؤها التدقيقُ وسطوحٌ أخرى، ولا تُقرأ في
+    #: بوّابةٍ هنا: لا في بناء الهيكل، ولا في الخيط الذهبيّ، ولا في
+    #: الاستوديو. وحارسُها عند `ready_to_submit` في القاعدة، لا هنا.
     rights_passed: bool = False
     ai_consent_granted: bool = False
     project_exists: bool = False
@@ -116,11 +121,9 @@ def derive_state(facts: JourneyFacts) -> str:
             # تُعلَن جاهزةً للاستوديو وسجلُّ الأدبيات لم يُراجَع بعد (§14).
             if facts.literature_pending:
                 return LITERATURE_PENDING
-            # **والحقوقُ هنا تمنع فعلًا قادمًا**: الانتقالُ إلى «جاهزةٌ
-            # للإرسال» يفرضه قيدُ القاعدة. فتُقال في موضعها، ومعها فعلٌ
-            # يُنقر — لا قبل أن تُكتب كلمةٌ واحدة في المخطوطة.
-            if not facts.rights_passed:
-                return RIGHTS_REQUIRED
+            # **ولا خطوةَ حقوقٍ في هذه الرحلة** (قرارُ منتج). كانت تُشتقّ
+            # هنا فتقف بين المسوّدة المكتملة والاستوديو. وقيدُ القاعدة عند
+            # `ready_to_submit` باقٍ كما هو — والإرسالُ ليس من هذه الرحلة.
             return READY_FOR_PAPER_STUDIO
         if facts.sections_drafted:
             return DRAFTING
@@ -192,18 +195,59 @@ def shell_blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
     return tuple(reasons)
 
 
-def blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
-    """ما يمنع التقدّم **إلى ما يُرسَل أو يُنشَر** — رموزٌ لا نثر، وقد تجتمع.
+def ai_blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
+    """ما يمنع **نداءَ النموذج** — بناءُ الخيط الذهبيّ وصياغةُ الأقسام.
 
-    وهي بوّاباتُ الهيكل وزيادةً: الحقوقُ والإذن. ويقرؤها الخيطُ الذهبيّ
-    (يُرسل دليلًا خارجًا) والشاشةُ حين تُسمّي ما يلزم الخطوةَ القادمة.
+    وهي بوّاباتُ الهيكل ومعها الإذن: لا يُرسَل دليلُ الباحث إلى مزوّدٍ
+    خارجيّ بلا إذنٍ صريحٍ منه، ولا تحت إذنٍ بات على لقطةٍ أخرى.
+
+    **ولا حقوقَ فيها ولا تأليف.** والفرقُ ليس تفصيلًا: الحقوقُ تحكم ما
+    يخرج إلى العالم — إرسالًا ونشرًا وتصديرًا — لا ما يُقرأ به دليلُ
+    الباحث آليًّا في أدواته. واشتراطُها هنا كان يُعيد الطريقَ المسدود
+    خطوةً واحدة إلى الأمام: يُبنى الهيكلُ ثمّ يقف الخيطُ الذهبيّ على
+    حقوقٍ لا يمسّها.
+
+    ولو اقتضت قاعدةٌ قانونيةٌ يومًا حقوقًا لمجرّد المعالجة الآلية، فموضعُها
+    هنا صراحةً وبتوثيقها — لا استنتاجًا من قائمةٍ عامّة.
     """
     reasons = list(shell_blocking_reasons(facts))
-    if facts.selected_opportunity and not facts.rights_passed:
-        reasons.append(BLOCK_RIGHTS)
     if facts.selected_opportunity and not facts.ai_consent_granted:
         reasons.append(BLOCK_NO_CONSENT)
     return tuple(reasons)
+
+
+def blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
+    """**كلُّ ما ستحتاجه الرحلةُ قبل أن تنتهي** — لا ما يمنع الآن.
+
+    اتّحادُ بوّابتين: الهيكلُ والنموذج. وهي قائمةُ «ما يلزم» تُقرأ للإخبار
+    — **ولا يُبنى عليها منعُ فعلٍ بعينه**، فلكلِّ فعلٍ بوّابتُه.
+
+    **ولا حقوقَ فيها ولا تأليف** (قرارُ منتج): رحلةُ «رسالة ← ورقة» لا
+    تمرّ بهما. وحارسُهما باقٍ حيث كان — قيدُ القاعدة
+    ‏`ck_opportunity_ready_requires_rights_and_authorship` عند
+    `ready_to_submit`، وخدمةُ `rights` وسجلُّها — ولا يُسقطه هذا القرار،
+    لأنّ الإرسالَ ليس من هذه الرحلة أصلًا.
+    """
+    reasons = list(shell_blocking_reasons(facts))
+    for reason in ai_blocking_reasons(facts):
+        if reason not in reasons:
+            reasons.append(reason)
+    return tuple(reasons)
+
+
+def current_blocking_reasons(facts: JourneyFacts) -> tuple[str, ...]:
+    """**ما يمنع الخطوةَ التالية بعينها — والخادمُ يملك هذا القرار.**
+
+    وكانت الشاشةُ ترشّح قائمةَ «ما يلزم» بقائمةٍ مكتوبةٍ فيها، فتصير
+    سياسةُ البوّابات موزّعةً بين طرفين يفترقان. فيُحسب هنا مرّةً واحدة:
+    أيُّ خطوةٍ تليه الرحلةُ الآن، وما الذي يقف دونها.
+    """
+    state = derive_state(facts)
+    if state in {MANUSCRIPT_CREATED, AWAITING_AI_CONSENT, DRAFTING, THREAD_READY}:
+        # الخطوةُ التالية نداءُ نموذج: خيطٌ ذهبيّ أو صياغة.
+        return ai_blocking_reasons(facts)
+    # وما عداه: الهيكلُ وحده. ولا بوّابةَ نشرٍ في هذه الرحلة.
+    return shell_blocking_reasons(facts)
 
 
 def can_build_paper(facts: JourneyFacts) -> bool:
@@ -217,13 +261,18 @@ def can_build_thread(facts: JourneyFacts) -> bool:
     والخيطُ يُعلَّق بمشروع، فلا يُبنى قبله (`thesis.paper_not_built_yet`).
     وخيطٌ قائمٌ لا يُبنى ثانيًا: الفعلُ المعروض يصير «مبنيّ» لا زرًّا يُضغط.
 
-    **ولا تُعاد بوّابةُ الإذن هنا** — `blocking_reasons` تحملها، فموضعُها
-    واحد. وبياتُ البصمة لا تُقرأ من هذه الوقائع أصلًا: يقولها الخادمُ عند
-    الفعل (`ai_consent_stale`)، ولا تُخمَّن في الشاشة.
+    **وبوّابتُه بوّابةُ النموذج** — `ai_blocking_reasons`: هيكلٌ قائمٌ
+    وإذنٌ صريح. ولا حقوقَ فيها: كان يقرأ اتّحادَ الثلاث، فرسالةٌ أُذن
+    لنموذجها ولم تُستكمل حقوقُها تقف عند الخيط الذهبيّ — **وهو الطريقُ
+    المسدودُ نفسُه، متقدّمًا خطوةً واحدة**. والحقوقُ تحكم ما يخرج إلى
+    العالم، والخيطُ لا يخرج.
+
+    وبياتُ البصمة لا تُقرأ من هذه الوقائع أصلًا: يقولها الخادمُ عند الفعل
+    (`ai_consent_stale`)، ولا تُخمَّن في الشاشة.
     """
     return (facts.project_exists
             and not facts.thread_ready
-            and not blocking_reasons(facts))
+            and not ai_blocking_reasons(facts))
 
 
 # ═════════════════ ٣. الحدُّ الذي لا يلين: مرجعٌ لا يُحلّ يُرفض ═════════════════
@@ -515,7 +564,13 @@ async def view(session, *, tenant_id: uuid.UUID, thesis) -> dict:
     return {
         "thesis_id": thesis.id,
         "state": derive_state(facts),
+        # **قائمتان لا واحدة، ولكلٍّ معناها:**
+        #   `blocking_reasons`         كلُّ ما ستحتاجه الرحلةُ قبل أن تنتهي.
+        #   `current_blocking_reasons` ما يمنع الخطوةَ التالية بعينها.
+        # وكانت الشاشةُ ترشّح الأولى بقائمةٍ مكتوبةٍ فيها لتستنتج الثانية —
+        # فتصير سياسةُ البوّابات في طرفين يفترقان. والقرارُ هنا وحده.
         "blocking_reasons": list(blocking_reasons(facts)),
+        "current_blocking_reasons": list(current_blocking_reasons(facts)),
         "can_build_paper": can_build_paper(facts),
         # **والخيطُ الذهبيّ فعلٌ في الرحلة، لا نقطةٌ تُكتشف.** كانت الشاشةُ
         # لا تعرف عنه شيئًا، فيبقى `thread_ready` واقعةً لا تقع أبدًا إلّا

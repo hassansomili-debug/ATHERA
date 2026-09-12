@@ -53,12 +53,23 @@ def test_every_server_state_is_mapped_to_a_step():
         f"حالاتٌ في الشاشة لا يُصدرها الخادم: {sorted(mapped - declared)}")
 
 
-def test_the_six_steps_are_declared_once():
+def test_the_four_steps_are_declared_once():
+    """**أربعُ خطواتٍ يقرؤها الباحث** — ورحلةُ MVP هي هذه وحدها.
+
+    وخرجت «الحقوق والتأليف» (قرارُ منتج): لم تكن خطوةً في الرحلة بل حدَّ
+    إرسالٍ عُرض في طريقها. وخرج «تحديثُ الأدبيات»: حدٌّ يقع داخل البناء
+    ويُقال في موضعه، لا خطوةٌ يعدّها الباحثُ ولا يفعل فيها شيئًا.
+    """
     source = _component()
     block = source[source.index("const STEP_KEYS"):source.index("] as const")]
     keys = re.findall(r'"([a-z]+)"', block)
-    assert keys == ["analysis", "opportunities", "rights", "build",
-                    "literature", "studio"], keys
+    assert keys == ["analysis", "ideas", "build", "studio"], keys
+    assert "rights" not in keys
+    # **والعنوانُ الفرعيّ يعدّها كما هي** — «ستّ خطوات» فوق أربعٍ خبرٌ كاذب.
+    for locale in ("ar", "en"):
+        subtitle = _messages(locale)["journey"]["subtitle"]
+        assert ("Four" in subtitle) or ("أربع" in subtitle), (
+            f"{locale}: العنوانُ الفرعيّ يعدّ خطواتٍ غيرَ المعروضة — {subtitle}")
 
 
 def test_every_blocking_reason_has_researcher_facing_copy():
@@ -66,8 +77,7 @@ def test_every_blocking_reason_has_researcher_facing_copy():
     declared = {
         journey.BLOCK_NO_CONSENT, journey.BLOCK_STALE_CONSENT,
         journey.BLOCK_NO_SELECTION, journey.BLOCK_OVERLAP,
-        journey.BLOCK_RIGHTS, journey.BLOCK_NO_OPPORTUNITY,
-        journey.BLOCK_EXTRACTION_FAILED,
+        journey.BLOCK_NO_OPPORTUNITY, journey.BLOCK_EXTRACTION_FAILED,
     }
     for locale in ("ar", "en"):
         blocked = _messages(locale)["journey"]["blocked"]
@@ -205,25 +215,33 @@ def test_the_card_shows_a_real_count_not_a_score():
 def test_the_screen_never_recomputes_a_gate_the_server_owns():
     """**والشاشةُ تتبع الخادم** — لا تجتهد في البوّابات.
 
-    وهذه هي الدعوى الباقية. **وقد سقط شطرٌ منها عمدًا**: كان الفعلُ
-    الرئيسُ يُعطَّل بـ`!canBuild`، فيقف الباحثُ أمام زرٍّ مطفأٍ بلا مخرج
-    — والحقوقُ والإذنُ كانا يطفئانه وهما لا يمسّان ما يفعله.
+    **وقد سقط شطرٌ منها عمدًا**: كان الفعلُ الرئيسُ يُعطَّل بـ`!canBuild`،
+    فيقف الباحثُ أمام زرٍّ مطفأٍ بلا مخرج. ثمّ صارت الشاشةُ ترشّح قائمةَ
+    الخادم بقائمةِ بوّاباتٍ «لاحقة» مكتوبةٍ فيها — أي تقرّر أيُّ حدٍّ
+    يسري الآن، فتصير السياسةُ في طرفين يفترقان.
 
-    فصار ما يلزم لما هو أبعد يُقال نصًّا ومعه سببُه، **ورمزُه يُقرأ من
-    الخادم** (`blocking_reasons`) لا يُعاد حسابُه من الوقائع.
+    **فالقرارُ صار حقلًا في العقد**: `current_blocking_reasons`.
     """
     source = _component()
-    # الرمزُ يُقرأ من الخادم كما أرسله.
-    assert 'blocking_reasons.includes(\n    "rights_gate_not_passed")' in source \
-        or '"rights_gate_not_passed"' in source
-    assert "journey?.blocking_reasons" in source
-    # **ولا منطقَ بوّابةٍ يُعاد في الشاشة** — وهذا ما لم يتغيّر.
+    assert "journey?.current_blocking_reasons" in source, (
+        "الشاشةُ لا تقرأ ما يمنع الآن من الخادم")
+    # **ولا قائمةَ بوّاباتٍ مكتوبةً في الشاشة** تقرّر ما يسري.
+    assert "LATER_GATES" not in source
+    # **ولا منطقَ بوّابةٍ يُعاد** — وهذا ما لم يتغيّر.
     for gate in ("overlap_unresolved", "rights_passed", "ai_consent_granted"):
         assert gate not in source, f"منطقُ بوّابةٍ أُعيد في الشاشة: {gate}"
+
+
+def test_no_rights_copy_reaches_the_researcher_on_this_journey():
+    """**ولا نصَّ حقوقٍ في رحلة «رسالة ← ورقة»** (قرارُ منتج)."""
+    source = _component()
+    assert "rights" not in source.lower(), "أثرُ حقوقٍ بقي في شاشة الرحلة"
     for locale in ("ar", "en"):
         journey_copy = _messages(locale)["journey"]
-        assert journey_copy["rightsCta"], f"{locale}: نصُّ استكمال الحقوق مفقود"
-        assert journey_copy["rightsWhy"], f"{locale}: سببُ لزوم الحقوق مفقود"
+        assert "rightsCta" not in journey_copy
+        assert "rightsWhy" not in journey_copy
+        assert "rights_gate_not_passed" not in journey_copy["blocked"]
+        assert "rights" not in journey_copy["steps"]
 
 
 def test_the_component_parses_as_balanced_source():

@@ -76,9 +76,15 @@ def test_the_guard_would_catch_an_unscoped_call():
 # ══════════ ٢. الحالُ تُشتقّ من صفوف، ولا نسبةَ تُخترع ══════════
 
 
-def test_the_sixteen_states_are_declared():
-    assert len(journey.STATES) == 16
-    assert len(set(journey.STATES)) == 16
+def test_the_fifteen_states_are_declared():
+    """**خمسَ عشرةَ بعد أن خرجت `rights_required`** — قرارُ منتج.
+
+    ولم تكن خطوةً في الرحلة، بل حدَّ إرسالٍ عُرض في طريقها.
+    """
+    assert len(journey.STATES) == 15
+    assert len(set(journey.STATES)) == 15
+    assert not hasattr(journey, "RIGHTS_REQUIRED"), "مفردةٌ ميّتة بقيت"
+    assert not hasattr(journey, "BLOCK_RIGHTS"), "رمزُ منعٍ ميّت بقي"
 
 
 def test_every_declared_state_is_actually_reachable():
@@ -206,27 +212,26 @@ def test_the_deterministic_shell_is_refused_only_by_its_own_gates():
     ):
         assert journey.can_build_paper(broken) is False
 
-    # ── وما لا يمنعه: الحقوقُ والإذن — **وكلاهما باقٍ حدًّا في موضعه** ──
+    # ── وما لا يمنعه: الإذنُ، وحقوقٌ لم تعد في الرحلة أصلًا ──
     for allowed in (
         dataclasses_replace(ready, rights_passed=False),
         dataclasses_replace(ready, ai_consent_granted=False),
         dataclasses_replace(ready, rights_passed=False, ai_consent_granted=False),
     ):
         assert journey.can_build_paper(allowed) is True
-        # ويبقيان مذكورين فيما يمنع ما هو أبعد.
-        full = journey.blocking_reasons(allowed)
-        if not allowed.rights_passed:
-            assert journey.BLOCK_RIGHTS in full
+        # والإذنُ يبقى مذكورًا فيما يمنع ما هو أبعد.
         if not allowed.ai_consent_granted:
-            assert journey.BLOCK_NO_CONSENT in full
+            assert journey.BLOCK_NO_CONSENT in journey.blocking_reasons(allowed)
+        # **ولا أثرَ للحقوق في شيءٍ من ذلك.**
+        assert "rights" not in " ".join(journey.blocking_reasons(allowed))
 
 
-def test_rights_still_stand_before_the_studio_and_submission():
-    """**والحقوقُ حدٌّ باقٍ** — تقف حيث تمنع فعلًا خارجيَّ الأثر.
+def test_no_rights_step_stands_anywhere_in_the_journey():
+    """**ولا خطوةَ حقوقٍ في رحلة «رسالة ← ورقة»** (قرارُ منتج).
 
-    ومسوّدةٌ تمّت أقسامُها وسجلُّ أدبياتها مراجَع لا تُعلَن «جاهزةً
-    للاستوديو» وحقوقُها لم تُستكمل: الخطوةُ التالية إرسالٌ، وقيدُ القاعدة
-    يفرض الحقوقَ عند `ready_to_submit`.
+    ومسوّدةٌ تمّت أقسامُها وسجلُّ أدبياتها مراجَع تبلغ الاستوديو، وحقوقُها
+    لم تُستكمل. وحارسُ الحقوق باقٍ حيث كان — قيدُ القاعدة عند
+    `ready_to_submit` وخدمةُ `rights` — والإرسالُ ليس من هذه الرحلة.
     """
     F = journey.JourneyFacts
     drafted = dict(processing_state="ready_for_review", opportunities=1,
@@ -234,13 +239,17 @@ def test_rights_still_stand_before_the_studio_and_submission():
                    project_exists=True, outline_exists=True, manuscript_exists=True,
                    sections_drafted=3, sections_expected=3)
 
-    assert journey.derive_state(F(**drafted, rights_passed=False)) == (
-        journey.RIGHTS_REQUIRED)
-    assert journey.derive_state(F(**drafted, rights_passed=True)) == (
-        journey.READY_FOR_PAPER_STUDIO)
-    # والأدبياتُ تسبقهما — حدٌّ لم يُمَسّ.
+    without_rights = F(**drafted, rights_passed=False)
+    assert journey.derive_state(without_rights) == journey.READY_FOR_PAPER_STUDIO
+    assert journey.current_blocking_reasons(without_rights) == ()
+    assert journey.blocking_reasons(without_rights) == ()
+
+    # والحالان سواء: الحقوقُ لا تُغيّر شيئًا في هذه الرحلة.
+    with_rights = F(**drafted, rights_passed=True)
+    assert journey.derive_state(with_rights) == journey.derive_state(without_rights)
+    # والأدبياتُ حدٌّ باقٍ لم يُمَسّ.
     assert journey.derive_state(
-        F(**drafted, rights_passed=True, literature_pending=True)) == (
+        F(**drafted, rights_passed=False, literature_pending=True)) == (
         journey.LITERATURE_PENDING)
 
 
@@ -343,24 +352,37 @@ def test_an_existing_thread_is_not_offered_for_building_again():
     assert journey.can_build_thread(facts) is False
 
 
-def test_the_thread_gate_never_skips_a_paper_gate():
-    """**بوّاباتُ الورقة كلُّها تسبق الخيط** — ولا واحدةَ تُقفز إليه."""
+def test_the_thread_gate_never_skips_a_gate_that_touches_it():
+    """**ما يمسّ الخيطَ يسبقه** — ولا واحدةَ تُقفز إليه.
+
+    **وقد خرجت الحقوقُ من هذه القائمة عمدًا.** الخيطُ الذهبيّ نداءُ
+    نموذجٍ على دليلِ الباحث، ولا يخرج إلى العالم؛ والحقوقُ تحكم ما يخرج.
+    واشتراطُها عليه كان يُعيد الطريقَ المسدود خطوةً إلى الأمام — وله
+    فحصُه: `test_the_golden_thread_does_not_wait_on_rights`.
+    """
     for broken in (
         dataclasses_replace(_ready_facts(project_exists=True), ai_consent_granted=False),
-        dataclasses_replace(_ready_facts(project_exists=True), rights_passed=False),
         dataclasses_replace(_ready_facts(project_exists=True), overlap_unresolved=1),
         dataclasses_replace(_ready_facts(project_exists=True),
                             selected_opportunity=False, opportunities=0),
+        dataclasses_replace(_ready_facts(project_exists=True), extraction_failed=True),
     ):
         assert journey.can_build_thread(broken) is False, (
-            "الخيطُ يُبنى وبوّابةٌ لم تُفتح")
+            "الخيطُ يُبنى وبوّابةٌ تمسّه لم تُفتح")
+
+    # وبلا مشروعٍ لا خيط، وخيطٌ قائمٌ لا يُبنى ثانيًا.
+    assert journey.can_build_thread(_ready_facts()) is False
+    assert journey.can_build_thread(
+        _ready_facts(project_exists=True, thread_ready=True)) is False
 
 
 def test_the_consent_gate_is_declared_once_and_reused_by_both_actions():
-    """**ولا بوّابةَ تُكتب مرّتين.** `can_build_thread` تسأل `blocking_reasons`."""
+    """**ولا بوّابةَ تُكتب مرّتين.** `can_build_thread` تسأل بوّابةَ النموذج."""
     source = inspect.getsource(journey.can_build_thread)
-    assert "blocking_reasons(facts)" in source
+    assert "ai_blocking_reasons(facts)" in source
     assert "ai_consent_granted" not in source, "بوّابةُ الإذن أُعيدت كتابتُها"
+    # **ولا تقرأ اتّحادَ الثلاث** — فيه الحقوقُ، وهي لا تمسّها.
+    assert "publication_blocking_reasons" not in source
 
 
 # ══════════ ٧. صدقُ الحال: الصياغةُ تُقاس بصفوفٍ محفوظة ══════════
@@ -425,3 +447,68 @@ def test_the_journey_view_exposes_the_thread_facts_the_screen_reads():
     source = inspect.getsource(journey.view)
     assert '"thread_ready": facts.thread_ready' in source
     assert '"can_build_thread": can_build_thread(facts)' in source
+
+
+# ═════════ ثلاثُ بوّابات، وكلٌّ تحرس ما تمسّه ═════════
+#
+# **والخيطُ الذهبيّ كان يقف على الحقوق — وهو الطريقُ المسدود متقدّمًا
+# خطوةً واحدة.** أُصلح موضعُ الحدّ عند الهيكل، وبقي الخطأُ نفسُه بعده:
+# ‏`can_build_thread` كانت تقرأ اتّحادَ البوّابات الثلاث. فرسالةٌ أُذن
+# لنموذجها ولم تُستكمل حقوقُها تُبنى ورقتُها ثمّ تقف عند الخيط.
+
+
+def test_the_golden_thread_does_not_wait_on_rights():
+    """**الحقوقُ تحكم ما يخرج إلى العالم، والخيطُ لا يخرج.**
+
+    وهذه هي الحالُ التي أعادت الطريقَ المسدود: إذنٌ ممنوح، وحقوقٌ لم
+    تُستكمل، ومشروعٌ قائم، ولا خيطَ بعد.
+    """
+    F = journey.JourneyFacts
+    facts = F(processing_state="ready_for_review", opportunities=1,
+              selected_opportunity=True, overlap_unresolved=0,
+              rights_passed=False, ai_consent_granted=True,
+              project_exists=True, thread_ready=False)
+
+    assert journey.can_build_thread(facts) is True
+    # ولا حقوقَ في بوّابة النموذج أصلًا — ولا في الرحلة كلِّها.
+    assert journey.ai_blocking_reasons(facts) == ()
+    assert journey.blocking_reasons(facts) == ()
+
+
+def test_the_golden_thread_still_waits_on_consent_and_says_which():
+    """**ويقف على الإذن** — وبه وحده، لا بالحقوق.
+
+    والتمييزُ مقصود: أن يقف الفعلُ شيء، وأن يُقال سببُ وقوفه شيءٌ آخر.
+    فباحثٌ يُمنع بحجّة حقوقٍ لا تمسّ الفعلَ يبحث عمّا لا يفتح له بابًا.
+    """
+    F = journey.JourneyFacts
+    facts = F(processing_state="ready_for_review", opportunities=1,
+              selected_opportunity=True, overlap_unresolved=0,
+              rights_passed=False, ai_consent_granted=False,
+              project_exists=True, thread_ready=False)
+
+    assert journey.can_build_thread(facts) is False
+    reasons = journey.ai_blocking_reasons(facts)
+    assert reasons == (journey.BLOCK_NO_CONSENT,), "سببُ المنع ليس الإذنَ وحده"
+
+
+def test_the_server_says_what_blocks_now_and_it_is_not_the_superset():
+    """**وقرارُ «ما يمنع الآن» للخادم** — ولا ترشّحه الشاشةُ بقائمةٍ فيها.
+
+    وكانت الشاشةُ تحمل قائمةَ بوّاباتٍ «لاحقة» ترشّح بها العامّة، فتصير
+    السياسةُ في طرفين يفترقان يومًا.
+    """
+    F = journey.JourneyFacts
+    # ورقةٌ تُبنى الآن: الإذنُ مذكورٌ فيما سيلزم، ولا يمنع البناء.
+    starting = F(processing_state="ready_for_review", opportunities=1,
+                 selected_opportunity=True, rights_passed=False,
+                 ai_consent_granted=False)
+    assert journey.current_blocking_reasons(starting) == ()
+    assert journey.can_build_paper(starting) is True
+    assert journey.BLOCK_NO_CONSENT in journey.blocking_reasons(starting)
+
+    # ومخطوطةٌ قائمة: الخطوةُ التالية نموذجٌ، فالإذنُ هو ما يمنع — وحده.
+    manuscript = dataclasses_replace(
+        starting, project_exists=True, outline_exists=True, manuscript_exists=True)
+    assert journey.current_blocking_reasons(manuscript) == (journey.BLOCK_NO_CONSENT,)
+
