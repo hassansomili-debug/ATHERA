@@ -34,3 +34,10 @@ build/
 
 # أدواتُ الوكلاء المحلّية — لا تُدفع
 .claude/
+
+# آثارُ Playwright: لقطاتٌ وتتبُّعٌ وفيديو تُكتب عند سقوط فحص — مخرَجُ
+# تشغيلٍ محلّيّ لا مصدرٌ يُراجَع. وكانت `test-results/` غيرَ مستثناة، فأيُّ
+# تشغيلٍ فيه سقوطٌ يعرض آلافَ الملفّات على `git add .`.
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/

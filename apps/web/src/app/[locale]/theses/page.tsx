@@ -76,7 +76,13 @@ interface CardActions {
   is_archived: boolean;
   /** سببُ منعِ الأرشفة والسلّة أثناء عملٍ جارٍ — **والخادم يفرضه أيضًا**. */
   lifecycle_blocked_reason: string | null;
-  /** available · in_flight · no_evidence · found · failed · withheld · completed_empty */
+  /**
+   * available · in_flight · no_evidence · found · failed · withheld ·
+   * completed_empty · no_eligible_evidence
+   *
+   * و`no_eligible_evidence` ليست `no_evidence`: الأولى فحصٌ جرى فلم يجد
+   * دليلًا مؤهَّلًا، والثانية فحصٌ لم يجرِ بعد. والنصُّ يأتي من الخادم.
+   */
   mining_state: string;
   mining_reason: string;
   parse_withdrawn_reason: string;

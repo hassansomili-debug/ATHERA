@@ -221,6 +221,18 @@ async def _mined_at(tenant_id, user_id, thesis_id):
             .where(Thesis.id == thesis_id))).scalar_one()
 
 
+async def _mining_state(tenant_id, user_id, thesis_id):
+    """**حالُ التنقيب المحفوظة** (ترحيل 0031، ثمّ 0032) — من العمود نفسه."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.thesis import Thesis
+
+    async with tenant_session(tenant_id, user_id) as session:
+        return (await session.execute(
+            select(Thesis.mining_state).where(Thesis.id == thesis_id))).scalar_one()
+
+
 async def _counts(tenant_id, user_id, thesis_id):
     """صفوفُ المعماريّة القديمة — **يجب أن تبقى صفرًا**."""
     from sqlalchemy import func, select
@@ -480,8 +492,14 @@ async def test_a_title_the_researcher_wrote_is_never_silently_replaced(two_tenan
 async def test_low_confidence_extraction_does_not_mine_and_says_why(two_tenants):
     """استخراجٌ دون العتبة لا يُنقّب — **ويُقال السببُ باسمه**.
 
-    ولا يُختم `opportunities_mined_at`: البطاقةُ لا تدّعي فحصًا لم يقع على
-    دليلٍ مؤهَّل، فتبقى «لم يبدأ استخراج الفرص بعد».
+    ولا يُختم `opportunities_mined_at`: البطاقةُ لا تدّعي فحصًا وقع على
+    دليلٍ مؤهَّل.
+
+    **وكانت هذه الحاشيةُ تقول «فتبقى: لم يبدأ استخراج الفرص بعد»** — أي
+    أنّها كانت توثّق الكذبةَ مرادًا. وقد بدأ الفحصُ وانتهى وصنّف الدليلَ
+    فلم يُؤهَّل منه شيء؛ و«لم يبدأ» تَعِد الباحثَ بخطوةٍ قادمة فينتظر ما لن
+    يأتي. فصارت الحالُ المحفوظة `no_eligible_evidence` (ترحيل 0032)،
+    وصار النصُّ يقول ما وقع.
     """
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
@@ -497,10 +515,23 @@ async def test_low_confidence_extraction_does_not_mine_and_says_why(two_tenants)
     assert body["outcome"] == "no_eligible_evidence"
     assert await _mined_at(tid, uid, thesis_id) is None, "خُتمت رسالةٌ لم تُفحص"
 
-    for locale, forbidden in (("ar", "اكتمل الفحص"), ("en", "scan completed")):
+    # **والحالُ المحفوظة تقول ما وقع، لا أكذبَ ما في المفردات.**
+    from athera_api.services.thesis import mining, processing
+
+    assert await _mining_state(tid, uid, thesis_id) == mining.NO_ELIGIBLE_EVIDENCE
+
+    for locale, forbidden, expected in (
+        ("ar", "اكتمل الفحص", processing.AR_NO_ELIGIBLE_EVIDENCE),
+        ("en", "scan completed", processing.EN_NO_ELIGIBLE_EVIDENCE),
+    ):
         card = await _card(tid, uid, thesis_id, locale=locale)
+        # ولا «اكتمل بلا نتيجة»: ذاك فحصٌ جرى على دليلٍ مؤهَّل.
         assert card["opportunities_outcome"] != "completed_empty"
         assert forbidden not in (card["opportunities_outcome_label"] or "")
+        # **ولا «لم يبدأ» — وهي الكذبةُ التي أوقفت رسالتين في الإنتاج.**
+        assert card["opportunities_outcome"] == processing.OUTCOME_NO_ELIGIBLE_EVIDENCE
+        assert card["opportunities_outcome_label"] == expected
+        assert card["mining_state"] == mining.NO_ELIGIBLE_EVIDENCE
 
 
 # ═════════ ٦ · المسارُ القديم كما كان ═════════

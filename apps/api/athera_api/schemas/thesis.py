@@ -53,7 +53,7 @@ class ThesisCardActions(BaseModel):
     lifecycle_blocked_reason: str | None = None
 
     #: available · in_flight · no_evidence · found · failed ·
-    #: withheld · completed_empty
+    #: withheld · completed_empty · no_eligible_evidence
     mining_state: str
     #: لماذا التنقيب متاحٌ أو غير متاح — **بنصٍّ يصف الواقع لا وعدًا**.
     mining_reason: str
@@ -122,6 +122,7 @@ class ThesisResponse(BaseModel):
 
     sections_extracted: int
     # لماذا العدد هو ما هو: not_started · running · no_text_layer ·
+    # no_eligible_evidence ·
     # awaiting_consent · failed · completed_empty · found
     sections_outcome: str
     sections_outcome_label: str
@@ -148,8 +149,11 @@ class ThesisResponse(BaseModel):
     #: **مؤرشَفة = مُخفاة لا محذوفة** (ترحيل 0030). و`None` تعني «في القائمة».
     archived_at: dt.datetime | None = None
 
-    #: **حالُ التنقيب المحفوظة** (ترحيل 0031): `not_started` · `running` ·
-    #: `completed` · `withheld` · `failed`. تُقرأ من العمود مباشرةً، ولا
+    #: **حالُ التنقيب المحفوظة** (ترحيل 0031، ثمّ 0032): `not_started` ·
+    #: `running` · `completed` · `withheld` · `no_eligible_evidence` ·
+    #: `failed`. و`no_eligible_evidence` تقول «جرى التنقيبُ ولم يكن ثمّة
+    #: دليلٌ مؤهَّل» — واقعةٌ كانت تُكتب `not_started` فتكذب على الباحث.
+    #: تُقرأ من العمود مباشرةً، ولا
     #: تُشتقّ من `actions.mining_state` (ذاك سطحُ عرضٍ لا حالُ تخزين).
     #:
     #: و`mining_last_error` **لا يخرج في العقد**: رمزٌ تقنيّ داخليّ.
@@ -282,7 +286,8 @@ class MineResponse(BaseModel):
     #: كذبةٌ صغيرة تنتظر أن تُقرأ حقيقةً في العقد.
     outcome: str = "no_eligible_evidence"
     #: **حالُ التنقيب نفسه** — مستقلّةٌ عن حال الاستخراج (ترحيل 0031).
-    #: `not_started` · `running` · `completed` · `withheld` · `failed`.
+    #: `not_started` · `running` · `completed` · `withheld` ·
+    #: `no_eligible_evidence` · `failed`.
     mining_state: str = "not_started"
     note_ar: str = "الفرص مقترحات مؤصَّلة في عناصر الرسالة، ولا تتقدم بلا اعتماد الحقوق."
     note_en: str = "Opportunities are grounded proposals; none advances without rights approval."

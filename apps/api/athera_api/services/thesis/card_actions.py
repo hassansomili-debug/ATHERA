@@ -78,10 +78,18 @@ MINING_FAILED: Final = "failed"                # تعثّر التنقيب — �
 # تُطوى في واحدة، فتقول البطاقةُ عن سياسةٍ وقعت كما يجب إنّها «لا دليل».
 MINING_WITHHELD: Final = "withheld"            # دليلٌ قائم، حُجب عن الاستعمال التلقائيّ
 MINING_COMPLETED_EMPTY: Final = "completed_empty"  # جرى على دليلٍ مؤهَّل فلم يتكوّن شيء
+# **وفحصٌ جرى ولم يجد دليلًا مؤهَّلًا — لا فحصٌ لم يجرِ.**
+#
+# و`MINING_NO_EVIDENCE` أعلاه تقول «لم يجرِ فحصُ الفرص بعد»، وهي صادقةٌ
+# على رسالةٍ لم تُقرأ بعد وكاذبةٌ على هذه: فُحصت، وصُنِّف دليلُها، فلم
+# يُؤهَّل منه شيء. والحالُ المحفوظة تفرّق بينهما (ترحيل 0032)، فيفرّق
+# السطحُ تبعًا لها ولا يطوي الواقعتين في نصٍّ واحد.
+MINING_NO_ELIGIBLE_EVIDENCE: Final = "no_eligible_evidence"
 
 MINING_STATES: Final[tuple[str, ...]] = (
     MINING_AVAILABLE, MINING_IN_FLIGHT, MINING_NO_EVIDENCE,
     MINING_FOUND, MINING_FAILED, MINING_WITHHELD, MINING_COMPLETED_EMPTY,
+    MINING_NO_ELIGIBLE_EVIDENCE,
 )
 
 MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
@@ -153,6 +161,15 @@ MINING_LABELS: Final[dict[str, tuple[str, str]]] = {
         "form a reliable publication opportunity. You can continue processing to try "
         "again.",
     ),
+    # **ولا يُقال «لم يبدأ».** بدأ، وانتهى، ولم يجد دليلًا مؤهَّلًا — وذلك
+    # ما يُقال. والجملةُ تُذكر مراجعةَ ما استُخرج لأنّها المخرجُ العمليّ
+    # الوحيد هنا: أدلّةٌ استُبعدت قد تصير مؤهَّلةً بقرار الباحث.
+    MINING_NO_ELIGIBLE_EVIDENCE: (
+        processing.AR_NO_ELIGIBLE_EVIDENCE + " ومراجعةُ ما استُخرج من رسالتك قد تُتيح "
+        "أدلّةً مؤهَّلة، ثمّ يمكنك استكمال المعالجة.",
+        processing.EN_NO_ELIGIBLE_EVIDENCE + " Reviewing what was extracted from your thesis may "
+        "make eligible evidence available, after which you can continue processing.",
+    ),
 }
 
 
@@ -186,6 +203,8 @@ def mining_state(*, processing_state: str, thesis_mining_state: str,
         return MINING_IN_FLIGHT
     if thesis_mining_state == "failed":
         return MINING_FAILED
+    if thesis_mining_state == "no_eligible_evidence":
+        return MINING_NO_ELIGIBLE_EVIDENCE
     if thesis_mining_state == "withheld":
         return MINING_WITHHELD
     if thesis_mining_state == "completed":
@@ -323,8 +342,12 @@ def compute(
         # يُنتج مقترحًا محافظًا لم يكن يُنتجه (`_fallback_draft`)، فرسالةٌ
         # خُتمت بصفر قبل الإصلاح تُنتج اليوم فرصةً عند إعادة المحاولة.
         # فمنعُ الاستكمال هنا يحبس الباحثَ في نتيجةٍ تجاوزها المنتج.
+        # **و`no_eligible_evidence` منها**: الاستبعادُ حالُ دليلٍ لا حالُ
+        # عالَم. يراجع الباحثُ ما استُخرج، أو يُصلَح عطبٌ في الاستخراج،
+        # فيصير المُدخل نفسه مؤهَّلًا — ومنعُ الاستكمال يحبسه في نتيجة
+        # تجاوزها المنتج.
         (mining in {MINING_FAILED, MINING_AVAILABLE, MINING_WITHHELD,
-                    MINING_COMPLETED_EMPTY})
+                    MINING_COMPLETED_EMPTY, MINING_NO_ELIGIBLE_EVIDENCE})
         and not in_flight and not archived
     )
     can_view_opportunities = opportunities > 0 and not archived

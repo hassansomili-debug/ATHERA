@@ -101,8 +101,11 @@ class Thesis(Base, TenantScoped, Timestamped):
     # الاستخراج، وبلا عمودٍ خاصٍّ به يبقى مخرجٌ واحد لتسجيل فشله: أن يُكتب
     # في حال الاستخراج `extract_failed` — فيُمحى عملٌ نجح فعلًا، وتُعلَن
     # الرسالةُ فاشلةَ الاستخراج ومرشّحاتُها مكتوبةٌ مؤصَّلةٌ تنتظر المراجعة.
+    # **والسعةُ ٢٤ (ترحيل 0032)** — `no_eligible_evidence` عشرون محرفًا،
+    # ولا تتّسع لها `String(16)`. والعمودُ يُوسَّع في القاعدة أولًا ثمّ
+    # هنا: خدمةٌ تعلن سعةً لا تملكها القاعدةُ تكتب فتُقتطع.
     mining_state: Mapped[str] = mapped_column(
-        String(16), nullable=False, server_default="not_started")
+        String(24), nullable=False, server_default="not_started")
     #: **رمزُ سببٍ قصير، ولا نصَّ مستند.** الأثرُ التشغيليّ ليس مكانَ محتوى.
     mining_last_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
 

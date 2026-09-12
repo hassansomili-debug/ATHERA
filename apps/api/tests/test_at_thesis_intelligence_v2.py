@@ -106,7 +106,9 @@ def test_every_state_and_every_reason_speaks_both_languages():
         (processing.STATE_LABELS, processing.PROCESSING_STATES, "STATE_LABELS"),
         (processing.FAILURE_LABELS, processing.FAILURE_CODES, "FAILURE_LABELS"),
         (processing.SECTION_OUTCOME_LABELS, processing.OUTCOMES, "SECTION_OUTCOME_LABELS"),
-        (processing.OPPORTUNITY_OUTCOME_LABELS, processing.OUTCOMES,
+        # **ومجالُ الفرص أوسعُ بمفردة** (ترحيل 0032): «جرى ولم يكن ثمّة
+        # دليلٌ مؤهَّل» حالُ تنقيبٍ لا حالُ تجزيء، فلا تُلزم جدولَ الأقسام.
+        (processing.OPPORTUNITY_OUTCOME_LABELS, processing.OPPORTUNITY_OUTCOMES,
          "OPPORTUNITY_OUTCOME_LABELS"),
     )
     for table, vocabulary, name in tables:
@@ -188,9 +190,13 @@ def test_no_count_is_ever_reported_without_a_reason():
     for state in processing.PROCESSING_STATES:
         for count in (0, 3):
             assert processing.section_outcome(state, count) in processing.OUTCOMES
+            # **والحالُ المحفوظة تُمرَّر هنا أيضًا** (ترحيل 0032): فرعٌ لا
+            # يُستدعى في الفحص فرعٌ غيرُ محروس، ومنه جاء العطب أصلًا.
             for mined in (None, _now()):
-                assert processing.opportunity_outcome(
-                    state, count, mined) in processing.OUTCOMES
+                for stored in (None, "not_started", "withheld",
+                               processing.MINED_NO_ELIGIBLE_EVIDENCE):
+                    assert processing.opportunity_outcome(
+                        state, count, mined, stored) in processing.OPPORTUNITY_OUTCOMES
 
 
 def test_failure_is_not_emptiness():

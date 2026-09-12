@@ -55,9 +55,22 @@ COMPLETED: Final = "completed"
 #: (أُنشئت الآن أو كانت قائمة). فلا تُكتب حالٌ تقول «اكتمل» بينما التدقيق
 #: يقول «تعذّر التكوين» — تناقضُ مصدرين هو ما نُزع من هذا الملفّ أصلًا.
 WITHHELD: Final = "withheld"
+#: **جرى التنقيبُ، ولم يكن ثمّة دليلٌ مؤهَّل أصلًا** (ترحيل 0032).
+#:
+#: والمفردةُ أُضيفت لأنّ غيابَها كان العطب. رسالتان في الإنتاج قُرئتا
+#: واستُخرج منهما ثلاثٌ وعشرون حقلًا، ثمّ نُقِّبتا فلم يُؤهَّل منها حقلٌ
+#: واحد (كلُّها `no_extraction_confidence`)، فكُتب في العمود `not_started`
+#: — لأنّ مفردات 0031 الخمس لا تحوي هذه الواقعة، فوقع الاختيارُ على
+#: أكذبها. فقرأ الباحثُ «لم يبدأ استخراج الفرص بعد» وقد بدأ وانتهى.
+#:
+#: والفرقُ عن `WITHHELD` محكُّه واحد: أكان ثمّة دليلٌ مؤهَّل؟
+#:   • `WITHHELD`              نعم — جرى عليه ولم تتكوّن فرصة.
+#:   • `NO_ELIGIBLE_EVIDENCE`  لا — ولا شيءَ كان يمكن أن يجري عليه.
+NO_ELIGIBLE_EVIDENCE: Final = "no_eligible_evidence"
 FAILED: Final = "failed"
 
-STATES: Final[tuple[str, ...]] = (NOT_STARTED, RUNNING, COMPLETED, WITHHELD, FAILED)
+STATES: Final[tuple[str, ...]] = (
+    NOT_STARTED, RUNNING, COMPLETED, WITHHELD, NO_ELIGIBLE_EVIDENCE, FAILED)
 
 #: أساسُ الدليل الذي يُعدّ محاولةً حقيقية — وبه يُختم ويُسجَّل «نُقِّب».
 REAL_ATTEMPT: Final[frozenset[str]] = frozenset({"canonical", "legacy"})
@@ -81,6 +94,10 @@ REAL_ATTEMPT: Final[frozenset[str]] = frozenset({"canonical", "legacy"})
 BLOCKED_NO_SCIENTIFIC_BASIS: Final = "no_eligible_result_or_question"
 BLOCKED_NO_CONTEXT: Final = "no_construct_or_sample_context"
 BLOCKED_NO_SHAPE: Final = "no_opportunity_shape_matched"
+#: أثرُ «لا دليلَ مؤهَّل» — ويحمل نصَّ الحال نفسَه عن قصد: الواقعةُ واحدة،
+#: تُقال في الأثر وتُكتب في العمود، فلا يفترق المصدران.
+OUTCOME_NO_ELIGIBLE_EVIDENCE: Final = NO_ELIGIBLE_EVIDENCE
+
 BLOCKED_REASONS: Final[tuple[str, ...]] = (
     BLOCKED_NO_SCIENTIFIC_BASIS, BLOCKED_NO_CONTEXT, BLOCKED_NO_SHAPE,
 )
@@ -144,37 +161,48 @@ async def run(
     canonical = await canonical_facts.load(
         session, tenant_id=tenant_id, thesis_id=thesis_id, file_id=thesis.file_id)
 
+    # ── التسميةُ سؤال، والدليلُ سؤالٌ آخر — ولا يُشترط أحدُهما بالآخر ──
+    #
+    # **وكان فرعُ التسمية داخل `has_evidence`.** وذلك مقبولٌ ما دام العنوانُ
+    # المؤهَّلُ يُعَدّ دليلًا — وقد كان يُعَدّ خطأً. فلمّا صار العنوانُ لا
+    # يُنشئ دليلًا (وهي القاعدةُ المكتوبة في المنتج) صارت رسالةٌ لا شيءَ
+    # فيها إلّا عنوانٌ مؤهَّلٌ مؤصَّل **تفقد اسمَها**: تُعرض للباحث باسم
+    # ملفّها وفي القاعدة عنوانٌ مستخرَجٌ صالح.
+    #
+    # فالتسميةُ تخرج إلى هنا: تقع لكلِّ بصمةٍ كنسيّة، بدليلٍ علميٍّ أو بغيره.
+    # **العنوانُ يُسمّي متى وُجد، والدليلُ يُعَدّ متى كان علميًّا.**
     title_conflict = False
-    if canonical.has_evidence:
-        # ── العنوانُ: لغتُه تُحفظ، وعمودُه يخصّها وحدها ──
-        #
-        # **وكان يُقرأ من `thesis.title_ar` وحده.** فرسالةٌ إنجليزية عنوانُها
-        # معتمَدٌ ومتحقَّق في `title_en` تصل إلى هنا بلا عنوان، فتُعلَّق
-        # مقترحاتُها المعنونة ويُختم التنقيبُ مكتملًا بصفر فرص — وهو ما رصده
-        # قبولُ الإنتاج.
-        #
-        # **وما كتبه الباحثُ بيده لا يُستبدل باستخراجٍ اعتُمد**: التعارضُ
-        # يُسجَّل، والقائمُ يبقى.
-        chosen = canonical.title
-        if chosen is None:
-            # لا عنوانَ كنسيًّا. والتسميةُ حينئذٍ ممّا كتبه الباحثُ على الصفّ
-            # إن كتب — ولا يُخترع شيء.
-            naming = thesis.title_ar or thesis.title_en
+    naming: str | None = thesis.title_ar or thesis.title_en
+
+    # ── العنوانُ: لغتُه تُحفظ، وعمودُه يخصّها وحدها ──
+    #
+    # **وكان يُقرأ من `thesis.title_ar` وحده.** فرسالةٌ إنجليزية عنوانُها
+    # معتمَدٌ ومتحقَّق في `title_en` تصل إلى هنا بلا عنوان، فتُعلَّق
+    # مقترحاتُها المعنونة ويُختم التنقيبُ مكتملًا بصفر فرص — وهو ما رصده
+    # قبولُ الإنتاج.
+    #
+    # **وما كتبه الباحثُ بيده لا يُستبدل باستخراجٍ اعتُمد**: التعارضُ
+    # يُسجَّل، والقائمُ يبقى.
+    chosen = canonical.title
+    if chosen is not None:
+        existing = getattr(thesis, chosen.column)
+        if existing is None:
+            setattr(thesis, chosen.column, chosen.text)
+            naming = chosen.text
+        elif existing.strip() != chosen.text.strip():
+            title_conflict = True
+            naming = existing
         else:
-            existing = getattr(thesis, chosen.column)
-            if existing is None:
-                setattr(thesis, chosen.column, chosen.text)
-                naming = chosen.text
-            elif existing.strip() != chosen.text.strip():
-                title_conflict = True
-                naming = existing
-            else:
-                naming = existing
+            naming = existing
+
+    if canonical.has_evidence:
         facts = replace(canonical.facts, title=naming)
         evidence_basis = "canonical"
     elif canonical.has_canonical_footprint:
-        # **ولا هروبَ إلى القديم حين يُحجب الحديث.**
-        facts = miner.ThesisFacts(thesis_id=str(thesis_id), title=thesis.title_ar)
+        # **ولا هروبَ إلى القديم حين يُحجب الحديث.** والاسمُ هو المحسوبُ
+        # أعلاه: عنوانٌ كنسيٌّ إن وُجد، وإلّا ما كتبه الباحث — لا `title_ar`
+        # وحده، فرسالةٌ إنجليزيةٌ كانت تصل بلا اسم.
+        facts = miner.ThesisFacts(thesis_id=str(thesis_id), title=naming)
         evidence_basis = "canonical_withheld"
     else:
         sections = (
@@ -274,7 +302,7 @@ async def run(
     elif canonical.facts_withheld_for_conflict:
         outcome = "evidence_withheld_for_conflict"
     elif evidence_basis in {"none", "canonical_withheld"}:
-        outcome = "no_eligible_evidence"
+        outcome = OUTCOME_NO_ELIGIBLE_EVIDENCE
     elif blocked_reason is not None:
         # **ولا يُقال «اكتمل» عن تعذّر.** يسبق `withheld_for_missing_title`
         # لأنّه يحمل السببَ نفسَه وزيادة: عددُ المعلَّق وصفُ عَرَض، والسببُ
@@ -294,12 +322,18 @@ async def run(
     # بصفر، فيقول الصفُّ «اكتمل» ويقول التدقيق «تعذّر التكوين» — مصدران
     # يتناقضان، وهو ما نُزع من هذا الملفّ في موضعٍ آخر. فمحاولةٌ حقيقية بلا
     # فرصةٍ تُكتب `WITHHELD`، ومعها في التدقيق سببُ التعذّر.
+    #
+    # **و`NOT_STARTED` لا تُكتب هنا بحال.** هذه الدالّةُ **هي** التشغيل:
+    # بلوغُ هذا السطر يعني أنّ الحقائقَ حُمِّلت وصُنِّفت وجرى التنقيب. فكلُّ
+    # مخرَجٍ منها حدَثٌ وقع، و«لم يبدأ» عنه كذب. وتلك المفردةُ تبقى في
+    # `STATES` قيمةً افتراضيةً للعمود وحدها: رسالةٌ لم يُنادَ التنقيبُ عليها
+    # قطّ. وهذا هو العطبُ الذي أوقف رسالتين في الإنتاج بحرفه.
     if created or already:
         thesis.mining_state = COMPLETED
-    elif evidence_basis in REAL_ATTEMPT or canonical.has_canonical_footprint:
-        thesis.mining_state = WITHHELD
+    elif outcome == OUTCOME_NO_ELIGIBLE_EVIDENCE:
+        thesis.mining_state = NO_ELIGIBLE_EVIDENCE
     else:
-        thesis.mining_state = NOT_STARTED
+        thesis.mining_state = WITHHELD
 
     await session.flush()
 

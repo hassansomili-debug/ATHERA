@@ -355,6 +355,29 @@ test.describe("the counter counts only what can be reviewed", () => {
   });
 });
 
+test.describe("an older API must never render «undefined»", () => {
+  test("the review total falls back to the four categories when the field is absent",
+    async ({ page }) => {
+      const server: Server = { fields: freshFields(), seen: [] };
+      await serve(page, server);
+      // **خادمٌ أقدم**: العقدُ بلا `reviewable_total` — كما في الإنتاج حين
+      // سبق الوِبُ الـAPI. والفئاتُ الأربع موجودةٌ فيه، فيُشتقّ منها.
+      await page.route(`**/api/v1/theses/${THESIS}/review`, async (route) => {
+        const body = reviewBody(server) as Record<string, unknown>;
+        delete body.reviewable_total;
+        await route.fulfill({
+          status: 200, contentType: "application/json", body: JSON.stringify(body),
+        });
+      });
+      await openReview(page, "ar");
+
+      const line = page.locator("[data-review-total]").first();
+      await expect(line).toHaveAttribute("data-review-total", "7");
+      await expect(line).not.toContainText("undefined");
+      await expect(page.locator("body")).not.toContainText("undefined");
+    });
+});
+
 // ══════════ ٥. تجربةُ المراجعة ══════════
 
 test.describe("the review screen puts the decision first", () => {

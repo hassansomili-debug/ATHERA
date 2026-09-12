@@ -1246,8 +1246,10 @@ def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
         row.title_ar, row.title_en, filename, locale)
 
     sections_why = processing.section_outcome(state, sections)
+    # **والحالُ المحفوظة تُمرَّر** (ترحيل 0032): الختمُ وحده كان يُسقط
+    # «نُقِّبت ولم يُؤهَّل دليلُها» إلى «لم يبدأ» — وهو ما عُرض في الإنتاج.
     opportunities_why = processing.opportunity_outcome(
-        state, found, row.opportunities_mined_at)
+        state, found, row.opportunities_mined_at, row.mining_state)
 
     # **إعادةُ المحاولة تُعرض حيث تنفع وحدها**، ويُقال سببُ منعها حيث تُمنع.
     can_retry = row.file_id is not None and state in processing.RETRYABLE

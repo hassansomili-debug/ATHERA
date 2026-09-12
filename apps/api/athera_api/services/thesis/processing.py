@@ -170,10 +170,45 @@ OUTCOME_AWAITING_CONSENT: Final = "awaiting_consent"
 OUTCOME_FAILED: Final = "failed"
 OUTCOME_COMPLETED_EMPTY: Final = "completed_empty"
 OUTCOME_FOUND: Final = "found"
+#: **جرى فحصُ الفرص، ولم يكن ثمّة دليلٌ مؤهَّل** (ترحيل 0032).
+#:
+#: وهذه الحالُ كانت تُقرأ `OUTCOME_NOT_STARTED` — وذاك العطبُ نفسُه بعينه:
+#: ‏`opportunities_mined_at` لا يُختم إلّا لمحاولةٍ على دليلٍ مؤهَّل، فرسالةٌ
+#: نُقِّبت ولم يُؤهَّل دليلُها تصل إلى هنا بختمٍ فارغ، فتُقرأ «لم يبدأ
+#: استخراج الفرص بعد». وهو ما عُرض في الإنتاج بجوار «٢٣ حقلًا مقترحًا».
+OUTCOME_NO_ELIGIBLE_EVIDENCE: Final = "no_eligible_evidence"
 
+#: **حالُ التنقيب المحفوظة التي تقابلها** (`mining.NO_ELIGIBLE_EVIDENCE`).
+#:
+#: وتُعلن هنا حرفًا لا تُستورَد من `mining`: هذه الوحدةُ ورقةٌ في رسم
+#: الاستيراد — لا تستورد من أختٍ لها — و`mining` تجرّ معها التدقيقَ
+#: والنماذجَ والمنقّبَ كلَّها. واتّفاقُ الحرفين محروسٌ باختبارٍ يقابل
+#: المفرداتِ في `mining` وسطحِ البطاقة والترحيل 0032 معًا، فلا يتفرّقان
+#: بصمت.
+MINED_NO_ELIGIBLE_EVIDENCE: Final = "no_eligible_evidence"
+
+#: **نصُّ «لا دليلَ مؤهَّل» المتعاقَد عليه** — يُعلن مرةً هنا ويُشار إليه من
+#: سطح البطاقة. فشاشتان تقولان الواقعةَ نفسها بعبارتين مختلفتين تجعلان
+#: الباحثَ يظنّهما حالتين.
+AR_NO_ELIGIBLE_EVIDENCE: Final = "اكتمل التحليل، لكن لم تتوفر أدلة مؤهلة لتوليد أفكار بحثية."
+EN_NO_ELIGIBLE_EVIDENCE: Final = (
+    "Analysis completed, but no eligible evidence was available for paper generation."
+)
+
+#: مفرداتُ **عدد الأقسام** — و«لا دليلَ مؤهَّل» ليست منها: تلك حالُ تنقيبٍ
+#: لا حالُ تجزيء، وقسمٌ لا يُقال عنه إنّه غيرُ مؤهَّل للتنقيب.
 OUTCOMES: Final[tuple[str, ...]] = (
     OUTCOME_NOT_STARTED, OUTCOME_RUNNING, OUTCOME_NO_TEXT_LAYER,
     OUTCOME_AWAITING_CONSENT, OUTCOME_FAILED, OUTCOME_COMPLETED_EMPTY, OUTCOME_FOUND,
+)
+
+#: ومفرداتُ **عدد الفرص** — وهي تلك وزيادةٌ واحدة.
+#:
+#: **وكانت القائمةُ واحدةً للجدولين.** فمفردةٌ تخصّ التنقيبَ وحده كانت
+#: تُلزم جدولَ الأقسام بنصٍّ لا معنى له عنده، أو يسكت الفحصُ عن الجدولين
+#: معًا. فيُفصل المجالان، ويبقى الفحصُ يعضّ على كلٍّ بمجاله.
+OPPORTUNITY_OUTCOMES: Final[tuple[str, ...]] = (
+    *OUTCOMES, OUTCOME_NO_ELIGIBLE_EVIDENCE,
 )
 
 SECTION_OUTCOME_LABELS: Final[dict[str, tuple[str, str]]] = {
@@ -200,6 +235,11 @@ OPPORTUNITY_OUTCOME_LABELS: Final[dict[str, tuple[str, str]]] = {
         "The scan completed and found no candidate opportunity",
     ),
     OUTCOME_FOUND: ("فرص مرشَّحة", "Candidate opportunities"),
+    # **والنصُّ يُستورَد لا يُنسَخ.** الواقعةُ واحدة، وشاشتان تقولانها
+    # بعبارتين مختلفتين تجعلان الباحثَ يظنّهما حالتين مختلفتين.
+    OUTCOME_NO_ELIGIBLE_EVIDENCE: (
+        AR_NO_ELIGIBLE_EVIDENCE, EN_NO_ELIGIBLE_EVIDENCE,
+    ),
 }
 
 
@@ -220,17 +260,32 @@ def section_outcome(state: str, sections: int) -> str:
     return OUTCOME_COMPLETED_EMPTY
 
 
-def opportunity_outcome(state: str, found: int, mined_at: dt.datetime | None) -> str:
+def opportunity_outcome(state: str, found: int, mined_at: dt.datetime | None,
+                        mining_state: str | None = None) -> str:
     """لماذا عددُ الفرص هو ما هو.
 
     **و«لم يُنقَّب بعد» ليست نتيجةً صفرية.** ولذلك يُحفظ
     `opportunities_mined_at`: بدونه لا سبيل إلى التمييز بين تنقيبٍ لم يقع
     وتنقيبٍ وقع فلم يجد — وهما خبران مختلفان تمامًا للباحث.
+
+    ## والختمُ وحده لم يكن يكفي — وهذا هو العطب بحرفه
+
+    ‏`opportunities_mined_at` لا يُختم إلّا لمحاولةٍ على **دليلٍ مؤهَّل**.
+    فرسالةٌ نُقِّبت ولم يُؤهَّل من دليلها شيء تصل إلى هنا بختمٍ فارغ،
+    فتسقط إلى آخر السطر وتُقرأ «لم يبدأ استخراج الفرص بعد» — وقد بدأ
+    وانتهى. فتُقرأ معه **الحالُ المحفوظة** (ترحيل 0032)، وهي تقول الواقعة
+    صراحةً بلا استنباطٍ من غياب ختم.
+
+    و`mining_state` اختياريّةٌ لأنّ نداءً قديمًا لا يمرّرها يبقى صحيحًا على
+    ما كان يقوله — ولا يُصمت عطبٌ بقيمةٍ افتراضية: غيابُها يعني «لا أعرف»،
+    فيمضي السطرُ إلى ما كان عليه قبلها.
     """
     if found:
         return OUTCOME_FOUND
     if mined_at is not None:
         return OUTCOME_COMPLETED_EMPTY
+    if mining_state == MINED_NO_ELIGIBLE_EVIDENCE:
+        return OUTCOME_NO_ELIGIBLE_EVIDENCE
     if state == TEXT_LAYER_MISSING:
         return OUTCOME_NO_TEXT_LAYER
     if state == FAILED:
