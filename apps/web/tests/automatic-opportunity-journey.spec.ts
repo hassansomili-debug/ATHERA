@@ -171,11 +171,11 @@ test("a mined thesis offers its opportunities, and never a mining button", async
   // **ولا زرَّ تنقيبٍ يدويّ في الحال السويّة.**
   await expect(target.getByTestId("card-mine")).toHaveCount(0);
 
-  // **والتحفّظُ في متن العبارة**: مبدئيّة، وقبل أيّ مقابلةٍ أو حكمِ جِدّة.
-  const note = target.getByTestId("card-mining-note");
-  await expect(note).toBeVisible();
-  await expect(note).toContainText("مبدئيّة");
-  await expect(note).toContainText("قبل");
+  // **وحاشيةُ المنقّب خرجت عن السطح** (تبسيطُ البطاقة): كانت تشرح حالَ
+  // محرّكٍ لا يعرفه الباحث. والتحفّظُ باقٍ حيث يقرؤه فعلًا: في شاشة
+  // أفكار الأوراق، على كلّ فكرةٍ بعينها.
+  await expect(target.getByTestId("card-mining-note")).toHaveCount(0);
+  await expect(target.getByTestId("card-headline")).toBeVisible();
 });
 
 test("the card opens this thesis, with no reselection", async ({ page }) => {

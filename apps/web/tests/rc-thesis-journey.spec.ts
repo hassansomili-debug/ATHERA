@@ -89,16 +89,20 @@ const THESES_TITLE_AR = "مركز الرسائل";
 /** ما يقوله الخادم حين يُعرض اسمُ ملفٍّ لا عنوانًا (`theses.identifiedByFilename`). */
 const BY_FILENAME_EN = "Title not extracted yet · shown by file name";
 
+// ── **والحالُ تُقرأ برمزها لا بنصِّها المعروض** (تبسيطُ السطح) ──
+//
+// كان سطرُ «Status: …» يُعرض على البطاقة فتُقرأ منه، وهو بنيةُ نظامٍ لا
+// تعني الباحث. فخرج من وجهه وبقي سمةً `data-processing-state` يقرؤها
+// المتصفّح. **والرمزُ أمتنُ من النصّ**: لا يتغيّر بترجمةٍ ولا بصياغة.
+
 /** حالاتٌ مستقرّة — عندها يتوقّف العمل، فتصحّ المقارنة عبر إعادة التحميل. */
-const TERMINAL_STATE_LABELS_EN = [
-  "File uploaded", "Awaiting your approval", "Ready for review",
-  "Analysis complete", "Analysis failed", "The document has no text layer",
+const TERMINAL_STATES = [
+  "uploaded", "awaiting_consent", "ready_for_review",
+  "completed", "failed", "text_layer_missing",
 ];
 
 /** حالاتٌ يجري فيها عملٌ الآن — لا يُقاس عليها استقرار. */
-const IN_FLIGHT_STATE_LABELS_EN = [
-  "Queued", "Reading the document", "Extracting the thesis structure",
-];
+const IN_FLIGHT_STATES = ["queued", "parsing", "extracting"];
 
 // ── فعلُ القراءة الذي **توجبه** الحال ──────────────────────────────────
 //
@@ -119,15 +123,22 @@ const REREAD_EN = "Read it again";
 const RETRY_EN = "Try again";
 const READ_ACTIONS_EN = [FIRST_READ_EN, REREAD_EN, RETRY_EN] as const;
 
-/** `null` = **لا فعلَ قراءةٍ على هذه الحال**، ويقوم مقامَه سببٌ مكتوب. */
+/**
+ * `null` = **لا فعلَ قراءةٍ على السطح**، وموضعُه «⋯».
+ *
+ * **وقد ضاق هذا الجدولُ عمدًا** (تبسيطُ السطح، قرارُ منتج): «اقرأ الرسالة»
+ * و«أعد القراءة» خرجتا من صدر البطاقة. والذي **لم** يتغيّر هو ما يحمل
+ * وزنَ الدعوى: **فعلٌ واحدٌ على السطح أو لا فعل، ولا ثلاثةٌ متجاورة.**
+ */
 const READ_ACTION_FOR_STATE_EN: Record<string, string | null> = {
-  "File uploaded": FIRST_READ_EN,
-  "Awaiting your approval": REREAD_EN,
-  "Ready for review": REREAD_EN,
-  "Analysis complete": REREAD_EN,
-  "Analysis failed": RETRY_EN,
+  uploaded: null,
+  awaiting_consent: null,
+  ready_for_review: null,
+  completed: null,
+  // سقطت القراءة وللسقوط سبب — فيُعرض إصلاحُها وحده، تحت جملة الإخفاق.
+  failed: RETRY_EN,
   // لا OCR بعد، وإعادةُ القراءة تُنتج النتيجة نفسها حرفًا بحرف.
-  "The document has no text layer": null,
+  text_layer_missing: null,
 };
 
 /**
@@ -426,7 +437,9 @@ function cardWith(page: Page, needle: string) {
  * شيءٍ لم يُسأل عنه.
  */
 function stateLine(page: Page, needle: string) {
-  return cardWith(page, needle).locator(".metric-label", { hasText: "Status:" });
+  // **وحالُ خطِّ المعالجة تُقرأ من سمةٍ لا من نصٍّ معروض** (تبسيطُ السطح):
+  // ‏«Status: …» بنيةُ نظامٍ خرجت من وجه الباحث، وبقيت مقروءةً آليًّا.
+  return cardWith(page, needle);
 }
 
 /**
@@ -440,9 +453,8 @@ async function stateLabel(page: Page, needle: string): Promise<string> {
   // فتُرجع فراغًا إن سُئلت قبل أن تُصيَّر البطاقة — والدعوى تسقط حينها على
   // سباقٍ لا على المنتج. والتوكيدُ الذي حلّت محلّه كان ينتظر من تلقائه.
   const line = stateLine(page, needle);
-  await expect(line, `لا سطرَ حالٍ على بطاقة ${needle}`).toBeVisible();
-  const text = (await line.textContent()) ?? "";
-  return text.replace(/^Status:\s*/, "").split(" · ")[0].trim();
+  await expect(line, `لا بطاقةَ باسم ${needle}`).toBeVisible();
+  return (await line.getAttribute("data-processing-state")) ?? "";
 }
 
 /** ينتظر أن تستقرّ حالُ البطاقة — بإعادة تحميلٍ لا باستطلاعٍ في الذاكرة. */
@@ -452,8 +464,8 @@ async function waitForTerminalState(page: Page, needle: string): Promise<string>
     const card = cardWith(page, needle);
     await expect(card).toHaveCount(1);
     const label = await stateLabel(page, needle);
-    if (TERMINAL_STATE_LABELS_EN.includes(label)) return label;
-    expect(IN_FLIGHT_STATE_LABELS_EN, `حالٌ غير معروفة على البطاقة: ${label}`)
+    if (TERMINAL_STATES.includes(label)) return label;
+    expect(IN_FLIGHT_STATES, `حالٌ غير معروفة على البطاقة: ${label}`)
       .toContain(label);
     await page.waitForTimeout(1000);
   }
@@ -599,9 +611,12 @@ test("٧أ · رسالةٌ بلا ملفّ تقول «لم يبدأ» لا «٠�
     expect(body, `بطاقةٌ تعرض «٠ فرص» بلا سبب:\n${body}`)
       .not.toMatch(/Opportunities found:\s*0(\D|$)/);
 
-    // ولا زرَّ إعادةٍ يَعِد بما لا ملفَّ له — **ومعه سببُه مكتوبًا**.
+    // ولا زرَّ إعادةٍ يَعِد بما لا ملفَّ له.
+    //
+    // **وسببُ تعذُّرِ الإعادة خرج عن السطح** (تبسيطُ البطاقة): نصٌّ تقنيّ
+    // لا فعلَ للباحث تحته. وما يبقى في وجهه فعلٌ يُنقر: «أرفق ملفّ الرسالة».
     await expect(card.getByRole("button", { name: "Try again" })).toHaveCount(0);
-    expect(body).toContain("No file is attached to this thesis.");
+    await expect(card.getByTestId("card-attach-file")).toBeVisible();
   });
 });
 
@@ -697,13 +712,16 @@ test("٦ · الحالُ تصمد عبر إعادة التحميل | the process
   // كاملة — لا تنقّلٌ داخل العميل — هي الفحص الصحيح.
   await page.goto(`/${EN}/theses`);
   await expect(page.getByRole("heading", { name: THESES_TITLE_EN })).toBeVisible();
-  await expect(stateLine(page, TEXT_PDF_NAME)).toContainText(settled);
-  await expect(stateLine(page, SCANNED_PDF_NAME)).toContainText(scannedState);
+  // **والحالُ تُقارَن برمزها في السمة** — لا بنصٍّ معروض على البطاقة.
+  await expect(stateLine(page, TEXT_PDF_NAME))
+    .toHaveAttribute("data-processing-state", settled);
+  await expect(stateLine(page, SCANNED_PDF_NAME))
+    .toHaveAttribute("data-processing-state", scannedState);
 
   // والمستندُ الممسوح لا بدّ أن ينتهي إلى «لا طبقة نصّ» بعينها: هي أساسُ
   // الدعويين ٧ و٨، ولو انتهى إلى غيرها لفحصتا شيئًا آخر بلا أن يُقال.
   expect(scannedState, "المستندُ بلا نصّ لم يُصنَّف «لا طبقة نصّ»")
-    .toBe("The document has no text layer");
+    .toBe("text_layer_missing");
 });
 
 // ══════════════════════════════════════════════════════════════════════
@@ -729,7 +747,9 @@ test("٧ · الفشلُ يُرى مختلفًا عن الفراغ، ولا صف
   // **ووسمُ «No readable text layer» انتقل إلى «تفاصيل الاستخراج»**
   // (تبسيطُ البطاقة): هو صيغةٌ ثانية للسبب نفسِه، والبطاقةُ تقوله على
   // المسار السويّ مرّتين — حالًا وتفسيرًا — فلا يُشترط ثالثةٌ مكرَّرة.
-  expect(scannedText).toContain("The document has no text layer");
+  // **ووسمُ حالِ خطِّ المعالجة خرج عن السطح** (تبسيطُ البطاقة). والذي
+  // يبقى — وهو المقصود — أنّ البطاقة **تقول إنّها لم تُتِمّ، وتقول لماذا**.
+  expect(scannedText).toContain("couldn't finish analyzing");
   expect(scannedText).toContain("OCR is not available yet");
 
   // **وحالُ «لم يبدأ» ليست فشلًا** — رسالةٌ بلا ملفّ لم يُطلب لها شيء.
@@ -781,8 +801,17 @@ test("٨ · إعادةُ المحاولة تُعرض وتُردّ ٤٠٩ | retry
     const withText = cardWith(page, TEXT_PDF_NAME);
     const textState = await stateLabel(page, TEXT_PDF_NAME);
     const offered = await expectReadAction(withText, textState);
-    expect(offered, `مستندٌ نصّيّ في حال «${textState}» ولا فعلَ قراءةٍ عليه`)
-      .not.toBeNull();
+
+    // **وإعادةُ القراءة انتقلت إلى «⋯»** (تبسيطُ السطح، قرارُ منتج): على
+    // السطح فعلٌ واحد أو لا فعل. فالضمانةُ باقيةٌ ومنقولة: ما لم يُعرض
+    // على الصدر يُعرض في القائمة — ولا يختفي.
+    if (offered === null) {
+      await withText.getByTestId("card-menu").click();
+      await expect(
+        withText.getByTestId("menu-reprocess"),
+        `مستندٌ نصّيّ في حال «${textState}» ولا إعادةَ قراءةٍ حتى في «⋯»`,
+      ).toBeVisible();
+    }
 
     // ــ وحيث لا تجوز: لا زرَّ **من الثلاثة**، وسببٌ مكتوب مكانه ــ
     //
@@ -791,11 +820,13 @@ test("٨ · إعادةُ المحاولة تُعرض وتُردّ ٤٠٩ | retry
     const scanned = cardWith(page, SCANNED_PDF_NAME);
     const scannedState = await stateLabel(page, SCANNED_PDF_NAME);
     expect(scannedState, "المستندُ بلا نصّ لم يعد «لا طبقة نصّ» — الدعوى تفحص غيرَ ما قُصد")
-      .toBe("The document has no text layer");
+      .toBe("text_layer_missing");
     expect(await expectReadAction(scanned, scannedState),
            "مستندٌ ممسوح ضوئيًّا عُرض عليه فعلُ قراءةٍ يُعيد النتيجة نفسها")
       .toBeNull();
-    await expect(scanned.getByText("The document has no text layer", { exact: false }).first())
+    // **وحضورُ السبب** — نصًّا يقرؤه الباحث، لا وسمَ حالٍ تقنيًّا:
+    // «ممسوحٌ ضوئيًّا ولا OCR بعد». وهو ما يفسّر غيابَ الوعد.
+    await expect(scanned.getByText("OCR is not available yet", { exact: false }).first())
       .toBeVisible();
 
     // **والرفضُ يقع على الخادم لا في الشاشة وحدها.** شاشةٌ تُخفي زرًّا

@@ -409,7 +409,9 @@ test.describe("the card offers only what the server accepts", () => {
     await expect(card.getByTestId("card-reprocess")).toHaveCount(0);
     await expect(card.getByTestId("card-process")).toHaveCount(0);
     // ولا تُترك بلا خبر: ما يجري يُقال.
-    await expect(card.getByTestId("card-running")).toContainText("في انتظار الدور");
+    // **وما يجري الآن صار جملةَ الصدر** (تبسيطُ السطح): حاشيةُ «الجاري»
+    // كانت تحمل معها سببَ منعٍ تقنيًّا لا فعلَ للباحث تحته.
+    await expect(card.getByTestId("card-headline")).toContainText("نحلّل رسالتك");
     expect(errors).toEqual([]);
   });
 
@@ -420,7 +422,7 @@ test.describe("the card offers only what the server accepts", () => {
       await openTheses(page);
 
       const card = cardOf(page, `busy-${state}`);
-      await expect(card.getByTestId("card-running")).toBeVisible();
+      await expect(card.getByTestId("card-headline")).toContainText("نحلّل رسالتك");
       // ولو كان عند المنقّب دليل، فالعملُ الجاري يمنع الطلب — والخادم يردّ 409.
       await expect(card.getByTestId("card-mine")).toHaveCount(0);
       await expect(card.getByTestId("card-reprocess")).toHaveCount(0);
@@ -468,33 +470,41 @@ test.describe("the card offers only what the server accepts", () => {
   interface ReadActionCase {
     id: string;
     card: Card;
-    expected: (typeof READ_ACTIONS_AR)[number];
+    /** `null` = **لا فعلَ قراءةٍ على السطح**، وموضعُه «⋯». */
+    expected: (typeof READ_ACTIONS_AR)[number] | null;
     why: string;
   }
 
+  /**
+   * **وقد تغيّر نصفُ هذا العقد عمدًا** (تبسيطُ السطح، قرارُ منتج):
+   *
+   * ‏«اقرأ الرسالة» و«أعد القراءة» خرجتا من صدر البطاقة إلى «⋯». والذي
+   * **لم** يتغيّر هو ما يحمل وزنَ هذا الفحص: **فعلٌ واحدٌ على السطح، ولا
+   * ثلاثةٌ متجاورة.** وصار أضيقَ لا أوسع: فعلٌ واحدٌ في حالٍ واحدة.
+   */
   const READ_ACTION_CASES: ReadActionCase[] = [
     {
       id: "never-read",
       card: make("never-read", { state: "uploaded" }),
-      expected: "اقرأ الرسالة",
-      why: "أوّلُ قراءةٍ ليست إعادة",
+      expected: null,
+      why: "رسالةٌ لم تُقرأ بعد: القراءةُ تبدأ من نفسها، ولا زرَّ يُعرض",
     },
     {
       id: "read-once",
       card: make("read-once", { state: "ready_for_review" }),
-      expected: "أعد القراءة",
-      why: "قُرئ فنجح — فالثانيةُ إعادةُ قراءةٍ لا إصلاحُ عطب",
+      expected: null,
+      why: "قُرئ فنجح — وإعادةُ القراءة ضبطُ جودةٍ في «⋯» لا فعلٌ رئيس",
     },
     {
       id: "read-failed",
       card: make("read-failed", { state: "failed", failureCode: "parse_failed" }),
       expected: "أعد المحاولة",
-      why: "سقطت القراءة وللسقوط سبب — فيُعرض إصلاحُها",
+      why: "سقطت القراءة وللسقوط سبب — فيُعرض إصلاحُها وحده",
     },
   ];
 
   for (const { id, card, expected, why } of READ_ACTION_CASES) {
-    test(`the ${id} state offers exactly «${expected}» and neither of the others`,
+    test(`the ${id} state offers ${expected ? `exactly «${expected}»` : "no read action"} on the primary surface`,
       async ({ page }) => {
         await serve(page, newServer([card]));
         await openTheses(page);
@@ -509,6 +519,12 @@ test.describe("the card offers only what the server accepts", () => {
               .toHaveCount(0);
           }
         }
+
+        // **وما خرج لم يُحذف**: إعادةُ القراءة باقيةٌ في «⋯».
+        if (expected === null) {
+          await article.getByTestId("card-menu").click();
+          await expect(article.getByTestId("menu-reprocess")).toBeVisible();
+        }
       });
   }
 
@@ -521,7 +537,8 @@ test.describe("the card offers only what the server accepts", () => {
 
     const card = cardOf(page, "scanned-one");
     await expect(card.getByTestId("card-reprocess")).toHaveCount(0);
-    await expect(card.getByTestId("card-retry-blocked")).toContainText("OCR");
+    // **والسببُ باقٍ نصًّا** — في رسالة الإخفاق لا في حاشيةٍ تقنيّة.
+    await expect(card).toContainText("OCR");
   });
 });
 
@@ -544,39 +561,39 @@ test.describe("the manual mine button appears only where a retry means something
       await expect(card.getByTestId("card-mine")).toHaveCount(0);
       // **والنصُّ يُشتقّ من العقد لا يُكتب بيدٍ ثانية** — والنسخةُ الثانية
       // هي التي تفترق عن الأصل بأوّل تعديل، وقد افترقت مرّتين.
-      await expect(card.getByTestId("card-mining-note")).toContainText(NO_EVIDENCE_AR);
+      // **وسببُ الصفر صار جملةَ الصدر** يقولها الخادم — لا حاشيةَ منقّبٍ
+      // تشرح حالَ محرّكٍ لا يعرفه الباحث.
+      //
+      // والنصُّ من العقد نفسِه: `opportunities_outcome_label` كما يرسله
+      // الخادمُ لهذه الحال — لا نسخةٌ ثانية تُكتب في التجهيزة.
+      await expect(card.getByTestId("card-headline"))
+        .toContainText("لم يبدأ استخراج الفرص بعد");
       await expect(card.getByRole("button", { name: "استكمال معالجة الرسالة", exact: true }))
         .toHaveCount(0);
     });
 
-  test("mining dispatches once and a repeat request creates no duplicate",
-    async ({ page }) => {
-      const server = newServer([
-        make("mine-one", { state: "ready_for_review", sections: 2, results: 1 }),
-      ]);
-      await serve(page, server);
-      await openTheses(page);
+  test("the researcher is never asked to run the miner", async ({ page }) => {
+    // **والتنقيبُ يعمل من نفسه** (قرارُ منتج): زرُّ «استخرج الفرص» خرج من
+    // البطاقة كلِّها — سطحًا و«⋯» — فلا يُطلب من الباحث تشغيلُ محرّكٍ
+    // يعمل وحده بعد القراءة.
+    //
+    // **وعدمُ التكرار عند طلبٍ ثانٍ محروسٌ حيث يقع**: في الخادم، في
+    // `test_at_thesis_center_stabilization.py` — طلبٌ ثانٍ يردّ
+    // `opportunities_already_present == created` ولا يكتب صفًّا جديدًا.
+    const server = newServer([
+      make("mine-one", { state: "ready_for_review", sections: 2, results: 1 }),
+    ]);
+    await serve(page, server);
+    await openTheses(page);
 
-      const card = cardOf(page, "mine-one");
-      await expect(card.getByTestId("card-mine")).toBeVisible();
+    const card = cardOf(page, "mine-one");
+    await expect(card.getByTestId("card-headline")).toBeVisible();
+    await expect(card.getByTestId("card-mine")).toHaveCount(0);
 
-      const first = page.waitForResponse((r) =>
-        r.url().includes("/mine-opportunities") && r.request().method() === "POST");
-      await card.getByTestId("card-mine").click();
-      expect((await (await first).json()).opportunities_created).toBe(3);
-      await expect(card).toContainText("فرص مكتشفة: 3");
-      await expect(card.getByTestId("card-notice")).toBeVisible();
-
-      // **الضغطة الثانية**: الخادم يجد ما هو قائم فلا يكتب — والعدد لا يتضاعف.
-      const second = page.waitForResponse((r) =>
-        r.url().includes("/mine-opportunities") && r.request().method() === "POST");
-      await card.getByTestId("card-mine").click();
-      const payload = await (await second).json();
-      expect(payload.opportunities_created).toBe(0);
-      expect(payload.opportunities_already_present).toBe(3);
-      await expect(card).toContainText("فرص مكتشفة: 3");
-      await expect(card).not.toContainText("فرص مكتشفة: 6");
-    });
+    await card.getByTestId("card-menu").click();
+    await expect(card.getByTestId("card-menu-panel")).toBeVisible();
+    await expect(card.getByTestId("card-mine")).toHaveCount(0);
+  });
 });
 
 test.describe("every action reports inside its own card", () => {
@@ -606,15 +623,17 @@ test.describe("every action reports inside its own card", () => {
     await openTheses(page);
 
     const card = cardOf(page, "retry-one");
-    await expect(card).toContainText("تعذّر التحليل");
+    await expect(card).toContainText("لم نتمكّن من إتمام تحليل");
 
     const sent = page.waitForResponse((r) =>
       r.url().includes("/retry-one/reprocess") && r.request().method() === "POST");
-    await card.getByTestId("card-reprocess").click();
+    await card.getByTestId("card-menu").click();
+    await card.getByTestId("menu-reprocess").click();
     expect((await sent).status()).toBe(202);
 
     // **الشاهدُ في البطاقة لا في الطلب وحده**: الحال تغيّرت في الشاشة.
-    await expect(card).toContainText("في انتظار الدور");
+    // **والحالُ تتغيّر أمام الباحث** — بجملة الصدر لا بوسمِ خطِّ معالجة.
+    await expect(card.getByTestId("card-headline")).toContainText("نحلّل رسالتك");
     await expect(card.getByTestId("card-notice")).toBeVisible();
     await expect(card.getByTestId("card-reprocess")).toHaveCount(0);
   });
@@ -635,7 +654,8 @@ test.describe("every action reports inside its own card", () => {
       await serve(page, server);
       await openTheses(page);
 
-      await cardOf(page, "bad-one").getByTestId("card-reprocess").click();
+      await cardOf(page, "bad-one").getByTestId("card-menu").click();
+      await cardOf(page, "bad-one").getByTestId("menu-reprocess").click();
 
       await expect(cardOf(page, "bad-one").getByTestId("card-error"))
         .toContainText("المعالجة جارية على هذه الرسالة الآن.");
@@ -655,7 +675,8 @@ test.describe("every action reports inside its own card", () => {
       await serve(page, server);
       await openTheses(page);
 
-      await cardOf(page, "foreign-one").getByTestId("card-reprocess").click();
+      await cardOf(page, "foreign-one").getByTestId("card-menu").click();
+      await cardOf(page, "foreign-one").getByTestId("menu-reprocess").click();
       await expect(cardOf(page, "foreign-one").getByTestId("card-error"))
         .toContainText("الرسالة غير موجودة.");
     });

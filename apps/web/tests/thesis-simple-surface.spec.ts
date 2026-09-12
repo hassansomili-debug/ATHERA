@@ -129,3 +129,81 @@ test("والتفاصيلُ طُويت ولم تُحذف | the details are folded
     await expect(ready.getByTestId("card-review")).toBeVisible();
     await expect(ready.getByTestId("card-advanced")).toContainText("12");
   });
+
+// ═══════════ ٤ · والسطحُ الرئيس لا يحمل شيئًا من خطِّ المعالجة ═══════════
+
+/** ما لا يجوز أن يظهر على بطاقةٍ سويّة — أفعالُ خطِّ معالجةٍ وحواشيه. */
+const OFF_THE_SURFACE = [
+  "card-process", "card-reprocess", "card-journey", "card-mine",
+  "card-mining-note", "card-retry-blocked", "card-running",
+] as const;
+
+for (const scene of [
+  { name: "processing", opts: { running: true } },
+  { name: "ready", opts: { found: 3 } },
+  { name: "failed", opts: { failed: true } },
+]) {
+  test(`لا مفرداتِ خطِّ معالجةٍ على بطاقة ${scene.name} | the ${scene.name} card carries no pipeline controls`,
+    async ({ page }) => {
+      await seedSession(page);
+      await serveTheses(page, [card("only", scene.opts)]);
+      await page.goto(`/${EN}/theses`);
+
+      const only = page.getByTestId("thesis-card-only");
+      await expect(only.getByTestId("card-headline")).toBeVisible();
+
+      for (const id of OFF_THE_SURFACE) {
+        await expect(only.getByTestId(id), `بقي على السطح: ${id}`).toHaveCount(0);
+      }
+
+      // **ولا أثرَ لأساس الحقوق** — لا على السطح ولا داخل التفاصيل.
+      await only.getByTestId("card-advanced").locator("summary").click();
+      const shown = (await only.innerText()).toLowerCase();
+      for (const word of ["rights", "authorship", "gt1"]) {
+        expect(shown, `نصُّ حقوقٍ عُرض: ${word}`).not.toContain(word);
+      }
+    });
+}
+
+test("الحالُ الجارية بلا فعل | processing offers nothing to click",
+  async ({ page }) => {
+    await seedSession(page);
+    await serveTheses(page, [card("busy", { running: true })]);
+    await page.goto(`/${EN}/theses`);
+
+    const busy = page.getByTestId("thesis-card-busy");
+    await expect(busy.getByTestId("card-headline"))
+      .toContainText("PUBRIVA is analyzing your thesis");
+    // **ولا فعلٌ رئيسٌ أثناء عملٍ يجري**: زرٌّ هنا إمّا يكذب وإمّا يُقاطع.
+    await expect(busy.getByTestId("card-try-again")).toHaveCount(0);
+    await expect(busy.getByTestId("card-view-paper-ideas")).toHaveCount(0);
+  });
+
+test("والإخفاقُ فعلٌ واحدٌ تحت جملته | failure offers exactly one action",
+  async ({ page }) => {
+    await seedSession(page);
+    await serveTheses(page, [card("broken", { failed: true })]);
+    await page.goto(`/${EN}/theses`);
+
+    const broken = page.getByTestId("thesis-card-broken");
+    await expect(broken.getByTestId("card-headline"))
+      .toContainText("couldn't finish analyzing");
+    // **[أعد المحاولة] تحت الجملة مباشرةً، ولا ثانيةَ أسفلها.**
+    await expect(broken.getByTestId("card-try-again")).toBeVisible();
+    await expect(broken.getByTestId("card-try-again")).toHaveCount(1);
+    await expect(broken.getByTestId("card-view-paper-ideas")).toHaveCount(0);
+  });
+
+test("وإعادةُ التحليل باقيةٌ في «⋯» | reanalysis still lives in the overflow menu",
+  async ({ page }) => {
+    await seedSession(page);
+    await serveTheses(page, [card("ready", { found: 2 })]);
+    await page.goto(`/${EN}/theses`);
+
+    const ready = page.getByTestId("thesis-card-ready");
+    // **ولا تُحذف الأفعالُ، تُنقل.** «⋯» تحمل إعادةَ التحليل والمراجعة.
+    await ready.getByTestId("card-menu").click();
+    await expect(ready.getByTestId("menu-reprocess")).toBeVisible();
+    await expect(ready.getByTestId("menu-review")).toBeVisible();
+  });
+
