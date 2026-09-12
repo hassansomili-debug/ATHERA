@@ -316,6 +316,15 @@ class OpportunityResponse(BaseModel):
     #: **عددُ المراجع الحقيقية** التي يقوم عليها المقترح — لا نسبةٌ ولا درجة.
     #: يُعدّ ما هو مكتوبٌ في الصفّ، فصفرٌ هنا يعني مقترحًا بلا إسناد.
     provenance_count: int = 0
+    #: ── اكتمالُ السياق: يُقال ولا يُستنتج ──
+    #:
+    #: **وفكرةٌ ناقصةُ السياق تُعرض ناقصةً معلنة، لا تُخفى ولا تُجمَّل.**
+    #: و`None` تعني «لم يُسجَّل اكتشافٌ لهذه الفرصة» — فرصةٌ من مسارٍ
+    #: قديمٍ أو من قبل ترحيل الاكتشاف — ولا تُقرأ «مكتملة».
+    context_complete: bool | None = None
+    #: ما ينقص من سياق التطوير: `constructs` · `sample`. وفارغةٌ تعني
+    #: «لا ينقص شيء» **حين يكون `context_complete` صادقًا** لا مطلقًا.
+    missing_context: list[str] = Field(default_factory=list)
 
 
 class DimensionResponse(BaseModel):

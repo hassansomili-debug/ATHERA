@@ -398,7 +398,6 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
       <div style={{ marginBlock: "18px 24px" }}>
         <ThesisIntake locale={locale} messages={getMessages(locale)} />
       </div>
-      <p className="provenance-note">{t("theses.rightsNote")}</p>
       {/* §23 — الفرص مرشَّحات، ويُقال ذلك حيث تُعدّ لا في حاشيةٍ بعيدة. */}
       <p className="provenance-note">{t("theses.candidatesOnly")}</p>
 
@@ -529,25 +528,96 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                 </p>
               ) : null}
 
-              <div className="metric-label" style={{ marginBlockStart: 6 }}>
-                {t("theses.rightsBasis")}:{" "}
-                {thesis.rights_basis ? t(`theses.basis.${thesis.rights_basis}`) : t("theses.noRights")}
-                {thesis.defended_on ? ` · ${t("theses.defended")}: ${thesis.defended_on}` : ""}
+              {/* ═══ ما يقرؤه الباحثُ أوّلًا: جملةٌ واحدة وفعلٌ واحد ═══
+                  **وثلاثُ حالاتٍ لا أكثر** في المسار السويّ: نحلّل الآن،
+                  أو وجدنا أفكارًا، أو تعذّر التحليل.
+
+                  وكانت البطاقةُ تعرض عليه عدَّ الأقسام وعدَّ الفرص وأساسَ
+                  الحقوق وتاريخَ المناقشة وحالَ التنقيب — مفرداتِ نظامٍ
+                  يقرؤها من بنى النظام، لا من رفع رسالته. وتفاصيلُها باقيةٌ
+                  كاملةً تحت «تفاصيل الاستخراج» لمن أرادها. */}
+              <div
+                data-testid="card-headline"
+                style={{ marginBlockStart: 8, display: "grid", gap: 8 }}
+              >
+                <strong style={{ fontSize: 16 }}>
+                  {actions.is_running
+                    ? t("theses.simpleAnalyzing")
+                    : thesis.failure_code
+                      ? t("theses.simpleFailed")
+                      : thesis.opportunities_found > 0
+                        ? t("theses.simpleReady").replace(
+                            "{count}", String(thesis.opportunities_found))
+                        // **والصفرُ يقوله الخادمُ بسببه، ولا تخترع الشاشةُ له
+                        //   جملة.** كتبتُ هنا «اكتمل التحليل، ولا أفكارَ بعد»
+                        //   فقالتها البطاقةُ عن رسالةٍ رُفعت ولم تُقرأ بعدُ
+                        //   أصلًا — اختلاقٌ صغير في الموضع الذي بُنيت هذه
+                        //   الشاشةُ كلُّها لمنعه. والسببُ محسوبٌ في الخادم
+                        //   لستّ حالاتٍ مختلفة، فيُعرض كما قاله.
+                        : thesis.opportunities_outcome_label}
+                </strong>
+
+                {/* **فعلٌ رئيسٌ واحد** — ولا زرَّ معطّلًا ولا مفردةَ نظام. */}
+                {!actions.is_running && !thesis.failure_code
+                    && thesis.opportunities_found > 0 ? (
+                  <div>
+                    <Link
+                      href={`/${locale}/theses/${thesis.id}/journey`}
+                      data-testid="card-view-paper-ideas"
+                      style={lead("review")}
+                    >
+                      {t("theses.viewPaperIdeas")}
+                    </Link>
+                  </div>
+                ) : null}
               </div>
 
-              {/* ── الرقمُ مع سببه، أو السببُ وحده ──
-                  «٠ أقسام» بلا سبب جملةٌ تُقال في ستّ حالاتٍ معناها مختلف؛
-                  فالرقم لا يُعرض إلّا حين يكون العدُّ قد وقع فعلًا. */}
-              <div className="metric-label">
-                {thesis.sections_outcome === "found"
-                  ? `${t("theses.sections")}: ${thesis.sections_extracted}`
-                  : thesis.sections_outcome_label}
-              </div>
-              <div className="metric-label">
-                {thesis.opportunities_outcome === "found"
-                  ? `${t("theses.opportunities")}: ${thesis.opportunities_found}`
-                  : thesis.opportunities_outcome_label}
-              </div>
+              {/* ── وتفاصيلُ الاستخراج تُطوى ولا تُحذف ──
+                  من أرادها وجدها كاملةً: أساسُ الحقوق، وتاريخُ المناقشة،
+                  وعدُّ الأقسام بسببه، وسببُ عدد الفرص. */}
+              <details data-testid="card-advanced" style={{ marginBlockStart: 8 }}>
+                <summary className="metric-label" style={{ cursor: "pointer" }}>
+                  {t("theses.extractionDetails")}
+                </summary>
+
+                <div className="metric-label" style={{ marginBlockStart: 6 }}>
+                  {t("theses.rightsBasis")}:{" "}
+                  {thesis.rights_basis
+                    ? t(`theses.basis.${thesis.rights_basis}`)
+                    : t("theses.noRights")}
+                  {thesis.defended_on
+                    ? ` · ${t("theses.defended")}: ${thesis.defended_on}` : ""}
+                </div>
+
+                {/* ── الرقمُ مع سببه، أو السببُ وحده ──
+                    «٠ أقسام» بلا سبب جملةٌ تُقال في ستّ حالاتٍ معناها مختلف؛
+                    فالرقم لا يُعرض إلّا حين يكون العدُّ قد وقع فعلًا. */}
+                <div className="metric-label">
+                  {thesis.sections_outcome === "found"
+                    ? `${t("theses.sections")}: ${thesis.sections_extracted}`
+                    : thesis.sections_outcome_label}
+                </div>
+                <div className="metric-label">
+                  {thesis.opportunities_outcome === "found"
+                    ? `${t("theses.opportunities")}: ${thesis.opportunities_found}`
+                    : thesis.opportunities_outcome_label}
+                </div>
+
+                {/* **ومراجعةُ ما استُخرج تسكن هنا** — لا فعلًا رئيسًا.
+                    الباحثُ لم يرفع رسالته ليراجع استخراجًا آليًّا؛ رفعها
+                    ليعرف أيَّ الأوراق تُشتقّ منها. والمراجعةُ ضبطُ جودةٍ
+                    اختياريّ، وبابُها مفتوحٌ لمن أراده. */}
+                {actions.can_review ? (
+                  <div style={{ marginBlockStart: 8 }}>
+                    <Link
+                      href={`/${locale}/theses/${thesis.id}/review`}
+                      data-testid="card-review"
+                    >
+                      {t("theses.reviewCta")}
+                    </Link>
+                  </div>
+                ) : null}
+              </details>
 
               {/* ── الأفعال: ما يقوله الخادم، لا ما تجتهد فيه الشاشة ── */}
               <div style={{ display: "flex", gap: 8, marginBlockStart: 12, flexWrap: "wrap" }}>
@@ -563,16 +633,6 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                       ? t("theses.busyLabel")
                       : t("theses.restoreCta")}
                   </button>
-                ) : null}
-
-                {actions.can_review ? (
-                  <Link
-                    href={`/${locale}/theses/${thesis.id}/review`}
-                    data-testid="card-review"
-                    style={lead("review")}
-                  >
-                    {t("theses.reviewCta")}
-                  </Link>
                 ) : null}
 
                 {/* **أرفق ملفًّا** بدل «فكّك» التي تردّ `thesis.no_file`. */}
@@ -620,15 +680,10 @@ export default function ThesesPage({ params }: { params: Promise<{ locale: strin
                     **والتنقيبُ يبدأ من نفسه بعد القراءة**، فلا يُطلب من
                     الباحث تشغيلُ ما يعمل وحده. وهذا رابطٌ إلى رسالته
                     بعينها، لا شاشةٌ يُعيد فيها اختيارها. */}
-                {actions.can_view_opportunities ? (
-                  <Link
-                    href={`/${locale}/opportunities?thesis_id=${thesis.id}`}
-                    data-testid="card-view-opportunities"
-                    style={lead("view_opportunities")}
-                  >
-                    {t("theses.viewOpportunities")}
-                  </Link>
-                ) : null}
+                {/* **ولا فعلان إلى الوجهة نفسها.** «اعرض أفكار الأوراق» في
+                    صدر البطاقة يقود إلى الرحلة، و«اعرض فرص النشر» كانت
+                    تقود إليها أيضًا بمفردةِ نظامٍ أخرى. فيبقى الأوّل. */}
+                {null}
 
                 {/* **ورحلةُ هذه الرسالة إلى ورقة** — ستُّ خطواتٍ تقول ما تمّ
                     وما ينتظر. ولا شرطَ عليها: الصفحةُ نفسُها تعرض الحالَ

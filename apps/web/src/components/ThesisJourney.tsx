@@ -92,6 +92,9 @@ interface Opportunity {
   provenance_count: number;
   /** قرارُ الباحث: `proposed` | `selected` | `excluded` — لا دورةُ الإنتاج. */
   planning_status: string;
+  /** `null` = لم يُسجَّل اكتشافٌ لهذه الفرصة — ولا تُقرأ «مكتملة». */
+  context_complete: boolean | null;
+  missing_context: string[];
 }
 
 interface BuildResult {
@@ -351,6 +354,30 @@ export function ThesisJourney({
           ) : null}
 
           {/* **والمقترحُ يُعلن أنّه مقترحُ آلة** — لا يُقرأ حكمًا علميًّا. */}
+          {/* ── اكتمالُ السياق: يُقال ولا يُخفى ──
+              **وفكرةٌ ناقصةُ السياق تُعرض ناقصةً معلنة.** الباحثُ يقرّر
+              على بيّنة: هذه مؤصَّلةٌ ومكتملةُ السياق، وتلك مؤصَّلةٌ ينقصها
+              وصفُ عيّنةٍ أو بُنًى. ولا يُخترع ما نقص ولا يُجمَّل.
+
+              و`null` تعني «لم يُسجَّل» لا «ناقصة»: فرصةٌ من قبل ترحيل
+              الاكتشاف لم يُحسب لها مستوًى، فلا يُقال عنها شيء. */}
+          {opportunity.context_complete === true ? (
+            <span className="metric-label" data-testid="opportunity-context">
+              {t("journey.contextComplete")}
+            </span>
+          ) : opportunity.context_complete === false ? (
+            <span className="metric-label" data-testid="opportunity-context">
+              {t("journey.contextNeeds")}{" "}
+              {(opportunity.missing_context ?? [])
+                .map((gap) => gap === "sample"
+                  ? t("journey.needsSample")
+                  : gap === "constructs"
+                    ? t("journey.needsConstructs")
+                    : gap)
+                .join(" · ")}
+            </span>
+          ) : null}
+
           <p
             className="provenance-note"
             data-testid="opportunity-ai-notice"

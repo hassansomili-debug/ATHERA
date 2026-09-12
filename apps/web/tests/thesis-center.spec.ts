@@ -580,17 +580,25 @@ test.describe("the manual mine button appears only where a retry means something
 });
 
 test.describe("every action reports inside its own card", () => {
-  test("the review CTA leads to the review screen for that thesis", async ({ page }) => {
-    const server = newServer([
-      make("review-one", { state: "ready_for_review" }),
-      make("review-two", { state: "ready_for_review" }),
-    ]);
-    await serve(page, server);
-    await openTheses(page);
+  test("the review CTA lives under extraction details and leads to that thesis",
+    async ({ page }) => {
+      const server = newServer([
+        make("review-one", { state: "ready_for_review" }),
+        make("review-two", { state: "ready_for_review" }),
+      ]);
+      await serve(page, server);
+      await openTheses(page);
 
-    await cardOf(page, "review-two").getByTestId("card-review").click();
-    await expect(page).toHaveURL(new RegExp(`/${AR}/theses/review-two/review$`));
-  });
+      const card = cardOf(page, "review-two");
+      // **ومراجعةُ ما استُخرج لم تعد فعلًا رئيسًا.** الباحثُ رفع رسالته
+      // ليعرف أيَّ الأوراق تُشتقّ منها، لا ليراجع استخراجًا آليًّا. فهي
+      // ضبطُ جودةٍ اختياريّ، وبابُها تحت «تفاصيل الاستخراج».
+      await expect(card.getByTestId("card-review")).not.toBeVisible();
+
+      await card.getByTestId("card-advanced").locator("summary").click();
+      await card.getByTestId("card-review").click();
+      await expect(page).toHaveURL(new RegExp(`/${AR}/theses/review-two/review$`));
+    });
 
   test("reprocess dispatches and the card's state visibly changes", async ({ page }) => {
     const server = newServer([make("retry-one", { state: "failed", failureCode: "parse_failed" })]);

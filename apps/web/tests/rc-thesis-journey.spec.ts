@@ -587,9 +587,12 @@ test("٧أ · رسالةٌ بلا ملفّ تقول «لم يبدأ» لا «٠�
     await expect(card).toHaveCount(1);
 
     const body = (await card.innerText()).trim();
-    // **«لم يبدأ التحليل» لا «٠ أقسام».** ستُّ حالاتٍ تُنتج الصفر ومعناها
-    // مختلف؛ فالسببُ يُقال، والرقمُ لا يُعرض إلّا حين يكون العدُّ قد وقع.
-    expect(body).toContain("Analysis has not started");
+    // **«لم يبدأ» لا «٠».** ستُّ حالاتٍ تُنتج الصفر ومعناها مختلف؛
+    // فالسببُ يُقال، والرقمُ لا يُعرض إلّا حين يكون العدُّ قد وقع.
+    //
+    // **وسببُ الأقسام انتقل إلى «تفاصيل الاستخراج»** (تبسيطُ البطاقة):
+    // عدُّ الأقسام بنيةُ نظامٍ لا يسألها من رفع رسالة. والباقي على المسار
+    // السويّ هو سببُ الأفكار — وهو ما يعنيه الباحث.
     expect(body).toContain("Opportunity mining has not started");
     expect(body, `بطاقةٌ تعرض «٠ أقسام» بلا سبب:\n${body}`)
       .not.toMatch(/Sections extracted:\s*0(\D|$)/);
@@ -722,15 +725,20 @@ test("٧ · الفشلُ يُرى مختلفًا عن الفراغ، ولا صف
   const manualText = (await manual.innerText()).trim();
 
   // **حالُ فشلٍ مسمّاة، لا صمت.** وهي تحمل سببها نصًّا.
+  //
+  // **ووسمُ «No readable text layer» انتقل إلى «تفاصيل الاستخراج»**
+  // (تبسيطُ البطاقة): هو صيغةٌ ثانية للسبب نفسِه، والبطاقةُ تقوله على
+  // المسار السويّ مرّتين — حالًا وتفسيرًا — فلا يُشترط ثالثةٌ مكرَّرة.
   expect(scannedText).toContain("The document has no text layer");
-  expect(scannedText).toContain("No readable text layer");
+  expect(scannedText).toContain("OCR is not available yet");
 
   // **وحالُ «لم يبدأ» ليست فشلًا** — رسالةٌ بلا ملفّ لم يُطلب لها شيء.
-  expect(manualText).toContain("Analysis has not started");
+  // والسببُ المعروضُ على المسار السويّ هو سببُ الأفكار (تبسيطُ البطاقة).
+  expect(manualText).toContain("Opportunity mining has not started");
 
   // والفرقُ يُرى: لا يجوز أن تحمل بطاقةُ الفراغ نصَّ الفشل ولا العكس.
   expect(manualText).not.toContain("No readable text layer");
-  expect(scannedText).not.toContain("Analysis has not started");
+  expect(scannedText).not.toContain("Opportunity mining has not started");
 
   // **ولا «٠» بلا سبب — في أيّ بطاقة.** العددُ لا يُعرض إلّا حين يكون
   // العدُّ قد وقع؛ وما لم يقع يُقال بسببه لا برقمٍ صفريّ.

@@ -182,17 +182,22 @@ test("the card opens this thesis, with no reselection", async ({ page }) => {
   await serve(page, 3);
   await page.goto(`/${AR}/theses`);
 
+  // **والوجهةُ صارت شاشةَ أفكار الأوراق** (تبسيطُ السطح): هناك العنوانُ
+  // والتسويغُ واكتمالُ السياق و«ابدأ هذه الورقة» — لا خريطةُ نشرٍ عامّة.
   const open = page.getByTestId(`thesis-card-${THESIS}`)
-    .getByTestId("card-view-opportunities");
+    .getByTestId("card-view-paper-ideas");
   await expect(open).toBeVisible();
   // **الرابطُ يحمل الرسالة بعينها** — لا شاشةٌ تُعيد السؤال.
-  await expect(open).toHaveAttribute("href", `/${AR}/opportunities?thesis_id=${THESIS}`);
+  await expect(open).toHaveAttribute("href", `/${AR}/theses/${THESIS}/journey`);
 
   await open.click();
-  await expect(page).toHaveURL(new RegExp(`/${AR}/opportunities\\?thesis_id=${THESIS}$`));
+  await expect(page).toHaveURL(new RegExp(`/${AR}/theses/${THESIS}/journey$`));
 
-  // والشاشةُ تفتح على تلك الرسالة، لا على أولى القائمة.
-  await expect(page.getByTestId("thesis-picker")).toHaveValue(THESIS);
+  // **والشاشةُ مقصورةٌ على تلك الرسالة، فلا سؤالَ يُعاد أصلًا.**
+  // وكانت تفتح خريطةَ نشرٍ عامّة ومعها منتقي رسائل يُضبط على المعرّف؛
+  // والمنتقي نفسُه دليلُ أنّ الشاشةَ تحتمل غيرَها. وهذه لا تحتمل.
+  await expect(page.getByTestId("thesis-picker")).toHaveCount(0);
+  await expect(page.getByTestId("thesis-journey")).toBeVisible();
 });
 
 test("a thesis the researcher does not own is never preselected", async ({ page }) => {
@@ -227,7 +232,7 @@ test("a thesis with nothing mined shows no opportunity link", async ({ page }) =
 
   const target = page.getByTestId(`thesis-card-${THESIS}`);
   await expect(target).toBeVisible();
-  await expect(target.getByTestId("card-view-opportunities")).toHaveCount(0);
+  await expect(target.getByTestId("card-view-paper-ideas")).toHaveCount(0);
   // ولا زرَّ تنقيبٍ أيضًا: الأتمتةُ تملكه، ولم تجد بعد.
   await expect(target.getByTestId("card-mine")).toHaveCount(0);
 });
