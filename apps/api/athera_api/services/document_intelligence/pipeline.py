@@ -15,6 +15,7 @@ import datetime as dt
 import hashlib
 import uuid
 from dataclasses import dataclass
+from typing import Final
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,6 +105,32 @@ async def parse_into_chunks(
     return rows
 
 
+#: **ما يعنيه الرقم — معلنًا في المطالبة، لا متروكًا للتخمين.**
+#:
+#: كانت المطالبة تطلب `extraction_confidence` ولا تقول ما هو. ورقمٌ بلا
+#: تعريفٍ يملؤه النموذجُ بما يظنّه: أهي ثقةٌ في **صحّة العلم**؟ في أهمّية
+#: النتيجة؟ في جودة الرسالة؟ وكلُّ قراءةٍ من هذه تُنتج توزيعًا مختلفًا،
+#: ثمّ تُقاس بعتباتٍ عُيِّرت على قراءةٍ واحدة — فيصير الحدُّ عشوائيًّا.
+#:
+#: والتعريفُ المكتوب هنا **لا يطلب رفعَ الأرقام**. يطلب أن تقيس شيئًا
+#: واحدًا بعينه: هل هذه القيمة **مذكورةٌ صراحةً** في الاقتباس، ومُسنَدةٌ
+#: إلى الحقل الصحيح؟ وما دون ذلك له مخارجُه المعلنة: التباسُ الإسناد
+#: `ambiguous`، وغيابُ الدليل `not_found`. ولا قيمةَ افتراضية بحال.
+CONFIDENCE_CONTRACT: Final = (
+    "تعريف extraction_confidence — اقرأه قبل أن تُعطي رقمًا:\n"
+    "هو ثقتُك في أنّ هذه القيمة **مذكورةٌ صراحةً في النصّ المقتبَس**، "
+    "وأنّها **مُسنَدةٌ إلى هذا الحقل** لا إلى حقلٍ آخر. لا أكثر.\n"
+    "وهو ليس: صحّةَ النتيجة علميًّا، ولا دلالتَها الإحصائية، ولا أهمّيةَ "
+    "الاكتشاف، ولا جودةَ الرسالة، ولا ثقتَك في النظرية.\n"
+    "فإن كان النصُّ يذكر القيمةَ صراحةً وإسنادُها إلى الحقل بيّن: "
+    "أعطِ ثقةً عالية تناسب ذلك الوضوح.\n"
+    "وإن كان الإسنادُ غيرَ بيّن أو يحتمل حقلين: status = ambiguous.\n"
+    "وإن لم يرد في المقاطع: status = not_found.\n"
+    "**ولا تخترع رقمًا افتراضيًّا، ولا تُغفل الحقل**: كلُّ حقلٍ حالتُه "
+    "extracted يحمل extraction_confidence بين 0.0 و1.0."
+)
+
+
 def build_prompt(section: Section, chunks: list[ChunkView], specs) -> str:
     """المطالبة: الحقول المطلوبة ثم المقاطع **موسومةً كبيانات**.
 
@@ -122,6 +149,7 @@ def build_prompt(section: Section, chunks: list[ChunkView], specs) -> str:
         "وextraction_confidence.\n"
         "إن لم يرد الحقل في المقاطع فـstatus = not_found وvalue = null. "
         "وإن ورد ملتبسًا فـstatus = ambiguous. **لا تخمّن ولا تكمل من معرفتك العامة.**\n\n"
+        f"{CONFIDENCE_CONTRACT}\n\n"
         f"<DOCUMENT section=\"{section.value}\">\n{body}\n</DOCUMENT>"
     )
 

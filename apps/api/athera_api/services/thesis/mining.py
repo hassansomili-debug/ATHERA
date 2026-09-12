@@ -75,6 +75,13 @@ STATES: Final[tuple[str, ...]] = (
 #: أساسُ الدليل الذي يُعدّ محاولةً حقيقية — وبه يُختم ويُسجَّل «نُقِّب».
 REAL_ATTEMPT: Final[frozenset[str]] = frozenset({"canonical", "legacy"})
 
+#: مجالُ الاكتشاف في `readiness_components` — **مُسمّى فلا يزاحم غيرَه**.
+#:
+#: وهو حقائقُ اكتشافٍ لا أحكامُ جاهزيةِ نشر: مستوى الفكرة، ومرتكزُها،
+#: وحقائقُها المصدر، وما ينقص من سياقها. ولا يُكتب فيه `ready_to_convert`
+#: ولا أختُها — تلك مفرداتُ `readiness.classify` وتخصّ التطوير.
+DISCOVERY_NAMESPACE: Final = "thesis_discovery"
+
 # ═════════ «اكتمل بلا نتيجة» ≠ «تعذّر التكوين» ═════════
 #
 # **والفرقُ بينهما ليس تفصيلًا لغويًّا، فليُقرأ قبل أن يُطوى أحدُهما في الآخر:**
@@ -217,10 +224,17 @@ async def run(
             thesis_id=str(thesis_id), title=thesis.title_ar,
             questions=tuple(s.content_ar or "" for s in sections
                             if s.section_key == "questions"),
+            # **والمسارُ القديم يحفظ معرّفاتِه كذلك** — فالإسنادُ واحدٌ
+            # في المسارين، ولا فكرةٌ بلا مصدرٍ تُبنى من أيّهما.
+            question_refs=tuple((str(s.id), s.content_ar or "") for s in sections
+                                if s.section_key == "questions"),
             results=tuple((str(r.id), r.label_ar) for r in results),
             variables=tuple({v for r in results for v in (r.variables or [])}),
             sample_ids=tuple({str(thesis_id)}),
             published_result_ids=tuple(str(r.id) for r in results if r.is_published),
+            # **والقديمُ يُعلن أنّه قديم**: مراجعُه صفوفُ جداولٍ لا حقائقَ
+            # مرشّحة، فلا اكتشافَ يُبنى عليه ولا إسنادَ يُدَّعى له.
+            evidence_is_canonical=False,
         )
         evidence_basis = "legacy" if (sections or results) else "none"
 
@@ -263,7 +277,41 @@ async def run(
             published_output_refs=draft.published_output_refs,
             data_age_years=report.data_age_years,
             literature_age_years=report.literature_age_years,
+            # ── دورةُ الحياة تبدأ حيث كانت تبدأ دائمًا ──
+            #
+            # **ولا تُرقّى فكرةٌ اكتُشفت إلى «جاهزة».** `discovered` تقول
+            # إنّها وُجدت، و`planning_status` قرارُ الباحث ولم يقله بعد.
+            # ولا `evidence_readiness_score` يُصطنع: مُصنِّفُ الجاهزية
+            # (`readiness.classify`) مفرداتُه `ready_to_convert` وأخواتُها
+            # — وهي أحكامُ تطويرٍ لا أحكامُ اكتشاف. فيُترك بلا حساب حتى
+            # تُحسب مدخلاتُه صدقًا، ولا يُملأ برقمٍ يُقرأ وعدًا.
             status="discovered",
+            planning_status="proposed",
+            # ── ولا يُوسَم مرجعٌ قديم بأنّه إسنادٌ كنسيّ ──
+            #
+            # **`thesis_discovery` عقدٌ كنسيّ، ويَعِد بما يُفحص**: كلُّ
+            # مرجعٍ فيه يُردّ إلى `FactCandidate` قائم، ومنه إلى مقطعه
+            # واقتباسِه وموضعه. والمسارُ القديم يُمرّر معرّفاتِ
+            # ‏`ThesisSection`/`ThesisResult`، وهي صفوفُ جداولٍ أخرى: لا
+            # ‏`FactCandidate` لها، ولا اقتباسَ ولا مقطع.
+            #
+            # والأشكالُ المتخصّصة تسبق المقترحَ المبدئيّ وتعمل على القديم
+            # أيضًا، فحظرُ المبدئيّ وحده (`evidence_is_canonical`) لم يكن
+            # يكفي: كانت فرصةٌ قديمة تُكتب ومعها `source_fact_refs` تُقرأ
+            # إسنادًا كنسيًّا فلا يُردّ إلى شيء.
+            #
+            # فالمجالُ يُكتب للكنسيّ وحده. والقديمُ يبقى كما كان قبل هذا
+            # العمل — بلا `readiness_components` — ولا صفَّ يُختلق له،
+            # ولا بياناتٌ قديمة تُرحَّل هنا.
+            readiness_components=(
+                {DISCOVERY_NAMESPACE: {
+                    "level": draft.discovery_level,
+                    "basis": draft.discovery_basis,
+                    "source_fact_refs": list(draft.source_fact_refs),
+                    "missing_context": list(draft.missing_context),
+                    "context_complete": not draft.missing_context,
+                }}
+                if evidence_basis == "canonical" else None),
         ))
         created += 1
 

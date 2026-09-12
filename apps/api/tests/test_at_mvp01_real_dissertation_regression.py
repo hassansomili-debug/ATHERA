@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import uuid
 
 import pytest
 
@@ -288,3 +289,116 @@ async def test_the_same_real_document_with_no_confidence_stays_fail_closed(
     state = await _mining_state(tid, uid, thesis_id)
     assert state == mining.NO_ELIGIBLE_EVIDENCE
     assert state != mining.NOT_STARTED
+
+# ═══════════ ٥ · القبول: مستندٌ حقيقيّ ← فكرةُ ورقةٍ مؤصَّلة ═══════════
+#
+# **وهذا هو المِحكّ.** لا «صُنِّف دليلٌ مؤهَّل» ولا «بلغ المنقّبَ شيء»:
+# ‏`PublicationOpportunity` محفوظةٌ في القاعدة، مُسنَدةٌ إلى حقيقةٍ مؤصَّلة
+# في مقطعٍ حقيقيّ من هذا المستند.
+#
+# **وغيابُ العيّنة أو البُنى لا يُسقط الاكتشاف.** المستندُ لا يذكر أسلوبَ
+# معاينةٍ البتّة (فُحص: كلمة «sampling» لا ترد فيه). فالمطلوبُ أن تقوم
+# الفكرةُ ويُقال نقصُها، لا أن تُردّ الرسالةُ بصفر ولا أن يُخترع لها سياق.
+
+
+@requires_db
+@requires_real_document
+@pytest.mark.asyncio
+async def test_the_real_dissertation_produces_a_grounded_paper_idea(two_tenants, parsed):
+    """**قبولُ MVP-0.1: رسالةٌ حقيقية ← فكرةُ ورقةٍ واحدةٌ على الأقلّ، مؤصَّلة.**
+
+    والمسارُ حقيقيٌّ حتى حدّ النموذج: تحليلُ PDF فعليّ، ومقاطعُه كما خرجت،
+    واقتباساتٌ **مأخوذةٌ حرفًا** منها، وتأصيلٌ بـ`quote_is_grounded`،
+    وتصنيفٌ بالمصنّف الإنتاجيّ، وتنقيبٌ بالمنقّب الإنتاجيّ.
+
+    **وحقولُ النموذج مُعادةُ البناء — CONTROLLED MODEL OUTPUT.** لم يُستدعَ
+    مزوّدٌ حيّ ولا يُدَّعى ذلك: المُعادُ بناؤه هو الحقلُ الذي يقابل الاقتباس
+    وثقتُه. وما عداه من المستند حقيقيٌّ كلُّه.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import DocumentChunk, FactCandidate
+    from athera_api.models.thesis import PublicationOpportunity
+    from athera_api.services.extraction.base import quote_is_grounded
+    from athera_api.services.thesis import canonical_facts
+    from athera_api.services.thesis import fact_eligibility as policy
+    from athera_api.services.thesis import mining
+
+    _data, chunks = parsed
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    thesis_id, file_id, run_id = await _seed(
+        tid, uid, filename="Developing_an_Effective_Integr_acceptance.pdf")
+
+    # ── المرتكزُ العلميّ: أطولُ مقطعٍ نصًّا، واقتباسُه حرفٌ منه ──
+    #
+    # ولا عيّنةَ ولا بُنًى تُزرع: المستندُ لا يحملهما بصيغةٍ تُستخرَج،
+    # وهذا بعينه ما يُفحص — أنّ غيابَهما لا يمحو الفكرة.
+    longest = max(chunks, key=lambda c: len(c.text))
+    async with tenant_session(tid, uid) as session:
+        row = DocumentChunk(
+            tenant_id=tid, file_id=file_id, seq=longest.seq, text=longest.text,
+            locator=longest.locator, page_number=longest.page_number,
+            char_count=len(longest.text))
+        session.add(row)
+        await session.flush()
+        verbatim = longest.text[:300].strip()
+        await _candidate(session, tid, run_id=run_id, file_id=file_id, chunk=row,
+                         field_key="primary_findings", value=[verbatim],
+                         confidence=0.95, quote=verbatim)
+
+    async with tenant_session(tid, uid) as session:
+        canonical = await canonical_facts.load(
+            session, tenant_id=tid, thesis_id=thesis_id, file_id=file_id)
+
+    # ‏١ · مرتكزٌ علميٌّ مؤهَّلٌ آليًّا، بلا اعتمادٍ بشريّ.
+    anchors = canonical.counts.get(policy.AUTO_ELIGIBLE, 0)
+    assert anchors >= 1, f"لا مرتكزَ علميًّا من مستندٍ حقيقيّ: {canonical.reasons}"
+    assert canonical.eligible_facts_used >= 1
+    assert canonical.approved_verified_used == 0
+    assert canonical.reasons.get("quote_not_grounded", 0) == 0
+
+    # ‏٢ · وفكرةٌ محفوظةٌ فعلًا.
+    async with _client(tid, uid) as client:
+        body = (await client.post(
+            f"/api/v1/theses/{thesis_id}/mine-opportunities")).json()
+    assert body["opportunities_created"] >= 1, f"مستندٌ حقيقيّ بلا فكرة: {body}"
+    assert body["mining_state"] == mining.COMPLETED
+
+    async with tenant_session(tid, uid) as session:
+        opportunities = (await session.execute(
+            select(PublicationOpportunity)
+            .where(PublicationOpportunity.thesis_id == thesis_id))).scalars().all()
+    assert len(opportunities) >= 1
+
+    # ‏٣ · **والنقصُ صادقٌ معلن** — لا عيّنةٌ اختُلقت ولا بُنًى.
+    opportunity = opportunities[0]
+    discovery = (opportunity.readiness_components or {})[mining.DISCOVERY_NAMESPACE]
+    assert discovery["level"] == mining.miner.LEVEL_IDEA_ONLY
+    assert discovery["context_complete"] is False
+    assert set(discovery["missing_context"]) == {"constructs", "sample"}
+    assert (opportunity.sample_refs or []) == []
+    assert (opportunity.variable_refs or []) == []
+
+    # ‏٤ · **ولا جاهزيةَ نشرٍ تُدَّعى.**
+    assert opportunity.status == "discovered"
+    assert opportunity.planning_status == "proposed"
+    assert opportunity.evidence_readiness_score is None
+
+    # ‏٥ · وسلسلةُ الإسناد كاملةً، من الفكرة إلى صفحةٍ في المستند.
+    refs = discovery["source_fact_refs"]
+    assert refs
+    async with tenant_session(tid, uid) as session:
+        for ref in refs:
+            fact = (await session.execute(
+                select(FactCandidate)
+                .where(FactCandidate.id == uuid.UUID(ref)))).scalar_one()
+            chunk = (await session.execute(
+                select(DocumentChunk)
+                .where(DocumentChunk.id == fact.chunk_id))).scalar_one()
+            assert fact.tenant_id == tid and fact.file_id == file_id
+            assert (fact.locator or "").strip()
+            assert quote_is_grounded(fact.quote, chunk.text)
+            # والاقتباسُ موجودٌ حرفًا في المستند الأصليّ — لا في القاعدة وحدها.
+            assert fact.quote in longest.text
