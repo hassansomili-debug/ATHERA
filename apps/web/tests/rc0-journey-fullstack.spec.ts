@@ -41,84 +41,80 @@ function watch(page: Page): Seen {
   return seen;
 }
 
-test.describe.configure({ mode: "serial" });
-
 let projectUrl = "";
 
-test("١ · حسابٌ حقيقيّ بالنموذج | a real account, through the form",
+/**
+ * **ورحلةٌ واحدة لا أربع.**
+ *
+ * كلُّ `test` في Playwright يأخذ سياقًا جديدًا، فتضيع الجلسةُ بين الخطوات:
+ * سجّلتُ ودخلتُ في فحص، ثمّ فتحتُ البحثَ في فحصٍ آخر فوجدتُ صفحةَ دخول.
+ * وقد وقع ذلك فعلًا في التشغيلة الأولى لهذه الرقعة.
+ *
+ * والعلاجُ رحلةٌ متّصلة بخطوات — كما تفعل رحلةُ القبول نفسُها — لا حَملُ
+ * الجلسة بين سياقات.
+ */
+test("رحلةُ RC-0 على مكدّسٍ حقيقيّ | the RC-0 journey, end to end",
   async ({ page }) => {
+    test.setTimeout(180_000);
     const seen = watch(page);
-    await page.goto(`/${EN}/register`);
-    await page.locator("#reg-name").fill("RC0 Journey");
-    await page.locator("#reg-email").fill(ACCOUNT);
-    await page.locator("#reg-password").fill(PASSWORD);
-    await page.locator("form button[type=submit]").click();
-    await page.waitForURL(`**/${EN}`, { timeout: 30_000 });
 
-    expect(seen.serverErrors, `خمسمئة في التسجيل: ${seen.serverErrors[0]}`)
-      .toHaveLength(0);
-    expect(seen.errors, `استثناء: ${seen.errors[0]}`).toHaveLength(0);
-  });
-
-test("٢ · بحثٌ يُنشأ بعنوانه، ويُفتح بيتُه | a project, opened at its canonical home",
-  async ({ page }) => {
-    await page.goto(`/${EN}/login`);
-    await page.locator("input[type=email]").fill(ACCOUNT);
-    await page.locator("#login-password").fill(PASSWORD);
-    await page.locator("form button[type=submit]").click();
-    await page.waitForURL(`**/${EN}`, { timeout: 30_000 });
-
-    await page.goto(`/${AR}/portfolio`);
-    await page.getByLabel("عنوان البحث").fill(PROJECT_TITLE);
-    await page.getByRole("button", { name: /أنشئ البحث/ }).click();
-
-    // الإنشاء يفتح بيتَ المشروع مباشرةً — ولا معرّفَ يُنسخ بيد.
-    await page.waitForURL(/\/portfolio\/[0-9a-f-]{36}/, { timeout: 30_000 });
-    projectUrl = page.url();
-    await expect(page.getByRole("heading", { name: PROJECT_TITLE })).toBeVisible();
-  });
-
-test("٣ · والرحلةُ تصل من خادمٍ حقيقيّ | the Journey loads from a real server",
-  async ({ page }) => {
-    const seen = watch(page);
-    await page.goto(projectUrl);
-
-    const journey = page.getByTestId("research-journey");
-    await expect(journey).toBeVisible({ timeout: 30_000 });
-
-    // **وهذه المفرداتُ بعينها تفحصها رحلةُ القبول على الإنتاج.**
-    await expect(page.getByTestId("journey-failed")).toHaveCount(0);
-    await expect(page.getByTestId("journey-loading")).toHaveCount(0);
-    await expect(page.getByTestId("journey-current-stage")).toHaveText("الفكرة");
-    await expect(page.getByTestId("journey-next-title")).toBeVisible();
-    await expect(page.getByTestId("journey-next-why")).toContainText("لا سؤالَ");
-    await expect(journey.getByTestId("journey-stages").locator("> li"))
-      .toHaveCount(9);
-    await expect(page.locator('[data-current="true"]')).toHaveCount(1);
-    await expect(page.getByTestId("journey-primary-cta")).toBeVisible();
-
-    // **ولا نسبةَ إنجاز**، ولا خمسمئة في الطريق.
-    expect(await page.locator("body").innerText()).not.toMatch(/\d+\s*%/);
-    expect(seen.serverErrors, `خمسمئة: ${seen.serverErrors[0]}`).toHaveLength(0);
-    expect(seen.errors, `استثناء: ${seen.errors[0]}`).toHaveLength(0);
-  });
-
-test("٤ · والفعلُ الرئيس يبلغ أدواتِ المصادر | the primary action reaches real controls",
-  async ({ page }) => {
-    await page.goto(projectUrl);
-    await expect(page.getByTestId("research-journey")).toBeVisible({
-      timeout: 30_000,
+    // ── ١ · حسابٌ حقيقيّ بالنموذج ──
+    await test.step("register a real account through the form", async () => {
+      await page.goto(`/${EN}/register`);
+      await page.locator("#reg-name").fill("RC0 Journey");
+      await page.locator("#reg-email").fill(ACCOUNT);
+      await page.locator("#reg-password").fill(PASSWORD);
+      await page.locator("form button[type=submit]").click();
+      await page.waitForURL(`**/${EN}`, { timeout: 60_000 });
     });
 
-    // بحثٌ خاوٍ يقف عند الفكرة؛ وقسمُ المصادر يُبلَغ بالرابط نفسِه.
-    await page.goto(`${projectUrl}?section=literature`);
-    await expect(
-      page.getByRole("heading", { name: "أضِف مرجعًا من مكتبتك" }),
-    ).toBeVisible({ timeout: 30_000 });
+    // ── ٢ · بحثٌ يُنشأ بعنوانه، ويُفتح بيتُه ──
+    await test.step("create a project and land on its canonical home", async () => {
+      await page.goto(`/${AR}/portfolio`);
+      await page.getByLabel("عنوان البحث").fill(PROJECT_TITLE);
+      await page.getByRole("button", { name: /أنشئ البحث/ }).click();
+      // الإنشاء يفتح بيتَ المشروع مباشرةً — ولا معرّفَ يُنسخ بيد.
+      await page.waitForURL(/\/portfolio\/[0-9a-f-]{36}/, { timeout: 60_000 });
+      projectUrl = page.url();
+      await expect(page.getByRole("heading", { name: PROJECT_TITLE })).toBeVisible();
+    });
 
-    // ويبقى بعد تحديث — القسمُ في الرابط لا في الذاكرة.
-    await page.reload();
-    await expect(
-      page.getByRole("heading", { name: "أضِف مرجعًا من مكتبتك" }),
-    ).toBeVisible({ timeout: 30_000 });
+    // ── ٣ · والرحلةُ تصل من خادمٍ حقيقيّ ──
+    //
+    // **وهذه المفرداتُ بعينها تفحصها رحلةُ القبول على الإنتاج.**
+    await test.step("the Research Journey loads from a real server", async () => {
+      const journey = page.getByTestId("research-journey");
+      await expect(journey).toBeVisible({ timeout: 60_000 });
+
+      await expect(page.getByTestId("journey-failed")).toHaveCount(0);
+      await expect(page.getByTestId("journey-loading")).toHaveCount(0);
+      await expect(page.getByTestId("journey-current-stage")).toHaveText("الفكرة");
+      await expect(page.getByTestId("journey-next-title")).toBeVisible();
+      await expect(page.getByTestId("journey-next-why")).toContainText("لا سؤالَ");
+      await expect(journey.getByTestId("journey-stages").locator("> li"))
+        .toHaveCount(9);
+      await expect(page.locator('[data-current="true"]')).toHaveCount(1);
+      await expect(page.getByTestId("journey-primary-cta")).toBeVisible();
+
+      // **ولا نسبةَ إنجاز.**
+      expect(await page.locator("body").innerText()).not.toMatch(/\d+\s*%/);
+    });
+
+    // ── ٤ · والقسمُ يُبلَغ بالرابط ويبقى بعد التحديث ──
+    await test.step("the sources section is addressable and survives reload",
+      async () => {
+        await page.goto(`${projectUrl}?section=literature`);
+        await expect(
+          page.getByRole("heading", { name: "أضِف مرجعًا من مكتبتك" }),
+        ).toBeVisible({ timeout: 60_000 });
+
+        await page.reload();
+        await expect(
+          page.getByRole("heading", { name: "أضِف مرجعًا من مكتبتك" }),
+        ).toBeVisible({ timeout: 60_000 });
+      });
+
+    // ولا خمسمئة ولا استثناء في الرحلة كلِّها.
+    expect(seen.serverErrors, `خمسمئة: ${seen.serverErrors[0]}`).toHaveLength(0);
+    expect(seen.errors, `استثناء: ${seen.errors[0]}`).toHaveLength(0);
   });
