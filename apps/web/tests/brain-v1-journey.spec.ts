@@ -69,7 +69,13 @@ function journeyPayload(overrides: Record<string, unknown> = {}) {
   return {
     project_id: PROJECT, title: "بحثٌ في أوّله",
     context_fingerprint: "a".repeat(64),
-    fingerprint_schema: "pubriva.brain.context.v1",
+    fingerprint_schema: "pubriva.brain.context.v2",
+    // **وحقولُ RC-0 تدخل التجهيزةَ لأنّ حارسَ الشكل يطلبها.** والحارسُ
+    // يرفض حمولةً ناقصةً قصدًا — فتُستكمل التجهيزةُ ولا يُليَّن الحارس.
+    stages: [],
+    current_stage: null,
+    known: [],
+    missing: [],
     first_seen_at: "2026-09-13T00:00:00Z", last_seen_at: "2026-09-13T00:00:00Z",
     recommended: {
       action_key: "define_research_question", category: "foundation",

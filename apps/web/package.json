@@ -23,7 +23,8 @@
     "test:rc": "playwright test tests/rc-thesis-journey.spec.ts",
     "test:final-mile": "playwright test tests/thesis-final-mile.spec.ts",
     "test:simple-surface": "playwright test tests/thesis-simple-surface.spec.ts",
-    "test:brain-v1": "playwright test tests/brain-v1-journey.spec.ts"
+    "test:brain-v1": "playwright test tests/brain-v1-journey.spec.ts",
+    "test:rc0-journey": "playwright test tests/rc0-research-journey.spec.ts"
   },
   "dependencies": {
     "next": "^16.0.0",

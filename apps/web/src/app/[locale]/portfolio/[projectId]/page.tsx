@@ -22,6 +22,8 @@ import {
   unlinkFile,
 } from "@/lib/workspace";
 import { listLibraryFiles, type LibraryFile } from "@/lib/library";
+import { ResearchJourney } from "@/components/ResearchJourney";
+import { type ProjectJourney, projectJourney } from "@/lib/researchBrain";
 
 /**
  * مساحة عمل البحث — **البحث هو الشيء المركزي، لا الوحدة**.
@@ -99,6 +101,12 @@ export default function ProjectWorkspacePage({
   const t = translator(getMessages(locale));
 
   const [section, setSection] = useState<Section>("overview");
+  // **والرحلةُ رايةٌ مستقلّة عن النظرة العامّة.** تسقط إحداهما فتبقى
+  // الأخرى، وسقوطُها يُقال بنصّه — شاشةٌ بلا خطوةٍ تالية تُقرأ «لا شيء
+  // مطلوب»، وذاك أسوأ من رسالة خطأ (§73، §74).
+  const [journey, setJourney] = useState<ProjectJourney | null>(null);
+  const [journeyLoad, setJourneyLoad] =
+    useState<"loading" | "ready" | "failed">("loading");
   const [overview, setOverview] = useState<ProjectOverview | null>(null);
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [sources, setSources] = useState<ProjectSource[]>([]);
@@ -133,6 +141,17 @@ export default function ProjectWorkspacePage({
 
   const reload = useCallback(() => {
     projectOverview(locale, projectId).then(setOverview).catch(say);
+    // **ولا `setState` متزامنٌ هنا**: `reload` تُنادى من داخل `useEffect`،
+    // وضبطُ الحال في متنها مباشرةً يُطلق عرضًا متتاليًا — يمنعه القواعد.
+    // والحالُ تبدأ `loading`، وإعادةُ ضبطها تخصّ زرَّ المحاولة وحدَه.
+    projectJourney(locale, projectId)
+      .then((view) => {
+        setJourney(view);
+        setJourneyLoad("ready");
+      })
+      // **ولا تُمرَّر إلى `say`**: سقوطُ الرحلة لا يُظهر خطأً عامًّا على
+      // الصفحة كلِّها؛ يُقال في موضعه، والبقيّةُ تبقى صالحة.
+      .catch(() => setJourneyLoad("failed"));
     projectFiles(locale, projectId)
       .then((rows) => {
         setFiles(rows);
@@ -301,27 +320,40 @@ export default function ProjectWorkspacePage({
 
       {section === "overview" && overview ? (
         <>
-          <article className="card">
-            <div className="metric-label">{t("project.nextTitle")}</div>
-            <div style={{ fontSize: 15, marginBlock: 6 }}>
-              {overview.recommended_next?.label ?? t("project.nextNone")}
-            </div>
-          </article>
+          {/* ═══════════ رحلةُ البحث — **بيتُ المشروع** ═══════════
 
-          {overview.blockers.length > 0 ? (
-            <article className="card" style={{ marginBlockStart: 8 }}>
-              <div className="metric-label">{t("project.blockersTitle")}</div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBlockStart: 6 }}>
-                {overview.blockers.map((label) => (
-                  <span className="chip chip-muted" key={label}>
-                    {label}
-                  </span>
-                ))}
-              </div>
-            </article>
-          ) : null}
+              وهي أوّلُ ما يُقرأ في هذه الصفحة قصدًا: كانت هنا بطاقةٌ رفيعة
+              تعرض «الخطوة التالية» من `workspace.next_action` — خمسةُ شروطٍ
+              متتابعة تعرف مركزَ الرسائل وتُخاطب الباحثَ باسمٍ قديم. وصارت
+              الخطوةُ تُشتقّ من المراحل التسع بحال كلِّ مجالٍ من جدوله.
 
-          <h2 style={{ marginBlockEnd: 4 }}>{t("project.brainTitle")}</h2>
+              **ولم تُحذف تلك الدالّة** — يُبقيها مسارُ النظرة العامّة
+              لمن يستعملها، والتوحيدُ قرارُ منتجٍ لا تنظيفُ شيفرة. */}
+          {journeyLoad === "loading" ? (
+            <p data-testid="journey-loading" style={{ color: "var(--muted)" }}>
+              {t("researchJourney.loading")}
+            </p>
+          ) : journeyLoad === "failed" || journey === null ? (
+            // **والسقوط ليس فراغًا**: شاشةٌ بلا خطوةٍ تُقرأ «لا شيء مطلوب».
+            <p data-testid="journey-failed" className="gate">
+              {t("researchJourney.failed")}{" "}
+              <button
+                type="button"
+                className="chip chip-muted"
+                onClick={() => {
+                  setJourneyLoad("loading");
+                  void reload();
+                }}
+              >
+                {t("common.retry")}
+              </button>
+            </p>
+          ) : (
+            <ResearchJourney journey={journey} locale={locale} t={t} />
+          )}
+
+          <h2 style={{ marginBlockEnd: 4, marginBlockStart: 18 }}>
+            {t("project.brainTitle")}</h2>
           <p className="metric-label" style={{ marginBlockStart: 0 }}>
             {t("project.brainNote")}
           </p>
