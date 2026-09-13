@@ -249,7 +249,6 @@ const JOURNEY = {
   missing_count: 0,
   needs_review_count: 0,
   conflict_count: 0,
-  superseded_now: 0,
   limitations: "قراءةٌ لما سُجِّل في هذا البحث داخل PUBRIVA وحدَه.",
   note: "لا تُعرض نسبةُ إنجاز.",
 };

@@ -88,7 +88,7 @@ def test_the_openapi_document_declares_every_field_the_screen_reads():
     schema = app.openapi()["components"]["schemas"]["ProjectJourneyView"]
     properties = set(schema["properties"])
     required = {"project_id", "context_fingerprint", "recommended", "actions",
-                "capabilities", "superseded_now", "limitations", "note"}
+                "capabilities", "limitations", "note"}
     assert required <= properties, f"حقولٌ غائبةٌ عن العقد: {sorted(required - properties)}"
 
 
@@ -107,7 +107,7 @@ def test_the_response_model_does_not_silently_swallow_a_field():
     from athera_api.schemas.research_brain import ProjectJourneyView
 
     assert ProjectJourneyView.model_config.get("extra", "ignore") == "ignore"
-    for field in ("context_fingerprint", "superseded_now", "capabilities"):
+    for field in ("context_fingerprint", "capabilities", "actions"):
         assert field in ProjectJourneyView.model_fields
 
 
@@ -219,87 +219,6 @@ async def test_a_material_change_produces_a_new_fingerprint(two_tenants):
 
 
 # ═════════════════ د · والقولُ القديم يَبْلى (§41، §92) ═════════════════
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_a_recommendation_made_under_an_old_context_stops_being_current(two_tenants):
-    """**التوصيةُ لا تُعرض جاريةً بعد أن تغيّر ما بُنيت عليه.**
-
-    ولا تُحذف: تُوسَم `superseded` ويبقى نصُّها وتاريخُها، فيمكن مراجعةُ
-    ما قالته المنصّةُ ومتى.
-    """
-    from sqlalchemy import select
-
-    from athera_api.db import tenant_session
-    from athera_api.models.research_brain import (
-        PROPOSED,
-        SUPERSEDED,
-        ResearchRecommendation,
-    )
-
-    a = two_tenants["a"]
-    tid, uid = a["tenant_id"], a["user_id"]
-    project_id = await _bare_project(tid, uid)
-    path = JOURNEY.format(pid=project_id)
-
-    async with _client(a) as http:
-        first = (await http.get(path)).json()
-    old_fingerprint = first["context_fingerprint"]
-
-    async with tenant_session(tid, uid) as session:
-        stored = (await session.execute(
-            select(ResearchRecommendation).where(
-                ResearchRecommendation.project_id == project_id))).scalars().all()
-    assert stored, "لم تُحفظ توصيةٌ أصلًا — فلا شيء يَبْلى"
-    assert {row.status for row in stored} == {PROPOSED}
-    # **وقاعدةٌ حتمية لا مزوّدَ لها** — والقيدُ في القاعدة يفرضه.
-    assert {row.generated_by for row in stored} == {"rule"}
-    assert all(row.provider is None for row in stored)
-
-    # ── يتغيّر البحثُ تغيّرًا ذا معنى ──
-    await _add_question(tid, uid, project_id)
-    async with _client(a) as http:
-        second = (await http.get(path)).json()
-
-    assert second["context_fingerprint"] != old_fingerprint
-    assert second["superseded_now"] >= 1
-
-    async with tenant_session(tid, uid) as session:
-        rows = (await session.execute(
-            select(ResearchRecommendation).where(
-                ResearchRecommendation.project_id == project_id))).scalars().all()
-
-    aged = [r for r in rows if r.context_fingerprint == old_fingerprint]
-    assert aged, "سجلُّ التوصيات القديمة مُحي — والمحوُ يُفقد المراجعة"
-    assert {r.status for r in aged} == {SUPERSEDED}
-    # وما قيل تحت البصمة الجديدة جارٍ.
-    fresh = [r for r in rows if r.context_fingerprint == second["context_fingerprint"]]
-    assert fresh and {r.status for r in fresh} == {PROPOSED}
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_every_persisted_recommendation_states_its_limits(two_tenants):
-    """**وما لا تعرفه التوصيةُ يُقال** (§28) — لا تُسلَّم عاريةً من حدودها."""
-    from sqlalchemy import select
-
-    from athera_api.db import tenant_session
-    from athera_api.models.research_brain import ResearchRecommendation
-
-    a = two_tenants["a"]
-    project_id = await _bare_project(a["tenant_id"], a["user_id"])
-    async with _client(a) as http:
-        await http.get(JOURNEY.format(pid=project_id))
-
-    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
-        rows = (await session.execute(
-            select(ResearchRecommendation).where(
-                ResearchRecommendation.project_id == project_id))).scalars().all()
-
-    assert rows
-    for row in rows:
-        assert row.limitations_ar and "PUBRIVA" in row.limitations_ar
 
 
 # ═════════════════ هـ · العزل والإذن (§36، §37، §89) ═════════════════
@@ -514,10 +433,7 @@ async def test_row_level_security_hides_another_tenants_brain_rows(two_tenants):
     from sqlalchemy import func, select
 
     from athera_api.db import tenant_session
-    from athera_api.models.research_brain import (
-        ResearchContextSnapshot,
-        ResearchRecommendation,
-    )
+    from athera_api.models.research_brain import ResearchContextSnapshot
 
     a, b = two_tenants["a"], two_tenants["b"]
     project_id = await _bare_project(a["tenant_id"], a["user_id"])
@@ -527,41 +443,146 @@ async def test_row_level_security_hides_another_tenants_brain_rows(two_tenants):
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
         mine = (await session.execute(
             select(func.count(ResearchContextSnapshot.id)))).scalar_one()
-        my_recs = (await session.execute(
-            select(func.count(ResearchRecommendation.id)))).scalar_one()
 
     async with tenant_session(b["tenant_id"], b["user_id"]) as session:
         theirs = (await session.execute(
             select(func.count(ResearchContextSnapshot.id))
             .where(ResearchContextSnapshot.project_id == project_id))).scalar_one()
-        their_recs = (await session.execute(
-            select(func.count(ResearchRecommendation.id))
-            .where(ResearchRecommendation.project_id == project_id))).scalar_one()
 
-    assert mine >= 1 and my_recs >= 1
+    assert mine >= 1
     assert theirs == 0, "لقطةُ مستأجرٍ ظهرت لمستأجرٍ آخر"
-    assert their_recs == 0, "توصيةُ مستأجرٍ ظهرت لمستأجرٍ آخر"
+
+# ══════════ ط · لا توصيةَ تعيش لتَبْلى — والحُجّةُ التي أسقطت الجدول ══════════
+#
+# كان هنا جدولُ توصياتٍ ووسمُ تقادم. وأُسقطا في مراجعةٍ معمارية لأنّ
+# التوصيةَ **تُحسب من الحال الراهنة في كلّ طلب**، فلا تعيش لتَبْلى أصلًا.
+#
+# والحجّةُ لا تُترك قولًا في رسالة الالتزام: تُفحص هنا. فإن كُتب يومًا
+# مسارٌ يعرض توصيةً محفوظة، سقطت هذه الفحوصُ وعاد السؤالُ إلى طاولته.
+
+
+def test_the_journey_rules_cannot_reach_a_database_at_all():
+    """**حتميّةٌ بنيويّة تُقرأ من الشجر النحويّ لا من النيّة.**
+
+    ودالّةٌ خالصة لا تقرأ قاعدةً تُعطي الجوابَ نفسه للحال نفسها، فحفظُ
+    جوابها نسخةٌ ثانية من شيءٍ يُشتقّ. وهذا هو الأساسُ الذي بُني عليه
+    إسقاطُ الجدول — فيُحرس.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(
+        "athera_api/research_brain/journey.py").read_text(encoding="utf-8")
+    imported: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imported.append(node.module)
+        elif isinstance(node, ast.Import):
+            imported.extend(alias.name for alias in node.names)
+
+    for module in imported:
+        for banned in ("sqlalchemy", "models", "services", "db"):
+            assert banned not in module, (
+                f"قواعدُ الرحلة استوردت `{module}` — ولم تعد دالّةً خالصة، "
+                "فيسقط ما بُني عليه إسقاطُ جدول التوصيات")
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_the_database_refuses_a_rule_recommendation_that_names_a_provider():
-    """**والقيدُ في القاعدة يفرق بين قاعدةٍ حتمية ومخرَجِ نموذج.**
+async def test_what_the_screen_shows_is_always_computed_from_the_current_state(two_tenants):
+    """**ما يُعرض محسوبٌ من الراهن دائمًا — لا مقروءٌ من صفٍّ محفوظ.**
 
-    وهذا حارسٌ بنيويّ: لو كُتب يومًا مسارٌ يحفظ اقتراحَ نموذجٍ بوسم `rule`
-    لَسقط عند الكتابة، ولم يُقرأ بعدها قولُ آلةٍ على أنه استدلالٌ حتميّ.
+    ويُقاس بأدقّ ما يمكن: تُقارَن بصمةُ الجواب ببصمةٍ تُحسب **الآن** من
+    حال البحث. فلو جاء الجوابُ من صفٍّ محفوظ لَانفصلت الاثنتان عند أوّل
+    تغيير — وهو بعينه «قولٌ قديم يُعرض جاريًا».
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services.research_assessment import build_project_assessment
+    from athera_api.services.research_assessment.orchestrator import fingerprint_of
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    project_id = await _bare_project(tid, uid)
+    path = JOURNEY.format(pid=project_id)
+
+    async def live_fingerprint() -> str:
+        async with tenant_session(tid, uid) as session:
+            snap = await build_project_assessment(
+                session, tenant_id=tid, project_id=project_id)
+            return fingerprint_of(snap)
+
+    async with _client(a) as http:
+        before = (await http.get(path)).json()
+        assert before["context_fingerprint"] == await live_fingerprint()
+
+        await _add_question(tid, uid, project_id)
+
+        after = (await http.get(path)).json()
+        assert after["context_fingerprint"] == await live_fingerprint(), (
+            "البصمةُ المعروضة لا تطابق حالَ البحث الآن — أي أنّ شيئًا حُفظ ثمّ عُرض")
+
+    # **والخطوةُ تبدّلت مع الحال** — ولا أثرَ للقديمة في الجواب.
+    assert before["recommended"]["action_key"] != after["recommended"]["action_key"]
+    assert "define_research_question" not in [
+        row["action_key"] for row in after["actions"]]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_only_the_snapshot_table_is_written_by_a_journey_read(two_tenants):
+    """**والمكتوبُ صفٌّ واحد: بصمةٌ رُصدت.**
+
+    ولا جدولَ ثانيًا للعقل في القاعدة — فحصٌ يمنع عودةَ ما أُسقط بلا
+    مراجعةٍ جديدة.
     """
     from sqlalchemy import text
 
     from athera_api.db import system_session
 
+    a = two_tenants["a"]
+    project_id = await _bare_project(a["tenant_id"], a["user_id"])
+    async with _client(a) as http:
+        assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 200
+
     async with system_session() as session:
-        with pytest.raises(Exception) as caught:
-            await session.execute(text(
-                "INSERT INTO research_recommendations "
-                "(id, tenant_id, project_id, context_fingerprint, action_key, "
-                " category, status, title_ar, reason_ar, generated_by, provider) "
-                "VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), "
-                f"'{'a' * 64}', 'x', 'data', 'proposed', 'ع', 'ع', 'rule', 'anthropic')"))
-        assert "ck_rule_has_no_provider" in str(caught.value) or \
-            "violates" in str(caught.value).lower()
+        tables = set((await session.execute(text(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
+            "AND tablename LIKE 'research\\_%'"))).scalars())
+
+    assert "research_context_snapshots" in tables
+    assert "research_recommendations" not in tables, (
+        "عاد جدولُ التوصيات — والحجّةُ التي أسقطته لم تتغيّر")
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_snapshot_history_is_what_makes_change_detectable(two_tenants):
+    """**وتاريخُ البصمات هو القدرةُ التي حُفظ الجدولُ من أجلها.**
+
+    لقطتان لحالين، وأوقاتُ أولِ رؤيةٍ لكلٍّ منهما — وبها يُعرف **متى**
+    تغيّر البحث. وهذا ما لا يُستعاد بإعادة الحساب، فيُحفظ.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research_brain import ResearchContextSnapshot
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    project_id = await _bare_project(tid, uid)
+    path = JOURNEY.format(pid=project_id)
+
+    async with _client(a) as http:
+        first = (await http.get(path)).json()["context_fingerprint"]
+        await _add_question(tid, uid, project_id)
+        second = (await http.get(path)).json()["context_fingerprint"]
+
+    async with tenant_session(tid, uid) as session:
+        rows = (await session.execute(
+            select(ResearchContextSnapshot)
+            .where(ResearchContextSnapshot.project_id == project_id)
+            .order_by(ResearchContextSnapshot.first_seen_at))).scalars().all()
+
+    assert [row.context_fingerprint for row in rows] == [first, second], (
+        "تاريخُ الحالين لم يُحفظ — وهو وحده ما يقول متى تغيّر البحث")
+    assert rows[0].first_seen_at <= rows[1].first_seen_at

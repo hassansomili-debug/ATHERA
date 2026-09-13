@@ -101,7 +101,6 @@ function journeyPayload(overrides: Record<string, unknown> = {}) {
       { key: "draft_results", allowed: false, blocking_reasons: ["no_findings_recorded"] },
     ],
     known_count: 0, missing_count: 9, needs_review_count: 0, conflict_count: 0,
-    superseded_now: 0,
     limitations: "هذه قراءةٌ لما سُجِّل في هذا البحث داخل PUBRIVA وحدَه.",
     note: "لا تُعرض نسبةُ إنجاز.",
     ...overrides,

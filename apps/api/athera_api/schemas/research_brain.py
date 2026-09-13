@@ -57,6 +57,9 @@ class ProjectJourneyView(BaseModel):
     title: str
 
     #: بصمةُ الحال — تُعرض في مسار التشخيص، ولا تُعرض للباحث العاديّ (§84).
+    #:
+    #: **وهي ما يجعل التقادمَ قابلًا للكشف** دون حفظِ توصية: لقطتان
+    #: ببصمتين مختلفتين حالان مختلفتان، والمعروضُ دائمًا محسوبٌ من الراهنة.
     context_fingerprint: str
     fingerprint_schema: str
     first_seen_at: dt.datetime
@@ -72,9 +75,6 @@ class ProjectJourneyView(BaseModel):
     missing_count: int = 0
     needs_review_count: int = 0
     conflict_count: int = 0
-
-    #: توصياتٌ قيلت تحت بصمةٍ سابقة فلم تعد جارية — **يُقال عددُها** (§41).
-    superseded_now: int = 0
 
     #: ما لا تعرفه هذه القراءة — يُعلَن ولا يُسكت عنه.
     limitations: str

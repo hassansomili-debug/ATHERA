@@ -1167,10 +1167,11 @@ async def project_journey(
     رأيٌ في الترتيب. ودمجُهما يُنتج إمّا رأيًا يحجب، وإمّا واقعةً تُتجاوَز.
 
     **ولا نموذجَ يُستدعى هنا** (§30). فلو سقط المزوّدُ كلُّه لبقي هذا
-    الجوابُ صحيحًا: القواعدُ حتمية، والبصمةُ تُحسب، والتاريخُ يُحفظ.
+    الجوابُ صحيحًا: القواعدُ حتمية، والبصمةُ تُحسب، وتاريخُها يُحفظ.
 
-    ولا تُعاد كتابةُ بحثٍ من هذا المسار: يُكتب في جدولَي العقل وحدَهما —
-    بصمةٌ رُصدت وتوصيةٌ قيلت — والوحداتُ الأصلية تبقى صاحبةَ الحقيقة.
+    **والخطوةُ المقترحة تُحسب في كلّ طلبٍ ولا تُحفظ**: فلا توصيةَ تعيش
+    لتَبْلى، ولا سبيلَ إلى عرض قولٍ قديمٍ على أنّه جارٍ. والمكتوبُ من هذا
+    المسار صفٌّ واحد — بصمةٌ رُصدت — والوحداتُ الأصلية تبقى صاحبةَ الحقيقة.
     """
     await _project(session, principal, project_id)
     snapshot = await research_assessment.build_project_assessment(
@@ -1212,6 +1213,5 @@ async def project_journey(
         known_count=len(report.known), missing_count=len(report.missing),
         needs_review_count=len(report.needs_review),
         conflict_count=len(report.conflicts),
-        superseded_now=outcome.expired,
         limitations=_JOURNEY_LIMITS_AR if arabic else _JOURNEY_LIMITS_EN,
         note=_JOURNEY_NOTE_AR if arabic else _JOURNEY_NOTE_EN)

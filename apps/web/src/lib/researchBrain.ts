@@ -131,7 +131,12 @@ export interface JourneyCapability {
 export interface ProjectJourney {
   project_id: string;
   title: string;
-  /** بصمةُ الحال — **لا تُعرض للباحث العاديّ** (§84)، وتُقرأ في التشخيص. */
+  /**
+   * بصمةُ الحال — **لا تُعرض للباحث العاديّ** (§84)، وتُقرأ في التشخيص.
+   *
+   * وهي ما يجعل التقادمَ مكشوفًا بلا حفظِ توصية: المعروضُ محسوبٌ من الحال
+   * الراهنة في كلّ طلب، فلا قولَ قديمٌ يعيش ليُعرض جاريًا.
+   */
   context_fingerprint: string;
   fingerprint_schema: string;
   first_seen_at: string;
@@ -143,7 +148,6 @@ export interface ProjectJourney {
   missing_count: number;
   needs_review_count: number;
   conflict_count: number;
-  superseded_now: number;
   limitations: string;
   note: string;
 }
