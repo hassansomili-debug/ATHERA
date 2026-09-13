@@ -127,7 +127,11 @@ async def test_an_empty_project_answers_without_inventing_a_research_question(tw
     assert response.status_code == 200, response.text
     body = response.json()
 
-    assert body["recommended"]["action_key"] == "define_research_question"
+    # **ومفتاحُ الفعل مفتاحُ المرحلة** بعد توحيد صاحب القرار: كان
+    # `define_research_question` من سجلِّ توصياتٍ ثانٍ يرتّب بأولوياتٍ
+    # مستقلّة — فيقول الزرُّ غيرَ ما تقوله المرحلة.
+    assert body["recommended"]["action_key"] == "idea"
+    assert body["current_stage"] == "idea"
     assert len(body["context_fingerprint"]) == 64
     # **ولا نسبةَ إنجاز** ولا ادّعاءَ معرفةٍ غير موجودة.
     assert "%" not in response.text and "٪" not in response.text
@@ -189,12 +193,13 @@ async def test_the_next_step_changes_as_the_project_develops(two_tenants):
         await _add_method(tid, uid, project_id, sample_size=120)
         with_sample = (await http.get(path)).json()
 
-    assert empty["recommended"]["action_key"] == "define_research_question"
-    assert with_question["recommended"]["action_key"] == "select_method"
-    # منهجٌ بلا حجمِ عيّنة — فالخطوةُ التالية أن يُسجَّل الحجم.
-    assert with_method["recommended"]["action_key"] == "define_sample"
-    # ثمّ سُجِّل، فانتقلت الرحلةُ إلى ما بعده.
-    assert with_sample["recommended"]["action_key"] == "link_sources"
+    # **والفعلُ يتبع المرحلة دائمًا** — لا ترتيبَ ثانٍ يخالفها.
+    assert empty["recommended"]["action_key"] == empty["current_stage"] == "idea"
+    assert with_question["recommended"]["action_key"] == "references"
+    assert with_method["recommended"]["action_key"] == "references"
+    assert with_sample["recommended"]["action_key"] == "references"
+    for body in (empty, with_question, with_method, with_sample):
+        assert body["recommended"]["action_key"] == body["current_stage"]
 
     # **وكلُّ خطوةٍ تحمل سببَها** — لا «الذكاء الاصطناعي يقترح».
     for body in (empty, with_question, with_method, with_sample):
@@ -392,13 +397,13 @@ async def test_a_conflicted_project_reports_the_conflict_and_does_not_settle_it(
     assert response.status_code == 200, response.text
     body = response.json()
 
+    # **والتعارضُ يُعلَن ويُعدّ** — ولا يُحسم عن الباحث.
     assert body["conflict_count"] >= 1, "تعارضٌ مسجَّل لم يصل الجواب"
-    assert body["recommended"]["action_key"] == "resolve_contradiction"
-    # **ويُقدَّم على غيره** — فلا يُبنى على أدلةٍ متنازَعٍ فيها.
-    assert body["actions"][0]["action_key"] == "resolve_contradiction"
-    # **ولا ترجيحَ في النصّ.**
+    # ولا ترجيحَ في شيءٍ ممّا يُعرض.
+    blob = " ".join([body["recommended"]["reason"]]
+                    + [row["reason"] for row in body["stages"]])
     for verdict in ("احذف", "استبعد", "الأرجح", "تجاهل"):
-        assert verdict not in body["recommended"]["reason"]
+        assert verdict not in blob
 
 
 @requires_db
@@ -498,6 +503,7 @@ async def test_what_the_screen_shows_is_always_computed_from_the_current_state(t
     """
     from athera_api.db import tenant_session
     from athera_api.services.research_assessment import build_project_assessment
+    from athera_api.services.research_assessment import stage_reader
     from athera_api.services.research_assessment.orchestrator import fingerprint_of
 
     a = two_tenants["a"]
@@ -506,10 +512,17 @@ async def test_what_the_screen_shows_is_always_computed_from_the_current_state(t
     path = JOURNEY.format(pid=project_id)
 
     async def live_fingerprint() -> str:
+        """البصمةُ محسوبةً **الآن** من حال البحث — بكلّ ما تُشتقّ منه الرحلة.
+
+        ووقائعُ المراحل جزءٌ منها منذ `v2`: لولاها لَاختلفت هذه عن بصمة
+        الجواب بلا أن يكون شيءٌ قد حُفظ — فيفشل الفحصُ على سببٍ لا يخصّه.
+        """
         async with tenant_session(tid, uid) as session:
             snap = await build_project_assessment(
                 session, tenant_id=tid, project_id=project_id)
-            return fingerprint_of(snap)
+            facts = await stage_reader.read(
+                session, tenant_id=tid, project_id=project_id)
+            return fingerprint_of(snap, facts)
 
     async with _client(a) as http:
         before = (await http.get(path)).json()

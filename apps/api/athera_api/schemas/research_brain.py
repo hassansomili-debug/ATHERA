@@ -46,6 +46,46 @@ class CapabilityView(BaseModel):
     blocking_reasons: list[str] = Field(default_factory=list)
 
 
+class StageView(BaseModel):
+    """مرحلةٌ واحدة كما يقرؤها الباحث — **بحالها وسببها، لا برمزها**."""
+
+    key: str
+    #: خمسُ حالاتٍ صادقة — و«الحاليّة» ليست منها بل `is_current` أدناه.
+    status: str
+    #: **هنا يقف الباحث** — علمٌ مستقلّ لا يمحو الحال.
+    is_current: bool = False
+    title: str
+    #: لماذا هذه الحال — ويصل دائمًا، فلا حالَ بلا تفسير (§43).
+    reason: str
+    #: ملخّصٌ قصيرٌ صادق، أو فارغٌ إن لم يكن ثمّة ما يُلخَّص (§47).
+    summary: str = ""
+    route: str | None = None
+    #: رموزُ المنع — تُترجَم في الواجهة، ومع `blocked` وحدها (§44).
+    blocking_reasons: list[str] = Field(default_factory=list)
+
+
+class KnownFactView(BaseModel):
+    """واقعةٌ يعرفها PUBRIVA عن هذا البحث — **أو لا يعرفها** (§48، §51).
+
+    و`value` الفارغة تعني «غير مسجَّل»، ولا تُملأ باستنباط: وجودُ بياناتٍ
+    لا يجعل المنهجَ كمّيًّا.
+    """
+
+    key: str
+    label: str
+    value: str = ""
+    known: bool = False
+
+
+class MissingItemView(BaseModel):
+    """ناقصٌ واحد — **مصنَّفًا لا مكدَّسًا في قائمةٍ حمراء** (§49)."""
+
+    key: str
+    label: str
+    #: `blocking` أو `recommended` أو `optional`.
+    severity: str
+
+
 class ProjectJourneyView(BaseModel):
     """«الذكاء البحثيّ» لمشروعٍ واحد.
 
@@ -65,6 +105,18 @@ class ProjectJourneyView(BaseModel):
     first_seen_at: dt.datetime
     last_seen_at: dt.datetime
 
+    # ═══ أين أنت؟ وماذا أُنجز؟ ═══
+    #
+    # **والمراحلُ تسع** (§19): أربعَ عشرةَ مرحلةً دقيقةً في شريطٍ واحد
+    # تُخفي الرحلةَ بدل أن تُظهرها.
+    stages: list[StageView] = Field(default_factory=list)
+    #: مفتاحُ المرحلة الحاليّة — واحدةٌ لا عدّة (§46).
+    current_stage: str | None = None
+
+    # ═══ ما نعرفه، وما الناقص ═══
+    known: list[KnownFactView] = Field(default_factory=list)
+    missing: list[MissingItemView] = Field(default_factory=list)
+
     #: الخطوةُ التالية المقترحة — واحدةٌ لا عشر.
     recommended: JourneyActionView | None = None
     actions: list[JourneyActionView] = Field(default_factory=list)
@@ -81,4 +133,5 @@ class ProjectJourneyView(BaseModel):
     note: str
 
 
-__all__ = ["CapabilityView", "JourneyActionView", "ProjectJourneyView"]
+__all__ = ["CapabilityView", "JourneyActionView", "KnownFactView",
+           "MissingItemView", "ProjectJourneyView", "StageView"]

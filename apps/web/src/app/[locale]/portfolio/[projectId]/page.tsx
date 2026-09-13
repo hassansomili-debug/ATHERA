@@ -3,6 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { AtheraApiError } from "@/lib/api";
 import { DEFAULT_LOCALE, type Locale, getMessages, isLocale, translator } from "@/lib/i18n";
@@ -22,6 +23,8 @@ import {
   unlinkFile,
 } from "@/lib/workspace";
 import { listLibraryFiles, type LibraryFile } from "@/lib/library";
+import { ResearchJourney } from "@/components/ResearchJourney";
+import { type ProjectJourney, projectJourney } from "@/lib/researchBrain";
 
 /**
  * مساحة عمل البحث — **البحث هو الشيء المركزي، لا الوحدة**.
@@ -98,7 +101,40 @@ export default function ProjectWorkspacePage({
   const locale: Locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
   const t = translator(getMessages(locale));
 
-  const [section, setSection] = useState<Section>("overview");
+  /**
+   * القسمُ المفتوح **في الرابط لا في الذاكرة وحدها**.
+   *
+   * وكان حالًا في React فقط، فكان «أضف مراجع» لا يملك وجهةً يقصدها:
+   * الفعلُ الرئيسُ للمراجع كان يقصد صفحةَ المشروع نفسَها، فينقر الباحثُ
+   * فيعود إلى مكانه. والأدواتُ قائمةٌ في قسم «الدراسات السابقة» من هذه
+   * الصفحة، فلم يكن ينقص إلا عنوانٌ يبلغه.
+   *
+   * وبه يصحّ التحديثُ والرجوعُ معًا: `?section=literature` تُقرأ عند كلّ
+   * عرض، فلا تُفقد بإعادة تحميلٍ ولا بزرّ الرجوع.
+   */
+  const router = useRouter();
+  const pathname = usePathname();
+  const query = useSearchParams();
+  const requested = query.get("section");
+  const section: Section = SECTIONS.includes(requested as Section)
+    ? (requested as Section)
+    : "overview";
+
+  const setSection = useCallback(
+    (next: Section) => {
+      // **ولا يُكتب في السجلّ إلا ما يُرجَع إليه.** «نظرة عامة» هي
+      // الافتراض، فتُكتب بلا معامل كي لا يحمل الرابطُ حالًا هي الأصل.
+      const search = next === "overview" ? "" : `?section=${next}`;
+      router.replace(`${pathname}${search}`, { scroll: false });
+    },
+    [pathname, router],
+  );
+  // **والرحلةُ رايةٌ مستقلّة عن النظرة العامّة.** تسقط إحداهما فتبقى
+  // الأخرى، وسقوطُها يُقال بنصّه — شاشةٌ بلا خطوةٍ تالية تُقرأ «لا شيء
+  // مطلوب»، وذاك أسوأ من رسالة خطأ (§73، §74).
+  const [journey, setJourney] = useState<ProjectJourney | null>(null);
+  const [journeyLoad, setJourneyLoad] =
+    useState<"loading" | "ready" | "failed">("loading");
   const [overview, setOverview] = useState<ProjectOverview | null>(null);
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [sources, setSources] = useState<ProjectSource[]>([]);
@@ -133,6 +169,17 @@ export default function ProjectWorkspacePage({
 
   const reload = useCallback(() => {
     projectOverview(locale, projectId).then(setOverview).catch(say);
+    // **ولا `setState` متزامنٌ هنا**: `reload` تُنادى من داخل `useEffect`،
+    // وضبطُ الحال في متنها مباشرةً يُطلق عرضًا متتاليًا — يمنعه القواعد.
+    // والحالُ تبدأ `loading`، وإعادةُ ضبطها تخصّ زرَّ المحاولة وحدَه.
+    projectJourney(locale, projectId)
+      .then((view) => {
+        setJourney(view);
+        setJourneyLoad("ready");
+      })
+      // **ولا تُمرَّر إلى `say`**: سقوطُ الرحلة لا يُظهر خطأً عامًّا على
+      // الصفحة كلِّها؛ يُقال في موضعه، والبقيّةُ تبقى صالحة.
+      .catch(() => setJourneyLoad("failed"));
     projectFiles(locale, projectId)
       .then((rows) => {
         setFiles(rows);
@@ -151,7 +198,10 @@ export default function ProjectWorkspacePage({
         setLinkedSourcesLoad("failed");
         say(err);
       });
-  }, [locale, projectId, say]);
+  // **ومُحدِّثُ الحال مذكورٌ وإن كان ثابتًا.** مُصرِّفُ React يقابل ما
+  // يستنتجه بما يُكتب، فيتخلّى عن التحسين عند أوّل اختلاف — ولو كان
+  // الاختلافُ في ثابتٍ لا يتغيّر.
+  }, [locale, projectId, say, setJourneyLoad]);
 
   useEffect(reload, [reload]);
 
@@ -301,27 +351,28 @@ export default function ProjectWorkspacePage({
 
       {section === "overview" && overview ? (
         <>
-          <article className="card">
-            <div className="metric-label">{t("project.nextTitle")}</div>
-            <div style={{ fontSize: 15, marginBlock: 6 }}>
-              {overview.recommended_next?.label ?? t("project.nextNone")}
-            </div>
-          </article>
+          {/* ═══════════ رحلةُ البحث — **بيتُ المشروع** ═══════════
 
-          {overview.blockers.length > 0 ? (
-            <article className="card" style={{ marginBlockStart: 8 }}>
-              <div className="metric-label">{t("project.blockersTitle")}</div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBlockStart: 6 }}>
-                {overview.blockers.map((label) => (
-                  <span className="chip chip-muted" key={label}>
-                    {label}
-                  </span>
-                ))}
-              </div>
-            </article>
-          ) : null}
+              وهي أوّلُ ما يُقرأ في هذه الصفحة قصدًا: كانت هنا بطاقةٌ رفيعة
+              تعرض «الخطوة التالية» من `workspace.next_action` — خمسةُ شروطٍ
+              متتابعة تعرف مركزَ الرسائل وتُخاطب الباحثَ باسمٍ قديم. وصارت
+              الخطوةُ تُشتقّ من المراحل التسع بحال كلِّ مجالٍ من جدوله.
 
-          <h2 style={{ marginBlockEnd: 4 }}>{t("project.brainTitle")}</h2>
+              **ولم تُحذف تلك الدالّة** — يُبقيها مسارُ النظرة العامّة
+              لمن يستعملها، والتوحيدُ قرارُ منتجٍ لا تنظيفُ شيفرة. */}
+          <ResearchJourney
+            journey={journey}
+            load={journeyLoad}
+            locale={locale}
+            t={t}
+            onRetry={() => {
+              setJourneyLoad("loading");
+              void reload();
+            }}
+          />
+
+          <h2 style={{ marginBlockEnd: 4, marginBlockStart: 18 }}>
+            {t("project.brainTitle")}</h2>
           <p className="metric-label" style={{ marginBlockStart: 0 }}>
             {t("project.brainNote")}
           </p>

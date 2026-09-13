@@ -69,10 +69,17 @@ function journeyPayload(overrides: Record<string, unknown> = {}) {
   return {
     project_id: PROJECT, title: "بحثٌ في أوّله",
     context_fingerprint: "a".repeat(64),
-    fingerprint_schema: "pubriva.brain.context.v1",
+    fingerprint_schema: "pubriva.brain.context.v2",
+    // **وحقولُ RC-0 تدخل التجهيزةَ لأنّ حارسَ الشكل يطلبها.** والحارسُ
+    // يرفض حمولةً ناقصةً قصدًا — فتُستكمل التجهيزةُ ولا يُليَّن الحارس.
+    stages: [],
+    current_stage: null,
+    known: [],
+    missing: [],
     first_seen_at: "2026-09-13T00:00:00Z", last_seen_at: "2026-09-13T00:00:00Z",
     recommended: {
-      action_key: "define_research_question", category: "foundation",
+      // **مفتاحُ الفعل مفتاحُ المرحلة** — العقدُ الحاليّ بعد RC-0.
+      action_key: "idea", category: "idea",
       status: "recommended", title: "حدِّد سؤال البحث",
       reason: "لا سؤالَ بحثٍ مسجَّلٌ لهذا المشروع بعد، وعليه يُبنى ما بعده.",
       route: `/portfolio/${PROJECT}/thread`,
@@ -80,15 +87,15 @@ function journeyPayload(overrides: Record<string, unknown> = {}) {
     },
     actions: [
       {
-        action_key: "define_research_question", category: "foundation",
+        action_key: "idea", category: "idea",
         status: "recommended", title: "حدِّد سؤال البحث",
         reason: "لا سؤالَ بحثٍ مسجَّلٌ لهذا المشروع بعد، وعليه يُبنى ما بعده.",
         route: `/portfolio/${PROJECT}/thread`,
         blocking_reasons: [], requirements: [], evidence_refs: [],
       },
       {
-        action_key: "link_sources", category: "evidence", status: "recommended",
-        title: "اربط مصادر بالبحث",
+        action_key: "references", category: "references", status: "recommended",
+        title: "أضف مراجع للبحث",
         reason: "لا مصدرَ مربوطٌ بهذا البحث، ولا يُسنَد ادّعاءٌ بلا مصدر.",
         route: "/library",
         blocking_reasons: [], requirements: [], evidence_refs: [],

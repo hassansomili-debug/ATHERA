@@ -121,6 +121,48 @@ export interface JourneyAction {
   evidence_refs: string[];
 }
 
+/**
+ * حالُ المرحلة — خمسٌ صادقة. و«الحاليّة» ليست منها بل `is_current`.
+ *
+ * فلو كُتبت «حاليّة» مكان الحال لضاع **هل بُدئت أم لا**: مخطوطةٌ كُتبت ولم
+ * تُعتمد ومخطوطةٌ لا وجودَ لها تصيران سواءً على الشاشة.
+ */
+export type StageStatus =
+  | "completed"
+  | "needs_action"
+  | "not_started"
+  | "blocked"
+  | "optional";
+
+export interface JourneyStage {
+  key: string;
+  status: StageStatus;
+  /** **هنا يقف الباحث** — وواحدةٌ لا عدّة. */
+  is_current: boolean;
+  title: string;
+  /** لماذا هذه الحال — ويصل دائمًا، فلا حالَ بلا تفسير. */
+  reason: string;
+  /** ملخّصٌ قصيرٌ صادق، أو فارغٌ إن لم يكن ثمّة ما يُلخَّص. */
+  summary: string;
+  route: string | null;
+  blocking_reasons: string[];
+}
+
+/** واقعةٌ يعرفها PUBRIVA — أو **يُعلن أنّها غير مسجَّلة**. */
+export interface KnownFact {
+  key: string;
+  label: string;
+  value: string;
+  known: boolean;
+}
+
+/** ناقصٌ واحد برتبته — ثلاثٌ لا قائمةٌ حمراء واحدة. */
+export interface MissingItem {
+  key: string;
+  label: string;
+  severity: "blocking" | "recommended" | "optional";
+}
+
 /** بوّابةٌ حتمية — ما **يمكن** الآن، مفصولًا عمّا يُستحسن. */
 export interface JourneyCapability {
   key: string;
@@ -141,6 +183,11 @@ export interface ProjectJourney {
   fingerprint_schema: string;
   first_seen_at: string;
   last_seen_at: string;
+  /** المراحلُ التسع بترتيبها الثابت. */
+  stages: JourneyStage[];
+  current_stage: string | null;
+  known: KnownFact[];
+  missing: MissingItem[];
   recommended: JourneyAction | null;
   actions: JourneyAction[];
   capabilities: JourneyCapability[];
@@ -171,6 +218,9 @@ function isJourney(value: unknown): value is ProjectJourney {
     !Array.isArray(row) &&
     Array.isArray(row.actions) &&
     Array.isArray(row.capabilities) &&
+    Array.isArray(row.stages) &&
+    Array.isArray(row.known) &&
+    Array.isArray(row.missing) &&
     typeof row.context_fingerprint === "string"
   );
 }
@@ -195,4 +245,23 @@ export const projectJourney = (locale: Locale, projectId: string) =>
 export function localeRoute(locale: Locale, route: string | null): string | null {
   if (!route) return null;
   return `/${locale}${route}`;
+}
+
+
+/** المرحلةُ الحاليّة — أو `null` إن لم يبقَ ما يُعمل فيه. */
+export function currentStage(journey: ProjectJourney): JourneyStage | null {
+  return journey.stages.find((row) => row.is_current) ?? null;
+}
+
+/** ما أُنجز — بالعدّ الصادق لا بنسبةٍ تُخترع. */
+export function completedStages(journey: ProjectJourney): JourneyStage[] {
+  return journey.stages.filter((row) => row.status === "completed");
+}
+
+/** الناقصُ برتبةٍ واحدة — والرتبُ لا تُخلط في قائمةٍ حمراء. */
+export function missingByGrade(
+  journey: ProjectJourney,
+  severity: MissingItem["severity"],
+): MissingItem[] {
+  return journey.missing.filter((row) => row.severity === severity);
 }

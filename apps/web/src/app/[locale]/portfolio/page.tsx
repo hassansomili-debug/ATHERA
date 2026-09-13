@@ -211,8 +211,16 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
               ) : null}
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockStart: 10 }}>
-              <Link className="chip chip-muted" href={`/${locale}/portfolio/${project.id}`}>
-                {t("project.open")}
+              {/* **فعلٌ واحدٌ واضحٌ للمتابعة** (§63): كان «افتح» رمادًا
+                  بجوار «نقل إلى السلّة» بالوزن نفسه، فيقف الباحثُ بين
+                  فعلين متساويين أحدهما إتلاف. و«متابعة البحث» تقول ما
+                  وراء النقرة — وتفتح بيتَ المشروع حيث رحلتُه. */}
+              <Link
+                className="chip chip-stage"
+                href={`/${locale}/portfolio/${project.id}`}
+                data-testid={`project-continue-${project.id}`}
+              >
+                {t("researchJourney.continueResearch")}
               </Link>
               <button
                 type="button"
