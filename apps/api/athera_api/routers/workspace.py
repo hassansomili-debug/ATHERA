@@ -65,7 +65,10 @@ from ..schemas.workspace import (
 from ..schemas.research_brain import (
     CapabilityView,
     JourneyActionView,
+    KnownFactView,
+    MissingItemView,
     ProjectJourneyView,
+    StageView,
 )
 from ..services import (
     audit,
@@ -74,6 +77,7 @@ from ..services import (
     screening,
     workspace,
 )
+from ..research_brain import stages as stage_model
 from ..services.research_assessment import orchestrator
 
 router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
@@ -1198,8 +1202,28 @@ async def project_journey(
             requirements=list(row.requirements),
             evidence_refs=list(row.evidence_refs))
 
+    def _stage(row) -> StageView:
+        return StageView(
+            key=row.key.value, status=row.status.value, is_current=row.is_current,
+            title=row.title_ar if arabic else row.title_en,
+            reason=row.reason_ar if arabic else row.reason_en,
+            summary=row.summary_ar if arabic else row.summary_en,
+            route=row.route, blocking_reasons=list(row.blocking_reasons))
+
+    stage_facts = outcome.stage_facts
     recommended = outcome.decision.recommended
     return ProjectJourneyView(
+        stages=[_stage(row) for row in outcome.stages.stages],
+        current_stage=(outcome.stages.current.value
+                       if outcome.stages.current else None),
+        known=[KnownFactView(
+            key=row.key, label=row.label_ar if arabic else row.label_en,
+            value=row.value_ar if arabic else row.value_en, known=row.known)
+            for row in stage_model.known_facts(stage_facts)],
+        missing=[MissingItemView(
+            key=row.key, label=row.label_ar if arabic else row.label_en,
+            severity=row.severity)
+            for row in stage_model.missing_items(stage_facts, outcome.stages)],
         project_id=project_id, title=snapshot.title_ar,
         context_fingerprint=outcome.context_fingerprint,
         fingerprint_schema=outcome.snapshot_row.fingerprint_schema,

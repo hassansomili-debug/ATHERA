@@ -498,6 +498,7 @@ async def test_what_the_screen_shows_is_always_computed_from_the_current_state(t
     """
     from athera_api.db import tenant_session
     from athera_api.services.research_assessment import build_project_assessment
+    from athera_api.services.research_assessment import stage_reader
     from athera_api.services.research_assessment.orchestrator import fingerprint_of
 
     a = two_tenants["a"]
@@ -506,10 +507,17 @@ async def test_what_the_screen_shows_is_always_computed_from_the_current_state(t
     path = JOURNEY.format(pid=project_id)
 
     async def live_fingerprint() -> str:
+        """البصمةُ محسوبةً **الآن** من حال البحث — بكلّ ما تُشتقّ منه الرحلة.
+
+        ووقائعُ المراحل جزءٌ منها منذ `v2`: لولاها لَاختلفت هذه عن بصمة
+        الجواب بلا أن يكون شيءٌ قد حُفظ — فيفشل الفحصُ على سببٍ لا يخصّه.
+        """
         async with tenant_session(tid, uid) as session:
             snap = await build_project_assessment(
                 session, tenant_id=tid, project_id=project_id)
-            return fingerprint_of(snap)
+            facts = await stage_reader.read(
+                session, tenant_id=tid, project_id=project_id)
+            return fingerprint_of(snap, facts)
 
     async with _client(a) as http:
         before = (await http.get(path)).json()

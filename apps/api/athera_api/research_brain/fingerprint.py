@@ -44,14 +44,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from .rules import Assessment
 
 #: نسخةُ الصيغة. تتغيّر حين يتغيّر **ما يدخل** البصمة، فتُقادِم كلَّ ما
 #: بُني على الصيغة السابقة عمدًا — لأنّ تطابق بصمتين حُسبتا بصيغتين
 #: مختلفتين تطابقٌ بلا معنى.
-SCHEMA: str = "pubriva.brain.context.v1"
+#:
+#: و`v2` أضافت وقائعَ المراحل (`stage_facts`). والسببُ عطبٌ أمسكه فحصٌ على
+#: قاعدةٍ حيّة: خليّةُ مصفوفةٍ استُخرجت فتقدّمت الرحلةُ مرحلةً كاملة —
+#: **والبصمةُ لم تتغيّر**، لأنّ لقطةَ التقييم لا تقرأ مصفوفةَ الدراسات.
+#: فكانت البصمةُ تقول «لم يتغيّر شيءٌ ذو معنى» عن تغيّرٍ رآه الباحثُ بعينه.
+SCHEMA: str = "pubriva.brain.context.v2"
 
 
 def _entities(assessment: Assessment) -> list[str]:
@@ -109,7 +114,8 @@ def _sections(assessment: Assessment) -> dict[str, str]:
 
 
 def payload(assessment: Assessment, *, project_id: str,
-            contradiction_keys: Iterable[str] = ()) -> dict:
+            contradiction_keys: Iterable[str] = (),
+            stage_facts: Mapping[str, object] | None = None) -> dict:
     """المُدخلُ القانونيّ للبصمة — **مكشوفًا ليُقرأ عند اختلاف بصمتين**.
 
     بصمتان مختلفتان بلا سبيلٍ إلى معرفة ما اختلف تجعلان التشخيصَ تخمينًا.
@@ -127,15 +133,36 @@ def payload(assessment: Assessment, *, project_id: str,
         # التعارضُ المسجَّل جزءٌ من حال البحث: ظهورُه أو زوالُه تغيّرٌ
         # يُبنى عليه فعلٌ مقترح (§58).
         "contradictions": sorted(contradiction_keys),
+        # **وكلُّ ما تُشتقّ منه الرحلةُ يدخل البصمة.**
+        #
+        # وإلا قالت البصمةُ «لم يتغيّر شيء» عن تغيّرٍ نقل الباحثَ مرحلةً:
+        # لقطةُ التقييم تخدم القواعدَ العلمية ولا تقرأ مصفوفةَ الدراسات ولا
+        # الأدواتِ ولا المخطوطات، والرحلةُ تقرؤها كلَّها.
+        "stage_facts": _canonical_facts(stage_facts),
+    }
+
+
+def _canonical_facts(facts: Mapping[str, object] | None) -> dict[str, object]:
+    """وقائعُ المراحل مرتَّبةً بمفاتيحها — **ولا شيءَ غيرَ قابلٍ للتسلسل**.
+
+    فالقيمُ أعدادٌ وسلاسلُ وحالاتٌ فقط؛ وكائنٌ حيٌّ هنا يجعل البصمةَ تتغيّر
+    بعنوانه في الذاكرة.
+    """
+    if not facts:
+        return {}
+    return {
+        key: (sorted(value) if isinstance(value, (list, tuple, set)) else value)
+        for key, value in sorted(facts.items())
     }
 
 
 def of(assessment: Assessment, *, project_id: str,
-       contradiction_keys: Iterable[str] = ()) -> str:
+       contradiction_keys: Iterable[str] = (),
+       stage_facts: Mapping[str, object] | None = None) -> str:
     """بصمةُ لقطةٍ واحدة — ستّ وستون محرفًا من `sha256`."""
     canonical = json.dumps(
         payload(assessment, project_id=project_id,
-                contradiction_keys=contradiction_keys),
+                contradiction_keys=contradiction_keys, stage_facts=stage_facts),
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
