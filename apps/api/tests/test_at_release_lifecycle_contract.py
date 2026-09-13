@@ -224,3 +224,97 @@ def test_the_acceptance_spec_no_longer_requires_the_retired_card():
     for testid in ("research-journey", "journey-current-stage",
                    "journey-next-title", "journey-next-why", "journey-failed"):
         assert testid in spec, f"رحلةُ RC-0 غيرُ مفحوصةٍ في القبول: {testid}"
+
+
+# ═════════════ ٤ · ومشغّلُ الفحص يُثبَّت قبل أن يُنادى ═════════════
+#
+# **العطبُ الذي أسقط التشغيلة `34765368242`.**
+#
+# `@playwright/test` ليست في `apps/web/package.json` عن قصد — لا Node على
+# جهاز التطوير لإعادة توليد القفل، وإضافتُها بلا قفلٍ مطابق تكسر `npm ci`
+# في كلّ مهمّة. فيُثبِّتها كلُّ مشغّلٍ يحتاجها بـ`--no-save`.
+#
+# وسقطت هذه الخطوةُ من مشغّل القبول وحده. فخرج `npm run test:acceptance`
+# بـ`playwright: not found` ورمزِ ١٢٧ — **قبل أن يبلغ المنتجَ أصلًا**.
+# والأسوأُ أنّ الرسالةَ تبدو عطبَ منتجٍ لمن يقرأ العنوان وحده.
+
+#: السطرُ المتّبع في المستودع — والنسخةُ تطابق ما يعلنه Next.
+RUNNER_INSTALL = "npm install --no-save @playwright/test@^1.51.1"
+
+
+def _acceptance_steps() -> list[dict]:
+    doc = _load(ACCEPTANCE)
+    return doc["jobs"]["acceptance"]["steps"]
+
+
+def _index_of(steps: list[dict], needle: str) -> int:
+    """موضعُ أوّل خطوةٍ تُنفّذ `needle` — **بالبنية لا برقم سطر**.
+
+    فرقمُ السطر يتغيّر بأيّ تعليقٍ يُضاف، وحارسٌ يسقط على تعليقٍ يُعطَّل.
+    """
+    for i, step in enumerate(steps):
+        if needle in (step.get("run") or ""):
+            return i
+    return -1
+
+
+def test_the_acceptance_workflow_installs_the_pinned_test_runner():
+    """**ولا يُنادى مشغّلٌ لم يُثبَّت.**"""
+    steps = _acceptance_steps()
+    assert _index_of(steps, RUNNER_INSTALL) != -1, (
+        "مشغّلُ القبول لا يثبّت مشغّلَ الفحص — وهو العطبُ الذي أسقط "
+        f"34765368242. يلزم: {RUNNER_INSTALL}")
+
+
+def test_the_runner_version_matches_the_rest_of_the_repository():
+    """**ونسخةٌ واحدة في المستودع كلِّه.**
+
+    ولا تُستعمل `playwright@1.63.0` التي يجلبها `npx` عرضًا: تلك حزمةُ
+    تنزيلِ متصفّحات لا مشغّلُ فحص، وتثبيتُ نسخةٍ أخرى يُخرج ERESOLVE أو
+    يُشغّل الفحوصَ على مشغّلٍ لم تُجرَّب عليه.
+    """
+    pinned = {
+        path.name
+        for path in _workflow_files()
+        if RUNNER_INSTALL in path.read_text(encoding="utf-8")
+    }
+    assert {"ci.yml", "rc-e2e.yml", ACCEPTANCE.name} <= pinned, (
+        f"نسخةُ مشغّل الفحص ليست واحدة — المثبِّتون: {sorted(pinned)}")
+
+
+def test_the_acceptance_steps_run_in_a_workable_order():
+    """**والترتيبُ هو الشرط**: تركيبٌ، فمشغّل، فمتصفّح، ثمّ الرحلة.
+
+    ومشغّلٌ يُثبَّت بعد أن يُنادى لا ينفع، ومتصفّحٌ يُنزَّل قبل التركيب
+    يُنزَّل إلى شجرةٍ تُمحى.
+    """
+    steps = _acceptance_steps()
+    ci = _index_of(steps, "npm ci")
+    runner = _index_of(steps, RUNNER_INSTALL)
+    browser = _index_of(steps, "playwright install --with-deps chromium")
+    journey = _index_of(steps, "npm run test:acceptance")
+
+    for label, idx in (("npm ci", ci), ("runner", runner),
+                       ("chromium", browser), ("journey", journey)):
+        assert idx != -1, f"خطوةٌ مفقودة من مشغّل القبول: {label}"
+
+    assert ci < runner < browser < journey, (
+        "ترتيبُ خطوات القبول لا يعمل: "
+        f"npm ci={ci} · runner={runner} · chromium={browser} · journey={journey}")
+
+
+def test_the_test_runner_is_not_added_to_the_web_manifest():
+    """**والاتّفاقُ يبقى**: تُثبَّت عابرةً، ولا تدخل بيانَ الحزمة.
+
+    وإدخالُها بلا قفلٍ مطابق يكسر `npm ci` في كلّ مهمّة — وذاك أوسعُ ضررًا
+    من الخطوة الساقطة التي أُصلحت.
+    """
+    import json
+
+    manifest = json.loads(
+        (REPO / "apps" / "web" / "package.json").read_text(encoding="utf-8"))
+    for section in ("dependencies", "devDependencies", "peerDependencies",
+                    "optionalDependencies"):
+        found = [n for n in manifest.get(section, {}) if "playwright" in n.lower()]
+        assert found == [], (
+            f"`{section}` صارت تحمل {found} — والاتّفاق تثبيتٌ عابر في المشغّل")
