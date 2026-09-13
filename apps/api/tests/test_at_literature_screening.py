@@ -521,7 +521,11 @@ def test_every_message_key_these_screens_name_exists_in_both_locales():
     for page in (SCREEN / "screening" / "page.tsx", SCREEN / "matrix" / "page.tsx",
                  SCREEN / "page.tsx"):
         text = page.read_text(encoding="utf-8")
-        keys = set(re.findall(r't\(\s*"([a-zA-Z0-9_.]+)"\s*\)', text))
+        # **و`t(` تُطلب كلمةً لا لاحقة.** بلا الحدّ تلتقط كلَّ دالّةٍ
+        # تنتهي بالحرف نفسِه — `get("section")` تُقرأ `t("section")` —
+        # فيُطلب مفتاحُ ترجمةٍ لاسمِ معاملٍ في الرابط. وحارسٌ يعاقب على
+        # شيفرةٍ سليمة يُعطَّل ثمّ لا يحرس شيئًا.
+        keys = set(re.findall(r'(?<![A-Za-z0-9_])t\(\s*"([a-zA-Z0-9_.]+)"\s*\)', text))
         # والمفاتيح المخزَّنة في جداول الأسماء تُفحص كذلك — هي مفاتيح لا نصوص.
         keys |= set(re.findall(r'"([a-zA-Z]+\.[a-zA-Z0-9_]+)"', text))
         for key in sorted(keys):

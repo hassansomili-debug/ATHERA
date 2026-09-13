@@ -331,7 +331,39 @@ def test_missing_items_are_graded_not_piled_into_one_red_list():
     assert "idea" not in grades
 
 
-def test_every_stage_routes_somewhere_and_carries_the_project():
+def test_every_routable_stage_carries_a_real_project_path():
+    """**ووجهةٌ حقيقيةٌ أو لا وجهة** — ولا معرّفٌ غيرُ مستبدَل.
+
+    و`None` حالٌ مقصودة: مرحلةٌ لا تملك المنصّةُ أداةً تُنفّذها بعد لا
+    تَعِد بزرٍّ يفتح شيئًا. فتُفحص المستبدَلةُ وحدها.
+    """
     for row in derive().stages:
-        assert row.route and row.route.startswith("/")
+        if row.route is None:
+            continue
+        assert row.route.startswith("/")
         assert "{project_id}" not in row.route
+
+
+def test_the_references_stage_does_not_point_at_the_journey_page_itself():
+    """**ولا يعود الفعلُ بالباحث إلى مكانه.**
+
+    كانت وجهتُها `/portfolio/{id}` — وهي صفحةُ الرحلة التي يقف عليها.
+    """
+    route = derive(questions=1).by_key(s.StageKey.REFERENCES).route
+    assert route == f"/portfolio/{P}?section=literature"
+    assert route != f"/portfolio/{P}"
+
+
+def test_a_qualitative_analysis_has_no_route_until_the_platform_supports_it():
+    """**فرقٌ بين «هذا العملُ باقٍ» و«اضغط هنا لتفعله».**"""
+    qualitative = derive(questions=1, has_method_row=True,
+                         study_type="qualitative").by_key(s.StageKey.ANALYSIS)
+    assert qualitative.status is s.StageStatus.NOT_STARTED
+    assert qualitative.route is None
+    assert "لا أداةَ هنا" in qualitative.reason_ar
+
+    # **والمسارُ الكمّيّ يبلغ أداتَه** حين تتوفّر بياناتُه.
+    quantitative = derive(questions=1, has_method_row=True,
+                          study_type="quantitative", datasets=1,
+                          ).by_key(s.StageKey.ANALYSIS)
+    assert quantitative.route == "/analysis"

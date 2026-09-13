@@ -56,12 +56,15 @@ const OVERVIEW = {
 
 function stage(key: string, title: string, status: string, opts: {
   current?: boolean; reason?: string; summary?: string; blocking?: string[];
+  /** `null` صراحةً حين لا تملك المنصّةُ أداةً تُنفّذ هذا العمل بعد. */
+  route?: string | null;
 } = {}) {
   return {
     key, status, is_current: opts.current ?? false, title,
     reason: opts.reason ?? `سببُ حال ${title}.`,
     summary: opts.summary ?? "",
-    route: `/portfolio/${PROJECT}/thread`,
+    // **و`??` لا تصلح**: `null` وجهةٌ مقصودة يقولها الخادم.
+    route: "route" in opts ? opts.route : `/portfolio/${PROJECT}/thread`,
     blocking_reasons: opts.blocking ?? [],
   };
 }
@@ -98,7 +101,9 @@ function journeyPayload(overrides: Record<string, unknown> = {}) {
       { key: "instrument", label: "أداة الدراسة", severity: "optional" },
     ],
     recommended: {
-      action_key: "define_research_question", category: "foundation",
+      // **ومفتاحُ الفعل مفتاحُ المرحلة** — كما تُصدره الـAPI بعد توحيد
+      // صاحب القرار. ولا `define_research_question` من سجلٍّ سقط.
+      action_key: "idea", category: "idea",
       status: "recommended", title: "حدِّد سؤال البحث",
       reason: "لا سؤالَ بحثٍ مسجَّلٌ لهذا المشروع بعد، وعليه يُبنى ما بعده.",
       route: `/portfolio/${PROJECT}/thread`,
@@ -343,4 +348,136 @@ test("ز · بطاقةُ البحث لها فعلُ متابعةٍ واحدٌ و
     const cta = page.getByTestId(`project-continue-${PROJECT}`);
     await expect(cta).toHaveText("متابعة البحث");
     await expect(cta).toHaveAttribute("href", `/${AR}/portfolio/${PROJECT}`);
+  });
+
+// ═══════════ ح · الفعلُ الرئيس يبلغ أدواتٍ حقيقية ═══════════
+
+/** رحلةٌ مرحلتُها «المراجع» — كما يقولها الخادمُ لبحثٍ فيه سؤالٌ بلا مصادر. */
+function referencesJourney() {
+  return journeyPayload({
+    current_stage: "references",
+    stages: [
+      stage("idea", "الفكرة", "completed"),
+      stage("references", "المراجع", "not_started", { current: true }),
+      stage("literature", "الدراسات السابقة", "blocked",
+            { blocking: ["no_sources_linked"] }),
+      stage("synthesis", "التركيب والفجوة", "blocked",
+            { blocking: ["no_literature_read"] }),
+      stage("design", "تصميم البحث", "not_started"),
+      stage("instrument", "أداة الدراسة", "optional"),
+      stage("data", "البيانات", "optional"),
+      stage("analysis", "التحليل", "not_started"),
+      stage("paper", "الورقة", "not_started"),
+    ],
+    recommended: {
+      action_key: "references", category: "references", status: "recommended",
+      title: "أضف مراجع للبحث",
+      reason: "لا مصدرَ مربوطٌ بهذا البحث.",
+      // **وهذا هو موضعُ الإصلاح**: قسمُ المصادر لا صفحةُ الرحلة نفسُها.
+      route: `/portfolio/${PROJECT}?section=literature`,
+      blocking_reasons: [], requirements: [], evidence_refs: [],
+    },
+  });
+}
+
+test("ح · «أضف مراجع» يفتح أدواتِ المصادر لا الصفحةَ نفسَها | the CTA opens the real controls",
+  async ({ page }) => {
+    await seedSession(page);
+    await serve(page, { journey: referencesJourney() });
+    await page.goto(home(AR));
+
+    const cta = page.getByTestId("journey-primary-cta");
+    await expect(cta).toBeVisible();
+    await cta.click();
+
+    // **والوجهةُ تُفتح فعلًا** — لا يُكتفى بفحص `href`.
+    await expect(page).toHaveURL(/\?section=literature$/);
+    // وأدواتُ المصادر الحقيقية ظاهرةٌ بعد النقر.
+    await expect(
+      page.getByRole("heading", { name: "أضِف مرجعًا من مكتبتك" }),
+    ).toBeVisible();
+    // ولم تبقَ الرحلةُ معروضةً — أي أنّنا غادرنا «نظرة عامة» فعلًا.
+    await expect(page.getByTestId("research-journey")).toHaveCount(0);
+  });
+
+test("ح′ · والقسمُ يبقى بعد التحديث وبالرجوع | the section survives reload and Back",
+  async ({ page }) => {
+    await seedSession(page);
+    await serve(page, { journey: referencesJourney() });
+    await page.goto(`${home(AR)}?section=literature`);
+
+    // يبقى بعد تحميلٍ مباشرٍ للرابط.
+    await expect(
+      page.getByRole("heading", { name: "أضِف مرجعًا من مكتبتك" }),
+    ).toBeVisible();
+
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "أضِف مرجعًا من مكتبتك" }),
+    ).toBeVisible();
+
+    // ثمّ رجوعٌ إلى الرحلة، فتُعرض — ولا يُفقد المشروع.
+    await page.goto(home(AR));
+    await expect(page.getByTestId("research-journey")).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/\?section=literature$/);
+  });
+
+test("ح″ · وبالإنجليزية تبقى إنجليزية | the locale is preserved",
+  async ({ page }) => {
+    await seedSession(page);
+    await serve(page, { journey: referencesJourney() });
+    await page.goto(`${home(EN)}?section=literature`);
+
+    await expect(page).toHaveURL(new RegExp(`^.*/${EN}/portfolio/`));
+    await expect(page.locator("html")).toHaveAttribute("lang", EN);
+  });
+
+// ═══════════ ط · ولا فعلَ كاذبٌ لعملٍ لا تُنفّذه المنصّة ═══════════
+
+test("ط · تحليلٌ كيفيّ: تُقال الحالُ ولا يُعرض زرٌّ يَعِد بما لا يقع",
+  async ({ page }) => {
+    await seedSession(page);
+    await serve(page, {
+      journey: journeyPayload({
+        current_stage: "analysis",
+        stages: [
+          stage("idea", "الفكرة", "completed"),
+          stage("references", "المراجع", "completed"),
+          stage("literature", "الدراسات السابقة", "completed"),
+          stage("synthesis", "التركيب والفجوة", "completed"),
+          stage("design", "تصميم البحث", "completed"),
+          stage("instrument", "أداة الدراسة", "optional"),
+          stage("data", "البيانات", "optional"),
+          stage("analysis", "التحليل", "not_started", {
+            current: true,
+            // **ولا وجهة** — كما يقولها الخادمُ لهذه الحال بعينها.
+            route: null,
+            reason: "لم يبدأ التحليلُ بعد. ولا تُمثِّل المنصّةُ اليوم مادّةَ "
+                    + "البحث الكيفيّ، فلا أداةَ هنا تُنفّذ هذا العمل بعد.",
+          }),
+          stage("paper", "الورقة", "not_started"),
+        ],
+        recommended: {
+          action_key: "analysis", category: "analysis", status: "recommended",
+          title: "ابدأ التحليل",
+          reason: "لا تُمثِّل المنصّةُ اليوم مادّةَ البحث الكيفيّ، فلا أداةَ "
+                  + "هنا تُنفّذ هذا العمل بعد.",
+          // **ولا وجهة** — والخادمُ يقولها `null`.
+          route: null,
+          blocking_reasons: [], requirements: [], evidence_refs: [],
+        },
+      }),
+    });
+    await page.goto(home(AR));
+
+    // المرحلةُ الحاليّةُ التحليل، ولا قفزَ إلى الورقة.
+    await expect(page.getByTestId("journey-current-stage")).toHaveText("التحليل");
+    // والسببُ يُقال.
+    await expect(page.getByTestId("journey-next-why"))
+      .toContainText("لا أداةَ هنا تُنفّذ هذا العمل بعد");
+    // **ولا زرَّ يفتح أداةً لا تقبل هذه المادّة.**
+    await expect(page.getByTestId("journey-primary-cta")).toHaveCount(0);
+    // ولا رابطَ في بطاقة المرحلة يقصد أداةَ التحليل.
+    await expect(page.getByTestId("stage-link-analysis")).toHaveCount(0);
   });

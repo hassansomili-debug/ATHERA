@@ -669,3 +669,151 @@ def test_no_generated_runner_artifact_is_tracked():
 
     leaked = [path for path in tracked if "test-results/" in path]
     assert leaked == [], f"آثارُ مشغّلٍ متتبَّعة: {leaked}"
+
+# ══════════ م · عقدُ الأفعال: وجهةٌ حقيقية، وحالٌ لا تُطوى ══════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_references_action_points_at_the_sources_not_at_the_journey_page(
+        two_tenants):
+    """**والفعلُ يبلغ أداةً، لا يعيد الباحثَ إلى مكانه.**
+
+    كان يقصد `/portfolio/{id}` — وهي صفحةُ الرحلة التي يقف عليها أصلًا،
+    فينقر «أضف مراجع» فلا يتغيّر شيء. وأدواتُ المصادر في قسم «الدراسات
+    السابقة» من الصفحة نفسِها، فيُقصد بعينه.
+    """
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid)
+    await _question(tid, uid, pid)
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    assert body["current_stage"] == "references"
+    route = body["recommended"]["route"]
+    assert route == f"/portfolio/{pid}?section=literature"
+    # **ولا يساوي صفحةَ الرحلة نفسَها.**
+    assert route != f"/portfolio/{pid}"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_qualitative_analysis_offers_no_route_to_a_tool_that_cannot_run_it(
+        two_tenants):
+    """**وفرقٌ بين «هذا العملُ باقٍ» و«اضغط هنا لتفعله».**
+
+    وتشغيلةُ التحليل في هذه المنصّة تلزمها نسخةُ مجموعةِ بيانات
+    (`analysis_runs.dataset_version_id` غيرُ قابلٍ للإفراغ)، فأداةُ التحليل
+    لا تقبل مادّةً كيفية. فلا وجهةَ تُعرض.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.models.synthesis import GapCandidate  # noqa: F401
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid, title="دراسةٌ كيفية")
+    await _question(tid, uid, pid)
+    src = await _source(tid, uid, pid, included=True)
+    await _matrix_cell(tid, uid, pid, src)
+    async with tenant_session(tid, uid) as session:
+        session.add(_gap(tid, pid, "context_gap", "فجوةٌ سياقية."))
+    await _method(tid, uid, pid, study_type="qualitative")
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    stages = {row["key"]: row for row in body["stages"]}
+    assert body["current_stage"] == "analysis"
+    # **ولا وجهةَ في المرحلة ولا في الفعل.**
+    assert stages["analysis"]["route"] is None
+    assert body["recommended"]["route"] is None
+    # ويُقال السببُ بدل الوعد.
+    assert "لا أداةَ هنا" in body["recommended"]["reason"]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_quantitative_analysis_keeps_its_real_route(two_tenants):
+    """**والمسارُ الكمّيّ يبلغ أداتَه** — فما سقط هو الوعدُ الكاذب وحدَه."""
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid)
+    await _question(tid, uid, pid)
+    await _method(tid, uid, pid, study_type="quantitative")
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    stages = {row["key"]: row for row in body["stages"]}
+    assert stages["analysis"]["route"] == "/analysis"
+    assert stages["data"]["route"] == "/analysis"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_optional_stage_stays_optional_in_the_actions(two_tenants):
+    """**والاختياريُّ لا يُطوى في «موصًى به».**
+
+    كان الفعلُ يُكتب `blocked if blocking else recommended`، فيصير
+    «أضف بيانات» في بحثٍ كيفيّ موصًى بها — وهي نافعةٌ لا لازمة. وتغييرُ
+    الرتبة تغييرُ معنًى: ما لا يلزم يبدو ناقصًا.
+    """
+    from athera_api.db import tenant_session
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid, title="دراسةٌ كيفية")
+    await _question(tid, uid, pid)
+    src = await _source(tid, uid, pid, included=True)
+    await _matrix_cell(tid, uid, pid, src)
+    async with tenant_session(tid, uid) as session:
+        session.add(_gap(tid, pid, "context_gap", "فجوةٌ سياقية."))
+    await _method(tid, uid, pid, study_type="qualitative")
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    actions = {row["action_key"]: row for row in body["actions"]}
+    stages = {row["key"]: row for row in body["stages"]}
+
+    for key in ("instrument", "data"):
+        assert stages[key]["status"] == "optional"
+        assert actions[key]["status"] == "optional", (
+            f"الاختياريُّ {key} صار «{actions[key]['status']}» في الأفعال")
+
+    # **والمكتملُ ليس فعلًا يُقترح.**
+    for key, row in stages.items():
+        if row["status"] == "completed":
+            assert key not in actions
+    # ولا تظهر حالٌ لم تُعلَن في المراحل.
+    for row in actions.values():
+        assert row["status"] in ("optional", "recommended", "blocked")
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_blocked_stage_is_shown_with_its_reason_but_never_offered_as_a_step(
+        two_tenants):
+    """**والمتوقّفةُ تُعرض ولا تُقترح.**
+
+    فسببُ إغلاقها مرحلةٌ قبلها، ودعوتُها «خطوةً أخرى» دعوةٌ إلى بابٍ مغلق.
+    لكنّ حالَها وسببَها وما يلزم لرفعه يصل كلُّه في `stages` — فالمنعُ
+    يُسمّى ولا يُخفى (§44).
+    """
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid)
+    await _question(tid, uid, pid)
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    stages = {row["key"]: row for row in body["stages"]}
+    assert stages["literature"]["status"] == "blocked"
+    assert stages["literature"]["blocking_reasons"] == ["no_sources_linked"]
+    assert stages["literature"]["reason"].strip()
+
+    # **ولا تُعرض فعلًا يُدعى إليه.**
+    assert "literature" not in [row["action_key"] for row in body["actions"]]

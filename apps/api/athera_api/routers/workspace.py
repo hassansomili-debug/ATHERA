@@ -1137,6 +1137,18 @@ async def verify_matrix_cell(
 
 # ═══════════════ الذكاء البحثيّ — أين يقف البحث وما التالي ═══════════════
 
+#: حالُ المرحلة كما تُنشر في الفعل — **ولا تُطوى الاختياريّةُ في «موصًى به»**.
+#:
+#: و`COMPLETED` لا تظهر هنا أصلًا: `JourneyStages.secondary` تستبعدها،
+#: فالمكتملُ ليس فعلًا يُقترح.
+_ACTION_STATUS: dict[stage_model.StageStatus, str] = {
+    stage_model.StageStatus.OPTIONAL: "optional",
+    stage_model.StageStatus.BLOCKED: "blocked",
+    stage_model.StageStatus.NEEDS_ACTION: "recommended",
+    stage_model.StageStatus.NOT_STARTED: "recommended",
+    stage_model.StageStatus.COMPLETED: "completed",
+}
+
 #: ما لا تعرفه هذه القراءة — ويُقال للباحث بجانب الجواب لا في وثيقةٍ بعيدة.
 _JOURNEY_LIMITS_AR = (
     "هذه قراءةٌ لما سُجِّل في هذا البحث داخل PUBRIVA وحدَه. وما أنجزتَه "
@@ -1205,10 +1217,16 @@ async def project_journey(
 
         و`action_key` مفتاحُ المرحلة نفسِه: فلا يمكن أن يقول الفعلُ شيئًا
         وتقول المرحلةُ غيرَه، لأنّهما صارا شيئًا واحدًا بالبناء.
+
+        **وحالُ المرحلة تعبُر كما هي.** كان هذا يكتب
+        `blocked if blocking else recommended`، فيصير الاختياريُّ
+        **موصًى به** في الجواب — وذاك تغييرُ معنًى لا اختصارُ صياغة:
+        «أضف بيانات» في بحثٍ كيفيّ نافعةٌ ولا تلزم، وعرضُها موصًى بها
+        يجعل ما لا يلزم يبدو ناقصًا.
         """
         return JourneyActionView(
             action_key=row.key.value, category=row.key.value,
-            status="blocked" if row.blocking_reasons else "recommended",
+            status=_ACTION_STATUS[row.status],
             title=row.cta_ar if arabic else row.cta_en,
             reason=row.reason_ar if arabic else row.reason_en,
             route=row.route,

@@ -90,7 +90,11 @@ class StageStatus(str, Enum):
 #: **ولا تُبنى الوحدةُ داخل الرحلة**: الرحلةُ تدلّ، والعملُ يقع في أداته.
 ROUTE: Final[dict[StageKey, str]] = {
     StageKey.IDEA: "/portfolio/{project_id}/thread",
-    StageKey.REFERENCES: "/portfolio/{project_id}",
+    # **وقسمُ المصادر لا صفحةُ الرحلة نفسُها.** كان يقصد
+    # `/portfolio/{project_id}` — وهي الصفحةُ التي يقف عليها الباحثُ أصلًا،
+    # فينقر «أضف مراجع» فيعود إلى مكانه. وأدواتُ المصادر قائمةٌ في قسم
+    # «الدراسات السابقة» من الصفحة نفسِها، فيُقصد بعينه.
+    StageKey.REFERENCES: "/portfolio/{project_id}?section=literature",
     StageKey.LITERATURE: "/portfolio/{project_id}/matrix",
     StageKey.SYNTHESIS: "/portfolio/{project_id}/gaps",
     StageKey.DESIGN: "/portfolio/{project_id}/thread",
@@ -262,6 +266,12 @@ class _Verdict:
     summary_ar: str = ""
     summary_en: str = ""
     blocking: tuple[str, ...] = ()
+    #: **ولا وجهةَ حين لا تستطيع المنصّةُ تنفيذ العمل بعد.**
+    #:
+    #: فرقٌ بين «هذا العملُ باقٍ عليك» و«اضغط هنا لتفعله»: الثانيةُ وعدٌ
+    #: بمسارٍ قائم. ومرحلةٌ صادقةٌ في نصّها تقول «لا نُمثّل هذه المادّة
+    #: بعد» ثمّ تعرض زرًّا يفتح أداةً لا تقبلها تنقض نصَّها بزرّها.
+    routable: bool = True
 
 
 def _idea(f: StageFacts) -> _Verdict:
@@ -473,14 +483,19 @@ def _analysis(f: StageFacts) -> _Verdict:
                 "No usable data is available to analyse.",
                 blocking=(NEEDS_DATA,))
         if f.analysis_runs == 0:
+            # **ولا وجهةَ لهذا الفعل.** تشغيلةُ التحليل في هذه المنصّة
+            # تلزمها نسخةُ مجموعةِ بيانات (`analysis_runs.dataset_version_id`
+            # غيرُ قابلٍ للإفراغ)، فأداةُ التحليل لا تقبل مادّةً كيفية. وزرٌّ
+            # يقول «ابدأ التحليل» ويفتحها يَعِد بما لا يقع.
             return _Verdict(
                 StageStatus.NOT_STARTED,
                 ("لم يبدأ التحليلُ بعد. ولا تُمثِّل المنصّةُ اليوم مادّةَ "
                  "البحث الكيفيّ — كالمقابلات والوثائق — كما تُمثّل مجموعاتِ "
-                 "البيانات، فلا يُحتسب ما جرى منه خارجها."),
+                 "البيانات، فلا أداةَ هنا تُنفّذ هذا العمل بعد."),
                 ("Analysis has not started. PUBRIVA does not yet model qualitative "
                  "material — interviews, documents — the way it models datasets, so "
-                 "work done outside it is not counted here."))
+                 "no tool here can carry out this work yet."),
+                routable=False)
     if f.analysis_runs == 0:
         return _Verdict(
             StageStatus.NOT_STARTED,
@@ -631,7 +646,8 @@ def derive(facts: StageFacts, *, project_id: str) -> JourneyStages:
             cta_ar=CTA[key][0], cta_en=CTA[key][1],
             reason_ar=verdict.why_ar, reason_en=verdict.why_en,
             summary_ar=verdict.summary_ar, summary_en=verdict.summary_en,
-            route=ROUTE[key].replace("{project_id}", project_id),
+            route=(ROUTE[key].replace("{project_id}", project_id)
+                   if verdict.routable else None),
             blocking_reasons=verdict.blocking))
 
     return JourneyStages(stages=tuple(judged), current=current)
