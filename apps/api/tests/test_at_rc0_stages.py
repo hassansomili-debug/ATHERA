@@ -145,12 +145,23 @@ def test_a_finding_is_never_implied_without_analysis_output():
                      analysis_outputs=3, findings=2) is s.StageStatus.COMPLETED
 
 
-def test_analysis_is_blocked_without_data_and_says_so():
-    """**§44 — المنعُ يُسمّى**، ومعه ما يلزم لرفعه."""
-    stage = derive(questions=1).by_key(s.StageKey.ANALYSIS)
-    assert stage.status is s.StageStatus.BLOCKED
-    assert stage.blocking_reasons == (s.NEEDS_DATA,)
-    assert stage.reason_ar.strip()
+def test_analysis_is_blocked_without_data_only_on_the_quantitative_path():
+    """**§44 — المنعُ يُسمّى**، ومعه ما يلزم لرفعه.
+
+    **والحجبُ يخصّ المسارَ الكمّيّ وحدَه.** فبحثٌ لم يُسجَّل منهجُه — أو
+    سُجّل كيفيًّا — لا يُحجب تحليلُه بحجّةِ مجموعةِ بياناتٍ لا تُمثِّل
+    المنصّةُ مادّتَه بها بعد.
+    """
+    quantitative = derive(questions=1, has_method_row=True,
+                          study_type="quantitative").by_key(s.StageKey.ANALYSIS)
+    assert quantitative.status is s.StageStatus.BLOCKED
+    assert quantitative.blocking_reasons == (s.NEEDS_DATA,)
+    assert quantitative.reason_ar.strip()
+
+    # ولا منهجَ مسجَّل ⇒ لا حجب، ولا ادّعاءَ تمام.
+    unknown = derive(questions=1).by_key(s.StageKey.ANALYSIS)
+    assert unknown.status is s.StageStatus.NOT_STARTED
+    assert unknown.blocking_reasons == ()
 
 
 # ═════════════════ د · ولا يُفترض منهجٌ (§32، §34، §51) ═════════════════
@@ -194,9 +205,14 @@ def test_a_qualitative_project_is_not_blocked_on_data():
                  matrix_sources=2, gaps=1)
     assert out.by_key(s.StageKey.DATA).status is s.StageStatus.OPTIONAL
     assert out.by_key(s.StageKey.INSTRUMENT).status is s.StageStatus.OPTIONAL
-    # فالمرحلةُ الحاليّة تتجاوزهما إلى ما يلزم فعلًا — والتحليلُ متوقّفٌ
-    # بلا بيانات، فلا يُدعى إليه.
-    assert out.current is s.StageKey.PAPER
+
+    # **ولا قفزَ إلى الورقة.** كان التحليلُ يُحجب لغياب مجموعةِ بيانات
+    # بينما البياناتُ اختياريّة — والاثنتان معًا لا تستقيمان، وكانت
+    # الرحلةُ تتخطّى التحليلَ كأنّه لا يلزم دراسةً كيفية.
+    analysis = out.by_key(s.StageKey.ANALYSIS)
+    assert analysis.status is s.StageStatus.NOT_STARTED
+    assert analysis.blocking_reasons == ()
+    assert out.current is s.StageKey.ANALYSIS
 
 
 # ═════════════════ هـ · حتميّةٌ، ومرحلةٌ حاليّة واحدة (§46، §101) ═════════════════
@@ -291,13 +307,15 @@ def test_no_thesis_vocabulary_anywhere_in_the_journey():
 def test_a_blocked_stage_cannot_exist_without_a_named_reason():
     with pytest.raises(ValueError, match="بلا سببٍ مسمّى"):
         s.Stage(key=s.StageKey.DATA, status=s.StageStatus.BLOCKED,
-                title_ar="ع", title_en="x", reason_ar="ع", reason_en="x")
+                title_ar="ع", title_en="x", reason_ar="ع", reason_en="x",
+                cta_ar="ع", cta_en="x")
 
 
 def test_reasons_may_not_be_attached_to_an_unblocked_stage():
     with pytest.raises(ValueError, match="أسبابُ منعٍ"):
         s.Stage(key=s.StageKey.DATA, status=s.StageStatus.COMPLETED,
                 title_ar="ع", title_en="x", reason_ar="ع", reason_en="x",
+                cta_ar="ع", cta_en="x",
                 blocking_reasons=("no_data_available",))
 
 

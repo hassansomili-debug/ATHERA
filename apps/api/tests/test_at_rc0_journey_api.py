@@ -129,6 +129,29 @@ async def _manuscript(tid, uid, pid, *, with_text: bool, approved: bool = False)
             await session.flush()
 
 
+
+
+def _gap(tid, pid, gap_type: str, text: str):
+    """فجوةٌ بحثية بحقولها الإلزامية — **وكلُّها تقول من أين جاءت**.
+
+    والقيدُ في القاعدة يفرض «كم مصدرًا نُظر فيه» و«ما حدودُ ما نعرف»: فجوةٌ
+    بلا هذين دعوى بلا سند.
+    """
+    from athera_api.models.synthesis import GapCandidate
+
+    return GapCandidate(
+        tenant_id=tid, project_id=pid, gap_type=gap_type,
+        description_ar=text, why_suggested_ar="لم تتناولها الدراساتُ المقروءة.",
+        # **ومدى البحث يسمّي فهارسَه** — وإلا فالدعوى بلا حدّ (قيدٌ في القاعدة).
+        sources_considered=2,
+        search_scope={"indexes_searched": ["project_sources"]},
+        source_scope_distribution={"full_text": 2},
+        known_limitations_ar="قراءةٌ محدودةٌ بعددِ ما أُدرج.",
+        strength="emerging_pattern", generation_method="deterministic",
+        # **ووقتُ التوليد إلزاميّ**: كشفٌ بلا وقتٍ لا يُعرف أقديمٌ هو أم جديد.
+        generated_at=dt.datetime.now(dt.UTC), status="generated")
+
+
 # ═════════════════ أ · بحثٌ خاوٍ (§89) ═════════════════
 
 
@@ -433,3 +456,216 @@ async def test_the_journey_speaks_both_languages_completely(two_tenants):
         assert ar["title"] and en["title"] and ar["title"] != en["title"]
         assert ar["reason"] and en["reason"]
     assert english["stages"][0]["title"] == "Idea"
+
+# ══════════ ي · رحلةٌ موحَّدة لا تخالف نفسَها ══════════
+#
+# **العطبُ الذي تحرسه هذه الحزمة، ويراه الباحثُ بعينه:**
+#
+#     المرحلة الحالية : المراجع
+#     والزرُّ يقول    : حدِّد المنهج
+#
+# وسببُه أنّ للقرار كان محرّكان: المراحلُ تقول أين هو، وسجلُّ قواعدَ آخر
+# يرتّب «التالي» بأولوياتٍ مستقلّة. ومحرّكان لا يُصلَحان بموازنةٍ بينهما،
+# بل بأن يبقى واحد — فصار الفعلُ الرئيس **نداءَ المرحلة الحاليّة** بالبناء.
+
+
+def _primary(body) -> str:
+    """مفتاحُ الفعل الرئيس — وهو مفتاحُ المرحلة نفسِه بعد التوحيد."""
+    return body["recommended"]["action_key"]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_question_without_sources_points_at_references_not_the_method(two_tenants):
+    """**أ · الحالةُ المسمّاة في المراجعة بعينها.**
+
+    سؤالٌ موجود، ولا مصادر ⇒ المرحلة «المراجع»، والفعلُ «المراجع».
+    **ولا `select_method`** — وهو ما كان يقوله الزرُّ قبل التوحيد.
+    """
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid)
+    await _question(tid, uid, pid)
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    assert body["current_stage"] == "references"
+    assert _primary(body) == "references"
+    assert _primary(body) != "select_method"
+    # وعنوانُ الفعل نداءٌ لا اسمُ مرحلة.
+    assert body["recommended"]["title"] == "أضف مراجع للبحث"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_included_sources_without_literature_point_at_literature(two_tenants):
+    """**ب · مصادرُ مُدرَجةٌ ولا قراءة ⇒ الدراساتُ السابقة.**"""
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid)
+    await _question(tid, uid, pid)
+    await _source(tid, uid, pid, included=True)
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    assert body["current_stage"] == "literature"
+    assert _primary(body) == "literature"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_literature_and_gap_without_method_point_at_the_design(two_tenants):
+    """**ج · دراساتٌ وفجوةٌ ولا منهج ⇒ تصميمُ البحث.**"""
+    from athera_api.db import tenant_session
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid)
+    await _question(tid, uid, pid)
+    src = await _source(tid, uid, pid, included=True)
+    await _matrix_cell(tid, uid, pid, src)
+    async with tenant_session(tid, uid) as session:
+        session.add(_gap(tid, pid, "population_gap", "فجوةٌ في مجتمع الدراسة."))
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    assert body["current_stage"] == "design"
+    assert _primary(body) == "design"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_primary_action_always_matches_the_current_stage(two_tenants):
+    """**والتطابقُ بنيويّ لا اتفاقيّ** — يُفحص على كلّ حالٍ تُبنى هنا."""
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid)
+    path = JOURNEY.format(pid=pid)
+
+    async with _client(a) as http:
+        seen = [(await http.get(path)).json()]
+        await _question(tid, uid, pid)
+        seen.append((await http.get(path)).json())
+        src = await _source(tid, uid, pid, included=True)
+        seen.append((await http.get(path)).json())
+        await _matrix_cell(tid, uid, pid, src)
+        seen.append((await http.get(path)).json())
+        await _method(tid, uid, pid, study_type="quantitative")
+        seen.append((await http.get(path)).json())
+
+    for body in seen:
+        assert _primary(body) == body["current_stage"], (
+            f"الفعلُ {_primary(body)} يخالف المرحلة {body['current_stage']}")
+        # **والخطواتُ الأخرى لا تُعيد الحاليّة.**
+        assert body["current_stage"] not in [
+            row["action_key"] for row in body["actions"]]
+
+
+# ══════════ ك · المنهجُ الكيفيّ لا يُحجب بأداةٍ كمّية ══════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_qualitative_project_does_not_skip_analysis_to_reach_the_paper(
+        two_tenants):
+    """**د · والتناقضُ الذي كان: البياناتُ اختياريّة والتحليلُ متوقّفٌ لغيابها.**
+
+    فكانت الرحلةُ تقفز من تصميم البحث إلى الورقة، كأنّ التحليلَ لا يلزم
+    دراسةً كيفية. والعلاجُ صدقٌ عن قدرة المنصّة: التحليلُ **لم يبدأ** — لا
+    متوقّفًا بحجّةِ أداةٍ كمّية، ولا مكتملًا، ولا اختياريًّا يُتخطّى.
+    """
+    from athera_api.db import tenant_session
+
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid, title="دراسةٌ كيفية")
+    await _question(tid, uid, pid)
+    src = await _source(tid, uid, pid, included=True)
+    await _matrix_cell(tid, uid, pid, src)
+    async with tenant_session(tid, uid) as session:
+        session.add(_gap(tid, pid, "context_gap", "فجوةٌ سياقية."))
+    await _method(tid, uid, pid, study_type="qualitative")
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    stages = {row["key"]: row for row in body["stages"]}
+
+    # ولا أداةَ تُشترط، ولا مجموعةَ بياناتٍ كمّية.
+    assert stages["instrument"]["status"] == "optional"
+    assert stages["data"]["status"] == "optional"
+
+    # **ولا يُحجب التحليلُ لغياب مجموعة بيانات.**
+    assert stages["analysis"]["status"] == "not_started"
+    assert stages["analysis"]["blocking_reasons"] == []
+    # ولا يُدَّعى تمامُه.
+    assert stages["analysis"]["status"] != "completed"
+    # **ولا قفزَ إلى الورقة.**
+    assert body["current_stage"] == "analysis"
+    assert _primary(body) == "analysis"
+    # ويُقال بصدقٍ إنّ المنصّةَ لا تُمثّل هذه المادّة بعد.
+    assert "لا تُمثِّل المنصّةُ" in stages["analysis"]["reason"]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_quantitative_path_still_requires_data_before_analysis(two_tenants):
+    """**هـ · والمسارُ الكمّيّ يبقى كما هو** — لا تحليلَ بلا بيانات."""
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid, title="دراسةٌ كمّية")
+    await _question(tid, uid, pid)
+    await _method(tid, uid, pid, study_type="quantitative")
+
+    async with _client(a) as http:
+        body = (await http.get(JOURNEY.format(pid=pid))).json()
+
+    stages = {row["key"]: row for row in body["stages"]}
+    assert stages["instrument"]["status"] == "not_started"
+    assert stages["data"]["status"] == "not_started"
+    assert stages["analysis"]["status"] == "blocked"
+    assert stages["analysis"]["blocking_reasons"] == ["no_data_available"]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_the_same_state_gives_the_same_stage_and_the_same_primary(two_tenants):
+    """**و · حتميّةٌ كاملة** — المرحلةُ والفعلُ معًا."""
+    a = two_tenants["a"]
+    tid, uid = a["tenant_id"], a["user_id"]
+    pid = await _project(tid, uid)
+    await _question(tid, uid, pid)
+
+    seen = set()
+    async with _client(a) as http:
+        for _ in range(5):
+            body = (await http.get(JOURNEY.format(pid=pid))).json()
+            seen.add((body["current_stage"], _primary(body),
+                      tuple(r["action_key"] for r in body["actions"])))
+    assert len(seen) == 1
+
+
+# ══════════ ل · ولا أثرَ مشغّلٍ مُتتبَّع ══════════
+
+
+def test_no_generated_runner_artifact_is_tracked():
+    """**ز · حالُ مشغّلٍ ليست مصدرًا يُراجَع.**
+
+    وقد تسرّب `apps/api/test-results/.last-run.json` إلى طلبِ دمجٍ يحمل
+    `"status": "failed"` من تشغيلٍ محلّيّ عابر — تُقرأ في المراجعة إخفاقًا
+    قائمًا في الفرع.
+    """
+    import subprocess
+
+    root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, check=True).stdout.strip()
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=root, capture_output=True, text=True,
+        check=True).stdout.splitlines()
+
+    leaked = [path for path in tracked if "test-results/" in path]
+    assert leaked == [], f"آثارُ مشغّلٍ متتبَّعة: {leaked}"

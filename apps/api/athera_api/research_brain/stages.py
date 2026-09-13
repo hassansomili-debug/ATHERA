@@ -113,6 +113,22 @@ TITLES: Final[dict[StageKey, tuple[str, str]]] = {
     StageKey.PAPER: ("الورقة", "Paper"),
 }
 
+#: **نداءُ الفعل لكلّ مرحلة** — فعلٌ يُطلب لا اسمُ مرحلةٍ يُعاد.
+#:
+#: والباحثُ يُقال له «أضف مراجع» لا «المراجع»: الاسمُ يصف موضعًا، والنداءُ
+#: يقول ما يفعل. وهو ما يظهر في الفعل الرئيس تحت «الخطوة التالية».
+CTA: Final[dict[StageKey, tuple[str, str]]] = {
+    StageKey.IDEA: ("حدِّد سؤال البحث", "Define the research question"),
+    StageKey.REFERENCES: ("أضف مراجع للبحث", "Add references"),
+    StageKey.LITERATURE: ("راجِع الدراسات السابقة", "Review the literature"),
+    StageKey.SYNTHESIS: ("استخرج الفجوة البحثية", "Identify the research gap"),
+    StageKey.DESIGN: ("ابدأ تصميم البحث", "Start the research design"),
+    StageKey.INSTRUMENT: ("أنشئ أداة الدراسة", "Create the instrument"),
+    StageKey.DATA: ("أضف بيانات البحث", "Add your research data"),
+    StageKey.ANALYSIS: ("ابدأ التحليل", "Start the analysis"),
+    StageKey.PAPER: ("ابدأ كتابة الورقة", "Start writing the paper"),
+}
+
 #: رموزُ المنع — ثابتةٌ للآلة، وتُترجَم في طبقة العرض (§69).
 NEEDS_QUESTION: Final = "research_question_missing"
 NEEDS_SOURCES: Final = "no_sources_linked"
@@ -220,6 +236,9 @@ class Stage(BaseModel):
 
     #: **هنا يقف الباحثُ الآن** — علمٌ مستقلّ عن الحال لا بديلٌ عنها.
     is_current: bool = False
+    #: نداءُ الفعل — «أضف مراجع» لا «المراجع».
+    cta_ar: str = Field(min_length=1)
+    cta_en: str = Field(min_length=1)
 
     route: str | None = None
     #: رموزُ ما يمنع — تُترجَم في طبقة العرض، ومع `BLOCKED` وحدها.
@@ -432,13 +451,36 @@ def _analysis(f: StageFacts) -> _Verdict:
 
     وهذا أخطرُ ثابتٍ في هذا الملفّ: منظومةٌ تعرض «نتائج» بلا مخرَجِ تحليلٍ
     يُشتقّ منه تُعلّم الباحثَ أن يبني ورقةً على رقمٍ لا أصلَ له.
+
+    ## والحجبُ على «مجموعة بيانات» يخصّ المسارَ الكمّيّ وحدَه
+
+    كان هذا يحجب كلَّ تحليلٍ بلا `datasets`، فوقع تناقضٌ في بحثٍ كيفيّ:
+    مرحلةُ البيانات **اختياريّة** ومرحلةُ التحليل **متوقّفةٌ لغياب
+    البيانات** — والاثنتان معًا لا تستقيمان. وأسوأُ أثرِه أنّ الرحلةَ كانت
+    تقفز من تصميم البحث إلى الورقة، كأنّ التحليلَ لا يلزم دراسةً كيفية.
+
+    **والعلاجُ صدقٌ عن القدرة لا نموذجٌ جديد**: المنصّةُ اليوم تُمثّل مادّةَ
+    البحث `Dataset` في المسار الكمّيّ، ولا تُمثّل المقابلاتِ والوثائقَ بعد.
+    فالتحليلُ في بحثٍ كيفيّ **لم يبدأ** — لا متوقّفًا بحجّةِ أداةٍ كمّية،
+    ولا مكتملًا، ولا اختياريًّا يُتخطّى.
     """
     if f.datasets == 0:
-        return _Verdict(
-            StageStatus.BLOCKED,
-            "لا بياناتٍ صالحةً للتحليل.",
-            "No usable data is available to analyse.",
-            blocking=(NEEDS_DATA,))
+        if f.measurement_expected:
+            # المسارُ الكمّيّ: لا تحليلَ بلا بياناتٍ فعلًا.
+            return _Verdict(
+                StageStatus.BLOCKED,
+                "لا بياناتٍ صالحةً للتحليل.",
+                "No usable data is available to analyse.",
+                blocking=(NEEDS_DATA,))
+        if f.analysis_runs == 0:
+            return _Verdict(
+                StageStatus.NOT_STARTED,
+                ("لم يبدأ التحليلُ بعد. ولا تُمثِّل المنصّةُ اليوم مادّةَ "
+                 "البحث الكيفيّ — كالمقابلات والوثائق — كما تُمثّل مجموعاتِ "
+                 "البيانات، فلا يُحتسب ما جرى منه خارجها."),
+                ("Analysis has not started. PUBRIVA does not yet model qualitative "
+                 "material — interviews, documents — the way it models datasets, so "
+                 "work done outside it is not counted here."))
     if f.analysis_runs == 0:
         return _Verdict(
             StageStatus.NOT_STARTED,
@@ -518,6 +560,36 @@ class JourneyStages:
     stages: tuple[Stage, ...]
     current: StageKey | None
 
+    @property
+    def primary(self) -> Stage | None:
+        """**الفعلُ الرئيس — من المرحلة الحاليّة، ولا مصدرَ ثانٍ له.**
+
+        وكان هذا موضعَ تناقضٍ حقيقيّ: تقول الشاشةُ «المرحلة: المراجع»
+        ويقول زرُّها «حدِّد المنهج» — لأنّ سجلَّ قواعدَ آخر كان يرتّب
+        الأفعال بأولوياتٍ مستقلّةٍ عن ترتيب المراحل. ورحلةٌ موحَّدة لا
+        تخالف نفسَها.
+
+        فصار الفعلُ الرئيس **هو نداءَ المرحلة الحاليّة** بالبناء: لا يمكن
+        أن يفترقا لأنّهما شيءٌ واحد.
+        """
+        for row in self.stages:
+            if row.is_current:
+                return row
+        return None
+
+    @property
+    def secondary(self) -> tuple[Stage, ...]:
+        """خطواتٌ أخرى مفتوحة — **بترتيب المراحل نفسِه**، بلا الحاليّة.
+
+        والاختياريّةُ منها تُعرض ولا تُقدَّم، والمتوقّفةُ لا تُعرض فعلًا
+        يُدعى إليه.
+        """
+        return tuple(
+            row for row in self.stages
+            if not row.is_current
+            and row.status in (StageStatus.NEEDS_ACTION, StageStatus.NOT_STARTED,
+                               StageStatus.OPTIONAL))
+
     def by_key(self, key: StageKey) -> Stage:
         for row in self.stages:
             if row.key is key:
@@ -556,6 +628,7 @@ def derive(facts: StageFacts, *, project_id: str) -> JourneyStages:
         judged.append(Stage(
             key=key, status=status, is_current=here,
             title_ar=TITLES[key][0], title_en=TITLES[key][1],
+            cta_ar=CTA[key][0], cta_en=CTA[key][1],
             reason_ar=verdict.why_ar, reason_en=verdict.why_en,
             summary_ar=verdict.summary_ar, summary_en=verdict.summary_en,
             route=ROUTE[key].replace("{project_id}", project_id),
@@ -654,6 +727,7 @@ def missing_items(f: StageFacts, derived: JourneyStages) -> tuple[MissingItem, .
 __all__ = [
     "BLOCKING", "JourneyStages", "KnownFact", "MissingItem", "NEEDS_ANALYSIS_OUTPUT", "NEEDS_DATA", "NEEDS_DESIGN",
     "NEEDS_LITERATURE", "NEEDS_QUESTION", "NEEDS_SOURCES", "ORDER", "ROUTE",
-    "OPTIONAL_GAP", "RECOMMENDED", "Stage", "StageFacts", "StageKey", "StageStatus",
+    "CTA", "OPTIONAL_GAP", "RECOMMENDED", "Stage", "StageFacts", "StageKey",
+    "StageStatus",
     "TITLES", "derive", "known_facts", "missing_items",
 ]

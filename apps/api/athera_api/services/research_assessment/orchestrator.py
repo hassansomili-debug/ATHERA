@@ -11,9 +11,19 @@
 منهجًا ولا قرارًا — الوحداتُ الأصلية تبقى صاحبةَ الحقيقة (§8، §29)،
 والباحثُ صاحبَ القرار.
 
+## وصاحبُ القرار واحد
+
+الموضعُ والفعلُ الرئيسُ والخطواتُ الأخرى **كلُّها من `stages.derive`**.
+وكان هنا سجلُّ توصياتٍ ثانٍ يرتّب «التالي» بأولوياتٍ خاصّةٍ به، فكانت
+الشاشةُ تقول «المرحلة: المراجع» ويقول زرُّها «حدِّد المنهج». ورحلةٌ
+موحَّدة لا تخالف نفسَها، ومحرّكان لا يُصلَحان بموازنةٍ بينهما.
+
+فبقيت من `journey.py` البوّاباتُ الحتمية وحدَها — سؤالٌ مختلفٌ في نوعه
+(«ما الذي يمكن») لا في ترتيبه، فلا يتنافس مع المراحل.
+
 ## ولمَ لا تُحفظ الخطوةُ المقترحة
 
-لأنّها **تُحسب من الحال الراهنة في كلّ طلب**. `journey.decide()` دالّةٌ
+لأنّها **تُحسب من الحال الراهنة في كلّ طلب**. و`stages.derive` دالّةٌ
 خالصة: وقائعُ واحدة تُعطي الجوابَ نفسه في كلّ مرّة، فحفظُه يُنشئ نسخةً
 ثانيةً من شيءٍ يُشتقّ.
 
@@ -115,19 +125,21 @@ async def record_snapshot(session: AsyncSession, *, tenant_id: uuid.UUID,
 class JourneyOutcome:
     """جوابُ المنسّق كاملًا — ولا يُبنى إلا من `advance`."""
 
-    __slots__ = ("context_fingerprint", "snapshot_row", "decision", "facts",
+    __slots__ = ("context_fingerprint", "snapshot_row", "capabilities", "facts",
                  "stages", "stage_facts")
 
     def __init__(self, *, context_fingerprint: str,
                  snapshot_row: ResearchContextSnapshot,
-                 decision: journey.JourneyDecision,
+                 capabilities: tuple[journey.Capability, ...],
                  facts: journey.JourneyFacts,
                  stages: stages.JourneyStages,
                  stage_facts: stages.StageFacts) -> None:
         self.context_fingerprint = context_fingerprint
         self.snapshot_row = snapshot_row
-        self.decision = decision
+        #: البوّاباتُ الحتمية وحدَها — **ولا سجلَّ توصياتٍ ثانيًا**.
+        self.capabilities = capabilities
         self.facts = facts
+        #: **صاحبةُ القرار**: منها الموضعُ والفعلُ الرئيسُ والخطواتُ الأخرى.
         self.stages = stages
         self.stage_facts = stage_facts
 
@@ -156,7 +168,7 @@ async def advance(session: AsyncSession, *, tenant_id: uuid.UUID,
 
     return JourneyOutcome(
         context_fingerprint=current, snapshot_row=snapshot_row,
-        decision=journey.decide(facts), facts=facts,
+        capabilities=journey.capabilities(facts), facts=facts,
         stages=stages.derive(stage_facts, project_id=str(snapshot.project_id)),
         stage_facts=stage_facts)
 

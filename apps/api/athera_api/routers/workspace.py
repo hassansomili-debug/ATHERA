@@ -1166,9 +1166,13 @@ async def project_journey(
 ) -> ProjectJourneyView:
     """أين يقف هذا البحث، وما الخطوةُ التالية، ولماذا.
 
-    **وما يمكن فعلُه مفصولٌ عمّا يُستحسن فعلُه** (§24): `capabilities`
-    بوّاباتٌ حتمية تُقرأ من الصفوف — «لا تحليلَ بلا بيانات» — و`actions`
-    رأيٌ في الترتيب. ودمجُهما يُنتج إمّا رأيًا يحجب، وإمّا واقعةً تُتجاوَز.
+    **وصاحبُ القرار واحد**: الموضعُ والفعلُ الرئيسُ والخطواتُ الأخرى كلُّها
+    من المراحل التسع. فلا يمكن أن تقول الشاشةُ «المرحلة: المراجع» ويقول
+    زرُّها «حدِّد المنهج» — وقد كان ذلك يقع حين كان للقرار محرّكان.
+
+    **وما يمكن فعلُه يبقى مفصولًا عمّا يُستحسن** (§24): `capabilities`
+    بوّاباتٌ حتمية تُقرأ من الصفوف — «لا تحليلَ بلا بيانات» — وهي سؤالٌ
+    مختلفٌ في نوعه لا في ترتيبه، فلا يتنافس مع المراحل.
 
     **ولا نموذجَ يُستدعى هنا** (§30). فلو سقط المزوّدُ كلُّه لبقي هذا
     الجوابُ صحيحًا: القواعدُ حتمية، والبصمةُ تُحسب، وتاريخُها يُحفظ.
@@ -1188,20 +1192,6 @@ async def project_journey(
     _rules, report = research_assessment.assess(snapshot)
     arabic = principal.locale == "ar"
 
-    def _action(row) -> JourneyActionView:
-        return JourneyActionView(
-            action_key=row.action_key, category=row.category.value,
-            status=row.status.value,
-            title=row.title_ar if arabic else row.title_en,
-            reason=row.reason_ar if arabic else row.reason_en,
-            # **المسارُ بلا لغة** — تُركّبها الواجهةُ من موضعها، فلا يُكتب
-            # هنا رابطٌ عربيٌّ يُفتح لقارئٍ إنجليزيّ.
-            route=(row.route.replace("{project_id}", str(project_id))
-                   if row.route else None),
-            blocking_reasons=list(row.blocking_reasons),
-            requirements=list(row.requirements),
-            evidence_refs=list(row.evidence_refs))
-
     def _stage(row) -> StageView:
         return StageView(
             key=row.key.value, status=row.status.value, is_current=row.is_current,
@@ -1210,8 +1200,23 @@ async def project_journey(
             summary=row.summary_ar if arabic else row.summary_en,
             route=row.route, blocking_reasons=list(row.blocking_reasons))
 
+    def _stage_action(row) -> JourneyActionView:
+        """فعلٌ من مرحلة — **ولا مصدرَ ثانٍ للقرار**.
+
+        و`action_key` مفتاحُ المرحلة نفسِه: فلا يمكن أن يقول الفعلُ شيئًا
+        وتقول المرحلةُ غيرَه، لأنّهما صارا شيئًا واحدًا بالبناء.
+        """
+        return JourneyActionView(
+            action_key=row.key.value, category=row.key.value,
+            status="blocked" if row.blocking_reasons else "recommended",
+            title=row.cta_ar if arabic else row.cta_en,
+            reason=row.reason_ar if arabic else row.reason_en,
+            route=row.route,
+            blocking_reasons=list(row.blocking_reasons),
+            requirements=[], evidence_refs=[])
+
     stage_facts = outcome.stage_facts
-    recommended = outcome.decision.recommended
+    primary = outcome.stages.primary
     return ProjectJourneyView(
         stages=[_stage(row) for row in outcome.stages.stages],
         current_stage=(outcome.stages.current.value
@@ -1229,11 +1234,12 @@ async def project_journey(
         fingerprint_schema=outcome.snapshot_row.fingerprint_schema,
         first_seen_at=outcome.snapshot_row.first_seen_at,
         last_seen_at=outcome.snapshot_row.last_seen_at,
-        recommended=_action(recommended) if recommended else None,
-        actions=[_action(row) for row in outcome.decision.actions],
+        recommended=_stage_action(primary) if primary else None,
+        # **والخطواتُ الأخرى بترتيب المراحل نفسِه** — لا بترتيبٍ ثانٍ.
+        actions=[_stage_action(row) for row in outcome.stages.secondary],
         capabilities=[CapabilityView(key=row.key, allowed=row.allowed,
                                      blocking_reasons=list(row.blocking_reasons))
-                      for row in outcome.decision.capabilities],
+                      for row in outcome.capabilities],
         known_count=len(report.known), missing_count=len(report.missing),
         needs_review_count=len(report.needs_review),
         conflict_count=len(report.conflicts),

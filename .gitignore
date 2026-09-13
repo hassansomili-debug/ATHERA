@@ -41,3 +41,8 @@ build/
 apps/web/test-results/
 apps/web/playwright-report/
 apps/web/blob-report/
+# **ويكتبها المشغّلُ في `apps/api` أيضًا.** تسرّب `.last-run.json` إلى
+# طلبِ دمجٍ يحمل `"status": "failed"` من تشغيلٍ محلّيّ عابر — حالُ مشغّلٍ
+# لا مصدرٌ يُراجَع، وتُقرأ في المراجعة إخفاقًا قائمًا. والقاعدةُ بأضيق ما
+# يلزم: هذا المسارُ وحدَه، لا `test-results/` في كلّ مكان.
+apps/api/test-results/
