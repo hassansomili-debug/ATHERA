@@ -353,11 +353,18 @@ def test_the_acceptance_suite_records_no_artifact_that_could_hold_a_secret():
 
 def test_credentialed_acceptance_is_gated_behind_an_explicit_opt_in():
     """**الدمج ليس إذنًا.** بعد تسرّب الاعتماد في أثر تشغيلة، لا يعمل شيء
-    باعتمادٍ حتى يُضبط متغيّرٌ قصدًا — بعد التدوير وبعد حسابٍ مخصَّص."""
-    workflow = (WEB.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "vars.PUBRIVA_ACCEPT_READY == 'true'" in workflow, "لا بوّابة قبل التشغيل باعتماد"
-    # وسببُ عدم التشغيل يُقال، ولا يُقرأ الصمت نجاحًا.
-    assert "browser acceptance is NOT verified while this gate is closed" in workflow
+    باعتمادٍ حتى يُضبط متغيّرٌ قصدًا — بعد التدوير وبعد حسابٍ مخصَّص.
+
+    **والبوّابةُ صارت أشدّ بعد النقل.** كانت تُتخطّى بتحذير — والتخطّي
+    يُقرأ أخضرَ في قائمة الفحوص. وصارت تُسقط التشغيلة صراحةً، فلا يُظنّ
+    المنتجُ مفحوصًا وهو لم يُفحص.
+    """
+    workflow = (WEB.parents[1] / ".github" / "workflows"
+                / "production-acceptance.yml").read_text(encoding="utf-8")
+    assert "vars.PUBRIVA_ACCEPT_READY != 'true'" in workflow, "لا بوّابة قبل التشغيل باعتماد"
+    # وسببُ عدم التشغيل يُقال، ولا يُقرأ الصمت نجاحًا — بل يسقط.
+    assert "PRODUCT ACCEPTANCE NOT RUN" in workflow
+    assert "exit 1" in workflow
 
 
 # ══════════ ٩. ربطُ مرجعٍ بالبحث: مسارٌ في الخادم بلا بابٍ في المتصفح ══════════
@@ -592,13 +599,28 @@ def test_recovery_browser_tests_upload_no_credential_bearing_artifact():
 def test_no_acceptance_artifact_can_reach_the_upload():
     """**المسجّلات مُطفأة لا تكفي.** `error-context.md` يُكتب على أي حال
     ويحمل لقطة DOM لصفحةٍ فيها حقول اعتماد. فتُمحى مخرجات رحلة القبول قبل
-    أي رفع — ويبقى سجل الطرفية، وهو يكفي لمعرفة أين سقطت."""
-    workflow = (WEB.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    upload = workflow.index("name: playwright-report")
-    acceptance = workflow.index("Acceptance journey (real browser")
-    assert upload < acceptance, "الرفع يقع بعد رحلة القبول فيلتقط مخرجاتها"
-    assert "Destroy acceptance artifacts before any upload" in workflow
+    أي رفع — ويبقى سجل الطرفية، وهو يكفي لمعرفة أين سقطت.
+
+    **والحراسةُ انتقلت مع المحروس.** كانت رحلةُ القبول خطوةً في `ci.yml`،
+    فصارت مشغّلًا مستقلًّا بعد أن تبيّن أنّ فحصَ المصدر لا يصحّ أن يشترط
+    إنتاجًا منشورًا (انظر `test_at_release_lifecycle_contract.py`). والشرطُ
+    نفسُه يُفحص في موضعه الجديد، ولم يُخفَّف: لا رفعَ أثرٍ إطلاقًا، والمحوُ
+    يقع دائمًا.
+    """
+    workflow = (WEB.parents[1] / ".github" / "workflows"
+                / "production-acceptance.yml").read_text(encoding="utf-8")
+    # **ولا رفعَ أصلًا في هذا المشغّل** — وهو أقوى من ترتيبِ رفعٍ ومحو.
+    assert "upload-artifact" not in workflow, "رفعُ أثرٍ من رحلةِ اعتماد"
+    assert "Destroy acceptance artifacts" in workflow
     assert "rm -rf apps/web/playwright-report apps/web/test-results" in workflow
+    # والمحوُ يقع ولو سقطت الرحلة.
+    destroy = workflow.index("Destroy acceptance artifacts")
+    assert "if: always()" in workflow[destroy:destroy + 200]
+
+    # ولم تعد رحلةُ القبول في فحص المصدر أصلًا.
+    ci = (WEB.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "npm run test:acceptance" not in "\n".join(
+        line for line in ci.splitlines() if not line.lstrip().startswith("#"))
 
 
 # ══════════ ١٣. النطاق القانوني: pubriva.com وحده ══════════
@@ -608,7 +630,8 @@ CANONICAL_HOST = "https://pubriva.com"
 
 def test_the_acceptance_journey_targets_the_researchers_domain():
     """**القبول يفحص ما يستعمله الباحث** — لا اسم استضافة يصادف أن يخدمه."""
-    workflow = (WEB.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    workflow = (WEB.parents[1] / ".github" / "workflows"
+                / "production-acceptance.yml").read_text(encoding="utf-8")
     assert f"PUBRIVA_WEB_URL: {CANONICAL_HOST}" in workflow
     assert "PUBRIVA_WEB_URL: https://athera-bay.vercel.app" not in workflow
 

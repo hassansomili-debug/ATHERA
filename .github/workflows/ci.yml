@@ -334,51 +334,27 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
-      # ── رحلة القبول: على الإنتاج المنشور، بعد الدمج وحده ──
+      # ── ولا رحلةَ قبولٍ على الإنتاج من هنا ──
       #
-      # تشغيلُها من PR يفحص إنتاجًا لا يحمل شيفرة الـPR — نتيجةٌ مضلِّلة.
-      # وتُتخطّى بوضوح إن غاب الحساب، ولا تُعدّ نجاحًا.
-      # ── بوّابة صريحة قبل أي تشغيلٍ باعتماد ──
+      # **كانت هنا، وكانت تجعل المشغّلَ دائريًّا.**
       #
-      # **اعتمادُ حساب القبول ظهر في أثر تشغيلة إنتاجية.** فلا يُشغَّل شيء
-      # باعتمادٍ حتى يُعلن المالك أن الاعتماد المكشوف دُوّر، وأن السرّين
-      # يخصّان حساب قبولٍ مخصَّصًا لا حسابًا شخصيًّا. والدمج وحده لا يكفي
-      # إذنًا: يُضبط المتغيّر `PUBRIVA_ACCEPT_READY` إلى `true` قصدًا.
-      # ملفات فحوص دورة الحياة والاستعادة تُرفع عند الفشل — لا اعتماد فيها.
-      # وتُلتقط **قبل** رحلة القبول، فلا تختلط بها.
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-report
-          path: apps/web/playwright-report/
-          retention-days: 7
-
-      - name: Acceptance journey (real browser, deployed production)
-        if: ${{ github.ref == 'refs/heads/main'
-                && vars.PUBRIVA_ACCEPT_READY == 'true'
-                && env.PUBRIVA_ACCEPT_PASSWORD != '' }}
-        run: cd apps/web && npm run test:acceptance
-        env:
-          PUBRIVA_WEB_URL: https://pubriva.com
-
-      # **ولا يُرفع شيء من رحلة القبول إطلاقًا — ولو فشلت.**
-      # المسجّلات مُطفأة فيها، لكن `error-context.md` يُكتب على أي حال
-      # ويحمل لقطة DOM لصفحةٍ فيها حقول اعتماد. فتُمحى مخرجاتها قبل أي
-      # رفع، ويبقى سجل الطرفية وحده — وهو يكفي لمعرفة أين سقطت.
-      - name: Destroy acceptance artifacts before any upload
-        if: always()
-        run: rm -rf apps/web/playwright-report apps/web/test-results
-
-      - name: Report why acceptance did not run
-        if: ${{ github.ref == 'refs/heads/main'
-                && (vars.PUBRIVA_ACCEPT_READY != 'true' || env.PUBRIVA_ACCEPT_PASSWORD == '') }}
-        run: |
-          echo "::warning::acceptance journey did NOT run — it is gated."
-          echo "::warning::PUBRIVA_ACCEPT_READY=${{ vars.PUBRIVA_ACCEPT_READY || 'unset' }}"
-          echo "::warning::set the repository variable PUBRIVA_ACCEPT_READY=true only after"
-          echo "::warning::(1) the exposed password is rotated and"
-          echo "::warning::(2) the secrets belong to a dedicated acceptance account."
-          echo "::warning::browser acceptance is NOT verified while this gate is closed."
+      #     يُدمج الفرع  →  Vercel ينشر الوِب  →  CI على `main` يفحص
+      #     الإنتاج  →  والخادمُ ما زال إصدارًا سابقًا لأنّ النشرَ المحروس
+      #     يقع **بعد** خضرة CI  →  فتسقط الرحلة
+      #
+      # أي أنّ فحصَ المصدر كان يشترط أن يحمل الإنتاجُ شيفرةً لم تُنشر بعد.
+      # ووقع ذلك فعلًا في التشغيلة `34754134574`: سقطت رحلةُ القبول على
+      # `de5e49ac` لأنّ الوِب كان RC-0 والخادمُ قبله.
+      #
+      # وهذا ما يقوله الدليلُ التشغيليّ أصلًا (§9): «قبولُ المنتج بوّابةٌ
+      # منفصلة» تُشغَّل **بعد** النشر. فالمشغّلُ هنا كان يناقض الدليل.
+      #
+      # فانتقلت إلى `production-acceptance.yml` — تُشغَّل بيدٍ بعد الإصدار
+      # المحروس وتأخذ `expected_release_sha`. ولم تضعف تغطيةُ المتصفّح:
+      # كلُّ الرقعات المعزولة أعلاه باقيةٌ كما هي، والمنقولُ وحده ما كان
+      # هدفُه إنتاجًا **منشورًا سلفًا**.
+      #
+      # وحارسٌ يمنع عودتَها: `tests/test_at_release_lifecycle_contract.py`.
 
   security:
     name: Security — أسرار وتبعيات | secrets and dependencies

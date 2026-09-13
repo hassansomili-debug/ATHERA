@@ -1,0 +1,130 @@
+# ══════════ قبولُ المنتج على الإنتاج المنشور — بوّابةٌ بعد الإصدار ══════════
+#
+# **لماذا مشغِّلٌ مستقلّ، ولمَ بيدٍ لا تلقائيًّا.**
+#
+# كانت هذه الرحلةُ خطوةً في `ci.yml` تُشغَّل على `main` بعد الدمج. وذاك
+# ترتيبٌ دائريّ: فحصُ المصدر يشترط أن يحمل الإنتاجُ شيفرةً لم تُنشر بعد،
+# والنشرُ المحروس لا يقع إلا بعد خضرة الفحص. فوقع ما لا بدّ أن يقع —
+# التشغيلة `34754134574` سقطت على `de5e49ac` لأنّ Vercel نشر الوِب عند
+# الدمج بينما الخادمُ ما زال `31345edd`.
+#
+# **والفصلُ يحمل معنًى لا ترتيبًا فقط** (الدليل التشغيليّ §9): إصدارُ البنية
+# قد ينجح تقنيًّا وقبولُ المنتج يسقط. وضمُّهما في مشغّلٍ واحد يجعل سقوطَ
+# المنتج يبدو سقوطَ نشر، فيُطلب تراجعٌ لا لزوم له — أو يُخفى العكس.
+#
+# فأربعُ حالاتٍ تبقى متمايزة، ولا تُختزل واحدةٌ في أخرى:
+#
+#     CODE GREEN                 ← `ci.yml` و`rc-e2e.yml`
+#     INFRA RELEASE GREEN        ← `production-release.yml`
+#     AUTOMATED PRODUCT ACCEPTANCE GREEN  ← هذا المشغّل
+#     PRODUCTION GREEN           ← رحلةُ المالك الذهبية بنفسه، ولا يُؤتمت
+name: Production acceptance — authenticated golden journey
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_release_sha:
+        description: >-
+          الالتزامُ المنشور على الإنتاج الآن — أربعون محرفًا من `main`.
+          يُقرأ من تشغيلة الإصدار المحروس التي نجحت للتوّ، لا من الذاكرة.
+        required: true
+        type: string
+
+# **ولا امتيازَ إلا القراءة.** رحلةُ القبول لا تكتب في المستودع.
+permissions:
+  contents: read
+
+concurrency:
+  # ورحلتان بحسابِ قبولٍ واحد تتنازعان الحسابَ نفسَه.
+  group: production-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: Authenticated golden journey on deployed production
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    env:
+      PUBRIVA_ACCEPT_EMAIL: ${{ secrets.PUBRIVA_ACCEPT_EMAIL }}
+      PUBRIVA_ACCEPT_PASSWORD: ${{ secrets.PUBRIVA_ACCEPT_PASSWORD }}
+    steps:
+      # ــ ١ · الالتزامُ بعينه، لا «آخرُ main» ــ
+      #
+      # ورحلةُ القبول تفحص منتجًا منشورًا، فيجب أن تُشتقّ دعاويها من
+      # الشيفرة التي **نُشرت**. و`main` قد يكون تقدّم بعد الإصدار.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_release_sha }}
+          fetch-depth: 0
+
+      - name: Refuse a commit that is not a reviewed main commit
+        env:
+          SHA: ${{ inputs.expected_release_sha }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::expected_release_sha must be a full 40-character SHA"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          # **ولا تُقبل شيفرةٌ لم تمرّ بالمراجعة.** التزامٌ خارج `main`
+          # قد يكون فرعًا لم يُدمج — وقبولُه يُصادق على ما لم يُراجَع.
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not an ancestor of origin/main — refusing."
+            exit 1
+          fi
+          echo "release commit verified on main: $SHA"
+
+      # ــ ٢ · البوّابة: لا تشغيلَ باعتمادٍ حتى يأذن المالك ــ
+      #
+      # **والتخطّي لا يُعدّ نجاحًا.** مشغّلٌ يصمت حين لا يجد اعتمادًا يُقرأ
+      # أخضرَ، فيُظنّ المنتجُ مفحوصًا وهو لم يُفحص. فيسقط صراحةً.
+      - name: Require the acceptance gate, or fail loudly
+        if: ${{ vars.PUBRIVA_ACCEPT_READY != 'true'
+                || env.PUBRIVA_ACCEPT_PASSWORD == ''
+                || env.PUBRIVA_ACCEPT_EMAIL == '' }}
+        run: |
+          echo "::error::PRODUCT ACCEPTANCE NOT RUN"
+          echo "::error::PUBRIVA_ACCEPT_READY=${{ vars.PUBRIVA_ACCEPT_READY || 'unset' }}"
+          echo "::error::this workflow refuses to report success without running."
+          echo "::error::set PUBRIVA_ACCEPT_READY=true and provide the dedicated"
+          echo "::error::acceptance account secrets, then dispatch again."
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install Web dependencies
+        run: cd apps/web && npm ci
+
+      - name: Install Playwright Chromium
+        run: cd apps/web && npx playwright install --with-deps chromium
+
+      # ــ ٣ · الرحلة، على الإنتاج المنشور ــ
+      - name: Authenticated golden journey
+        run: cd apps/web && npm run test:acceptance
+        env:
+          PUBRIVA_WEB_URL: https://pubriva.com
+
+      # ــ ٤ · ولا يُرفع أثرٌ من رحلةٍ باعتماد، ولو سقطت ــ
+      #
+      # المسجّلاتُ مُطفأة، لكنّ `error-context.md` يُكتب على أيّ حال ويحمل
+      # لقطةَ DOM لصفحةٍ فيها حقولُ اعتماد. فتُمحى قبل أيّ رفع، ويبقى سجلُّ
+      # الطرفية وحده — وهو يكفي لمعرفة أين سقطت.
+      - name: Destroy acceptance artifacts
+        if: always()
+        run: rm -rf apps/web/playwright-report apps/web/test-results
+
+      - name: Say plainly what this proves, and what it does not
+        if: success()
+        run: |
+          echo "### AUTOMATED PRODUCT ACCEPTANCE GREEN" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "release commit: \`${{ inputs.expected_release_sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "This does **not** declare PRODUCTION GREEN." >> "$GITHUB_STEP_SUMMARY"
+          echo "That remains the owner's own golden journey (runbook §9)." >> "$GITHUB_STEP_SUMMARY"
