@@ -329,28 +329,16 @@ export default function ProjectWorkspacePage({
 
               **ولم تُحذف تلك الدالّة** — يُبقيها مسارُ النظرة العامّة
               لمن يستعملها، والتوحيدُ قرارُ منتجٍ لا تنظيفُ شيفرة. */}
-          {journeyLoad === "loading" ? (
-            <p data-testid="journey-loading" style={{ color: "var(--muted)" }}>
-              {t("researchJourney.loading")}
-            </p>
-          ) : journeyLoad === "failed" || journey === null ? (
-            // **والسقوط ليس فراغًا**: شاشةٌ بلا خطوةٍ تُقرأ «لا شيء مطلوب».
-            <p data-testid="journey-failed" className="gate">
-              {t("researchJourney.failed")}{" "}
-              <button
-                type="button"
-                className="chip chip-muted"
-                onClick={() => {
-                  setJourneyLoad("loading");
-                  void reload();
-                }}
-              >
-                {t("common.retry")}
-              </button>
-            </p>
-          ) : (
-            <ResearchJourney journey={journey} locale={locale} t={t} />
-          )}
+          <ResearchJourney
+            journey={journey}
+            load={journeyLoad}
+            locale={locale}
+            t={t}
+            onRetry={() => {
+              setJourneyLoad("loading");
+              void reload();
+            }}
+          />
 
           <h2 style={{ marginBlockEnd: 4, marginBlockStart: 18 }}>
             {t("project.brainTitle")}</h2>

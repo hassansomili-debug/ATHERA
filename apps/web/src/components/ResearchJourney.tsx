@@ -40,6 +40,9 @@ import {
 
 type Translate = (key: string) => string;
 
+/** حالُ القراءة — ثلاثٌ، **والفرقُ بين الثانية والثالثة هو المسألة**. */
+export type JourneyLoad = "loading" | "ready" | "failed";
+
 const GRADES: readonly MissingItem["severity"][] = [
   "blocking",
   "recommended",
@@ -127,15 +130,49 @@ function StageCard({
   );
 }
 
+/**
+ * الرحلةُ بحالاتها الثلاث — **والمكوّنُ يملكها كلَّها**.
+ *
+ * وكانت الصفحةُ تملك «جارٍ» و«تعذّر» ويملك المكوّنُ المحتوى وحده. فأمسك
+ * حارسٌ قائم (`test_every_screen_that_claims_emptiness_can_first_say_it_is_loading`)
+ * أنّ ملفًّا يقول «لم يُنجَز شيءٌ بعد» لا يملك ما يقول به «لم يصل الجواب» —
+ * وهما لا يُفرَّق بينهما بالنظر.
+ *
+ * والعلاجُ جمعُ الثلاث هنا لا تليينُ الحارس: مَن يقول «خالٍ» يجب أن
+ * يستطيع قولَ «أنتظر».
+ */
 export function ResearchJourney({
   journey,
+  load,
   locale,
   t,
+  onRetry,
 }: {
-  journey: ProjectJourney;
+  journey: ProjectJourney | null;
+  load: JourneyLoad;
   locale: Locale;
   t: Translate;
+  onRetry: () => void;
 }) {
+  if (load === "loading") {
+    return (
+      <p data-testid="journey-loading" style={{ color: "var(--muted)" }}>
+        {t("researchJourney.loading")}
+      </p>
+    );
+  }
+  if (load === "failed" || journey === null) {
+    // **والسقوطُ ليس فراغًا**: شاشةٌ بلا خطوةٍ تُقرأ «لا شيء مطلوب».
+    return (
+      <p data-testid="journey-failed" className="gate">
+        {t("researchJourney.failed")}{" "}
+        <button type="button" className="chip chip-muted" onClick={onRetry}>
+          {t("common.retry")}
+        </button>
+      </p>
+    );
+  }
+
   const here = currentStage(journey);
   const done = completedStages(journey);
   const next = journey.recommended;
