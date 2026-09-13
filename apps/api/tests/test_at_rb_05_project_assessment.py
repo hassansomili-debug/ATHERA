@@ -655,6 +655,15 @@ async def _seed_project(tenant_id: uuid.UUID, user_id: uuid.UUID, *, title: str,
         session.add(project)
         await session.flush()
 
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ** — فالمالك
+        # يُشتقّ من فاعلِ حدثِ الإنشاء، وبحثٌ بلا حدثٍ لا مالكَ له.
+        from athera_api.services import audit as _audit
+        await _audit.record(
+            session, tenant_id=tenant_id, action="workspace.project_created",
+            object_type="research_project", object_id=project.id,
+            actor_user_id=user_id,
+            reason="test fixture mirrors the real creation path")
+
         method = Method(tenant_id=tenant_id, project_id=project.id,
                         study_type="quantitative", design_family="correlational",
                         sampling_strategy="convenience", sample_size=sample_size,

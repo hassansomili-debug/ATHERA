@@ -911,3 +911,99 @@ async def set_access_state(
         reason="a member's access is a state, never a deleted row; the record of who "
                "worked on the paper outlives the collaboration")
     return member
+
+
+# ═══════════════ مَن يرى بحثًا — قراءةً بلا أثر (RC-T1A) ═══════════════
+#
+# **العطبُ الذي يُغلق هنا.** كانت قائمةُ «أبحاثي» تُبنى بـ
+# `tenant_id == principal.tenant_id` وحده، فيرى كلُّ باحثٍ في المستأجر
+# كلَّ بحثٍ فيه: بحوثًا لا يملكها ولا هو عضوٌ فيها. وعضويّةُ المستأجر
+# ليست عضويّةَ بحث — والفرقُ هو كلُّ ما تقوم عليه فرقُ البحث.
+#
+# **والقاعدةُ الواحدة:** مالكٌ، أو عضوٌ **نشط** يحمل `view_project` صفًّا
+# صريحًا. ولا دورَ يُفسَّر، ولا اسمَ يُطابَق، ولا انتماءَ مستأجرٍ يكفي.
+#
+# ## ولمَ قراءةٌ بلا أثر
+#
+# `access_for` تُنشئ عضويّةَ المالك عند الحاجة (`ensure_owner_membership`)،
+# وذاك صحيحٌ في مسارٍ يُغيّر فريقًا. لكنّ **فتحَ صفحةٍ أو عدَّ قائمةٍ لا
+# يكتب**: كتابةٌ في كلّ قراءةٍ تُنشئ صفوفًا بعدد الزيارات، وتُحوّل `GET`
+# إلى تغييرٍ لا يتوقّعه أحد. فهذه الدوالُّ تقرأ وتحكم ولا تُنشئ شيئًا.
+
+VIEW_PROJECT = "view_project"
+
+
+async def _owned_project_ids(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """بحوثُ هذا الباحث بالملكيّة — **بمصدري الإسناد الموثوقين معًا**.
+
+    وهما اللذان يقرؤهما `owner_user_id` لبحثٍ واحد: ملفُّ الباحث، وفاعلُ
+    حدثِ الإنشاء في سجلّ التدقيق. وتُقرآن هنا **مجموعتين** لا بحثًا بحثًا،
+    فلا يصير عدُّ القائمة استعلامًا لكلّ صفّ.
+    """
+    by_profile = set((await session.execute(
+        select(ResearchProject.id)
+        .join(ResearcherProfile, ResearcherProfile.id == ResearchProject.profile_id)
+        .where(ResearchProject.tenant_id == tenant_id,
+               ResearcherProfile.user_id == user_id)
+    )).scalars())
+
+    by_creation = set((await session.execute(
+        select(AuditEvent.object_id)
+        .where(AuditEvent.tenant_id == tenant_id,
+               AuditEvent.object_type == PROJECT_OBJECT_TYPE,
+               AuditEvent.action.in_(PROJECT_CREATED_ACTIONS),
+               AuditEvent.actor_user_id == user_id,
+               AuditEvent.object_id.is_not(None))
+    )).scalars())
+
+    return by_profile | by_creation
+
+
+async def _member_project_ids(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
+    permission: str = VIEW_PROJECT,
+) -> set[uuid.UUID]:
+    """بحوثٌ هو فيها عضوٌ **نشط** يحمل الصلاحيةَ صفًّا صريحًا.
+
+    و«نشط» شرطٌ لا تزيين: المدعوُّ لم يقبل بعد، والموقوفُ مُنع، والمُزال
+    ذهب — وثلاثتهم ليسوا أعضاءً عاملين.
+    """
+    return set((await session.execute(
+        select(ProjectMember.project_id)
+        .join(ProjectMemberPermission,
+              ProjectMemberPermission.member_id == ProjectMember.id)
+        .where(ProjectMember.tenant_id == tenant_id,
+               ProjectMember.user_id == user_id,
+               ProjectMember.access_state == "active",
+               ProjectMemberPermission.permission_key == permission)
+    )).scalars())
+
+
+async def visible_project_ids(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """كلُّ بحثٍ يجوز لهذا الباحث أن يراه — **بالاتّحاد لا بالتكرار**.
+
+    والمالكُ الذي له صفُّ عضويّةٍ أيضًا يظهر مرّةً واحدة: مجموعةٌ لا قائمة.
+    """
+    owned = await _owned_project_ids(
+        session, tenant_id=tenant_id, user_id=user_id)
+    joined = await _member_project_ids(
+        session, tenant_id=tenant_id, user_id=user_id)
+    return owned | joined
+
+
+async def may_view_project(
+    session: AsyncSession, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> bool:
+    """أيجوز لهذا الباحث أن يفتح هذا البحث؟ — **قراءةٌ بلا أثر**."""
+    if await owner_user_id(session, project_id=project_id) == user_id:
+        return True
+    member = await member_for(
+        session, project_id=project_id, user_id=user_id)
+    if member is None or member.access_state != "active":
+        return False
+    return VIEW_PROJECT in await permissions_of(session, member_id=member.id)

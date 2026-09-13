@@ -72,6 +72,7 @@ from ..schemas.research_brain import (
 )
 from ..services import (
     audit,
+    collaboration,
     matrix_extraction,
     research_assessment,
     screening,
@@ -85,9 +86,23 @@ router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
 
 async def _project(session: AsyncSession, principal: Principal,
                    project_id: uuid.UUID) -> ResearchProject:
+    """بحثٌ قائمٌ **يجوز لهذا الباحث أن يفتحه** — وعشرون مسارًا تمرّ من هنا.
+
+    **والعطبُ الذي يُغلق:** كان الشرطُ انتماءَ البحث للمستأجر وحده، فكان
+    أيُّ باحثٍ في المستأجر يفتح أيَّ بحثٍ فيه بمعرّفه — بحوثًا لا يملكها
+    ولا هو عضوٌ فيها. وعضويّةُ المستأجر ليست عضويّةَ بحث.
+
+    **والرفضُ `404` لا `403`.** فـ`403` تقول «موجودٌ ولستَ منه» — وذاك
+    يكشف وجودَ بحثٍ لمن لا شأن له به، فيُعَدّ المعرّفاتُ ويُستدلّ على ما
+    في المستأجر. والمعدومُ وغيرُ المأذون يُجابان جوابًا واحدًا.
+    """
     row = await workspace.live_project(
         session, tenant_id=principal.tenant_id, project_id=project_id)
     if row is None:
+        raise NotFound("workspace.project_not_found")
+    if not await collaboration.may_view_project(
+            session, tenant_id=principal.tenant_id, project_id=project_id,
+            user_id=principal.user_id):
         raise NotFound("workspace.project_not_found")
     return row
 
@@ -139,8 +154,22 @@ async def list_projects(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[ProjectSummary]:
-    """بحوث الباحث — **وما في السلّة لا يظهر مع القائم**."""
-    stmt = select(ResearchProject).where(ResearchProject.tenant_id == principal.tenant_id)
+    """بحوث الباحث — **ما يملكه وما شارك فيه**، لا ما في المستأجر.
+
+    وكان الشرطُ `tenant_id` وحده، فكانت القائمة تعرض بحوثَ زملائه: عناوينَ
+    أبحاثٍ لم يُدعَ إليها. والسلّةُ كانت تكشفها كذلك.
+
+    **والاستعلامان ثابتان لا يتبعان عدد البحوث**: تُجمع المعرّفاتُ
+    المسموحة مرّةً (ملكيّةً وعضويّةً)، ثمّ تُقرأ الصفوفُ بها.
+    """
+    visible = await collaboration.visible_project_ids(
+        session, tenant_id=principal.tenant_id, user_id=principal.user_id)
+    if not visible:
+        return []
+
+    stmt = select(ResearchProject).where(
+        ResearchProject.tenant_id == principal.tenant_id,
+        ResearchProject.id.in_(visible))
     stmt = (stmt.where(ResearchProject.deleted_at.is_not(None))
             if trash else stmt.where(ResearchProject.deleted_at.is_(None)))
     rows = (await session.execute(
