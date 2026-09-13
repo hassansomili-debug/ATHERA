@@ -271,6 +271,28 @@ the API is verified healthy, preserving the ordering.
 requires the owner to turn Git auto-deploy off first; until then, leave
 `deploy_web: false` or you will double-deploy.
 
+### 5.1 Recommendation, and the incident that settles it
+
+**Option B.** Not as a preference — as the conclusion of a real failure.
+
+RC-0 (PR #128) changed the Journey API contract. On merge, Vercel shipped the
+RC-0 Web immediately while the API was still `31345edd`. The Web asked for a
+response shape the deployed API does not produce, and — correctly — refused to
+render a stale shape as if it were current. Production was left split for as
+long as it took a human to notice.
+
+Option A is only safe when a release changes no API contract, and nobody can
+guarantee that by inspection at merge time. So:
+
+> **Owner action required:** in Vercel → Project → Settings → Git, disable
+> automatic production deployments for `main`. Then every release runs this
+> workflow with `deploy_web: true`, and Web ships only after the API is verified
+> healthy.
+
+Until that setting is changed, Option A remains in force and `deploy_web` must
+stay `false` — otherwise Web deploys twice. The repository cannot enforce this;
+it is a Vercel dashboard setting.
+
 ---
 
 ## 6. What a blocked migration means
@@ -338,19 +360,70 @@ It proves nothing about whether a researcher can upload a thesis, review
 extraction, archive a record, or restore one.
 
 **Nobody may declare a wave PRODUCTION GREEN on the strength of this workflow.**
-The release order is:
 
-1. Read the live schema revision out of production.
-2. Choose the mode: `schema_and_code` if the release carries a migration,
-   `code_only` if it does not.
-3. Migrate (if any) and verify the resulting schema.
-4. Deploy API, and Web by whichever single path is authoritative (§5).
-5. **Run production acceptance.**
-6. Declare the wave PRODUCTION GREEN only after production acceptance passes.
-7. Do not begin the next wave's deployment until the current one is confirmed
-   GREEN.
+### 9.1 Four greens, and none of them substitutes for another
 
-Steps 1–4 are what this workflow automates. Steps 5 and 6 are human.
+| Green | Proved by | Means |
+|---|---|---|
+| **CODE GREEN** | `ci.yml` + `rc-e2e.yml` | the source is correct in isolation |
+| **INFRA RELEASE GREEN** | `production-release.yml` | schema migrated, API healthy, URLs respond |
+| **AUTOMATED PRODUCT ACCEPTANCE GREEN** | `production-acceptance.yml` | a real researcher journey works on the deployed product |
+| **PRODUCTION GREEN** | the owner's own golden journey | a human confirmed it |
+
+Infrastructure release can succeed while product acceptance fails. That is why
+they are separate workflows: a product failure must not read as a deploy failure
+and must not trigger a rollback of a correct deploy.
+
+### 9.2 The release order, end to end
+
+    A. PR gates green (CI + RC E2E)
+    B. merge to main
+    C. post-merge source CI green
+    D. read the current main SHA — this is the release SHA
+    E. read the live production schema revision
+    F. dispatch `Production release — guarded`
+         expected_main_sha      = the SHA from (D)
+         expected_schema_before = the revision from (E)
+         release_mode           = schema_and_code | code_only
+         deploy_web             = per §5
+    G. verify API and Web are the same generation
+    H. dispatch `Production acceptance — authenticated golden journey`
+         expected_release_sha   = the SHA from (D)
+    I. the owner performs the golden journey personally
+    J. only then: PRODUCTION GREEN
+
+Steps A–C and F and H are automated. D, E, G, I and J are human.
+
+### 9.3 Why acceptance is not in `ci.yml` — a resolved incident
+
+It used to be. `ci.yml` ran the authenticated journey against
+`https://pubriva.com` on every push to `main`. That made the pipeline circular:
+
+    merge → Vercel deploys Web at once (§5)
+          → main CI tests deployed production
+          → but the API is still the previous release, because the guarded
+            release happens *after* CI is green
+          → acceptance fails
+          → so the API is never released
+          → so it never goes green
+
+This is not hypothetical. Run **`34754134574`** failed exactly this way on
+`de5e49ac`: production Web was RC-0 while the API was still `31345edd`. The
+failure was honest — the test was being asked to prove something that had not
+been deployed yet.
+
+**A source-review gate must never depend on production already containing the
+commit under review.** The authenticated journey now lives in
+`production-acceptance.yml`, dispatched by hand with the released SHA, at
+step (H) above. `tests/test_at_release_lifecycle_contract.py` fails if anyone
+puts a production-targeted test back into pre-release CI.
+
+### 9.4 The acceptance workflow never reports a silent skip
+
+If `PUBRIVA_ACCEPT_READY` is not `true`, or the dedicated acceptance account
+secrets are absent, the workflow **fails** with `PRODUCT ACCEPTANCE NOT RUN`. It
+does not exit green. A gate that quietly skips is worse than no gate: it reads
+as proof.
 
 ---
 

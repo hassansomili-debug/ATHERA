@@ -202,13 +202,45 @@ test("the P1 researcher journey completes end to end", async ({ page }) => {
     projectUrl = page.url();
   });
 
-  // ── ٧: النظرة العامة تقول حالاتٍ صادقة ──
-  await test.step("Overview shows truthful Research Brain states", async () => {
+  // ── ٧: رحلةُ البحث تقول حالًا صادقة عن بحثٍ أُنشئ للتوّ ──
+  //
+  // **وهذه الخطوةُ تفحص عقدَ RC-0، لا البطاقةَ التي حلّ محلَّها.**
+  //
+  // كانت تطلب نصَّ «بُبريفا تقترح» — عنوانَ بطاقةٍ رفيعة كانت تعرض خطوةً
+  // واحدة مصدرُها `workspace.next_action`. وRC-0 أزالها عن قصد وأحلّ
+  // محلَّها رحلةَ البحث. فإبقاءُ الدعوى يُلزمنا بإحياء منتجٍ متقاعد لأجل
+  // فحصٍ — وذاك عكسُ الترتيب.
+  //
+  // والمفحوصُ الآن أكثرُ ممّا كان: أنّ الرحلةَ **وصلت** (لا حالَ سقوط)،
+  // وأنّ لها مرحلةً حاليّةً مسمّاة، وخطوةً تالية بسببها، وتسعَ مراحل،
+  // وفعلًا رئيسًا واحدًا يقصد وجهةً — ولا نسبةَ إنجاز.
+  await test.step("the Research Journey loads and states a truthful stage", async () => {
+    const journey = page.getByTestId("research-journey");
+    await expect(journey).toBeVisible({ timeout: 20_000 });
+
+    // **١ · وصلت فعلًا** — وحالُ السقوط ليست فراغًا يُقرأ نجاحًا.
+    await expect(page.getByTestId("journey-failed")).toHaveCount(0);
+    await expect(page.getByTestId("journey-loading")).toHaveCount(0);
+
+    // **٢ · مرحلةٌ حاليّةٌ مسمّاة.** وبحثٌ أُنشئ بعنوانٍ وحده يقف عند الفكرة.
+    await expect(page.getByTestId("journey-current-stage")).toHaveText("الفكرة");
+
+    // **٣ · وخطوةٌ تالية ومعها لماذا** — لا فعلٌ بلا سبب.
+    await expect(page.getByTestId("journey-next-title")).toBeVisible();
+    await expect(page.getByTestId("journey-next-why")).toContainText("لا سؤالَ");
+
+    // **٤ · وتسعُ مراحلَ بترتيبها، وواحدةٌ حاليّة.**
+    await expect(journey.getByTestId("journey-stages").locator("> li"))
+      .toHaveCount(9);
+    await expect(page.locator('[data-current="true"]')).toHaveCount(1);
+
+    // **٥ · وفعلٌ رئيسٌ واحد يقصد وجهةً** — والفكرةُ مرحلةٌ لها أداة.
+    await expect(page.getByTestId("journey-primary-cta")).toBeVisible();
+
+    // **٦ · والخانات الصادقة باقية، ولا نسبةَ إنجاز في الصفحة إطلاقًا.**
     await expect(page.getByText("ما تعرفه بُبريفا عن بحثك")).toBeVisible();
     await expect(page.getByText(/لا تُعرض نسبة جاهزية/)).toBeVisible();
-    // ولا نسبة مئوية في الصفحة إطلاقًا.
     expect(await page.locator("body").innerText()).not.toMatch(/\d+\s*%/);
-    await expect(page.getByText("بُبريفا تقترح")).toBeVisible();
   });
 
   // ── ٨–١٠: مكتبة ← ربطٌ ببحث ← فكُّ الربط ← الأصل باقٍ في المكتبة ──
