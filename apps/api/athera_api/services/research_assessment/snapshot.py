@@ -63,7 +63,7 @@ from ...research_brain.values import known, missing
 from ..golden_thread.vocab import SAMPLING_STRATEGIES
 from ..publishing.drafting.checks import sample_numbers
 from ..publishing.vocab import MANUSCRIPT_SECTIONS
-from ..workspace import BRAIN_FIELDS
+from .vocab import BRAIN_FIELDS
 
 # مقاييس المتغيّرات كما يقبلها `Measure.scale_type` و`Analysis.outcome_scale`.
 # وعمود `variables.scale_type` و`data_dictionaries.scale_type` كلاهما
@@ -741,10 +741,15 @@ async def build_project_assessment(session: AsyncSession, *, tenant_id: uuid.UUI
                                    project_id: uuid.UUID) -> ProjectSnapshot | None:
     """يبني لقطة بحثٍ قائم — أو `None` إن لم يكن بحثًا قائمًا لهذا المستأجر.
 
-    و«القائم» من `workspace.live_project`: ما في السلّة ليس قائمًا، وتقييمُ
-    بحثٍ محذوف يعيده إلى الشاشة من بابٍ خلفي.
+    و«القائم» من `project_scope.live_project`: ما في السلّة ليس قائمًا،
+    وتقييمُ بحثٍ محذوف يعيده إلى الشاشة من بابٍ خلفي.
+
+    **ومن `project_scope` لا من `workspace`.** التعريفُ واحد، لكنّ
+    `workspace` تعرف مركزَ الرسائل — فكان استيرادُه منها يجرّ
+    `models.thesis` إلى أساس العقل. أمسكه عقدُ الاستيراد في
+    `pyproject.toml`، فانتقل التعريفُ إلى وحدةٍ محايدة ولم يتغيّر سلوك.
     """
-    from ..workspace import live_project
+    from ..project_scope import live_project
 
     project = await live_project(session, tenant_id=tenant_id, project_id=project_id)
     if project is None:

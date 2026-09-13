@@ -1522,7 +1522,20 @@
     "state_known": "Known",
     "state_missing": "Missing",
     "state_needs_review": "Needs review",
-    "state_conflicting": "Conflicting"
+    "state_conflicting": "Conflicting",
+    "journeyTitle": "Research Intelligence",
+    "journeyLead": "Where this project stands, what comes next, and why.",
+    "journeyLoading": "Reading the state of the project…",
+    "journeyFailed": "The project state could not be read right now. The sections below do not replace it.",
+    "nextStepTitle": "Recommended next step",
+    "nextStepWhy": "Why",
+    "nextStepNone": "No step is suggested right now — what is recorded supports what follows.",
+    "nextStepOpen": "Open",
+    "cannotTitle": "What cannot be done yet",
+    "cannotHint": "These are facts read from your project, not an opinion about ordering.",
+    "cannotNone": "Nothing is blocked right now.",
+    "moreStepsTitle": "Other steps",
+    "journeyLimits": "Limits of this reading"
   },
   "goldenThread": {
     "title": "Golden Thread",
@@ -1851,5 +1864,19 @@
     "threadReady": "The Golden Thread is built for this paper.",
     "title": "Your thesis on its way to a published paper",
     "waiting": "Not started yet"
+  },
+  "capability": {
+    "run_analysis": "Run an analysis",
+    "record_finding": "Record a finding",
+    "support_claim": "Support a claim with a source",
+    "draft_results": "Draft the results section"
+  },
+  "blocker": {
+    "dataset_missing": "No dataset exists in this project.",
+    "analysis_not_run": "No analysis run exists yet.",
+    "no_sources_linked": "No source is linked to this project.",
+    "no_findings_recorded": "No finding is recorded yet.",
+    "research_question_missing": "No research question is recorded.",
+    "method_not_selected": "No method has been selected."
   }
 }

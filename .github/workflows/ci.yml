@@ -236,6 +236,16 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
+      # ── الذكاء البحثيّ: أين يقف البحث وما التالي (الموجة 2-A) ──
+      #
+      # وتُشغَّل مستقلّةً عن أختها أعلاه قصدًا: تلك تحرس خانات التقييم،
+      # وهذه تحرس الخطوةَ التالية وسببَها وأسبابَ المنع. ودمجُهما يجعل
+      # سقوطَ إحداهما يُقرأ سقوطَ الأخرى.
+      - name: Research Intelligence journey surface (real browser)
+        run: cd apps/web && npm run test:brain-v1
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
       # ── إدارةُ المشاريع البحثية ──
       #
       # وصلت رقعتُها الفرعَ ولا خطوة تنادِيها — وهي ثاني مرّة في موجةٍ
