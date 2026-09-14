@@ -62,7 +62,7 @@ from ..schemas.synthesis import (
     ThemeView,
     VocabularyEntry,
 )
-from ..services import audit, workspace
+from ..services import audit, collaboration
 from ..services.synthesis import (
     assess_gaps,
     build_project_preview,
@@ -90,13 +90,23 @@ from ..services.synthesis.vocab import (
 router = APIRouter(prefix="/api/v1/synthesis", tags=["synthesis"])
 
 
+EDIT = "edit_research_content"
+
+
 async def _project(session: AsyncSession, principal: Principal,
-                   project_id: uuid.UUID) -> ResearchProject:
-    row = await workspace.live_project(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
-    if row is None:
-        raise NotFound("synthesis.project_not_found")
-    return row
+                   project_id: uuid.UUID, *,
+                   permission: str = collaboration.VIEW_PROJECT) -> ResearchProject:
+    """**البحثُ ومَن له أن يمسّه** — ومساواةُ المستأجر ليست جوابًا.
+
+    كان هنا `live_project` وحدها: بحثٌ قائمٌ في مستأجري. وذاك يعزل مؤسسةً
+    عن مؤسسة ولا يعزل باحثًا عن باحث — فكان كلُّ زميلٍ يقرأ مواضيعَ زميله
+    وتناقضاتِه وفجواتِه، **ويقرّر فيها**، وينشئ من فجوته بحثًا. والقرارُ
+    على مرشَّحةٍ علمية أثرٌ في سجلّ بحثٍ ليس له.
+    """
+    return (await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        user_id=principal.user_id, permission=permission,
+        not_found_code="synthesis.project_not_found")).project
 
 
 async def _titles(session: AsyncSession, principal: Principal,
@@ -274,7 +284,7 @@ async def analyze(
     والتوليد حتميّ بلا نموذج: التشغيلة نفسها على المصفوفة نفسها تُنتج
     القائمة نفسها بالترتيب نفسه.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     moment = dt.datetime.now(dt.UTC)
     corpus = await load_corpus(session, tenant_id=principal.tenant_id,
                                project_id=project_id, taken_at=moment)
@@ -336,7 +346,7 @@ async def decide_theme(
     session: AsyncSession = Depends(get_session),
 ) -> ThemeView:
     """حكمُ الباحث على موضوع — **ويُنسب إليه رفضًا كما اعتمادًا**."""
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     row = await store.theme_of(session, tenant_id=principal.tenant_id,
                                project_id=project_id, theme_id=theme_id)
     if row is None:
@@ -419,7 +429,7 @@ async def decide_contradiction(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> DecisionRequest:
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     rows = await store.list_contradictions(
         session, tenant_id=principal.tenant_id, project_id=project_id)
     row = next((r for r in rows if r.id == contradiction_id), None)
@@ -522,7 +532,7 @@ async def decide_gap(
     و«اعتمد» هنا تعني **«قرّرتُ متابعتها»** لا «ثبتت»؛ وهو ما تقوله الشاشة
     نصًّا قبل الزرّ. وسحبُ الاعتماد بعد إنشاء فرصةٍ فوقه ترفضه القاعدة.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     row = await store.gap_of(session, tenant_id=principal.tenant_id,
                              project_id=project_id, gap_id=gap_id)
     if row is None:
@@ -644,7 +654,7 @@ async def create_opportunity(
     حال الفجوة، والقاعدة ترفض المفتاح المركّب. فمن التفّ على واحدٍ اصطدم
     بالآخر — ولا يقع إنشاءٌ تلقائيّ بحال.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     if not payload.confirmed:
         raise AtheraError("synthesis.confirmation_required",
                           status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
@@ -726,7 +736,7 @@ async def create_project_from_opportunity(
     آخر بلا قرار باحثٍ يجعل الإدراج — وهو أخطر قرارٍ في الفرز — يقع بأثرٍ
     جانبي لضغطة زرّ.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     if not payload.confirmed:
         raise AtheraError("synthesis.confirmation_required",
                           status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)

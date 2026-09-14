@@ -32,7 +32,6 @@ from ..deps import Principal, get_principal, get_session
 from ..discovery import throttle
 from ..errors import AtheraError, NotFound
 from ..models.files import File
-from ..models.portfolio import ResearchProject
 from ..models.research import ExtractionRun, FactCandidate, ResearcherMemory
 from ..brain.contracts import strip_markup
 from ..brain.orchestrator import Orchestrator
@@ -54,6 +53,7 @@ from ..services import (
     ai_policy,
     ai_rate_limit,
     audit,
+    collaboration,
     consent,
     reference_discovery,
 )
@@ -206,15 +206,14 @@ async def ask(
     # المعرّف صحيح ولا يملكه، و٤٠٤ لا تقول شيئًا.
     project_view: ProjectContextView | None = None
     if payload.project_id is not None:
-        project = (
-            await session.execute(select(ResearchProject).where(
-                ResearchProject.id == payload.project_id,
-                ResearchProject.tenant_id == principal.tenant_id))
-        ).scalar_one_or_none()
-        if project is None or project.deleted_at is not None:
-            # الرمز المُعرَّف في الكتالوج، لا رمزٌ جديد يُترجَم إلى نفسه:
-            # مفتاحٌ غائب يصل الباحث حرفيًّا — `project.not_found` على الشاشة.
-            raise NotFound("workspace.project_not_found")
+        # والمستأجرُ وحده لم يكن كافيًا: كان سؤالٌ بريء الشكل يعيد عنوانَ
+        # بحثِ زميلك وحالَه وبوابتَه لمن يعرف المعرّف — والمحادثةُ أسهل
+        # بابٍ يُطرَق. فالبوابةُ المشتركة هنا كما في كلّ مسارٍ يقبل معرّفًا.
+        # والرمز المُعرَّف في الكتالوج، لا رمزٌ جديد يُترجَم إلى نفسه:
+        # مفتاحٌ غائب يصل الباحث حرفيًّا — `project.not_found` على الشاشة.
+        project = (await collaboration.ensure_project_access(
+            session, tenant_id=principal.tenant_id,
+            project_id=payload.project_id, user_id=principal.user_id)).project
         project_view = ProjectContextView(
             project_id=project.id,
             working_title=(project.working_title_en or project.working_title_ar)

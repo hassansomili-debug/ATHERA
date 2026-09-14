@@ -331,6 +331,10 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     #
     # ولا رمز هنا يقول «فجوة» بلا «محتملة»: نصّ الخطأ يقرؤه الباحث في لحظة
     # ضغطٍ على زرّ، وهو من أكثر ما يعلق في ذهنه عن معنى ما يفعله.
+    "planning.project_not_found": {
+        "ar": "لم يُعثر على هذا البحث.",
+        "en": "This project was not found.",
+    },
     "synthesis.project_not_found": {
         "ar": "لم يُعثر على هذا البحث.",
         "en": "This project was not found.",
@@ -595,6 +599,9 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     },
     "publishing.patch_already_decided": {
         "ar": "تم البت في هذه الرقعة مسبقًا.", "en": "This patch has already been decided.",
+    },
+    "analysis.dataset_not_found": {
+        "ar": "مجموعة البيانات غير موجودة.", "en": "Dataset not found.",
     },
     "analysis.version_not_found": {
         "ar": "نسخة البيانات غير موجودة.", "en": "Dataset version not found.",

@@ -244,15 +244,26 @@ async def _seed_file(tenant_id: uuid.UUID, user_id: uuid.UUID, name: str) -> uui
         return row.id
 
 
-async def _project(tenant_id: uuid.UUID, title: str) -> uuid.UUID:
+async def _project(tenant_id: uuid.UUID, user_id: uuid.UUID, title: str) -> uuid.UUID:
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
+    from athera_api.services import audit
 
-    async with tenant_session(tenant_id) as session:
+    async with tenant_session(tenant_id, user_id) as session:
         row = ResearchProject(tenant_id=tenant_id, working_title_ar=title,
                               status="planned", current_gate="G1")
         session.add(row)
         await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ.**
+        #
+        # فالمالكُ يُشتقّ من ملفّ الباحث أو من فاعلِ حدثِ الإنشاء في سجلّ
+        # التدقيق (`collaboration.owner_user_id`). وبحثٌ يُدسّ في القاعدة
+        # بلا واحدٍ منهما لا مالكَ له — ولا يفتحه أحد، وهو الصواب.
+        await audit.record(
+            session, tenant_id=tenant_id, action="workspace.project_created",
+            object_type="research_project", object_id=row.id,
+            actor_user_id=user_id,
+            reason="test fixture mirrors the real creation path")
         return row.id
 
 
@@ -284,7 +295,7 @@ async def test_a_selection_moves_together_and_keeps_every_key_and_link(
     a = clients["a"]
     tid, uid = two_tenants["a"]["tenant_id"], two_tenants["a"]["user_id"]
     made = [await _seed_file(tid, uid, f"ورقة {index}.pdf") for index in range(4)]
-    project = await _project(tid, "بحثٌ يعتمد على الملفات")
+    project = await _project(tid, uid, "بحثٌ يعتمد على الملفات")
 
     async with tenant_session(tid, uid) as session:
         for file_id in made:
@@ -411,7 +422,7 @@ async def test_deleting_a_selection_warns_with_a_number_and_destroys_nothing(
     a = clients["a"]
     tid, uid = two_tenants["a"]["tenant_id"], two_tenants["a"]["user_id"]
     made = [await _seed_file(tid, uid, f"يسند بحثًا {index}.pdf") for index in range(3)]
-    project = await _project(tid, "بحثٌ قائم")
+    project = await _project(tid, uid, "بحثٌ قائم")
     async with tenant_session(tid, uid) as session:
         for file_id in made[:2]:
             session.add(ProjectFile(tenant_id=tid, project_id=project, file_id=file_id,
@@ -460,7 +471,7 @@ async def test_linking_a_selection_counts_what_was_already_linked(clients, two_t
     a = clients["a"]
     tid, uid = two_tenants["a"]["tenant_id"], two_tenants["a"]["user_id"]
     made = [await _seed_file(tid, uid, f"مرجع {index}.pdf") for index in range(4)]
-    project = await _project(tid, "بحثٌ يُربط به")
+    project = await _project(tid, uid, "بحثٌ يُربط به")
     shelf = await _make_folder(a, "رفُّ المراجع")
     assert (await a.post("/api/v1/files/bulk/move",
                          json={"file_ids": [str(f) for f in made],

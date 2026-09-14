@@ -83,7 +83,7 @@ from ..schemas.project_management import (
     VocabularyEntry,
     VocabularyView,
 )
-from ..services import audit, workspace
+from ..services import audit, collaboration
 from ..services.project_management import (
     attention_items,
     missing_scientific_items,
@@ -144,15 +144,31 @@ def _now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
+EDIT = "edit_research_content"
+TASKS = "manage_tasks"
+
+
 async def _project(session: AsyncSession, principal: Principal,
-                   project_id: uuid.UUID) -> ResearchProject:
-    row = await workspace.live_project(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
-    if row is None:
-        # **٤٠٤ لا ٤٠٣**: تمييزُ «موجودٌ وليس لك» عن «غير موجود» يسرّب وجود
-        # بحوث غيرك — وهو تسريبٌ بذاته.
-        raise NotFound("project_management.project_not_found")
-    return row
+                   project_id: uuid.UUID, *,
+                   permission: str = collaboration.VIEW_PROJECT) -> ResearchProject:
+    """البحثُ **ومَن له أن يفعل هذا فيه** — لا «بحثٌ في مستأجري» وكفى.
+
+    كان الشرطُ هنا `live_project` وحدها. وهي تعزل مؤسسةً عن مؤسسة، ولا
+    تعزل باحثًا عن باحث: فكان كلُّ زميلٍ في المؤسسة يفتح لوحةَ زميله
+    وخطَّه الزمنيّ ومهامَّه، **ويكتب فيها** — يُنشئ مهمّةً في قائمة غيره،
+    ويؤكّد مرحلةَ بحثٍ ليس له، ويضع معلمًا في خطّةٍ لم يُدعَ إليها.
+
+    والمهامُّ والمعالمُ والخطّة تطلب `manage_tasks` — وهو الصفُّ الموجود
+    لها بعينها؛ وتأكيدُ المرحلة يطلب `edit_research_content` لأنه إقرارٌ
+    على حال البحث نفسه لا ترتيبُ عمل.
+
+    **٤٠٤ لا ٤٠٣** حين لا مدخلَ أصلًا: تمييزُ «موجودٌ وليس لك» عن «غير
+    موجود» يسرّب وجودَ بحوث غيرك — وهو تسريبٌ بذاته.
+    """
+    return (await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        user_id=principal.user_id, permission=permission,
+        not_found_code="project_management.project_not_found")).project
 
 
 def _title_view(row: ResearchProject) -> ProjectTitleView:
@@ -384,7 +400,7 @@ async def update_plan(
     `research_projects.target_date` ولا يُنسخ إلى عمودٍ ثانٍ.
     """
     tid = principal.tenant_id
-    project = await _project(session, principal, project_id)
+    project = await _project(session, principal, project_id, permission=TASKS)
     plan = await store.ensure_plan(session, tenant_id=tid, project_id=project_id)
 
     before = {"start_date": str(plan.start_date) if plan.start_date else None,
@@ -477,7 +493,7 @@ async def confirm_stage(
     خالف الاقتراح، لا أنّ الاقتراح لم يكن.
     """
     tid = principal.tenant_id
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     plan = await store.ensure_plan(session, tenant_id=tid, project_id=project_id)
     milestones = await store.milestone_rows(session, tenant_id=tid,
                                             project_id=project_id)
@@ -574,7 +590,7 @@ async def create_task(
     بدل انتهاكِ قيدٍ يصل الباحث خطأً عامًّا.
     """
     tid = principal.tenant_id
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=TASKS)
 
     if payload.assignee_member_id is not None:
         member = await store.member_in_project(
@@ -630,7 +646,7 @@ async def update_task(
     يبقى حسابُ التأخّر معلَّقًا على عمودٍ فارغ.
     """
     tid = principal.tenant_id
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=TASKS)
     task = await store.task_by_id(session, tenant_id=tid, project_id=project_id,
                                   task_id=task_id)
     if task is None:
@@ -796,7 +812,7 @@ async def set_milestone(
     لصار «اكتملت مراجعة الأدبيات» مكتوبًا في سجلٍّ لأن أحدًا فتح شاشة.
     """
     tid = principal.tenant_id
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=TASKS)
     if milestone_key not in MILESTONES:
         raise NotFound("project_management.milestone_unknown")
 
@@ -859,10 +875,17 @@ async def read_trash(
     وهذه بالضبط الشاشة التي عُرض فيها `قبول 2026-09-09T17:12…` عنوانًا
     لبحث. فالعمود لا يُقرأ خامًا هنا ولا في غيرها.
     """
-    rows = (await session.execute(
+    # **والسلّةُ سلّةُ صاحبها.** فقائمةٌ بكلّ محذوفٍ في المستأجر تعرض على
+    # الزميل عناوينَ بحوثِ زميله التي أزالها — وقد يكون أزالها لأنها لم
+    # تعد تُعرض لأحد. والرؤيةُ تُقرأ للمحذوف كما تُقرأ للقائم: الملكيّة
+    # والعضويّة لا يزولان بالحذف الظاهر.
+    visible = await collaboration.visible_project_ids(
+        session, tenant_id=principal.tenant_id, user_id=principal.user_id)
+    rows = [] if not visible else (await session.execute(
         select(ResearchProject)
         .where(ResearchProject.tenant_id == principal.tenant_id,
-               ResearchProject.deleted_at.is_not(None))
+               ResearchProject.deleted_at.is_not(None),
+               ResearchProject.id.in_(visible))
         .order_by(ResearchProject.deleted_at.desc())
     )).scalars().all()
     return TrashView(
@@ -879,6 +902,16 @@ async def _deletion_preview(session: AsyncSession, principal: Principal,
         session, tenant_id=principal.tenant_id, project_id=project_id)
     if project is None:
         # بحثٌ ليس في السلّة لا يُسأل عن إتلافه — والحذف الظاهر يسبقه دائمًا.
+        raise NotFound("project_management.project_not_in_trash")
+
+    # و**البوابةُ المشتركة لا تصلح هنا**: هي تشترط بحثًا قائمًا، وما في
+    # السلّة ليس قائمًا بتعريفها. فتُقرأ الصلاحياتُ مباشرةً — والجوابُ عند
+    # المنع هو جوابُ «ليس في السلّة» نفسه، فلا يصير المسارُ كاشفًا لما
+    # أزاله غيرُك. ومعاينةُ الإتلاف تعدّ صفوف البحث كلَّها، وهي معلومةٌ
+    # عن بحثٍ لا عن سلّة.
+    if await collaboration.project_permissions(
+            session, tenant_id=principal.tenant_id, project_id=project_id,
+            user_id=principal.user_id) is None:
         raise NotFound("project_management.project_not_in_trash")
 
     counts = await store.dependency_counts(

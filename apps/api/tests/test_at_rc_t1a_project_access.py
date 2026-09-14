@@ -290,3 +290,278 @@ async def test_the_trash_listing_does_not_expose_a_colleagues_deleted_project(
     async with _client(a) as http:
         mine = await http.get(f"{PROJECTS}?trash=true")
     assert "بحثٌ إلى السلّة" in [r["title_ar"] for r in mine.json()]
+
+
+# ═══════════ هـ · الموجّهاتُ المباشرة: لا بابَ خلفيًّا حول Workspace ═══════════
+#
+# **وهذا القسمُ وُلد من تصحيح.** قيل في المراجعة السابقة إنّ سطوحَ الملفات
+# والبيانات «محميّةٌ خلف Workspace» — ولم تكن. كان `_project` في Workspace
+# يُغلق، ويبقى أحد عشر موجّهًا آخر يقبل معرّفَ البحث مباشرةً بمساواة
+# المستأجر وحدها: الخيطُ الذهبيّ، والتخطيط، والتوليف، وإدارةُ المشروع،
+# والتحليل، والنشر، والصياغة، والأدبيّات، والمحادثة، والمكتبة، والمحفظة.
+#
+# فلا يُقال «محميّ خلف كذا» ويُصدَّق: **يُطرق البابُ نفسُه ويُرى ماذا يردّ**.
+
+GOLDEN_VIEW = "/api/v1/projects/{pid}/thread/golden-view"
+THREAD_ELEMENTS = "/api/v1/projects/{pid}/thread/elements"
+PUB_CONTEXT = "/api/v1/planning/{pid}/publication-context"
+DASHBOARD = "/api/v1/project-management/projects/{pid}/dashboard"
+TASKS = "/api/v1/project-management/projects/{pid}/tasks"
+THEMES = "/api/v1/synthesis/projects/{pid}/themes"
+LEDGER = "/api/v1/literature/projects/{pid}/evidence-ledger"
+DATASETS = "/api/v1/analysis/datasets"
+MANUSCRIPTS = "/api/v1/publishing/manuscripts"
+ASK = "/api/v1/ai/ask"
+PORTFOLIO = "/api/v1/portfolio/projects"
+
+ELEMENT_BODY = {"element_type": "problem", "label_ar": "مشكلةٌ دسّها غريب", "ordinal": 1}
+TASK_BODY = {"title": "مهمّةٌ دسّها غريب", "stage": "idea"}
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_e_a_non_member_is_refused_at_every_direct_project_router(two_tenants):
+    """**كلُّ بابٍ يُطرق بمعرّفٍ صحيح، وكلُّها تردّ ٤٠٤.**
+
+    ولا يُكتفى بالبوابة المشهورة: الزميلُ هنا يعرف المعرّفَ تمامًا كما
+    يعرفه صاحبُ البحث، ويطرق عشرةَ أبوابٍ لا يمرّ واحدٌ منها بـWorkspace.
+    """
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ لا يُطرق بابه")
+    colleague = await _second_user(a["tenant_id"], email=f"d-{uuid.uuid4().hex[:8]}@x.test")
+
+    async with _client(colleague) as http:
+        for route in (JOURNEY, GOLDEN_VIEW, PUB_CONTEXT, DASHBOARD, TASKS,
+                      THEMES, LEDGER):
+            got = await http.get(route.format(pid=project_id))
+            assert got.status_code == 404, f"{route} ردّ {got.status_code}: {got.text}"
+
+        # والكتابةُ كذلك — ولا صفَّ يُترك خلفها.
+        made = await http.post(THREAD_ELEMENTS.format(pid=project_id), json=ELEMENT_BODY)
+        assert made.status_code == 404, made.text
+        tasked = await http.post(TASKS.format(pid=project_id), json=TASK_BODY)
+        assert tasked.status_code == 404, tasked.text
+
+        # وطبقةُ البيانات: مجموعةٌ تُدسّ في بحثِ غيره.
+        dataset = await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "بياناتٌ دسّها غريب",
+            "classification": "C2", "raw_label": "خام", "raw_checksum": "a" * 64,
+            "row_count": 10})
+        assert dataset.status_code == 404, dataset.text
+
+        # ومخطوطةٌ تُنشأ في بحثِ غيره.
+        manuscript = await http.post(MANUSCRIPTS, json={
+            "project_id": str(project_id), "title_ar": "مخطوطةٌ دسّها غريب",
+            "language": "ar"})
+        assert manuscript.status_code == 404, manuscript.text
+
+        # والمحادثةُ لا تصير بابًا خلفيًّا لعنوان البحث وحاله.
+        asked = await http.post(ASK, json={
+            "question": "ما حال هذا البحث؟", "project_id": str(project_id)})
+        assert asked.status_code == 404, asked.text
+
+    # **ولا أثرَ بقي**: العنصرُ المرفوض لا صفَّ له في الخيط.
+    async with _client(a) as http:
+        woven = await http.get(GOLDEN_VIEW.format(pid=project_id))
+    assert woven.status_code == 200, woven.text
+    assert "مشكلةٌ دسّها غريب" not in woven.text
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_e_the_portfolio_listing_is_a_second_door_to_the_same_list(two_tenants):
+    """**شاشتان للقائمة نفسها، والحدُّ يُوضع في كلتيهما.**"""
+    a = two_tenants["a"]
+    await _owned_project(a, title="بحثٌ في المحفظة")
+    colleague = await _second_user(a["tenant_id"], email=f"p-{uuid.uuid4().hex[:8]}@x.test")
+
+    async with _client(a) as http:
+        mine = await http.get(PORTFOLIO)
+    assert mine.status_code == 200, mine.text
+    assert "بحثٌ في المحفظة" in [r["working_title_ar"] for r in mine.json()]
+
+    async with _client(colleague) as http:
+        theirs = await http.get(PORTFOLIO)
+    assert theirs.status_code == 200, theirs.text
+    assert "بحثٌ في المحفظة" not in [r["working_title_ar"] for r in theirs.json()]
+
+
+# ═══════════ و · الاطّلاعُ يقرأ ولا يكتب ═══════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_f_view_project_reads_but_never_writes(two_tenants):
+    """**`view_project` ليست إذنًا بالكتابة** — و٤٠٣ لا ٤٠٤ هنا.
+
+    فالفرقُ مقصود: من لا مدخلَ له يُجاب بـ٤٠٤ فلا يُستدلّ على وجود البحث؛
+    ومن يطّلع ولا يملك الفعل يعرف وجودَه سلفًا، فالصدقُ أنفع من إنكارٍ كاذب.
+    """
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ يُقرأ ولا يُكتب")
+    colleague = await _second_user(a["tenant_id"], email=f"v-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, colleague, project_id, permissions=["view_project"])
+
+    async with _client(colleague) as http:
+        # يقرأ.
+        for route in (JOURNEY, GOLDEN_VIEW, DASHBOARD, THEMES):
+            got = await http.get(route.format(pid=project_id))
+            assert got.status_code == 200, f"{route} ردّ {got.status_code}: {got.text}"
+
+        # ولا يكتب — في الخيط، ولا في المهامّ، ولا في البيانات.
+        made = await http.post(THREAD_ELEMENTS.format(pid=project_id), json=ELEMENT_BODY)
+        assert made.status_code == 403, made.text
+        tasked = await http.post(TASKS.format(pid=project_id), json=TASK_BODY)
+        assert tasked.status_code == 403, tasked.text
+        dataset = await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "بياناتٌ بلا إذن",
+            "classification": "C2", "raw_label": "خام", "raw_checksum": "b" * 64,
+            "row_count": 10})
+        assert dataset.status_code == 403, dataset.text
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_f_edit_research_content_writes_but_is_not_data_management(two_tenants):
+    """**والصلاحيّاتُ لا تتداخل**: من يحرّر المحتوى لا يملك البيانات بذلك.
+
+    وهذا حدُّ الإحصائيّ في هذا النظام: `manage_data` صفٌّ قائمٌ بذاته،
+    والمؤلّفُ المشارك يحرّر النصّ ولا يفتح مجموعةَ المشاركين.
+    """
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ يُحرَّر")
+    colleague = await _second_user(a["tenant_id"], email=f"e-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, colleague, project_id,
+                             permissions=["view_project", "edit_research_content"])
+
+    async with _client(colleague) as http:
+        made = await http.post(THREAD_ELEMENTS.format(pid=project_id), json=ELEMENT_BODY)
+        assert made.status_code == 201, made.text
+
+        # ولا مهامّ: `manage_tasks` صفٌّ آخر لم يُمنح.
+        tasked = await http.post(TASKS.format(pid=project_id), json=TASK_BODY)
+        assert tasked.status_code == 403, tasked.text
+
+        # **ولا بيانات** — وهذا هو الحدُّ الذي طُلب إثباتُه لا ادّعاؤه.
+        dataset = await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "بياناتُ مشاركين",
+            "classification": "C2", "raw_label": "خام", "raw_checksum": "c" * 64,
+            "row_count": 10})
+        assert dataset.status_code == 403, dataset.text
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_f_manage_data_opens_the_dataset_and_its_dictionary_and_nothing_else(
+        two_tenants):
+    """**قاموسُ الأعمدة يحمل وسمَ البيانات الشخصية** — فلا يُقرأ بالاطّلاع.
+
+    والمجموعةُ تُنشأ بـ`manage_data`، وتُقرأ نسخُها بالاطّلاع؛ أمّا الكتابةُ
+    في القاموس فتطلب الصفَّ نفسه. وثالثةٌ تُثبت أنّ المنحةَ لم تتمدّد:
+    صاحبُ البيانات لا يحرّر الخيط.
+    """
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ ذو بيانات")
+    statistician = await _second_user(a["tenant_id"], email=f"s-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, statistician, project_id,
+                             permissions=["view_project", "manage_data"])
+
+    async with _client(statistician) as http:
+        made = await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "مجموعةُ المشاركين",
+            "classification": "C2", "raw_label": "خام", "raw_checksum": "d" * 64,
+            "row_count": 40})
+        assert made.status_code == 201, made.text
+        version_id = made.json()["id"]
+
+        wrote = await http.put(
+            f"/api/v1/analysis/datasets/versions/{version_id}/dictionary",
+            json=[{"column_name": "age", "description_ar": "العمر", "is_pii": False}])
+        assert wrote.status_code == 200, wrote.text
+
+        # ولا يحرّر الخيطَ العلميّ: `edit_research_content` لم يُمنح.
+        element = await http.post(THREAD_ELEMENTS.format(pid=project_id), json=ELEMENT_BODY)
+        assert element.status_code == 403, element.text
+
+    # وزميلٌ لا عضويّةَ له لا يقرأ القاموس أصلًا — **ولا يعرف أنّه موجود**.
+    outsider = await _second_user(a["tenant_id"], email=f"o-{uuid.uuid4().hex[:8]}@x.test")
+    async with _client(outsider) as http:
+        read = await http.get(f"/api/v1/analysis/datasets/versions/{version_id}/dictionary")
+        assert read.status_code == 404, read.text
+        listed = await http.get(DATASETS)
+        assert listed.status_code == 200
+        assert listed.json() == []
+
+
+# ═══════════ ز · الملفُّ لا يتبع البحثَ، والبحثُ لا يفتح الملفّ ═══════════
+#
+# **وهذا ما طُلب إثباتُه لا ادّعاؤه.** قيل إنّ الملفات «محميّةٌ خلف
+# Workspace»؛ والحقيقةُ أدقُّ من ذلك وأمتن: `files` لا تسأل عن البحث أصلًا،
+# بل عن **مِنحةٍ صريحة على الملفّ نفسه** (`rbac.require_object_action`)،
+# تُكتب عند الرفع لصاحبه. فالحدُّ هنا قائمٌ بآليّةٍ أخرى — لا بـWorkspace.
+#
+# والحدّان مستقلّان في الاتجاهين، وكلاهما يُختبر:
+#   • زميلٌ لا عضويّةَ له لا ينزّل ملفًّا مربوطًا ببحثٍ ليس له.
+#   • **وعضوٌ في البحث لا ينزّل ملفَّه بمجرّد عضويّته**: `view_project`
+#     ليست منحةَ ملفّ، و`manage_data` ليست منحةَ ملفّ. والربطُ يقول
+#     «هذا البحث يستعمل هذا الملفّ»، لا «كلُّ عضوٍ يقرؤه».
+#
+# وذاك تصميمٌ مقصود: ملفُّ المشاركين قد يحمل هويّاتٍ لا يجوز أن يراها كلُّ
+# من دُعي إلى البحث. ويُقال هنا صريحًا حتى لا يُقرأ الصمتُ وعدًا.
+
+DOWNLOAD = "/api/v1/files/{fid}/download"
+LINK_FILE = "/api/v1/workspace/projects/{pid}/files"
+
+
+async def _file_owned_by(slot, name="بياناتُ المشاركين.pdf") -> uuid.UUID:
+    """ملفٌّ في مكتبة صاحبه، ومنحتُه مكتوبةٌ له كما يكتبها الرفعُ الحقيقيّ."""
+    from athera_api.db import tenant_session
+    from athera_api.models.files import File
+    from athera_api.models.identity import ObjectGrant
+
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    async with tenant_session(tid, uid) as session:
+        row = File(tenant_id=tid, storage_key=f"tenants/{tid}/{uuid.uuid4()}",
+                   original_filename=name, content_type="application/pdf",
+                   size_bytes=2048, checksum_sha256="0" * 64, classification="C2",
+                   status="stored", uploaded_by=uid)
+        session.add(row)
+        await session.flush()
+        session.add(ObjectGrant(tenant_id=tid, object_type="file", object_id=row.id,
+                                user_id=uid, grant_level="owner", granted_by=uid))
+        await session.flush()
+        return row.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_g_a_project_linked_file_is_not_readable_by_tenant_membership(two_tenants):
+    """**الربطُ بالبحث لا يفتح الملفّ لأحد** — لا لزميل، ولا لعضو."""
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ له ملفّ")
+    file_id = await _file_owned_by(a)
+
+    # صاحبُه يربطه ببحثه وينزّله.
+    async with _client(a) as http:
+        linked = await http.post(LINK_FILE.format(pid=project_id),
+                                 json={"asset_id": str(file_id)})
+        assert linked.status_code == 201, linked.text
+        mine = await http.get(DOWNLOAD.format(fid=file_id))
+        assert mine.status_code == 200, mine.text
+
+    # زميلٌ في المؤسسة، لا عضويّةَ له: لا بحثًا ولا ملفًّا.
+    colleague = await _second_user(a["tenant_id"], email=f"f-{uuid.uuid4().hex[:8]}@x.test")
+    async with _client(colleague) as http:
+        assert (await http.get(DOWNLOAD.format(fid=file_id))).status_code == 403
+        assert (await http.get(f"{PROJECTS}/{project_id}/files")).status_code == 404
+
+    # **وعضوٌ في البحث بصلاحيّتي الاطّلاع وإدارة البيانات — ولا منحةَ ملفّ.**
+    member = await _second_user(a["tenant_id"], email=f"g-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, member, project_id,
+                             permissions=["view_project", "manage_data"])
+    async with _client(member) as http:
+        # يرى أنّ للبحث ملفًّا — وهذا حقُّ العضو.
+        listed = await http.get(f"{PROJECTS}/{project_id}/files")
+        assert listed.status_code == 200, listed.text
+        # ولا ينزّله: المنحةُ على الملفّ صفٌّ آخر لم يُكتب له.
+        assert (await http.get(DOWNLOAD.format(fid=file_id))).status_code == 403

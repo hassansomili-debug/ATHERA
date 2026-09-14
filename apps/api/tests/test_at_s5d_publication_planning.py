@@ -166,11 +166,21 @@ async def _seed_project_with_memory(tid, uid, *, facts=None):
     from athera_api.models.portfolio import ResearchProject
     from athera_api.models.research import DocumentChunk, ExtractionRun, FactCandidate
     from athera_api.services import memory as memory_service
+    from athera_api.services import audit
 
     facts = facts or FACTS
     async with tenant_session(tid, uid) as session:
         project = ResearchProject(tenant_id=tid, working_title_ar="مشروع تخطيط")
         session.add(project)
+        await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ** — فالمالكُ
+        # يُشتقّ من فاعلِ حدثِ الإنشاء في سجلّ التدقيق، وبحثٌ بلا حدثٍ ولا
+        # ملفِّ باحثٍ لا مالكَ له، ولا يفتحه أحد.
+        await audit.record(
+            session, tenant_id=tid, action="workspace.project_created",
+            object_type="research_project", object_id=project.id,
+            actor_user_id=uid,
+            reason="test fixture mirrors the real creation path")
         record = File(
             tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
             original_filename="thesis.txt", content_type="text/plain", size_bytes=10,
@@ -591,6 +601,7 @@ async def test_consent_for_one_project_never_authorizes_another(two_tenants):
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
     from athera_api.services import consent
+    from athera_api.services import audit
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
@@ -600,6 +611,14 @@ async def test_consent_for_one_project_never_authorizes_another(two_tenants):
         other = ResearchProject(tenant_id=tid, working_title_ar="مشروع آخر")
         session.add(other)
         await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ** — فالمالكُ
+        # يُشتقّ من فاعلِ حدثِ الإنشاء في سجلّ التدقيق، وبحثٌ بلا حدثٍ ولا
+        # ملفِّ باحثٍ لا مالكَ له، ولا يفتحه أحد.
+        await audit.record(
+            session, tenant_id=tid, action="workspace.project_created",
+            object_type="research_project", object_id=other.id,
+            actor_user_id=uid,
+            reason="test fixture mirrors the real creation path")
         other_id = other.id
         context = await ctx.build(session, tenant_id=tid, project_id=project_id,
                                   capability=consent.PLANNING_CAPABILITY)
@@ -947,6 +966,7 @@ async def test_the_live_schema_enforces_planning_states(two_tenants):
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
     from athera_api.models.thesis import PublicationOpportunity
+    from athera_api.services import audit
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
@@ -955,6 +975,14 @@ async def test_the_live_schema_enforces_planning_states(two_tenants):
         project = ResearchProject(tenant_id=tid, working_title_ar="مشروع")
         session.add(project)
         await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ** — فالمالكُ
+        # يُشتقّ من فاعلِ حدثِ الإنشاء في سجلّ التدقيق، وبحثٌ بلا حدثٍ ولا
+        # ملفِّ باحثٍ لا مالكَ له، ولا يفتحه أحد.
+        await audit.record(
+            session, tenant_id=tid, action="workspace.project_created",
+            object_type="research_project", object_id=project.id,
+            actor_user_id=uid,
+            reason="test fixture mirrors the real creation path")
         row = PublicationOpportunity(
             tenant_id=tid, project_id=project.id, opportunity_kind="independent_question",
             paper_kind="extraction", working_title_ar="ع", status="discovered",
@@ -1243,6 +1271,7 @@ async def test_a_verified_memory_without_a_candidate_stays_eligible(two_tenants)
     from athera_api.models.files import File
     from athera_api.models.portfolio import ResearchProject
     from athera_api.models.research import ResearcherMemory
+    from athera_api.services import audit
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
@@ -1250,6 +1279,15 @@ async def test_a_verified_memory_without_a_candidate_stays_eligible(two_tenants)
     async with tenant_session(tid, uid) as session:
         project = ResearchProject(tenant_id=tid, working_title_ar="مشروع بلا استخراج")
         session.add(project)
+        await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ** — فالمالكُ
+        # يُشتقّ من فاعلِ حدثِ الإنشاء في سجلّ التدقيق، وبحثٌ بلا حدثٍ ولا
+        # ملفِّ باحثٍ لا مالكَ له، ولا يفتحه أحد.
+        await audit.record(
+            session, tenant_id=tid, action="workspace.project_created",
+            object_type="research_project", object_id=project.id,
+            actor_user_id=uid,
+            reason="test fixture mirrors the real creation path")
         record = File(
             tenant_id=tid, storage_key=f"t/{uuid.uuid4()}.txt",
             original_filename="notes.txt", content_type="text/plain", size_bytes=10,

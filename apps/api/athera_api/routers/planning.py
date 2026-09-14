@@ -38,7 +38,7 @@ from ..schemas.planning import (
     ThreadIssue,
     ThreadView,
 )
-from ..services import audit, consent
+from ..services import audit, collaboration, consent
 from ..services.planning import context as ctx
 from ..services.planning import generate, outline, thread
 from ..services.planning.contracts import OpportunityBatch
@@ -61,32 +61,32 @@ def _t(locale: str, ar: str, en: str) -> str:
     return en if locale == "en" else ar
 
 
+EDIT = "edit_research_content"
+
+
 async def _project(session: AsyncSession, principal: Principal,
-                   project_id: uuid.UUID) -> ResearchProject:
-    """**البوابة القانونية الوحيدة للملكية** — بالمعرّف والمستأجر معًا.
+                   project_id: uuid.UUID, *,
+                   permission: str = collaboration.VIEW_PROJECT) -> ResearchProject:
+    """**البوابة القانونية الوحيدة** — بالمستأجر والعضويّة والصلاحية معًا.
 
     كان هذا الفحص يقرأ المشروع بمعرّفه وحده ويتّكل على RLS في حراسة
     المستأجر. والاتّكال صحيح ما دامت RLS تنطبق — وفي الإنتاج لم تنطبق:
     رابط زمن التشغيل كان يتصل بدورٍ يحمل `rolbypassrls`، فسقطت الطبقة
     الوحيدة، ولم يكن خلفها شيء. فقرأ مستأجرٌ فرصَ آخر وخيطه وهيكله، وردّ
-    قراره بـ200.
+    قراره بـ200. فأُضيفت الفلترة الصريحة، والطبقتان تبقيان معًا.
 
-    فالطبقتان تبقيان معًا: RLS خاصيةُ قاعدة، والفلترة الصريحة تفويضُ
-    تطبيق. أيّهما بقي وحده يمنع التسريب — وهذا هو المقصود.
+    **ثم تبيّن أنّ الطبقتين معًا تحرسان الحدَّ الخطأ.** فكلتاهما تسأل
+    «أمِن مستأجري هذا البحث؟» — ولا تسأل واحدةٌ منهما «أهو بحثي؟». وفي
+    مؤسسةٍ فيها ألفُ باحث كان كلُّ واحدٍ منهم يقرأ فرصَ نشر الألف الباقين
+    ويقرّر فيها. فمساواةُ المستأجر شرطُ عزلٍ لا تفويضَ مشروع، والتفويضُ
+    صفُّ عضويّةٍ نشط يحمل الصلاحية — وهو ما تقرؤه البوابة المشتركة الآن.
 
-    و404 لا 403: وجودُ مشروعٍ عند مستأجرٍ آخر معلومةٌ لا تُفشى.
+    و404 لا 403: وجودُ بحثٍ ليس لك معلومةٌ لا تُفشى.
     """
-    project = (
-        await session.execute(
-            select(ResearchProject).where(
-                ResearchProject.id == project_id,
-                ResearchProject.tenant_id == principal.tenant_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if project is None:
-        raise NotFound("planning.project_not_found")
-    return project
+    return (await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        user_id=principal.user_id, permission=permission,
+        not_found_code="planning.project_not_found")).project
 
 
 async def _opportunity(session: AsyncSession, principal: Principal,
@@ -171,7 +171,7 @@ async def planning_consent(
 
     والبصمة تُحفظ مع القرار: أدلةٌ تُضاف بعده لا تُرسل تحته.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     context = await _build_context(session, principal, project_id)
     if payload.context_fingerprint != context.fingerprint:
         # الباحث وافق على شاشةٍ عرضت أدلةً غير التي بين أيدينا الآن.
@@ -211,7 +211,7 @@ async def generate_opportunities(
 
     # ── معاملة (1): اللقطة والإذن والتشغيلة — ثم تُغلق ──
     async with maker() as opening:
-        await _project(opening, principal, project_id)
+        await _project(opening, principal, project_id, permission=EDIT)
         context = await _build_context(opening, principal, project_id)
         if not context.sufficient:
             raise AtheraError("planning.insufficient_evidence", status_code=422,
@@ -369,7 +369,7 @@ async def decide_opportunity(
     قرارُ تخطيط.
     """
     # الملكية تُثبَت **قبل أي تعديل** — لا كتابة تسبق التفويض.
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     row = await _opportunity(session, principal, project_id, opportunity_id)
 
     # **والكتابةُ في `services/thesis/selection.py` وحدها.** فرصةُ الرسالة
@@ -414,7 +414,7 @@ async def build_thread(
     **حتميٌّ بالكامل — لا نداء نموذج.** بنية الخيط معروفة، والذي يحتاج
     اجتهادًا هو ربطها بالأدلة، وذلك عملٌ يقيني: أي دليل يصير أي عنصر.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     opportunity = await _selected(session, principal, project_id, opportunity_id)
     context = await _build_context(session, principal, project_id)
 
@@ -499,7 +499,7 @@ async def build_outline(
     وهيكلٌ لا نثر: غرضٌ وأسئلة وأدلة متاحة وناقصة وحدود ادّعاء. وكتابة
     الورقة مرحلةٌ أخرى لا تبدأ هنا.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     opportunity = await _selected(session, principal, project_id, opportunity_id)
     context = await _build_context(session, principal, project_id)
 

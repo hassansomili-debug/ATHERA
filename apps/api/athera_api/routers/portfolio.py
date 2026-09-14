@@ -9,7 +9,7 @@ from ..errors import NotFound
 from ..models.portfolio import ResearchProject
 from ..models.research import ResearcherProfile
 from ..schemas.portfolio import ProjectCreateRequest, ProjectResponse
-from ..services import audit
+from ..services import audit, collaboration
 
 router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"])
 
@@ -46,10 +46,18 @@ async def list_projects(
 ) -> list[ProjectResponse]:
     # ما في السلّة لا يظهر هنا أيضًا: بحثٌ يُحذف في شاشة ويبقى في أخرى
     # يجعل الحذف كذبًا، والباحث لا يعرف أيّ الشاشتين تقول الحق.
-    rows = (
+    #
+    # **ولا بحثَ غيرِك يظهر هنا.** كانت هذه العبارةُ بلا شرطٍ إلا الحذف،
+    # فكانت تردّ كلَّ بحثٍ في المستأجر: عناوينَ الزملاء ومجلّاتِهم المستهدفة
+    # ومخاطرَهم وتواريخَهم. وهي شاشةٌ ثانيةٌ للقائمة نفسها، ففاتت السدَّ
+    # الذي وُضع في `workspace` — **والحدُّ يُوضع في كلّ باب، لا في أشهرها**.
+    visible = await collaboration.visible_project_ids(
+        session, tenant_id=principal.tenant_id, user_id=principal.user_id)
+    rows = [] if not visible else (
         await session.execute(
             select(ResearchProject)
-            .where(ResearchProject.deleted_at.is_(None))
+            .where(ResearchProject.deleted_at.is_(None),
+                   ResearchProject.id.in_(visible))
             .order_by(ResearchProject.created_at.desc())
         )
     ).scalars().all()

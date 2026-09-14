@@ -1206,15 +1206,26 @@ def test_the_gaps_screen_never_promises_certainty_in_its_own_words():
 
 # ════════════════════ ١٠. اختبارات تمسّ القاعدة (CI) ════════════════════
 
-async def _seed_project(tid: uuid.UUID, title: str) -> uuid.UUID:
+async def _seed_project(tid: uuid.UUID, uid: uuid.UUID, title: str) -> uuid.UUID:
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
+    from athera_api.services import audit
 
-    async with tenant_session(tid) as session:
+    async with tenant_session(tid, uid) as session:
         project = ResearchProject(tenant_id=tid, working_title_ar=title,
                                   status="planned", current_gate="G1")
         session.add(project)
         await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ.**
+        #
+        # فالمالكُ يُشتقّ من ملفّ الباحث أو من فاعلِ حدثِ الإنشاء في سجلّ
+        # التدقيق (`collaboration.owner_user_id`). وبحثٌ يُدسّ في القاعدة
+        # بلا واحدٍ منهما لا مالكَ له — ولا يفتحه أحد، وهو الصواب.
+        await audit.record(
+            session, tenant_id=tid, action="workspace.project_created",
+            object_type="research_project", object_id=project.id,
+            actor_user_id=uid,
+            reason="test fixture mirrors the real creation path")
         return project.id
 
 
@@ -1284,7 +1295,7 @@ async def test_a_tenant_never_reads_another_tenants_synthesis(two_tenants):
     )
 
     a, b = two_tenants["a"], two_tenants["b"]
-    project = await _seed_project(a["tenant_id"], "بحث المستأجر أ")
+    project = await _seed_project(a["tenant_id"], a["user_id"], "بحث المستأجر أ")
     source = await _seed_source(a["tenant_id"], "دراسة أ")
     theme_id = await _seed_theme(a["tenant_id"], a["user_id"], project, source)
     gap_id = await _seed_gap(a["tenant_id"], a["user_id"], project)
@@ -1313,8 +1324,8 @@ async def test_one_tenant_two_projects_never_see_each_others_synthesis(two_tenan
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    first = await _seed_project(tid, "بحث أول")
-    second = await _seed_project(tid, "بحث ثانٍ")
+    first = await _seed_project(tid, uid, "بحث أول")
+    second = await _seed_project(tid, uid, "بحث ثانٍ")
     source = await _seed_source(tid, "دراسة مشتركة")
 
     theme_id = await _seed_theme(tid, uid, first, source, label="موضوع الأول")
@@ -1355,8 +1366,8 @@ async def test_a_theme_cannot_borrow_a_matrix_cell_from_another_project(two_tena
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    first = await _seed_project(tid, "بحث الخلية")
-    second = await _seed_project(tid, "بحث المستعير")
+    first = await _seed_project(tid, uid, "بحث الخلية")
+    second = await _seed_project(tid, uid, "بحث المستعير")
     source = await _seed_source(tid, "دراسة")
 
     async with tenant_session(tid, uid) as session:
@@ -1402,7 +1413,7 @@ async def test_the_database_refuses_an_opportunity_over_an_unapproved_gap(two_te
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    project = await _seed_project(tid, "بحث الفرصة")
+    project = await _seed_project(tid, uid, "بحث الفرصة")
     gap_id = await _seed_gap(tid, uid, project, status="generated")
 
     with pytest.raises(IntegrityError):
@@ -1428,7 +1439,7 @@ async def test_an_approved_gap_cannot_be_un_approved_under_a_live_opportunity(
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    project = await _seed_project(tid, "بحث الاعتماد")
+    project = await _seed_project(tid, uid, "بحث الاعتماد")
     gap_id = await _seed_gap(tid, uid, project, status="approved", decided_by=uid)
 
     async with tenant_session(tid, uid) as session:
@@ -1459,7 +1470,7 @@ async def test_a_decided_candidate_must_name_its_author(two_tenants):
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    project = await _seed_project(tid, "بحث القرار")
+    project = await _seed_project(tid, uid, "بحث القرار")
 
     with pytest.raises(IntegrityError):
         async with tenant_session(tid, uid) as session:
@@ -1496,7 +1507,7 @@ async def test_the_database_accepts_the_review_state_it_is_meant_to_allow(two_te
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    project = await _seed_project(tid, "بحث المراجعة")
+    project = await _seed_project(tid, uid, "بحث المراجعة")
 
     def _candidate(**over):
         base = dict(
@@ -1538,7 +1549,7 @@ async def test_a_gap_without_its_bounds_is_refused_by_the_database(two_tenants):
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    project = await _seed_project(tid, "بحث الحدود")
+    project = await _seed_project(tid, uid, "بحث الحدود")
 
     def _gap(**overrides):
         base = dict(
@@ -1571,7 +1582,7 @@ async def test_a_contradiction_side_that_states_nothing_is_refused(two_tenants):
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    project = await _seed_project(tid, "بحث الصمت")
+    project = await _seed_project(tid, uid, "بحث الصمت")
     source = await _seed_source(tid, "دراسة صامتة")
 
     async with tenant_session(tid, uid) as session:
@@ -1605,7 +1616,7 @@ async def test_a_content_theme_support_must_point_at_a_cell(two_tenants):
 
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
-    project = await _seed_project(tid, "بحث السند")
+    project = await _seed_project(tid, uid, "بحث السند")
     source = await _seed_source(tid, "دراسة")
 
     async with tenant_session(tid, uid) as session:
@@ -1797,7 +1808,7 @@ async def _seed_cells(tid, uid, project_id, source_id, **fields):
 
 async def _seed_two_opposed_studies(tid, uid):
     """مشروعٌ فيه دراستان تتعارضان — وهو أصغر ما يُنتج سلسلةً كاملة."""
-    project_id = await _seed_project(tid, "مشروعُ قبولٍ عبر HTTP")
+    project_id = await _seed_project(tid, uid, "مشروعُ قبولٍ عبر HTTP")
     first = await _seed_source(tid, "دراسةٌ أولى")
     second = await _seed_source(tid, "دراسةٌ ثانية")
     await _include_source(tid, uid, project_id, first)

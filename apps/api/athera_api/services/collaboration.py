@@ -40,7 +40,7 @@ from ..models.collaboration import (
 from ..models.identity import Membership, User
 from ..models.portfolio import ProjectMember, ResearchProject
 from ..models.research import ResearcherProfile
-from . import audit, team
+from . import audit, project_scope, team
 
 # أفعالُ إنشاء البحث في سجلّ التدقيق — منها يُشتقّ مالكُ بحثٍ لا ملفَّ له.
 # ومصدرُها سجلٌّ لا يُعدَّل ولا يُحذف منه، فالنسبة إليه نسبةٌ إلى واقعة.
@@ -995,15 +995,102 @@ async def visible_project_ids(
     return owned | joined
 
 
+# **الصلاحيّةُ تُقرأ مرّةً وتُستعمل مرارًا.** فالمسارُ الواحد يسأل عن
+# الاطّلاع ثم عن التحرير، وسؤالان يعنيان رحلتين إلى قاعدةٍ في إقليمٍ آخر.
+# فتُعاد المجموعةُ كاملةً، ويقرّر المسارُ منها بلا استعلامٍ ثانٍ.
+#
+# وصفُّ العضويّة **هو المرجع متى وُجد** — كما في `access_for` تمامًا. فلو
+# قُرئت الملكيّةُ أوّلًا لعاد المالكُ الموقوفُ يقرأ بعد إيقافه، ولاختلف
+# بابانِ على بحثٍ واحد. والملكيّةُ تُقرأ حيث لا صفَّ أصلًا: جسرُ ما قبل
+# العضويّات، لا بابٌ فوقها.
+OWNER_IMPLIED_PERMISSIONS: frozenset[str] = frozenset(
+    team.default_permissions("principal_investigator"))
+
+
+async def project_permissions(
+    session: AsyncSession, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> frozenset[str] | None:
+    """ما يملكه هذا الباحث في هذا البحث — أو `None` إن لم يكن له أن يراه.
+
+    و`None` ليست «مجموعةً فارغة»: الفارغةُ تعني عضوًا بلا صلاحيات، وهذه
+    تعني **لا مدخلَ أصلًا** — والفرقُ بينهما هو الفرق بين ٤٠٣ و٤٠٤.
+    """
+    member = await member_for(
+        session, project_id=project_id, user_id=user_id)
+    if member is None:
+        # لا صفَّ عضويّةٍ بعد: تُقرأ الملكيّةُ من مصدرها الموثوق، ويُمنح
+        # ما كان `ensure_owner_membership` ليمنحه — **بلا كتابة**.
+        if await owner_user_id(session, project_id=project_id) == user_id:
+            return OWNER_IMPLIED_PERMISSIONS
+        return None
+    if member.access_state != "active":
+        return None
+    keys = frozenset(await permissions_of(session, member_id=member.id))
+    if VIEW_PROJECT not in keys:
+        return None
+    return keys
+
+
 async def may_view_project(
     session: AsyncSession, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> bool:
     """أيجوز لهذا الباحث أن يفتح هذا البحث؟ — **قراءةٌ بلا أثر**."""
-    if await owner_user_id(session, project_id=project_id) == user_id:
-        return True
-    member = await member_for(
-        session, project_id=project_id, user_id=user_id)
-    if member is None or member.access_state != "active":
-        return False
-    return VIEW_PROJECT in await permissions_of(session, member_id=member.id)
+    return await project_permissions(
+        session, tenant_id=tenant_id, project_id=project_id,
+        user_id=user_id) is not None
+
+
+@dataclass(frozen=True)
+class ProjectAccess:
+    """البحثُ ومَا يملكه طالبُه فيه — **بقراءةٍ واحدة**.
+
+    والمسارُ يحتاجهما معًا دائمًا: الصفَّ ليعرض، والمجموعةَ ليقرّر. وردُّهما
+    منفصلين يعني رحلتين إلى قاعدةٍ في إقليمٍ آخر، وعدُّ الرحلات هو زمنُ
+    الاستجابة هنا.
+    """
+
+    project: ResearchProject
+    permissions: frozenset[str]
+
+    def allows(self, permission: str) -> bool:
+        return permission in self.permissions
+
+
+async def ensure_project_access(
+    session: AsyncSession, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
+    user_id: uuid.UUID, permission: str = VIEW_PROJECT,
+    not_found_code: str = "workspace.project_not_found",
+) -> ProjectAccess:
+    """**البوابةُ الوحيدة لكلّ مسارٍ يقبل معرّفَ بحث.**
+
+    ومساواةُ المستأجر ليست تفويضًا: زميلٌ في المؤسسة نفسها ليس عضوًا في
+    كلّ بحثٍ فيها. وهذا هو العطب الذي أغلقته هذه الدفعة — كان كلُّ موجّهٍ
+    يقرأ البحث بمعرّفه ومستأجره ثم يمضي، فقرأ زميلٌ خيطَ زميله وهيكلَه
+    وكتب فيهما، وردَّ المسارُ ٢٠٠.
+
+    وثلاثةُ فحوصٍ في ترتيبٍ مقصود:
+
+      ١. **بحثٌ قائم** في هذا المستأجر — وما في السلّة ليس قائمًا.
+      ٢. **مدخلٌ أصلًا؟** فإن لا، **٤٠٤** لا ٤٠٣: وجودُ بحثِ غيرك معلومةٌ
+         لا تُفشى، ولو رددنا ٤٠٣ لصار المسارُ عدّادَ بحوثٍ لمن يجرّب
+         المعرّفات. والرمزُ نفسه في الحالتين، فلا يُفرَّق بينهما بالنصّ.
+      ٣. **هذا الفعلُ بعينه؟** فإن لا، **٤٠٣**: الوجودُ معلومٌ له سلفًا،
+         والرسالةُ الصادقة أنفع من إنكارٍ كاذب.
+
+    ولا تكتب شيئًا. و`access_for` تُنشئ عضويّةَ المالك عند الحاجة، وذاك
+    صحيحٌ في مسارٍ يُغيّر فريقًا؛ أمّا **فتحُ صفحةٍ فلا يُنشئ عضويّة**.
+    """
+    row = await project_scope.live_project(
+        session, tenant_id=tenant_id, project_id=project_id)
+    if row is None:
+        raise NotFound(not_found_code)
+    keys = await project_permissions(
+        session, tenant_id=tenant_id, project_id=project_id, user_id=user_id)
+    if keys is None:
+        raise NotFound(not_found_code)
+    if permission not in keys:
+        raise Forbidden("team.permission_required", permission=permission,
+                        project_id=str(project_id))
+    return ProjectAccess(project=row, permissions=keys)

@@ -22,7 +22,6 @@ from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.literature import Claim
 from ..models.planning import ManuscriptOutline
-from ..models.portfolio import ResearchProject
 from ..models.publishing import (
     ClaimAnalysisLink,
     ClaimMemoryLink,
@@ -49,7 +48,7 @@ from ..schemas.drafting import (
     SectionReviewDecision,
     SectionView,
 )
-from ..services import audit, consent
+from ..services import audit, collaboration, consent
 from ..services.planning import context as research_context
 from ..services.publishing import consistency, vocab
 from ..services.publishing.drafting import checks as draft_checks
@@ -57,7 +56,7 @@ from ..services.publishing.drafting import context as draft_context
 from ..services.publishing.drafting import generate
 from ..services.publishing.drafting import policy
 from ..services.publishing.drafting.contracts import SectionDraft
-from .publishing import manuscript_for_tenant
+from .publishing import EDIT, manuscript_for_tenant
 
 logger = logging.getLogger("athera.drafting")
 
@@ -118,6 +117,13 @@ def _maker(tenant_id: uuid.UUID, actor_id: uuid.UUID):
     def _make():
         return tenant_session(tenant_id, actor_id)
     return _make
+
+
+async def manuscript_for_tenant_edit(session: AsyncSession, principal: Principal,
+                                     manuscript_id: uuid.UUID) -> Manuscript:
+    """المخطوطةُ لمن له أن يكتب فيها — لا لمن له أن يقرأها فقط."""
+    return await manuscript_for_tenant(
+        session, principal, manuscript_id, permission=EDIT)
 
 
 async def _current_version(session: AsyncSession, principal: Principal,
@@ -198,15 +204,10 @@ async def manuscript_from_opportunity(
     **ولا تُنسخ الفرصة ولا الهيكل**: المخطوطة تشير إليهما بمفتاح أجنبي،
     فيبقى مصدر الحقيقة واحدًا ولا يفترق نسختان.
     """
-    project = (
-        await session.execute(
-            select(ResearchProject).where(
-                ResearchProject.id == payload.project_id,
-                ResearchProject.tenant_id == principal.tenant_id)
-        )
-    ).scalar_one_or_none()
-    if project is None:
-        raise NotFound("publishing.project_not_found")
+    await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=payload.project_id,
+        user_id=principal.user_id, permission=EDIT,
+        not_found_code="publishing.project_not_found")
 
     opportunity = (
         await session.execute(
@@ -344,7 +345,7 @@ async def drafting_consent(
     وهذا يأذن بصياغة نصّ ورقة يحمل اسمه. غرضان يقرّهما مرتين.
     """
     _require_enabled(section_key)
-    record = await manuscript_for_tenant(session, principal, manuscript_id)
+    record = await manuscript_for_tenant_edit(session, principal, manuscript_id)
     context = await _build_context(session, principal, record, section_key)
     if payload.context_fingerprint != context.fingerprint:
         raise AtheraError("drafting.context_changed", status_code=409,
@@ -383,7 +384,7 @@ async def draft_section(
 
     # ── معاملة (1): اللقطة والإذن والحراسة — ثم تُغلق ──
     async with maker() as opening:
-        record = await manuscript_for_tenant(opening, principal, manuscript_id)
+        record = await manuscript_for_tenant_edit(opening, principal, manuscript_id)
         version = await _current_version(opening, principal, manuscript_id)
         current = await _section(opening, principal, version.id, section_key)
 
@@ -461,7 +462,7 @@ async def draft_section(
 
     # ── معاملة (أخيرة): نسخة جديدة، ثم الحفظ والربط والتدقيق ──
     async with maker() as fresh:
-        record = await manuscript_for_tenant(fresh, principal, manuscript_id)
+        record = await manuscript_for_tenant_edit(fresh, principal, manuscript_id)
         version = await _current_version(fresh, principal, manuscript_id)
         current = await _section(fresh, principal, version.id, section_key)
         if current is not None:
@@ -653,7 +654,7 @@ async def review_section(
 ) -> SectionView:
     """اعتماد الباحث أو طلبه تعديلًا — **ولا يعتمد النموذج نفسه** (§25)."""
     _require_enabled(section_key)
-    await manuscript_for_tenant(session, principal, manuscript_id)
+    await manuscript_for_tenant_edit(session, principal, manuscript_id)
     version = await _current_version(session, principal, manuscript_id)
     section = await _section(session, principal, version.id, section_key)
     if section is None:
@@ -788,7 +789,7 @@ async def edit_section(
     اعتمده — واعتمادٌ يُنقل إلى نصٍّ آخر اعتمادٌ لم يقع.
     """
     _require_enabled(section_key)
-    await manuscript_for_tenant(session, principal, manuscript_id)
+    await manuscript_for_tenant_edit(session, principal, manuscript_id)
     version = await _current_version(session, principal, manuscript_id)
     section = await _section(session, principal, version.id, section_key)
     if section is None:
