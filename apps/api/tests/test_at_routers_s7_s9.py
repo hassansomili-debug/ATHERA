@@ -48,6 +48,7 @@ async def client(two_tenants):
     from athera_api.main import app
     from athera_api.models.portfolio import ResearchProject
     from athera_api.security import issue_access_token
+    from athera_api.services import audit
 
     tenant = two_tenants["a"]
     async with tenant_session(tenant["tenant_id"], tenant["user_id"]) as session:
@@ -57,6 +58,16 @@ async def client(two_tenants):
         )
         session.add(project)
         await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ.**
+        #
+        # فالمالكُ يُشتقّ من ملفّ الباحث أو من فاعلِ حدثِ الإنشاء في سجلّ
+        # التدقيق (`collaboration.owner_user_id`). وبحثٌ يُدسّ في القاعدة
+        # بلا واحدٍ منهما لا مالكَ له — ولا يفتحه أحد، وهو الصواب.
+        await audit.record(
+            session, tenant_id=tenant["tenant_id"], action="workspace.project_created",
+            object_type="research_project", object_id=project.id,
+            actor_user_id=tenant["user_id"],
+            reason="test fixture mirrors the real creation path")
         project_id = project.id
 
     token = issue_access_token(

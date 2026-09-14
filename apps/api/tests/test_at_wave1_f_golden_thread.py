@@ -391,12 +391,23 @@ def _client(tenant_id: uuid.UUID, user_id: uuid.UUID):
 async def _seed_project(tid: uuid.UUID, uid: uuid.UUID, title: str) -> uuid.UUID:
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
+    from athera_api.services import audit
 
     async with tenant_session(tid, uid) as session:
         project = ResearchProject(tenant_id=tid, working_title_ar=title,
                                   study_type="quantitative", status="active")
         session.add(project)
         await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ.**
+        #
+        # فالمالكُ يُشتقّ من ملفّ الباحث أو من فاعلِ حدثِ الإنشاء في سجلّ
+        # التدقيق (`collaboration.owner_user_id`). وبحثٌ يُدسّ في القاعدة
+        # بلا واحدٍ منهما لا مالكَ له — ولا يفتحه أحد، وهو الصواب.
+        await audit.record(
+            session, tenant_id=tid, action="workspace.project_created",
+            object_type="research_project", object_id=project.id,
+            actor_user_id=uid,
+            reason="test fixture mirrors the real creation path")
         return project.id
 
 

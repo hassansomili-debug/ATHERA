@@ -830,7 +830,8 @@ def test_no_state_is_set_synchronously_inside_an_effect():
 
 # ════════════════════ اختبارات تمسّ القاعدة (CI) ════════════════════
 
-async def _seed_project(tid: uuid.UUID, title: str) -> uuid.UUID:
+async def _seed_project(tid: uuid.UUID, title: str,
+                        owner_id: uuid.UUID | None = None) -> uuid.UUID:
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
 
@@ -839,6 +840,15 @@ async def _seed_project(tid: uuid.UUID, title: str) -> uuid.UUID:
                                   status="planned", current_gate="G1")
         session.add(project)
         await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ** — فالمالك
+        # يُشتقّ من فاعلِ حدثِ الإنشاء، وبحثٌ بلا حدثٍ لا مالكَ له فلا يُفتح.
+        if owner_id is not None:
+            from athera_api.services import audit as _audit
+            await _audit.record(
+                session, tenant_id=tid, action="workspace.project_created",
+                object_type="research_project", object_id=project.id,
+                actor_user_id=owner_id,
+                reason="test fixture mirrors the real creation path")
         return project.id
 
 
@@ -976,7 +986,7 @@ async def test_a_page_number_is_refused_for_anything_but_full_text(two_tenants):
     from athera_api.models.screening import LiteratureMatrixCell
 
     a = two_tenants["a"]
-    project = await _seed_project(a["tenant_id"], "بحث الصفحات")
+    project = await _seed_project(a["tenant_id"], "بحث الصفحات", owner_id=a["user_id"])
     source = await _seed_source(a["tenant_id"], "دراسةٌ بملخّص")
     await _link(a["tenant_id"], a["user_id"], project, source, "included")
 
@@ -1001,7 +1011,7 @@ async def test_a_cell_that_cites_an_abstract_must_have_been_read_from_one(two_te
     from athera_api.services.screening import abstract_digest
 
     a = two_tenants["a"]
-    project = await _seed_project(a["tenant_id"], "بحث النسبة")
+    project = await _seed_project(a["tenant_id"], "بحث النسبة", owner_id=a["user_id"])
     source = await _seed_source(a["tenant_id"], "دراسة")
     await _link(a["tenant_id"], a["user_id"], project, source, "included")
 
@@ -1035,8 +1045,8 @@ async def test_one_project_never_sees_another_project_s_sources(two_tenants):
     from athera_api.services import screening
 
     a = two_tenants["a"]
-    first = await _seed_project(a["tenant_id"], "البحث الأول")
-    second = await _seed_project(a["tenant_id"], "البحث الثاني")
+    first = await _seed_project(a["tenant_id"], "البحث الأول", owner_id=a["user_id"])
+    second = await _seed_project(a["tenant_id"], "البحث الثاني", owner_id=a["user_id"])
     mine = await _seed_source(a["tenant_id"], "دراسةُ البحث الأول")
     theirs = await _seed_source(a["tenant_id"], "دراسةُ البحث الثاني")
     await _link(a["tenant_id"], a["user_id"], first, mine, "included")
@@ -1061,8 +1071,8 @@ async def test_a_duplicate_is_a_duplicate_inside_one_project_only(two_tenants):
     from athera_api.services import screening
 
     a = two_tenants["a"]
-    first = await _seed_project(a["tenant_id"], "بحثٌ فيه نسخة")
-    second = await _seed_project(a["tenant_id"], "بحثٌ فيه النسخة نفسها")
+    first = await _seed_project(a["tenant_id"], "بحثٌ فيه نسخة", owner_id=a["user_id"])
+    second = await _seed_project(a["tenant_id"], "بحثٌ فيه النسخة نفسها", owner_id=a["user_id"])
     one = await _seed_source(a["tenant_id"], "العنوان نفسه")
     two = await _seed_source(a["tenant_id"], "العنوان نفسه!")
     await _link(a["tenant_id"], a["user_id"], first, one)
@@ -1089,7 +1099,7 @@ async def test_filters_are_applied_before_paging_and_the_counters_follow_them(
     from athera_api.services import screening
 
     a = two_tenants["a"]
-    project = await _seed_project(a["tenant_id"], "بحثٌ فيه سنوات")
+    project = await _seed_project(a["tenant_id"], "بحثٌ فيه سنوات", owner_id=a["user_id"])
     for year in range(2010, 2040):
         source = await _seed_source(a["tenant_id"], f"دراسة {year}",
                                     publication_year=year)
@@ -1144,8 +1154,8 @@ async def test_a_batch_that_fails_on_one_source_applies_to_none(two_tenants):
     from athera_api.models.portfolio import ProjectSource
 
     a = two_tenants["a"]
-    project = await _seed_project(a["tenant_id"], "بحث الدفعة")
-    other = await _seed_project(a["tenant_id"], "بحثٌ آخر")
+    project = await _seed_project(a["tenant_id"], "بحث الدفعة", owner_id=a["user_id"])
+    other = await _seed_project(a["tenant_id"], "بحثٌ آخر", owner_id=a["user_id"])
     mine = []
     for index in range(19):
         source = await _seed_source(a["tenant_id"], f"دراسة {index}")
@@ -1181,7 +1191,7 @@ async def test_a_batch_exclusion_without_a_reason_changes_nothing(two_tenants):
     from athera_api.models.portfolio import ProjectSource
 
     a = two_tenants["a"]
-    project = await _seed_project(a["tenant_id"], "بحث الاستبعاد الجماعي")
+    project = await _seed_project(a["tenant_id"], "بحث الاستبعاد الجماعي", owner_id=a["user_id"])
     ids = []
     for index in range(3):
         source = await _seed_source(a["tenant_id"], f"دراسة {index}")
@@ -1214,7 +1224,7 @@ async def test_a_whole_batch_applies_together_when_every_check_passes(two_tenant
     from athera_api.models.portfolio import ProjectSource
 
     a = two_tenants["a"]
-    project = await _seed_project(a["tenant_id"], "بحثٌ يُدرَج كلُّه")
+    project = await _seed_project(a["tenant_id"], "بحثٌ يُدرَج كلُّه", owner_id=a["user_id"])
     ids = []
     for index in range(20):
         source = await _seed_source(a["tenant_id"], f"دراسة {index}")
@@ -1250,7 +1260,7 @@ async def test_the_extraction_writes_candidates_and_records_what_it_read(two_ten
     from athera_api.models.screening import LiteratureMatrixCell, SourceAbstract
 
     a = two_tenants["a"]
-    project = await _seed_project(a["tenant_id"], "بحث الاستخراج")
+    project = await _seed_project(a["tenant_id"], "بحث الاستخراج", owner_id=a["user_id"])
     abstract = ("A cross-sectional survey was administered. We surveyed 425 "
                 "undergraduate students in the United States. The results show "
                 "that screen time was negatively associated with achievement.")
@@ -1310,7 +1320,7 @@ async def test_the_extraction_writes_candidates_and_records_what_it_read(two_ten
 async def test_the_extraction_refuses_a_source_that_is_only_saved(two_tenants):
     """**المدرَجة وحدها تُقرأ.** و«محفوظ فقط» لم يُقرَّر بعدُ أنه دليل."""
     a = two_tenants["a"]
-    project = await _seed_project(a["tenant_id"], "بحثٌ فيه محفوظ فقط")
+    project = await _seed_project(a["tenant_id"], "بحثٌ فيه محفوظ فقط", owner_id=a["user_id"])
     source = await _seed_source(
         a["tenant_id"], "دراسةٌ محفوظة", last_verified_at=_now(),
         raw_metadata={"abstract": "<jats:p>A cross-sectional survey of 200 nurses.</jats:p>"})
@@ -1334,7 +1344,7 @@ async def test_the_extraction_never_overwrites_what_the_researcher_wrote(two_ten
     from athera_api.models.screening import LiteratureMatrixCell
 
     a = two_tenants["a"]
-    project = await _seed_project(a["tenant_id"], "بحثُ ما كتبه الباحث")
+    project = await _seed_project(a["tenant_id"], "بحثُ ما كتبه الباحث", owner_id=a["user_id"])
     source = await _seed_source(
         a["tenant_id"], "دراسة", last_verified_at=_now(),
         raw_metadata={"abstract": "<jats:p>A cross-sectional survey of 200 nurses.</jats:p>"})
@@ -1372,8 +1382,8 @@ async def test_the_matrix_of_one_project_never_reads_another_project_s_cell(
     from athera_api.services import screening
 
     a = two_tenants["a"]
-    first = await _seed_project(a["tenant_id"], "بحثٌ فيه خلية")
-    second = await _seed_project(a["tenant_id"], "بحثٌ بلا خلية")
+    first = await _seed_project(a["tenant_id"], "بحثٌ فيه خلية", owner_id=a["user_id"])
+    second = await _seed_project(a["tenant_id"], "بحثٌ بلا خلية", owner_id=a["user_id"])
     source = await _seed_source(a["tenant_id"], "مرجعٌ في بحثين")
     await _link(a["tenant_id"], a["user_id"], first, source, "included")
     await _link(a["tenant_id"], a["user_id"], second, source, "included")

@@ -142,13 +142,64 @@ def test_every_planning_lookup_constrains_the_tenant():
 
 
 def test_the_canonical_ownership_gate_checks_both_project_and_tenant():
+    """**والبوابةُ انتقلت، فانتقل الحارسُ معها — ولم يُخفَّف.**
+
+    كان هذا الفحص يقرأ نصَّ `planning._project` ويطلب فيه شرطَي المعرّف
+    والمستأجر حرفيًّا. وقد صار الشرطان — ومعهما ثالثٌ لم يكن — في البوابة
+    المشتركة `collaboration.ensure_project_access`، ويُقرأ المستأجرُ فيها
+    عبر `project_scope.live_project`.
+
+    فيُطلب هنا ما هو أقوى: **أن يمرّ التخطيطُ بالبوابة**، وأن تكون البوابةُ
+    نفسُها فاحصةً للثلاثة. ونصُّ `_project` لا يُقرأ حرفًا بعد اليوم —
+    فحارسٌ يتشبّث بصياغةٍ بعينها يُكسَر بكلّ إصلاحٍ صحيح، ويُغري بردّ
+    الإصلاح بدل تحديثه.
+    """
     import inspect
 
     from athera_api.routers import planning
+    from athera_api.services import collaboration
 
-    source = inspect.getsource(planning._project)
-    assert "ResearchProject.id == project_id" in source
-    assert "ResearchProject.tenant_id == principal.tenant_id" in source
+    assert "ensure_project_access" in inspect.getsource(planning._project)
+
+    gate = inspect.getsource(collaboration.ensure_project_access)
+    # الحدودُ الثلاثة في عبارةٍ واحدة: المستأجر، وحياةُ البحث، والمعرّف.
+    assert "ResearchProject.id == project_id" in gate
+    assert "ResearchProject.tenant_id == tenant_id" in gate
+    assert "ResearchProject.deleted_at.is_(None)" in gate
+    # والعضويّةُ وصفوفُها — ولا يُقرأ الدورُ ولا يُفسَّر.
+    assert "ProjectMember.user_id == user_id" in gate
+    assert "ProjectMemberPermission.permission_key" in gate
+    assert "_decide(" in gate
+    assert "raise NotFound" in gate and "raise Forbidden" in gate
+
+    # **والملكيّةُ تُقرأ في العبارة نفسها** من مصدريها الموثوقين — لا من
+    # دورٍ ولا من مفردةٍ تكتبها إدارةُ الفريق.
+    assert "ResearcherProfile.user_id" in gate
+    assert "PROJECT_CREATED_ACTIONS" in gate
+    assert "is_owner" in gate
+
+    # **والقرارُ في موضعٍ واحد، والملكيّةُ أوّلُ ما يُسأل عنه** — فصفُّ
+    # العضويّة لا يصير وسيلةً لإقصاء صاحب البحث عن بحثه.
+    decide = inspect.getsource(collaboration._decide)
+    assert decide.index("if is_owner:") < decide.index('access_state != "active"')
+    assert "OWNER_IMPLIED_PERMISSIONS" in decide
+    assert "VIEW_PROJECT not in keys" in decide
+
+    # وكلُّ عمليةٍ تُنقص سلطةَ المالك تُرفض صريحًا — لا صمتًا.
+    for operation in (collaboration.set_access_state,
+                      collaboration.set_permissions,
+                      collaboration.change_role):
+        body = inspect.getsource(operation)
+        assert "_refuse_if_verified_owner(" in body, operation.__name__
+    refusal = inspect.getsource(collaboration._refuse_if_verified_owner)
+    assert "is_verified_owner(" in refusal
+    assert "status_code=409" in refusal
+    # والنسبُ يُقرأ من `owner_user_id` وحدها — **لا من الدور**.
+    owner_check = inspect.getsource(collaboration.is_verified_owner)
+    assert "owner_user_id(" in owner_check
+    assert "principal_investigator" not in owner_check
+    assert "project_permissions" in inspect.getsource(
+        collaboration.may_view_project)
 
     opportunity = inspect.getsource(planning._opportunity)
     for required in ("PublicationOpportunity.id == opportunity_id",
@@ -1063,11 +1114,19 @@ async def _seed_manuscript_for(tid, uid):
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
     from athera_api.models.publishing import Manuscript, ManuscriptSection, ManuscriptVersion
+    from athera_api.services import audit
 
     async with tenant_session(tid, uid) as session:
         project = ResearchProject(tenant_id=tid, working_title_ar="مشروع مخطوطة")
         session.add(project)
         await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ** — فالمخطوطةُ
+        # تُحرس بحراسة بحثها، وبحثٌ بلا مالكٍ لا يفتحه أحد، ولا صاحبُه.
+        await audit.record(
+            session, tenant_id=tid, action="workspace.project_created",
+            object_type="research_project", object_id=project.id,
+            actor_user_id=uid,
+            reason="test fixture mirrors the real creation path")
         row = Manuscript(tenant_id=tid, project_id=project.id,
                          title_ar="سرٌّ لا يخرج من مستأجره", language="ar", status="draft")
         session.add(row)

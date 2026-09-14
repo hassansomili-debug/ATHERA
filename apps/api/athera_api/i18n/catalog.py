@@ -331,6 +331,10 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     #
     # ولا رمز هنا يقول «فجوة» بلا «محتملة»: نصّ الخطأ يقرؤه الباحث في لحظة
     # ضغطٍ على زرّ، وهو من أكثر ما يعلق في ذهنه عن معنى ما يفعله.
+    "planning.project_not_found": {
+        "ar": "لم يُعثر على هذا البحث.",
+        "en": "This project was not found.",
+    },
     "synthesis.project_not_found": {
         "ar": "لم يُعثر على هذا البحث.",
         "en": "This project was not found.",
@@ -596,6 +600,9 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     "publishing.patch_already_decided": {
         "ar": "تم البت في هذه الرقعة مسبقًا.", "en": "This patch has already been decided.",
     },
+    "analysis.dataset_not_found": {
+        "ar": "مجموعة البيانات غير موجودة.", "en": "Dataset not found.",
+    },
     "analysis.version_not_found": {
         "ar": "نسخة البيانات غير موجودة.", "en": "Dataset version not found.",
     },
@@ -797,6 +804,19 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     "team.last_manager": {
         "ar": "لا يبقى البحث بلا من يديره.",
         "en": "A project cannot be left with nobody able to manage its team.",
+    },
+    "workspace.owner_only": {
+        "ar": "أرشفةُ البحث وحذفه واسترجاعه لصاحبه وحده — "
+              "وتحريرُ المحتوى العلمي لا يمنح ذلك.",
+        "en": "Archiving, trashing and restoring a project belong to its owner "
+              "alone; editing research content does not grant that.",
+    },
+    "team.owner_is_immutable": {
+        "ar": "صاحبُ البحث لا تُنزع صلاحيته عليه ولا يُوقف وصوله. "
+              "ونقلُ ملكية البحث غير متاح بعد.",
+        "en": "The project owner cannot be suspended, removed, or stripped of "
+              "authority over their own project. Ownership transfer is not "
+              "available yet.",
     },
     "thesis.consent_is_personal": {
         "ar": "الموافقة على التأليف فعل صاحبها؛ وتسجيلها عنه يلزمه سند مكتوب (§24).",

@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import Principal, get_principal, get_session
-from ..errors import AtheraError, NotFound
+from ..errors import AtheraError
 from ..models.files import File
 from ..models.portfolio import ProjectFile
 from ..schemas.library import (
@@ -35,7 +35,7 @@ from ..schemas.library import (
     BulkOutcome,
     BulkTrashRequest,
 )
-from ..services import audit, library, workspace
+from ..services import audit, collaboration, library
 
 router = APIRouter(prefix="/bulk", tags=["library-bulk"])
 
@@ -170,10 +170,12 @@ async def bulk_link(
     واحدة، فيُقال «رُبط اثنا عشر، وكان ثمانيةٌ مربوطًا» — لا «رُبط عشرون»
     وفيها ثمانيةٌ لم يقع لها شيء.
     """
-    project = await workspace.live_project(
-        session, tenant_id=principal.tenant_id, project_id=payload.project_id)
-    if project is None:
-        raise NotFound("workspace.project_not_found")
+    # **والربطُ كتابةٌ في بحثٍ**، فيطلب ما يطلبه نظيرُه المفرد في
+    # `workspace.link_file`: عضويّةً نشطةً تحمل `manage_data`. وكان الشرطُ
+    # هنا انتماءَ البحث للمستأجر وحده — فكان زميلٌ يُغرق بحثَ زميله بملفات.
+    await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=payload.project_id,
+        user_id=principal.user_id, permission="manage_data")
 
     records = await _selection(session, principal, payload.file_ids, "read")
     existing = {

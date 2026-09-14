@@ -780,6 +780,19 @@ def test_every_error_code_this_router_raises_has_both_locales():
         and node.args and isinstance(node.args[0], ast.Constant)
         and isinstance(node.args[0].value, str)
     }
+
+    # **و`not_found_code=` رافعٌ كسائر الرافعين.** فالبوابةُ المشتركة
+    # `collaboration.ensure_project_access` هي التي تُطلق `NotFound`، ورمزُها
+    # يُمرَّر إليها من هنا — فيصل الباحثَ من هذا الموجّه باسمه. وفحصٌ يقرأ
+    # `raise` وحده كان سيعدّ الرمزَ «مفتاحًا بلا رافع»، والإصلاحُ المغري
+    # يومَها حذفُ الترجمة — أي حذفُ الرسالة التي يقرؤها الباحث فعلًا.
+    codes |= {
+        kw.value.value
+        for node in ast.walk(tree) if isinstance(node, ast.Call)
+        for kw in node.keywords
+        if kw.arg == "not_found_code" and isinstance(kw.value, ast.Constant)
+        and isinstance(kw.value.value, str)
+    }
     assert codes, "موجّهٌ بلا رموز خطأ؟"
     for code in codes:
         assert code in CATALOG, f"رمزٌ بلا ترجمة: {code}"
@@ -946,7 +959,21 @@ def counting_statements():
         AsyncSession.execute = original
 
 
-async def _seed_project(tenant_id, title="بحثُ قبولٍ لإدارة المشروع"):
+async def _events_on(tid, project_id) -> int:
+    """عدُّ أحداث التدقيق على بحثٍ — لقياس ما **أضافه** مسارٌ بعينه."""
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.audit import AuditEvent
+
+    async with tenant_session(tid) as session:
+        return (await session.execute(
+            select(func.count(AuditEvent.id)).where(
+                AuditEvent.tenant_id == tid,
+                AuditEvent.object_id == project_id))).scalar_one()
+
+
+async def _seed_project(tenant_id, user_id, title="بحثُ قبولٍ لإدارة المشروع"):
     """**بجلسةِ مستأجرٍ لا بجلسةٍ نظامية.**
 
     و`system_session` لا تضبط سياق المستأجر، فـ`app_current_tenant()` فارغة
@@ -955,12 +982,23 @@ async def _seed_project(tenant_id, title="بحثُ قبولٍ لإدارة ال�
     """
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ResearchProject
+    from athera_api.services import audit
 
-    async with tenant_session(tenant_id) as session:
+    async with tenant_session(tenant_id, user_id) as session:
         project = ResearchProject(tenant_id=tenant_id, working_title_ar=title,
                                   status="planned", current_gate="G1")
         session.add(project)
         await session.flush()
+        # **وملكيّةُ البحث تُسجَّل كما يسجّلها المسارُ الحقيقيّ.**
+        #
+        # فالمالكُ يُشتقّ من ملفّ الباحث أو من فاعلِ حدثِ الإنشاء في سجلّ
+        # التدقيق (`collaboration.owner_user_id`). وبحثٌ يُدسّ في القاعدة
+        # بلا واحدٍ منهما لا مالكَ له — ولا يفتحه أحد، وهو الصواب.
+        await audit.record(
+            session, tenant_id=tenant_id, action="workspace.project_created",
+            object_type="research_project", object_id=project.id,
+            actor_user_id=user_id,
+            reason="test fixture mirrors the real creation path")
         return project.id
 
 
@@ -1008,8 +1046,8 @@ async def test_the_database_refuses_a_task_assigned_to_another_projects_member(
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_a = await _seed_project(tid, "بحثُ ألف")
-    project_b = await _seed_project(tid, "بحثُ باء")
+    project_a = await _seed_project(tid, uid, "بحثُ ألف")
+    project_b = await _seed_project(tid, uid, "بحثُ باء")
     member_of_b = await _seed_member(tid, project_b)
 
     with pytest.raises(IntegrityError):
@@ -1032,7 +1070,7 @@ async def test_the_database_refuses_a_system_suggestion_nobody_accepted(two_tena
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid)
+    project_id = await _seed_project(tid, uid)
 
     with pytest.raises(IntegrityError):
         async with tenant_session(tid, uid) as session:
@@ -1055,7 +1093,7 @@ async def test_the_database_refuses_a_milestone_completed_by_nobody(two_tenants)
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid)
+    project_id = await _seed_project(tid, uid)
 
     with pytest.raises(IntegrityError):
         async with tenant_session(tid, uid) as session:
@@ -1077,7 +1115,7 @@ async def test_the_database_refuses_a_stage_event_with_no_human_behind_it(
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid)
+    project_id = await _seed_project(tid, uid)
 
     with pytest.raises(IntegrityError):
         async with tenant_session(tid, uid) as session:
@@ -1097,7 +1135,7 @@ async def test_a_completed_task_must_carry_the_time_it_was_completed(two_tenants
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid)
+    project_id = await _seed_project(tid, uid)
 
     with pytest.raises(IntegrityError):
         async with tenant_session(tid, uid) as session:
@@ -1120,7 +1158,7 @@ async def test_row_level_security_hides_another_tenants_tasks_in_sql_itself(
     from athera_api.models.project_management import ProjectTask
 
     a, b = two_tenants["a"], two_tenants["b"]
-    project_id = await _seed_project(a["tenant_id"])
+    project_id = await _seed_project(a["tenant_id"], a["user_id"])
 
     async with tenant_session(a["tenant_id"], a["user_id"]) as session:
         session.add(ProjectTask(
@@ -1151,7 +1189,7 @@ async def test_the_task_list_costs_the_same_for_one_task_and_for_forty(two_tenan
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid)
+    project_id = await _seed_project(tid, uid)
     member_id = await _seed_member(tid, project_id)
 
     async def add_tasks(count: int):
@@ -1193,7 +1231,7 @@ async def test_the_dashboard_costs_a_fixed_number_of_statements(two_tenants):
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid)
+    project_id = await _seed_project(tid, uid)
 
     async def read_dashboard_reads(session):
         now = _now()
@@ -1238,7 +1276,7 @@ async def test_the_deletion_preview_counts_ten_kinds_in_one_statement(two_tenant
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid)
+    project_id = await _seed_project(tid, uid)
 
     async with tenant_session(tid, uid) as session:
         with counting_statements() as seen:
@@ -1301,7 +1339,7 @@ async def test_a_signed_in_researcher_drives_the_whole_chain_over_http(two_tenan
     """
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid, "أثرُ التدريب على الأداء")
+    project_id = await _seed_project(tid, uid, "أثرُ التدريب على الأداء")
     member_id = await _seed_member(tid, project_id, "د. سارة")
     base = f"/api/v1/project-management/projects/{project_id}"
 
@@ -1445,7 +1483,7 @@ async def test_a_research_brain_suggestion_never_becomes_a_task_by_itself(
     """
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid)
+    project_id = await _seed_project(tid, uid)
     base = f"/api/v1/project-management/projects/{project_id}"
 
     async with _client(tid, uid) as client:
@@ -1491,8 +1529,8 @@ async def test_a_project_with_no_meaningful_title_is_shown_as_untitled_over_http
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
     manufactured = await _seed_project(
-        tid, "قبول 2026-09-09T17:12:41.883012+00:00")
-    real = await _seed_project(tid, "دراسة 2024 عن التدريب")
+        tid, uid, "قبول 2026-09-09T17:12:41.883012+00:00")
+    real = await _seed_project(tid, uid, "دراسة 2024 عن التدريب")
     await _trash_project(tid, uid, manufactured)
     await _trash_project(tid, uid, real)
 
@@ -1522,7 +1560,7 @@ async def test_permanent_deletion_previews_its_dependencies_then_refuses(
     """**لا إتلافَ صامت ولا نجاحٌ مدّعى.** ٤٠٩ ومعها المعاينة كاملة."""
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid, "بحثٌ له نسبٌ علميّ")
+    project_id = await _seed_project(tid, uid, "بحثٌ له نسبٌ علميّ")
     await _seed_member(tid, project_id)
 
     async with _client(tid, uid) as client:
@@ -1532,6 +1570,10 @@ async def test_permanent_deletion_previews_its_dependencies_then_refuses(
         assert (await client.get(f"{base}/deletion-preview")).status_code == 404
 
     await _trash_project(tid, uid, project_id)
+
+    # واللقطةُ تُؤخذ **بعد** الحذف الظاهر: ذاك حدثٌ مشروع يُكتب باسمه،
+    # والمقصودُ هنا ما يكتبه الإتلافُ المرفوض وحده.
+    before = await _events_on(tid, project_id)
 
     async with _client(tid, uid) as client:
         base = f"/api/v1/project-management/trash/{project_id}"
@@ -1571,11 +1613,16 @@ async def test_permanent_deletion_previews_its_dependencies_then_refuses(
         # `raise` يُمحى بالرفض نفسه. وكان الموجّه يكتب واحدًا — فيبقى السطر
         # يوهم أنّ المحاولة مسجَّلة، ولا صفَّ في القاعدة. فحُذف، ويُثبَّت
         # الغياب هنا كي لا يعود سطرٌ يدّعي أثرًا لا يقع.
+        #
+        # **والمقياسُ فرقٌ لا عدَدٌ مطلق.** فنسبةُ البحث إلى صاحبه حدثٌ في
+        # السجلّ يكتبه الإنشاء — وهو ما تفعله التجهيزة كما يفعل المسارُ
+        # الحقيقيّ. فلو طُلب صفرٌ مطلق لانكسر هذا الحارسُ على كلّ بحثٍ له
+        # مالك، ولأغرى بحذف النسب بدل إصلاح القياس.
         written = (await session.execute(
             select(func.count(AuditEvent.id)).where(
                 AuditEvent.tenant_id == tid,
                 AuditEvent.object_id == project_id))).scalar_one()
-        assert written == 0, "حدثُ تدقيقٍ كُتب في معاملةٍ مرفوضة ثمّ أُرجع"
+        assert written == before, "حدثُ تدقيقٍ كُتب في معاملةٍ مرفوضة ثمّ أُرجع"
 
 
 @requires_db
@@ -1583,7 +1630,7 @@ async def test_permanent_deletion_previews_its_dependencies_then_refuses(
 async def test_another_tenant_is_refused_at_the_route_not_only_in_sql(two_tenants):
     """**العزل يُثبت من حيث يدخل المهاجم**: برمزٍ صحيحٍ لمستأجرٍ آخر."""
     a, b = two_tenants["a"], two_tenants["b"]
-    project_id = await _seed_project(a["tenant_id"])
+    project_id = await _seed_project(a["tenant_id"], a["user_id"])
 
     async with _client(b["tenant_id"], b["user_id"]) as stranger:
         base = f"/api/v1/project-management/projects/{project_id}"
@@ -1607,8 +1654,8 @@ async def test_one_project_cannot_reach_into_another_inside_the_same_tenant(
     """
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_a = await _seed_project(tid, "بحثُ ألف")
-    project_b = await _seed_project(tid, "بحثُ باء")
+    project_a = await _seed_project(tid, uid, "بحثُ ألف")
+    project_b = await _seed_project(tid, uid, "بحثُ باء")
     member_of_b = await _seed_member(tid, project_b, "عضوُ باء")
 
     a_base = f"/api/v1/project-management/projects/{project_a}"
@@ -1653,7 +1700,7 @@ async def test_reading_the_dashboard_never_writes_a_row(two_tenants):
 
     tenant = two_tenants["a"]
     tid, uid = tenant["tenant_id"], tenant["user_id"]
-    project_id = await _seed_project(tid)
+    project_id = await _seed_project(tid, uid)
 
     async with _client(tid, uid) as client:
         base = f"/api/v1/project-management/projects/{project_id}"

@@ -57,7 +57,7 @@ from ..schemas.golden_thread import (
     ThreadStageView,
     UndeterminedFieldView,
 )
-from ..services import audit
+from ..services import audit, collaboration
 from ..services import research_assessment
 from ..services.golden_thread import graph as thread_graph
 from ..services.golden_thread import methodology, project_title, score, weave
@@ -68,6 +68,28 @@ router = APIRouter(prefix="/api/v1", tags=["golden-thread"])
 
 def _pick(locale: str, ar: str, en: str | None) -> str:
     return (en or ar) if locale == "en" else ar
+
+
+EDIT = "edit_research_content"
+
+
+async def _project(
+    session: AsyncSession, principal: Principal, project_id: uuid.UUID, *,
+    permission: str = collaboration.VIEW_PROJECT,
+) -> ResearchProject:
+    """**لا مسار هنا يقبل معرّف بحثٍ بلا هذه البوابة.**
+
+    وكان هذا الموجّه أعرى ما في المنصّة: لا فحصَ مستأجرٍ ولا عضويّة. فمن
+    عرف معرّفَ بحثِ زميله قرأ خيطَه الذهبيّ وهيكلَه، **وكتب فيه** عنصرًا
+    ووصلةً وبروتوكولًا، ثم فتح بوابته — وردّ المسارُ ٢٠١.
+
+    وكلُّ كتابةٍ علميّةٍ هنا تطلب `edit_research_content`، لا الاطّلاع
+    وحده: من له أن يقرأ البحث ليس بالضرورة من له أن يغيّر خيطه. والتقديرُ
+    (`acknowledged`) يرى ولا يمسّ — وهذا موضعُ الفرق.
+    """
+    return (await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        user_id=principal.user_id, permission=permission)).project
 
 
 async def _build_graph(session: AsyncSession, project_id: uuid.UUID) -> thread_graph.ThreadGraph:
@@ -205,6 +227,7 @@ async def create_element(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ElementResponse:
+    await _project(session, principal, project_id, permission=EDIT)
     element = ThreadElement(
         tenant_id=principal.tenant_id, project_id=project_id,
         element_type=payload.element_type, label_ar=payload.label_ar,
@@ -231,6 +254,7 @@ async def create_link(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await _project(session, principal, project_id, permission=EDIT)
     link = ThreadLink(
         tenant_id=principal.tenant_id, project_id=project_id,
         source_element_id=payload.source_element_id,
@@ -253,6 +277,7 @@ async def consistency(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ConsistencyResponse:
+    await _project(session, principal, project_id)
     result = score.compute(await _build_graph(session, project_id))
     return _consistency_response(result, principal.locale)
 
@@ -428,13 +453,7 @@ async def golden_view(
     `submit-gate`، والدرجة تُحسب هناك ولا تُنقل إلى هنا: الباحث الذي يقرأ
     «٧٤٪» يطمئنّ، والذي يقرأ «ثلاث وصلات لا صفَّ لها» يذهب فيسجّلها.
     """
-    project = (await session.execute(
-        select(ResearchProject).where(ResearchProject.id == project_id,
-                                      ResearchProject.tenant_id == principal.tenant_id,
-                                      ResearchProject.deleted_at.is_(None))
-    )).scalar_one_or_none()
-    if project is None:
-        raise NotFound("workspace.project_not_found")
+    project = await _project(session, principal, project_id)
 
     woven = weave.weave(await _thread_snapshot(session, principal.tenant_id, project_id))
     arabic = principal.locale != "en"
@@ -525,6 +544,7 @@ async def suggested_actions(
     يراجعها مختصّ، ومحرّكٌ يكتب في قائمة إنسانٍ بقاعدةٍ لم يوقّع عليها أحد
     يجعل قراءةَ آلةٍ التزامًا. فالقبول فعلُ الباحث، وهو الحلقة التي لم تصل.
     """
+    await _project(session, principal, project_id)
     actions = await _suggested_actions(session, principal, project_id)
     arabic = principal.locale != "en"
     return SuggestedActionsResponse(
@@ -549,6 +569,7 @@ async def suggested_action_preview(
     والمفتاح يُطابَق على اقتراحاتِ هذا البحث وحدها، فمفتاحُ اقتراحٍ في بحثٍ
     آخر لا يُعاين هنا: معاينةٌ تقبل أيّ مفتاح تسرّب كشفًا من بحثٍ إلى بحث.
     """
+    await _project(session, principal, project_id)
     actions = await _suggested_actions(session, principal, project_id)
     match = next((a for a in actions if a.key == action_key), None)
     if match is None:
@@ -619,6 +640,7 @@ async def create_protocol(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ProtocolResponse:
+    await _project(session, principal, project_id, permission=EDIT)
     protocol = Protocol(
         tenant_id=principal.tenant_id, project_id=project_id,
         version_label=payload.version_label, title_ar=payload.title_ar,
@@ -651,6 +673,7 @@ async def submit_gate(
     ولقطة الاتساق تُحفظ مع الاعتماد: القرار يقع على حالة معروفة وموثقة، لا
     على حالة يمكن أن تتغير بعده بصمت.
     """
+    await _project(session, principal, project_id, permission=EDIT)
     protocol = (
         await session.execute(
             select(Protocol).where(Protocol.project_id == project_id)

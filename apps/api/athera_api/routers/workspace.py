@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import Principal, get_principal, get_session
-from ..errors import AtheraError, NotFound
+from ..errors import AtheraError, Forbidden, NotFound
 from ..models.files import File
 from ..models.literature import Source
 from ..models.portfolio import ProjectFile, ProjectSource, ResearchProject
@@ -72,6 +72,7 @@ from ..schemas.research_brain import (
 )
 from ..services import (
     audit,
+    collaboration,
     matrix_extraction,
     research_assessment,
     screening,
@@ -83,13 +84,38 @@ from ..services.research_assessment import orchestrator
 router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
 
 
+EDIT = "edit_research_content"
+SOURCES = "manage_sources"
+DATA = "manage_data"
+
+
 async def _project(session: AsyncSession, principal: Principal,
-                   project_id: uuid.UUID) -> ResearchProject:
-    row = await workspace.live_project(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
-    if row is None:
-        raise NotFound("workspace.project_not_found")
-    return row
+                   project_id: uuid.UUID, *,
+                   permission: str = collaboration.VIEW_PROJECT,
+                   owner_only: bool = False) -> ResearchProject:
+    """بحثٌ قائمٌ **يجوز لهذا الباحث أن يفعل هذا فيه** — وعشرون مسارًا من هنا.
+
+    **والعطبُ الأوّل الذي أُغلق:** كان الشرطُ انتماءَ البحث للمستأجر وحده،
+    فكان أيُّ باحثٍ في المستأجر يفتح أيَّ بحثٍ فيه بمعرّفه — بحوثًا لا
+    يملكها ولا هو عضوٌ فيها. وعضويّةُ المستأجر ليست عضويّةَ بحث.
+
+    **والعطبُ الثاني:** ثم صار الشرطُ `view_project` لكلّ مسار — قراءةً
+    كان أو كتابة. فكان **المذكورُ شكرًا وتقديرًا** (`acknowledged`)، وليس
+    له إلا الاطّلاع، يُعيد تسمية البحث ويؤرشفه ويرميه في السلّة. والدورُ
+    لا يُقرأ هنا ولا يُفسَّر؛ يُقرأ **الصفُّ الذي يخصّ هذا الفعل بعينه**:
+    تحريرُ المحتوى لما يمسّ البحث، وإدارةُ المصادر لما يمسّ المراجع،
+    وإدارةُ البيانات لما يمسّ الملفات.
+
+    **والرفضُ `404` لا `403`** حين لا مدخلَ أصلًا. فـ`403` تقول «موجودٌ
+    ولستَ منه» — وذاك يكشف وجودَ بحثٍ لمن لا شأن له به، فيُعَدّ المعرّفاتُ
+    ويُستدلّ على ما في المستأجر. والمعدومُ وغيرُ المأذون يُجابان جوابًا
+    واحدًا. أمّا العضوُ الذي ينقصه صفٌّ فيُجاب `403`: الوجودُ معلومٌ له.
+    """
+    return (await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        user_id=principal.user_id, permission=permission,
+        not_found_code="workspace.project_not_found",
+        require_owner=owner_only)).project
 
 
 async def _summary(session: AsyncSession, principal: Principal,
@@ -139,8 +165,22 @@ async def list_projects(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[ProjectSummary]:
-    """بحوث الباحث — **وما في السلّة لا يظهر مع القائم**."""
-    stmt = select(ResearchProject).where(ResearchProject.tenant_id == principal.tenant_id)
+    """بحوث الباحث — **ما يملكه وما شارك فيه**، لا ما في المستأجر.
+
+    وكان الشرطُ `tenant_id` وحده، فكانت القائمة تعرض بحوثَ زملائه: عناوينَ
+    أبحاثٍ لم يُدعَ إليها. والسلّةُ كانت تكشفها كذلك.
+
+    **والاستعلامان ثابتان لا يتبعان عدد البحوث**: تُجمع المعرّفاتُ
+    المسموحة مرّةً (ملكيّةً وعضويّةً)، ثمّ تُقرأ الصفوفُ بها.
+    """
+    visible = await collaboration.visible_project_ids(
+        session, tenant_id=principal.tenant_id, user_id=principal.user_id)
+    if not visible:
+        return []
+
+    stmt = select(ResearchProject).where(
+        ResearchProject.tenant_id == principal.tenant_id,
+        ResearchProject.id.in_(visible))
     stmt = (stmt.where(ResearchProject.deleted_at.is_not(None))
             if trash else stmt.where(ResearchProject.deleted_at.is_(None)))
     rows = (await session.execute(
@@ -186,7 +226,7 @@ async def rename_project(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ProjectSummary:
-    project = await _project(session, principal, project_id)
+    project = await _project(session, principal, project_id, permission=EDIT)
     before = project.working_title_ar
     project.working_title_ar = payload.title_ar
     await session.flush()
@@ -206,7 +246,7 @@ async def archive_project(
     session: AsyncSession = Depends(get_session),
 ) -> ProjectSummary:
     """أرشِف — **البحث المؤجَّل ليس محذوفًا**."""
-    project = await _project(session, principal, project_id)
+    project = await _project(session, principal, project_id, owner_only=True)
     project.archived_at = project.archived_at or dt.datetime.now(dt.UTC)
     await session.flush()
     await audit.record(
@@ -229,7 +269,7 @@ async def trash_project(
     فالحذفُ الظاهر تأجيلٌ لا إتلاف: صفوف البحث كلها باقية، والاستعادة
     ترجعه كما كان. وسنواتُ عملٍ لا تُعاد كتابتها بضغطةٍ واحدة.
     """
-    project = await _project(session, principal, project_id)
+    project = await _project(session, principal, project_id, owner_only=True)
     project.deleted_at = dt.datetime.now(dt.UTC)
     project.deleted_by = principal.user_id
     await session.flush()
@@ -256,6 +296,23 @@ async def restore_project(
     )).scalar_one_or_none()
     if row is None:
         raise NotFound("workspace.project_not_found")
+
+    # **والبوابةُ المشتركة لا تصلح هنا**: هي تشترط بحثًا قائمًا، والمُسترجَع
+    # في السلّة بتعريفها. فيُقرأ الحدُّ مباشرةً — والملكيّةُ والعضويّةُ لا
+    # يزولان بالحذف الظاهر. وبلا هذا كان أيُّ زميلٍ في المؤسسة يُعيد إلى
+    # الشاشات بحثًا أزاله صاحبُه، وهو نقضُ الحذف لا قراءةٌ زائدة.
+    #
+    # **والاسترجاعُ لصاحبه وحده** كالحذف الذي يعكسه: من لا يملك أن يرمي لا
+    # يملك أن يُعيد. والترتيب مقصود — لا مدخلَ أصلًا فـ٤٠٤، ومدخلٌ بلا نسبٍ
+    # فـ٤٠٣: العضوُ يعرف البحث سلفًا، فإنكارُ وجوده كذبٌ لا يحمي شيئًا.
+    if await collaboration.project_permissions(
+            session, tenant_id=principal.tenant_id, project_id=project_id,
+            user_id=principal.user_id) is None:
+        raise NotFound("workspace.project_not_found")
+    if not await collaboration.is_verified_owner(
+            session, project_id=project_id, user_id=principal.user_id):
+        raise Forbidden(collaboration.OWNER_ONLY, project_id=str(project_id))
+
     row.deleted_at, row.deleted_by = None, None
     await session.flush()
     await audit.record(
@@ -380,7 +437,7 @@ async def link_file(
     session: AsyncSession = Depends(get_session),
 ) -> ProjectFileView:
     """اربط ملفًّا من المكتبة بهذا البحث — **بلا نسخ**."""
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=SOURCES)
     file = (await session.execute(
         select(File).where(File.id == payload.asset_id,
                            File.tenant_id == principal.tenant_id)
@@ -447,7 +504,7 @@ async def unlink_file(
     وإن كان يسند عملًا معتمَدًا لم تقع الإزالة حتى يُقرّ الباحث بما يترتب:
     فالتحذير الذي يُعرض بعد الفعل ليس تحذيرًا.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=SOURCES)
     link = (await session.execute(
         select(ProjectFile).where(
             ProjectFile.tenant_id == principal.tenant_id,
@@ -535,7 +592,7 @@ async def link_source(
     فالاستيراد ليس حكمًا بالصلاحية دليلًا، وجعلُ كل مستورَدٍ «مُدرَجًا»
     يبني ورقةً على ما لم يقرأه أحد.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=SOURCES)
     source = (await session.execute(
         select(Source).where(Source.id == payload.asset_id,
                              Source.tenant_id == principal.tenant_id)
@@ -585,7 +642,7 @@ async def set_source_use(
     **ولا يُستنتج استبعادٌ آليًّا.** لا شيء في هذا المسار يقرأ حالًا ويحكم:
     الحال تأتي من الطلب، والفاعل من الرمز، والوقت من الساعة.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=SOURCES)
     row = (await session.execute(
         select(ProjectSource, Source)
         .join(Source, Source.id == ProjectSource.source_id)
@@ -732,7 +789,7 @@ async def batch_decide(
     **والاستبعاد في الدفعة يلزمه سببه** كالفرد سواء — والقيد في القاعدة
     يرفض غير ذلك، فيُقال هنا برمزٍ له ترجمتان لا بخطأ قاعدة.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=SOURCES)
     # التكرار في الطلب يُطوى: مرجعٌ ذُكر مرّتين قرارٌ واحد، والعدّ المُعاد
     # يجعل «طُبّق على ٢١» وهي عشرون.
     wanted = list(dict.fromkeys(payload.source_ids))
@@ -915,7 +972,7 @@ async def extract_matrix(
     مُعتمِدٍ بشريّ يُسمّى. والاعتماد يمرّ بمسار المراجعة القائم نفسه، ولا
     نظامَ اعتمادٍ ثانٍ يُبنى بجانبه.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     wanted = list(dict.fromkeys(payload.source_ids))
     # الفحص على المجموعة كاملةً قبل أي كتابة — كالدفعة سواء.
     for source_id in wanted:
@@ -988,7 +1045,7 @@ async def set_matrix_cell(
     **ولا تُخترع أرقام صفحات.** خليةٌ قُرئت من ملخّصٍ إمّا بلا مُحدِّد وإمّا
     بالكلمة الصريحة «الملخّص» — ولا صفحة لملخّص.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     if field_key not in MATRIX_FIELDS:
         raise NotFound("workspace.matrix_field_unknown", field=field_key)
     await _included_link(session, principal, project_id, source_id)
@@ -1105,7 +1162,7 @@ async def verify_matrix_cell(
     موثقة بأثرٍ جانبي لحفظها. و«لا أعرف» حالةٌ أولى (الترحيل 0016): من راجع
     ولم يستطع الحكم **لم يرفض**.
     """
-    await _project(session, principal, project_id)
+    await _project(session, principal, project_id, permission=EDIT)
     if field_key not in MATRIX_FIELDS:
         raise NotFound("workspace.matrix_field_unknown", field=field_key)
     cell = (await session.execute(

@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.literature import Claim, Journal, JournalIndexingRecord
-from ..models.portfolio import ResearchProject
 from ..models.publishing import (
     JournalMatchRow,
     JournalPolicyCheck,
@@ -50,7 +49,7 @@ from ..schemas.publishing import (
     SectionUpsertRequest,
     SubmissionPackageResponse,
 )
-from ..services import audit
+from ..services import audit, collaboration
 from ..services.publishing import consistency, journals, manuscript, review, vocab
 
 router = APIRouter(prefix="/api/v1", tags=["publishing"])
@@ -69,15 +68,25 @@ def _pick(locale: str, arabic: str, english: str | None) -> str:
     return (english or arabic) if locale == "en" else arabic
 
 
+EDIT = "edit_research_content"
+
+
 async def manuscript_for_tenant(session: AsyncSession, principal: Principal,
-                                manuscript_id: uuid.UUID) -> Manuscript:
-    """**البوابة القانونية لملكية المخطوطة** — بالمعرّف والمستأجر معًا (S5E §21).
+                                manuscript_id: uuid.UUID, *,
+                                permission: str = collaboration.VIEW_PROJECT) -> Manuscript:
+    """**البوابة القانونية للمخطوطة** — بالمستأجر وببحثها معًا (S5E §21).
 
     درس حادثة P0 يُطبَّق هنا من البداية لا بعد تسريب: RLS خاصيةُ قاعدة،
     والفلترة الصريحة تفويضُ تطبيق. أيّهما بقي وحده يمنع — ولا واحدة تُترك
     تعمل وحدها، فقد أثبت الإنتاج أن سطرًا في سرّ نشرٍ يُسقط طبقةً كاملة.
 
-    و404 لا 403: وجود مخطوطة عند مستأجرٍ آخر معلومةٌ لا تُفشى.
+    **وطبقةٌ ثالثة لأنّ الأوليَين تحرسان الحدَّ الخطأ:** كلتاهما تسأل «أمِن
+    مستأجري هذه المخطوطة؟». فكان زميلٌ في المؤسسة نفسها يقرأ مخطوطةَ زميله
+    قسمًا قسمًا، **ويحرّرها**، ويعتمد بوابة G9، ويسحب حزمةَ التقديم كاملة.
+    و`project_id` على المخطوطة غيرُ قابلٍ للإفراغ، فحدُّ البحث ينطبق دائمًا
+    — والمخطوطةُ تُحرس بحراسة بحثها، لا بحراسةٍ خاصةٍ بها.
+
+    و404 لا 403 حين لا مدخل: وجود مخطوطةٍ ليست لك معلومةٌ لا تُفشى.
     """
     row = (
         await session.execute(
@@ -89,6 +98,10 @@ async def manuscript_for_tenant(session: AsyncSession, principal: Principal,
     ).scalar_one_or_none()
     if row is None:
         raise NotFound("publishing.manuscript_not_found")
+    await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=row.project_id,
+        user_id=principal.user_id, permission=permission,
+        not_found_code="publishing.manuscript_not_found")
     return row
 
 
@@ -114,15 +127,12 @@ async def create_manuscript(
 ) -> ManuscriptResponse:
     # **ملكية المشروع تُفحص صراحةً.** فحصُ المفتاح الأجنبي يجري بصلاحيات
     # النظام ولا يمرّ بـRLS، فمشروع مستأجرٍ آخر كان يُقبل مرجعًا لمخطوطة.
-    project = (
-        await session.execute(
-            select(ResearchProject).where(
-                ResearchProject.id == payload.project_id,
-                ResearchProject.tenant_id == principal.tenant_id)
-        )
-    ).scalar_one_or_none()
-    if project is None:
-        raise NotFound("publishing.project_not_found")
+    # ثم تبيّن أنّ المستأجر ليس الحدَّ المقصود: كتابةُ مخطوطةٍ في بحثِ زميلك
+    # كتابةٌ في بحثه — فتطلب ما تطلبه كلُّ كتابةٍ علمية فيه.
+    await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=payload.project_id,
+        user_id=principal.user_id, permission=EDIT,
+        not_found_code="publishing.project_not_found")
 
     record = Manuscript(
         tenant_id=principal.tenant_id, project_id=payload.project_id,
@@ -163,7 +173,7 @@ async def upsert_section(
     if payload.section_key not in vocab.MANUSCRIPT_SECTIONS:
         raise AtheraError("publishing.unknown_section", status_code=422,
                           section=payload.section_key)
-    await manuscript_for_tenant(session, principal, manuscript_id)
+    await manuscript_for_tenant(session, principal, manuscript_id, permission=EDIT)
     version = await _current_version(session, principal, manuscript_id)
     if version is None:
         raise NotFound("publishing.manuscript_not_found")
@@ -259,9 +269,14 @@ async def list_manuscripts(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[ManuscriptResponse]:
-    rows = (
+    # وقائمةُ المستأجر ليست قائمةَ الباحث: كانت تعرض عناوينَ مخطوطات
+    # الزملاء كلِّها ومعرّفاتِها — ومعرّفٌ مقروء هو مفتاحُ كلِّ ما بعده.
+    visible = await collaboration.visible_project_ids(
+        session, tenant_id=principal.tenant_id, user_id=principal.user_id)
+    rows = [] if not visible else (
         await session.execute(select(Manuscript)
-            .where(Manuscript.tenant_id == principal.tenant_id)
+            .where(Manuscript.tenant_id == principal.tenant_id,
+                   Manuscript.project_id.in_(visible))
             .order_by(Manuscript.created_at.desc()))
     ).scalars().all()
 
@@ -324,7 +339,7 @@ async def approve_g9(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ManuscriptResponse:
-    record = await manuscript_for_tenant(session, principal, manuscript_id)
+    record = await manuscript_for_tenant(session, principal, manuscript_id, permission=EDIT)
     result = await _readiness(session, principal, manuscript_id)
     snapshot = {
         "can_pass_g9": result.can_pass_g9,
@@ -514,6 +529,7 @@ async def internal_review(
     session: AsyncSession = Depends(get_session),
 ) -> ReviewRoundResponse:
     """§21 — المجلس يقترح رقعًا؛ لا سطر هنا يكتب في قسم معتمد."""
+    await manuscript_for_tenant(session, principal, manuscript_id, permission=EDIT)
     reports = [
         review.ReviewerReport(
             reviewer_role=r.reviewer_role, strengths=list(r.strengths),
@@ -631,6 +647,12 @@ async def apply_patch(
             ReviewRound.tenant_id == principal.tenant_id))
     ).scalar_one()
 
+    # **البوابة قبل أوّل كتابة، لا بعد آخرها.** والمعاملة كانت سترجع كلَّ
+    # شيء عند الرفض، لكنّ حارسًا يقع بعد بناء نسخةٍ كاملة حارسٌ يسهل أن
+    # يُنقل أو يُنسى — والترتيب نفسه هو الضمانة.
+    await manuscript_for_tenant(
+        session, principal, round_row.manuscript_id, permission=EDIT)
+
     old_version = (
         await session.execute(
             select(ManuscriptVersion).where(
@@ -682,7 +704,7 @@ async def apply_patch(
     patch.applied_in_version_id = new_version.id
 
     manuscript_row = await manuscript_for_tenant(
-        session, principal, round_row.manuscript_id)
+        session, principal, round_row.manuscript_id, permission=EDIT)
     manuscript_row.current_version_id = new_version.id
     # النسخة الجديدة تُلغي اعتماد G9 السابق: الاعتماد كان على نص آخر.
     manuscript_row.g9_approved_at = None

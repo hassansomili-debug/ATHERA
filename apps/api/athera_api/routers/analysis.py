@@ -52,10 +52,106 @@ from ..schemas.analysis import (
     ToolCapabilityResponse,
     VersionCreateRequest,
 )
-from ..services import audit
+from ..services import audit, collaboration
 from ..services.analysis import exports, interpretation, lineage, plan, reproducibility, vocab
 
 router = APIRouter(prefix="/api/v1/analysis", tags=["analysis"])
+
+
+# ═════════════ حدُّ البحث على طبقة البيانات ═════════════
+#
+# **هذه أخطرُ سطوحِ المنصّة، وكانت أعراها.** لا مسارَ هنا كان يسأل عن
+# البحث أصلًا: كلُّ شيء كان يُقرأ ويُكتب بمعرّفه وحده متّكلًا على عزل
+# المستأجر. فكان أيُّ باحثٍ في المؤسسة يُدرج مجموعةَ بيانات في بحثِ زميله،
+# ويقرأ قاموسَ أعمدتها — **وفيه الأعمدةُ الموسومةُ ببياناتٍ شخصية** —
+# ويجمّد نسخةً، ويشغّل تحليلًا، ويصدّرها إلى أداةٍ خارجية.
+#
+# و«الاطّلاع على البحث» ليس إذنًا بالبيانات: القراءةُ تكفي لرؤية أنّ هناك
+# مجموعة، وكلُّ مساسٍ بها يطلب `manage_data` — وهو الصفُّ الذي يحمله
+# الإحصائيّ في هذا النظام، لا كلُّ من رأى البحث.
+#
+# والسلسلةُ تُتبع إلى جذرها دائمًا: المخرَجُ إلى تشغيلته، والتشغيلةُ إلى
+# خطّتها، والخطّةُ إلى بحثها؛ والنسخةُ إلى مجموعتها، والمجموعةُ إلى بحثها.
+# **ولا تُقطع السلسلةُ عند أوّل جدولٍ يحمل `tenant_id`** — فذاك بالضبط
+# ما جعل هذه الطبقة مفتوحة.
+
+DATA = "manage_data"
+EDIT = "edit_research_content"
+APPROVE = "approve_scientific_candidates"
+
+
+async def _gate(session: AsyncSession, principal: Principal,
+                project_id: uuid.UUID, permission: str,
+                not_found_code: str) -> None:
+    await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        user_id=principal.user_id, permission=permission,
+        not_found_code=not_found_code)
+
+
+async def _gate_dataset(session: AsyncSession, principal: Principal,
+                        dataset_id: uuid.UUID, permission: str) -> None:
+    project_id = (await session.execute(
+        select(Dataset.project_id).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if project_id is None:
+        raise NotFound("analysis.dataset_not_found")
+    await _gate(session, principal, project_id, permission, "analysis.dataset_not_found")
+
+
+async def _gate_version(session: AsyncSession, principal: Principal,
+                        version_id: uuid.UUID, permission: str) -> None:
+    project_id = (await session.execute(
+        select(Dataset.project_id)
+        .join(DatasetVersionRow, DatasetVersionRow.dataset_id == Dataset.id)
+        .where(DatasetVersionRow.id == version_id))).scalar_one_or_none()
+    if project_id is None:
+        raise NotFound("analysis.version_not_found")
+    await _gate(session, principal, project_id, permission, "analysis.version_not_found")
+
+
+async def _gate_plan(session: AsyncSession, principal: Principal,
+                     plan_id: uuid.UUID, permission: str) -> None:
+    project_id = (await session.execute(
+        select(AnalysisPlanRow.project_id)
+        .where(AnalysisPlanRow.id == plan_id))).scalar_one_or_none()
+    if project_id is None:
+        raise NotFound("analysis.plan_not_found")
+    await _gate(session, principal, project_id, permission, "analysis.plan_not_found")
+
+
+async def _gate_run(session: AsyncSession, principal: Principal,
+                    run_id: uuid.UUID, permission: str) -> None:
+    project_id = (await session.execute(
+        select(AnalysisPlanRow.project_id)
+        .join(AnalysisRun, AnalysisRun.plan_id == AnalysisPlanRow.id)
+        .where(AnalysisRun.id == run_id))).scalar_one_or_none()
+    if project_id is None:
+        raise NotFound("analysis.run_not_found")
+    await _gate(session, principal, project_id, permission, "analysis.run_not_found")
+
+
+async def _gate_output(session: AsyncSession, principal: Principal,
+                       output_id: uuid.UUID, permission: str) -> None:
+    project_id = (await session.execute(
+        select(AnalysisPlanRow.project_id)
+        .join(AnalysisRun, AnalysisRun.plan_id == AnalysisPlanRow.id)
+        .join(AnalysisOutputRow, AnalysisOutputRow.run_id == AnalysisRun.id)
+        .where(AnalysisOutputRow.id == output_id))).scalar_one_or_none()
+    if project_id is None:
+        raise NotFound("analysis.output_not_found")
+    await _gate(session, principal, project_id, permission, "analysis.output_not_found")
+
+
+async def _managed(session: AsyncSession, principal: Principal) -> set[uuid.UUID]:
+    """بحوثٌ يملك فيها الطالبُ **إدارةَ البيانات** — لا التي يراها فقط.
+
+    فقوائمُ هذه الطبقة تفصيليّة: المجموعةُ بنسخها وحالاتها، والخطّةُ
+    باختباراتها ومتغيّراتها، والتصديرُ بأداته وحدوده. و«يرى البحث» ليس
+    «يرى بياناته» — فالمُرشِّح يقرأ الصفَّ المخصّص لها.
+    """
+    return await collaboration.project_ids_with(
+        session, tenant_id=principal.tenant_id, user_id=principal.user_id,
+        permission=DATA)
 
 
 def _pick(locale: str, arabic: str, english: str | None) -> str:
@@ -81,6 +177,8 @@ async def create_dataset(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> DatasetVersionResponse:
+    await _gate(session, principal, payload.project_id, DATA,
+                "workspace.project_not_found")
     dataset = Dataset(
         tenant_id=principal.tenant_id, project_id=payload.project_id,
         name_ar=payload.name_ar, name_en=payload.name_en,
@@ -110,8 +208,11 @@ async def list_datasets(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[DatasetResponse]:
-    datasets = (
-        await session.execute(select(Dataset).order_by(Dataset.created_at.desc()))
+    visible = await _managed(session, principal)
+    datasets = [] if not visible else (
+        await session.execute(select(Dataset)
+                              .where(Dataset.project_id.in_(visible))
+                              .order_by(Dataset.created_at.desc()))
     ).scalars().all()
     out: list[DatasetResponse] = []
     for dataset in datasets:
@@ -137,6 +238,10 @@ async def list_versions(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[DatasetVersionResponse]:
+    # **ونسخُ المجموعة بيانُ إدارةٍ لا بيانُ تقدّم**: الحالاتُ والبصماتُ
+    # وأعدادُ الصفوف ومعرّفاتُ التجميد. و«أنّ للبحث مجموعةً» تقوله الرحلةُ
+    # بلا شيءٍ من هذا.
+    await _gate_dataset(session, principal, dataset_id, DATA)
     rows = (
         await session.execute(
             select(DatasetVersionRow)
@@ -156,6 +261,7 @@ async def create_version(
     session: AsyncSession = Depends(get_session),
 ) -> DatasetVersionResponse:
     """TC-07 — التنظيف ينشئ نسخة ولا يعدّل الأصل."""
+    await _gate_dataset(session, principal, dataset_id, DATA)
     parent = (
         await session.execute(
             select(DatasetVersionRow).where(DatasetVersionRow.id == payload.parent_version_id)
@@ -206,6 +312,7 @@ async def freeze_version(
     session: AsyncSession = Depends(get_session),
 ) -> FreezeResponse:
     """§17.3 — بوابة G6."""
+    await _gate_version(session, principal, version_id, DATA)
     row = (
         await session.execute(
             select(DatasetVersionRow).where(DatasetVersionRow.id == version_id)
@@ -248,9 +355,12 @@ async def list_plans(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[PlanResponse]:
-    rows = (
+    visible = await _managed(session, principal)
+    rows = [] if not visible else (
         await session.execute(
-            select(AnalysisPlanRow).order_by(AnalysisPlanRow.created_at.desc())
+            select(AnalysisPlanRow)
+            .where(AnalysisPlanRow.project_id.in_(visible))
+            .order_by(AnalysisPlanRow.created_at.desc())
         )
     ).scalars().all()
     out: list[PlanResponse] = []
@@ -282,6 +392,8 @@ async def create_plan(
         if test.test_kind not in vocab.TEST_KINDS:
             raise AtheraError("analysis.unknown_test_kind", status_code=422,
                               kind=test.test_kind)
+    await _gate(session, principal, payload.project_id, DATA,
+                "workspace.project_not_found")
     row = AnalysisPlanRow(
         tenant_id=principal.tenant_id, project_id=payload.project_id,
         version_label=payload.version_label, summary_ar=payload.summary_ar,
@@ -311,6 +423,7 @@ async def approve_plan(
     session: AsyncSession = Depends(get_session),
 ) -> PlanResponse:
     """§9 G7 — الاعتماد يقفل القائمة بتجزئة."""
+    await _gate_plan(session, principal, plan_id, APPROVE)
     row = (
         await session.execute(select(AnalysisPlanRow).where(AnalysisPlanRow.id == plan_id))
     ).scalar_one_or_none()
@@ -361,6 +474,8 @@ async def create_run(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> RunResponse:
+    await _gate_plan(session, principal, payload.plan_id, DATA)
+    await _gate_version(session, principal, payload.dataset_version_id, DATA)
     plan_row = (
         await session.execute(
             select(AnalysisPlanRow).where(AnalysisPlanRow.id == payload.plan_id)
@@ -461,6 +576,7 @@ async def create_output(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """§39 — المخرَج لا يوجد بلا تشغيلة."""
+    await _gate_run(session, principal, run_id, DATA)
     run = (
         await session.execute(select(AnalysisRun).where(AnalysisRun.id == run_id))
     ).scalar_one_or_none()
@@ -490,6 +606,7 @@ async def interpret(
     session: AsyncSession = Depends(get_session),
 ) -> InterpretationResponse:
     """§18.3 / §9 G8 — أربع طبقات منفصلة بسلسلة سند."""
+    await _gate_output(session, principal, output_id, EDIT)
     output = (
         await session.execute(
             select(AnalysisOutputRow).where(AnalysisOutputRow.id == output_id)
@@ -583,6 +700,10 @@ async def read_dictionary(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> DictionaryCoverageResponse:
+    # **والقاموسُ أخطرُ ما في هذه الطبقة قراءةً**: أسماءُ الأعمدة ووصفُها
+    # ومقاييسُها — **ووسمُ ما يحمل بياناتٍ شخصية**. فقراءتُه إدارةُ بيانات
+    # لا اطّلاعٌ على بحث، ومن دُعي ليقرأ البحث لم يُدعَ ليقرأ عمودَ الهويّات.
+    await _gate_version(session, principal, version_id, DATA)
     rows = (
         await session.execute(
             select(DataDictionary)
@@ -619,6 +740,7 @@ async def upsert_dictionary(
     نسخة مجمَّدة تُرفض هنا: تغيير وصف عمود بعد التجميد يغيّر معنى تحليل جرى
     على الوصف القديم، بلا أن يتغيّر شيء في السجل يشي بذلك.
     """
+    await _gate_version(session, principal, version_id, DATA)
     version = (
         await session.execute(
             select(DatasetVersionRow).where(DatasetVersionRow.id == version_id)
@@ -673,8 +795,15 @@ async def list_exports(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[ToolExportResponse]:
-    rows = (
-        await session.execute(select(ToolExport).order_by(ToolExport.created_at.desc()))
+    visible = await _managed(session, principal)
+    rows = [] if not visible else (
+        await session.execute(
+            select(ToolExport)
+            .join(DatasetVersionRow,
+                  DatasetVersionRow.id == ToolExport.dataset_version_id)
+            .join(Dataset, Dataset.id == DatasetVersionRow.dataset_id)
+            .where(Dataset.project_id.in_(visible))
+            .order_by(ToolExport.created_at.desc()))
     ).scalars().all()
     out: list[ToolExportResponse] = []
     for row in rows:
@@ -701,6 +830,7 @@ async def create_export(
     الحدود تُنسخ من قدرات الأداة وقت التصدير، لا تُقرأ لاحقًا: لو تغيّرت
     القدرات غدًا، يبقى التصدير القديم يحمل ما قيل لصاحبه يومها.
     """
+    await _gate_version(session, principal, payload.dataset_version_id, DATA)
     version = (
         await session.execute(
             select(DatasetVersionRow).where(

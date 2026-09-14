@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -48,7 +48,7 @@ from ..schemas.literature import (
     SourceResponse,
     SourceSearchRequest,
 )
-from ..services import audit, reference_discovery
+from ..services import audit, collaboration, reference_discovery
 from ..services.literature import ledger, registry, verification
 
 router = APIRouter(prefix="/api/v1", tags=["literature"])
@@ -372,6 +372,37 @@ async def create_excerpt(
     )
 
 
+EDIT = "edit_research_content"
+
+
+async def _claim_gate(session: AsyncSession, principal: Principal, claim: Claim, *,
+                      permission: str = collaboration.VIEW_PROJECT) -> None:
+    """ادّعاءٌ منسوبٌ إلى بحثٍ **يُحرس بحراسة بحثه**.
+
+    وكان يُقرأ ويُغلق بمعرّفه وحده: فمن عرف معرّفَ ادّعاءٍ في بحثِ زميله
+    قرأ نصَّه وأدلّته، **وأغلقه نهائيًّا** (`finalize`) — وذاك قرارٌ علميّ
+    لا رجعةَ فيه في سجلّ بحثٍ ليس له.
+
+    و`project_id` يقبل الفراغ: ادّعاءٌ في مكتبة المستأجر لا ينتسب إلى بحث،
+    فليس له حدُّ بحثٍ يُحرس به، ويبقى على عزل المستأجر وحده. ولا يُختلق
+    له مالكٌ هنا — والحدُّ الناقص يُقال ولا يُسَدّ بتخمين.
+    """
+    if claim.project_id is None:
+        return
+    await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=claim.project_id,
+        user_id=principal.user_id, permission=permission,
+        not_found_code="evidence.claim_not_found")
+
+
+async def _claim_or_404(session: AsyncSession, claim_id: uuid.UUID) -> Claim:
+    claim = (await session.execute(
+        select(Claim).where(Claim.id == claim_id))).scalar_one_or_none()
+    if claim is None:
+        raise NotFound("evidence.claim_not_found")
+    return claim
+
+
 @router.get("/claims", response_model=list[ClaimResponse])
 async def list_claims(
     principal: Principal = Depends(get_principal),
@@ -380,7 +411,18 @@ async def list_claims(
 ) -> list[ClaimResponse]:
     query = select(Claim).order_by(Claim.created_at.desc()).limit(200)
     if project_id:
+        await collaboration.ensure_project_access(
+            session, tenant_id=principal.tenant_id, project_id=project_id,
+            user_id=principal.user_id)
         query = query.where(Claim.project_id == project_id)
+    else:
+        # **قائمةٌ بلا مُرشِّح لا تعني قائمةَ المستأجر كلِّه.** فادّعاءات
+        # بحوثِ الزملاء لا تُعرض هنا لمجرّد إغفال المُرشِّح — ويبقى ما لا
+        # بحثَ له على عزل المستأجر.
+        visible = await collaboration.visible_project_ids(
+            session, tenant_id=principal.tenant_id, user_id=principal.user_id)
+        query = query.where(or_(Claim.project_id.is_(None),
+                                Claim.project_id.in_(visible)))
     rows = (await session.execute(query)).scalars().all()
     out: list[ClaimResponse] = []
     for claim in rows:
@@ -395,6 +437,10 @@ async def create_claim(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ClaimResponse:
+    if payload.project_id is not None:
+        await collaboration.ensure_project_access(
+            session, tenant_id=principal.tenant_id, project_id=payload.project_id,
+            user_id=principal.user_id, permission=EDIT)
     claim = Claim(
         tenant_id=principal.tenant_id, project_id=payload.project_id, text_ar=payload.text_ar,
         text_en=payload.text_en, claim_type=payload.claim_type, section=payload.section,
@@ -437,6 +483,8 @@ async def attach_evidence(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ClaimResponse:
+    await _claim_gate(session, principal,
+                      await _claim_or_404(session, claim_id), permission=EDIT)
     await ledger.link_evidence(
         session, tenant_id=principal.tenant_id, claim_id=claim_id, excerpt_id=payload.excerpt_id,
         support_level=payload.support_level, actor_user_id=principal.user_id,
@@ -454,6 +502,8 @@ async def finalize_claim(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ClaimResponse:
+    await _claim_gate(session, principal,
+                      await _claim_or_404(session, claim_id), permission=EDIT)
     claim = await ledger.finalize_claim(
         session, tenant_id=principal.tenant_id, claim_id=claim_id,
         actor_user_id=principal.user_id,
@@ -468,9 +518,8 @@ async def get_claim(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> ClaimResponse:
-    claim = (await session.execute(select(Claim).where(Claim.id == claim_id))).scalar_one_or_none()
-    if claim is None:
-        raise NotFound("evidence.claim_not_found")
+    claim = await _claim_or_404(session, claim_id)
+    await _claim_gate(session, principal, claim)
     state = await ledger.claim_status(session, tenant_id=principal.tenant_id, claim_id=claim_id)
     return _claim_response(claim, state, principal.locale)
 
@@ -481,6 +530,9 @@ async def evidence_ledger(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> LedgerResponse:
+    await collaboration.ensure_project_access(
+        session, tenant_id=principal.tenant_id, project_id=project_id,
+        user_id=principal.user_id)
     claims = (
         await session.execute(select(Claim).where(Claim.project_id == project_id))
     ).scalars().all()

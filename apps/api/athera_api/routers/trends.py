@@ -53,7 +53,7 @@ from ..schemas.trends import (
     WatchlistCreateRequest,
     WatchlistResponse,
 )
-from ..services import audit
+from ..services import audit, collaboration
 from ..services.trends import brief, pipeline, scoring, signals, vocab
 
 router = APIRouter(prefix="/api/v1", tags=["trends"])
@@ -78,6 +78,13 @@ async def create_watchlist(
 ) -> WatchlistResponse:
     if not (payload.keywords or payload.theories or payload.methods or payload.journal_ids):
         raise AtheraError("trends.watchlist_needs_scope", status_code=422)
+
+    # ونسبةُ القائمة إلى بحثٍ تُتحقّق: صفٌّ يشير إلى بحثِ غيرك يجعل قائمتَك
+    # تظهر في سياقه، ويجعل معرّفَه مقروءًا في ردٍّ ليس له.
+    if payload.project_id is not None:
+        await collaboration.ensure_project_access(
+            session, tenant_id=principal.tenant_id,
+            project_id=payload.project_id, user_id=principal.user_id)
 
     row = ResearchWatchlist(
         tenant_id=principal.tenant_id, watchlist_kind=payload.watchlist_kind,
