@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from ..errors import AtheraError, Forbidden, NotFound
 from ..models.audit import AuditEvent
@@ -1002,19 +1003,44 @@ async def _member_project_ids(
     session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
     permission: str = VIEW_PROJECT,
 ) -> set[uuid.UUID]:
-    """بحوثٌ هو فيها عضوٌ **نشط** يحمل الصلاحيةَ صفًّا صريحًا.
+    """بحوثٌ هو فيها عضوٌ **نشط** يحمل الاطّلاعَ **والصلاحيةَ المطلوبة معًا**.
 
     و«نشط» شرطٌ لا تزيين: المدعوُّ لم يقبل بعد، والموقوفُ مُنع، والمُزال
     ذهب — وثلاثتهم ليسوا أعضاءً عاملين.
+
+    ## ولمَ الاطّلاعُ شرطٌ مع كلّ صلاحيةٍ أخرى
+
+    **كان هذا الفحص يسأل عن الصلاحية وحدها، فاختلف بابانِ على بحثٍ واحد.**
+    فـ`_decide` — وهي قرارُ التفويض الوحيد — تشترط `view_project` أساسًا
+    قبل أن تنظر في شيء: عضوٌ نُزع اطّلاعُه لا مدخلَ له مهما بقي في صفوفه.
+    وكان المُرشِّح هنا يكتفي بالصفّ المطلوب، فيقع التناقضُ الآتي:
+
+      عضوٌ نُزع منه `view_project` وبقي له `manage_data` —
+        • يختفي البحثُ من «أبحاثي»،
+        • وتردّ `ensure_project_access` عليه ٤٠٤،
+        • **ويبقى البحثُ ظاهرًا في قوائم طبقة التحليل** التي تُرشَّح بهذا.
+
+    وقائمةٌ تعرض ما لا يُفتح ليست تسامحًا: هي تسريبُ وجودِ بحثٍ وعنوانِه
+    ومعرّفِه لمن سُحب مدخلُه — ونزعُ الاطّلاع إنّما يُفعل ليمنع هذا بعينه.
+
+    **وعبارةٌ واحدة تُثبت الثلاثة**: العضويّةَ الحيّة، والاطّلاعَ، والصلاحيةَ
+    المطلوبة — بوصلتين على الجدول نفسه بكُنيتين. ورحلةٌ ثانية إلى قاعدةٍ في
+    إقليمٍ آخر ثمنٌ لا يلزم دفعه.
+
+    وحين تكون المطلوبةُ هي الاطّلاعَ نفسه، تُطابق الوصلتان الصفَّ ذاته —
+    فيبقى الجواب صحيحًا بلا فرعٍ خاصّ يُكتب له.
     """
+    baseline = aliased(ProjectMemberPermission)
+    wanted = aliased(ProjectMemberPermission)
     return set((await session.execute(
         select(ProjectMember.project_id)
-        .join(ProjectMemberPermission,
-              ProjectMemberPermission.member_id == ProjectMember.id)
+        .join(baseline, and_(baseline.member_id == ProjectMember.id,
+                             baseline.permission_key == VIEW_PROJECT))
+        .join(wanted, and_(wanted.member_id == ProjectMember.id,
+                           wanted.permission_key == permission))
         .where(ProjectMember.tenant_id == tenant_id,
                ProjectMember.user_id == user_id,
-               ProjectMember.access_state == "active",
-               ProjectMemberPermission.permission_key == permission)
+               ProjectMember.access_state == "active")
     )).scalars())
 
 

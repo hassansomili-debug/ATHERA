@@ -1206,3 +1206,243 @@ async def test_j_view_project_sees_safe_progress_but_no_data_internals(two_tenan
         assert (await http.get(
             DATASET_VERSIONS.format(did=dataset_id))).status_code == 404
         assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 404
+
+
+# ═══════ ك · الاطّلاعُ أساسٌ لكلّ صلاحيةٍ أخرى — في القوائم كما في البوابة ═══════
+#
+# **بابانِ كانا يختلفان على بحثٍ واحد.**
+#
+# `_decide` — وهي قرارُ التفويض الوحيد — تشترط `view_project` أساسًا قبل أن
+# تنظر في شيء. وكان مُرشِّحُ القوائم (`project_ids_with`) يكتفي بالصلاحية
+# المطلوبة وحدها، فوقع التناقض:
+#
+#   عضوٌ نُزع منه `view_project` وبقي له `manage_data`:
+#     • يختفي البحثُ من «أبحاثي»،
+#     • وتردّ `ensure_project_access` عليه ٤٠٤،
+#     • **ويبقى ظاهرًا في قوائم طبقة التحليل**.
+#
+# وقائمةٌ تعرض ما لا يُفتح ليست تسامحًا: هي تسريبُ وجودِ بحثٍ وعنوانِه
+# ومعرّفِه لمن سُحب مدخلُه — **ونزعُ الاطّلاع إنّما يُفعل ليمنع هذا بعينه**.
+
+
+async def _set_member_permissions(owner, member_user_id, project_id, keys):
+    """تُضبط الصفوفُ بالمسار القائم — ولا تُدسّ بيد."""
+    from athera_api.db import tenant_session
+    from athera_api.services import collaboration
+
+    async with tenant_session(owner["tenant_id"], owner["user_id"]) as session:
+        member = await collaboration.member_for(
+            session, project_id=project_id, user_id=member_user_id)
+        await collaboration.set_permissions(
+            session, tenant_id=owner["tenant_id"], member=member,
+            actor_user_id=owner["user_id"], keys=list(keys))
+
+
+async def _analysis_lists(slot) -> dict[str, list]:
+    async with _client(slot) as http:
+        out = {}
+        for name, route in (("datasets", DATASETS), ("plans", PLANS),
+                            ("exports", EXPORTS)):
+            response = await http.get(route)
+            assert response.status_code == 200, f"{route}: {response.text}"
+            out[name] = response.json()
+        return out
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_k_revoking_view_project_empties_the_analysis_lists_at_once(
+        two_tenants):
+    """**نزعُ الاطّلاع يسري فورًا وفي كلّ باب** — بلا دخولٍ جديد.
+
+    فالرمزُ في يد الباحث كما هو، ولا شيءَ يُبطله: الحكمُ يُقرأ من القاعدة
+    في كلّ طلب. فلو بقيت القائمةُ تعرض بعد النزع لكان ذلك عطبَ تفويضٍ لا
+    تأخّرَ ذاكرةٍ مؤقّتة.
+    """
+    a = two_tenants["a"]
+    title = "بحثٌ لعضوٍ يُنزع اطّلاعُه"
+    project_id = await _owned_project(a, title=title)
+    member = await _second_user(a["tenant_id"], email=f"rv-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, member, project_id,
+                             permissions=["view_project", "manage_data"])
+
+    # ── وله مجموعةُ بياناتٍ وخطّةٌ وتصدير، فالقوائمُ ليست فارغةً أصلًا ──
+    async with _client(member) as http:
+        made = await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "مجموعةٌ تُرى ثم تُحجب",
+            "classification": "C2", "raw_label": "خام", "raw_checksum": "1" * 64,
+            "row_count": 30})
+        assert made.status_code == 201, made.text
+        version_id = made.json()["id"]
+
+        planned = await http.post(PLANS, json={
+            "project_id": str(project_id), "version_label": "v1",
+            "summary_ar": "خطّةٌ أوّلية",
+            "tests": [{"test_key": "t1", "test_kind": "descriptive",
+                       "variables": ["age"], "note_ar": "وصفٌ أوّليّ"}]})
+        assert planned.status_code == 201, planned.text
+
+        exported = await http.post(EXPORTS, json={
+            "dataset_version_id": version_id, "tool": "spss",
+            # و`sav` صيغةُ استيرادٍ لا تصدير — والأداةُ تُصدّر `csv`/`sps`.
+            "export_format": "sps"})
+        assert exported.status_code == 201, exported.text
+
+    # ── مُنح: يُرى في «أبحاثي» وفي القوائم الثلاث ──
+    assert title in await _titles(member)
+    before = await _analysis_lists(member)
+    assert len(before["datasets"]) == 1, before
+    assert len(before["plans"]) == 1, before
+    assert len(before["exports"]) == 1, before
+
+    # ══ نُزع `view_project` وحده، و`manage_data` باقٍ ══
+    await _set_member_permissions(a, member["user_id"], project_id,
+                                  ["manage_data"])
+
+    # لا «أبحاثي» —
+    assert title not in await _titles(member)
+
+    # **ولا قائمةَ من قوائم التحليل** — وهذا هو العطبُ الذي يُغلق.
+    after = await _analysis_lists(member)
+    assert after["datasets"] == [], "المجموعاتُ ظهرت لمن نُزع اطّلاعُه"
+    assert after["plans"] == [], "الخططُ ظهرت لمن نُزع اطّلاعُه"
+    assert after["exports"] == [], "التصديراتُ ظهرت لمن نُزع اطّلاعُه"
+
+    # والوصولُ المباشر محجوبٌ كما كان — فالبابانِ اتّفقا.
+    async with _client(member) as http:
+        assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 404
+        assert (await http.get(DICTIONARY.format(vid=version_id))).status_code == 404
+        assert (await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "لا تُكتب",
+            "classification": "C2", "raw_label": "خام",
+            "raw_checksum": "2" * 64, "row_count": 1})).status_code == 404
+
+    # ══ وأُعيد الاطّلاع: يعود كلُّ شيء ══
+    await _set_member_permissions(a, member["user_id"], project_id,
+                                  ["view_project", "manage_data"])
+    assert title in await _titles(member)
+    restored = await _analysis_lists(member)
+    assert len(restored["datasets"]) == 1
+    assert len(restored["plans"]) == 1
+    assert len(restored["exports"]) == 1
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_k_the_owner_is_listed_whatever_their_permission_rows_say(
+        two_tenants):
+    """**والمالكُ يُدرَج بنسبه لا بصفوفه** — فالنزعُ لا يطاله."""
+    from athera_api.db import tenant_session
+    from athera_api.models.collaboration import ProjectMemberPermission
+    from sqlalchemy import delete
+
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ لمالكٍ بلا صفوف")
+    async with _client(a) as http:
+        made = await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "مجموعةُ المالك",
+            "classification": "C2", "raw_label": "خام", "raw_checksum": "3" * 64,
+            "row_count": 10})
+        assert made.status_code == 201, made.text
+
+    # صفُّ عضويّةٍ للمالك تُمحى صفوفُه في القاعدة مباشرةً — حالٌ لا يصنعها
+    # مسارٌ (الحرسُ يمنعه)، لكنّها قد تكون في صفوفِ ما قبل الحراسة.
+    owner_member_id = await _owner_membership_id(a, project_id)
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        await session.execute(delete(ProjectMemberPermission).where(
+            ProjectMemberPermission.member_id == owner_member_id))
+
+    assert "بحثٌ لمالكٍ بلا صفوف" in await _titles(a)
+    lists = await _analysis_lists(a)
+    assert len(lists["datasets"]) == 1, "المالكُ فقد مجموعتَه بنزع صفوفٍ لا تعنيه"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_k_no_permission_grants_access_without_the_view_baseline(two_tenants):
+    """**عقدٌ على المفردة كلّها** — لا صلاحيةَ تفتح بابًا بلا الاطّلاع.
+
+    والاختبارُ أعلاه يثبت الحالةَ التي وقعت (`manage_data`). وهذا يثبت
+    القاعدةَ على **كلّ** صلاحيةٍ في المفردة، بما فيها ما لا قائمةَ له اليوم:
+    فقائمةٌ تُكتب غدًا على `manage_sources` أو `manage_submission` لا تُعيد
+    العطبَ نفسه، **لأنّ أحدًا لن يتذكّر أن يكتب لها اختبارَه**.
+
+    ويُقاس المُرشِّحُ مباشرةً لا عبر مسار: المسارُ قد لا يوجد بعد، والقاعدةُ
+    تُحرس قبل أن يوجد.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services import collaboration, team
+
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ يُقاس عليه العقد")
+    member = await _second_user(a["tenant_id"], email=f"ct-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, member, project_id, permissions=["view_project"])
+
+    others = [k for k in team.PROJECT_PERMISSIONS if k != "view_project"]
+    assert len(others) == 8, others
+
+    async def ids_for(permission: str) -> set:
+        async with tenant_session(a["tenant_id"], member["user_id"]) as session:
+            return await collaboration.project_ids_with(
+                session, tenant_id=a["tenant_id"], user_id=member["user_id"],
+                permission=permission)
+
+    for permission in others:
+        # ١) الصلاحيةُ وحدها بلا اطّلاع: **لا مدخل**.
+        await _set_member_permissions(a, member["user_id"], project_id,
+                                      [permission])
+        assert project_id not in await ids_for(permission), (
+            f"«{permission}» وحدها فتحت القائمة بلا اطّلاع")
+        assert project_id not in await ids_for("view_project")
+
+        # ٢) والاثنتان معًا: يُدرَج.
+        await _set_member_permissions(a, member["user_id"], project_id,
+                                      ["view_project", permission])
+        assert project_id in await ids_for(permission), (
+            f"«{permission}» مع الاطّلاع لم تُدرِج البحث")
+
+        # ٣) والاطّلاعُ وحده لا يُدرِج في قائمةِ صلاحيةٍ أخرى.
+        await _set_member_permissions(a, member["user_id"], project_id,
+                                      ["view_project"])
+        assert project_id in await ids_for("view_project")
+        assert project_id not in await ids_for(permission), (
+            f"الاطّلاعُ وحده أدرج البحث في قائمة «{permission}»")
+
+
+def test_k_the_member_filter_proves_all_three_in_one_statement():
+    """**والرحلةُ واحدة**: العضويّةُ الحيّة والاطّلاعُ والمطلوبةُ في عبارة.
+
+    فالقاعدةُ في إقليمٍ آخر، وسدُّ ثغرةٍ باستعلامٍ ثانٍ يشتري الأمانَ بزمنٍ
+    لا يلزم دفعه. ويُقرأ ذلك من العبارة المولَّدة لا من الشيفرة.
+    """
+    import inspect
+    import uuid as _uuid
+
+    from sqlalchemy import and_, select
+    from sqlalchemy.orm import aliased
+
+    from athera_api.models.collaboration import ProjectMemberPermission
+    from athera_api.models.portfolio import ProjectMember
+    from athera_api.services import collaboration
+
+    body = inspect.getsource(collaboration._member_project_ids)
+    assert "aliased(" in body and body.count("aliased(") == 2
+    assert "VIEW_PROJECT" in body
+    assert body.count("session.execute") == 1, "رحلتان حيث تكفي واحدة"
+
+    baseline = aliased(ProjectMemberPermission)
+    wanted = aliased(ProjectMemberPermission)
+    sql = str(
+        select(ProjectMember.project_id)
+        .join(baseline, and_(baseline.member_id == ProjectMember.id,
+                             baseline.permission_key == "view_project"))
+        .join(wanted, and_(wanted.member_id == ProjectMember.id,
+                           wanted.permission_key == "manage_data"))
+        .where(ProjectMember.tenant_id == _uuid.uuid4(),
+               ProjectMember.user_id == _uuid.uuid4(),
+               ProjectMember.access_state == "active")
+        .compile(compile_kwargs={"literal_binds": True}))
+    assert sql.count("SELECT") == 1
+    assert sql.count("JOIN") == 2
+    for fragment in ("'view_project'", "'manage_data'", "'active'"):
+        assert fragment in sql, fragment
