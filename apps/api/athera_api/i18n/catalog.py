@@ -805,6 +805,13 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "لا يبقى البحث بلا من يديره.",
         "en": "A project cannot be left with nobody able to manage its team.",
     },
+    "team.owner_is_immutable": {
+        "ar": "صاحبُ البحث لا تُنزع صلاحيته عليه ولا يُوقف وصوله. "
+              "ونقلُ ملكية البحث غير متاح بعد.",
+        "en": "The project owner cannot be suspended, removed, or stripped of "
+              "authority over their own project. Ownership transfer is not "
+              "available yet.",
+    },
     "thesis.consent_is_personal": {
         "ar": "الموافقة على التأليف فعل صاحبها؛ وتسجيلها عنه يلزمه سند مكتوب (§24).",
         "en": "Author consent is the author's own act; recording it for them "

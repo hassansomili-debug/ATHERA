@@ -672,3 +672,315 @@ async def test_h_one_account_cannot_hold_two_memberships_in_one_project(two_tena
                 role="acknowledged", access_state="removed",
                 removed_at=dt.datetime.now(dt.UTC),
                 consent_state="not_requested", is_author=False))
+
+
+# ═══════ ط · صاحبُ البحث لا يُقصى عن بحثه (قرارُ مالك المنتج) ═══════
+#
+# **والعطبُ الذي يُغلق هنا كان قائمًا، وفُتح بهذه الدفعة نفسها.**
+#
+# حين صار صفُّ العضويّة مرجعَ التفويض، صار مديرُ الفريق قادرًا على إقصاء
+# صاحب البحث عن بحثه: يوقف عضويّته، أو ينزع صفوفَها، فيصير البحثُ الذي
+# أنشأه محجوبًا عنه — ولا مسارَ يعيده إليه. و`_refuse_if_last_team_manager`
+# لم تكن تمنع ذلك: هي تحرس «آخرَ مديرٍ» لا «صاحبَ البحث»، فمتى وُجد مديرٌ
+# ثانٍ سقط حرسُها.
+#
+# فالملكيّةُ المُثبَتة سلطةُ جذر: تُشتقّ من ملفّ الباحث أو من حدث الإنشاء في
+# سجلٍّ يُضاف إليه ولا يُعدَّل — ولا تكتبهما شاشةُ الفريق. **والدورُ ليس
+# ملكيّة**، ولا نقلَ للملكيّة في هذه الدفعة.
+
+MEMBER_ACCESS = "/api/v1/projects/{pid}/members/{mid}/access"
+MEMBER_PERMS = "/api/v1/projects/{pid}/members/{mid}/permissions"
+MEMBER_ROLE = "/api/v1/projects/{pid}/members/{mid}/role"
+LEAVE = "/api/v1/projects/{pid}/members/me/leave"
+
+OWNER_IMMUTABLE = "team.owner_is_immutable"
+
+
+async def _owner_membership_id(slot, project_id) -> uuid.UUID:
+    """صفُّ عضويّةِ المالك — يُنشئه `access_for` عند أوّل مسار فريق.
+
+    ولا يُدسّ بيد: يُبلَغ بالمسار الحقيقيّ كما يُبلَغ في الإنتاج، فيكون
+    الهجومُ أدناه على ما يوجد فعلًا لا على حالةٍ مصنوعة.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services import collaboration
+
+    async with tenant_session(slot["tenant_id"], slot["user_id"]) as session:
+        access = await collaboration.access_for(
+            session, tenant_id=slot["tenant_id"], project_id=project_id,
+            user_id=slot["user_id"])
+        return access.member.id
+
+
+async def _member_row_id(slot, project_id, user_id) -> uuid.UUID:
+    from athera_api.db import tenant_session
+    from athera_api.services import collaboration
+
+    async with tenant_session(slot["tenant_id"], slot["user_id"]) as session:
+        member = await collaboration.member_for(
+            session, project_id=project_id, user_id=user_id)
+    assert member is not None
+    return member.id
+
+
+async def _owner_still_has_their_project(slot, project_id, title) -> None:
+    """بعد كلّ محاولة: يرى ويفتح **ويفعل** — والثالثةُ هي بيتُ الحارس."""
+    assert title in await _titles(slot)
+    async with _client(slot) as http:
+        opened = await http.get(JOURNEY.format(pid=project_id))
+        assert opened.status_code == 200, opened.text
+        # سلطةُ الجذر لا الاطّلاعَ وحده: كتابةٌ علمية تطلب
+        # `edit_research_content`، وهي أوّلُ ما يُنزَع في الهجوم.
+        wrote = await http.post(THREAD_ELEMENTS.format(pid=project_id), json={
+            "element_type": "problem",
+            "label_ar": f"سؤالٌ كتبه صاحبُ البحث {uuid.uuid4().hex[:6]}",
+            "ordinal": 1})
+        assert wrote.status_code == 201, wrote.text
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_i_a_team_manager_cannot_suspend_or_remove_the_verified_owner(
+        two_tenants):
+    """**لا يُوقف مديرُ الفريق صاحبَ البحث ولا يُزيله** — و٤٠٩ لا صمت."""
+    a = two_tenants["a"]
+    title = "بحثٌ لا يُقصى صاحبُه"
+    project_id = await _owned_project(a, title=title)
+    manager = await _second_user(a["tenant_id"], email=f"mgr-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, manager, project_id,
+                             permissions=["view_project", "manage_team"])
+
+    owner_member_id = await _owner_membership_id(a, project_id)
+
+    async with _client(manager) as http:
+        for state in ("suspended", "removed"):
+            attack = await http.patch(
+                MEMBER_ACCESS.format(pid=project_id, mid=owner_member_id),
+                json={"access_state": state})
+            assert attack.status_code == 409, f"{state} → {attack.status_code}: {attack.text}"
+            assert attack.json()["error"]["code"] == OWNER_IMMUTABLE
+            await _owner_still_has_their_project(a, project_id, title)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_i_a_team_manager_cannot_strip_the_owners_permissions(two_tenants):
+    """**والبابُ الثاني مسدودٌ مع الأول** — نزعُ الصفوف ليس طريقًا للإقصاء.
+
+    فحمايةُ `access_state` وحدها كانت تترك هذا: يبقى المالكُ «نشطًا» وقد
+    نُزعت صفوفُه كلُّها، فيُحجب بلا أن يُوقف.
+    """
+    a = two_tenants["a"]
+    title = "بحثٌ لا تُنزع صفوفُ صاحبه"
+    project_id = await _owned_project(a, title=title)
+    manager = await _second_user(a["tenant_id"], email=f"str-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, manager, project_id,
+                             permissions=["view_project", "manage_team"])
+    owner_member_id = await _owner_membership_id(a, project_id)
+
+    async with _client(manager) as http:
+        for attempt in ([], ["view_project"], ["view_project", "manage_tasks"]):
+            attack = await http.put(
+                MEMBER_PERMS.format(pid=project_id, mid=owner_member_id),
+                json={"permissions": attempt})
+            assert attack.status_code == 409, f"{attempt} → {attack.status_code}: {attack.text}"
+            assert attack.json()["error"]["code"] == OWNER_IMMUTABLE
+            await _owner_still_has_their_project(a, project_id, title)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_i_a_team_manager_cannot_demote_the_owners_role(two_tenants):
+    """**ولا يُنزَّل صاحبُ البحث بدورٍ يكتبه غيره.**"""
+    a = two_tenants["a"]
+    title = "بحثٌ لا يُنزَّل صاحبُه"
+    project_id = await _owned_project(a, title=title)
+    manager = await _second_user(a["tenant_id"], email=f"dem-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, manager, project_id,
+                             permissions=["view_project", "manage_team"])
+    owner_member_id = await _owner_membership_id(a, project_id)
+
+    async with _client(manager) as http:
+        for role in ("acknowledged", "student", "supervisor"):
+            attack = await http.patch(
+                MEMBER_ROLE.format(pid=project_id, mid=owner_member_id),
+                json={"role": role})
+            assert attack.status_code == 409, f"{role} → {attack.status_code}: {attack.text}"
+            assert attack.json()["error"]["code"] == OWNER_IMMUTABLE
+    await _owner_still_has_their_project(a, project_id, title)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_i_the_owner_cannot_leave_their_own_project(two_tenants):
+    """**ولا يخرج صاحبُ البحث من بحثه** وهو صاحبُه — ولا نقلَ للملكيّة بعد.
+
+    فبحثٌ خرج صاحبُه عنه لا يُستعاد إلّا بتدخّلٍ يدويّ في القاعدة: الملكيّةُ
+    تبقى منسوبةً إليه في السجلّ، وصفُّه يقول إنه ذهب.
+    """
+    a = two_tenants["a"]
+    title = "بحثٌ لا يتركه صاحبُه"
+    project_id = await _owned_project(a, title=title)
+    # ومديرٌ ثانٍ موجود، فلا يكون المانعُ «آخرَ مديرٍ» بل الملكيّة نفسها.
+    manager = await _second_user(a["tenant_id"], email=f"lv-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, manager, project_id,
+                             permissions=["view_project", "manage_team"])
+    await _owner_membership_id(a, project_id)
+
+    async with _client(a) as http:
+        left = await http.post(LEAVE.format(pid=project_id))
+    assert left.status_code == 409, left.text
+    assert left.json()["error"]["code"] == OWNER_IMMUTABLE
+    await _owner_still_has_their_project(a, project_id, title)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_i_the_pi_role_alone_grants_no_ownership_protection(two_tenants):
+    """**الدورُ ليس ملكيّة** — ولا يُشتقّ منه حرسٌ ولا سلطةُ جذر.
+
+    فعضوٌ دورُه `principal_investigator` وليس صاحبَ النسب يُوقَف كأيّ عضو،
+    ولا يردّ المسارُ ٤٠٩. ولو كان الحرسُ مبنيًّا على المفردة لكان مديرُ
+    الفريق يصنع لنفسه حصانةً بتغيير دوره — وهو ما يُمنع هنا.
+    """
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ فيه باحثٌ رئيسٌ ليس صاحبَه")
+    pretender = await _second_user(a["tenant_id"], email=f"pi-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, pretender, project_id,
+                             permissions=["view_project", "manage_team"])
+    pretender_member_id = await _member_row_id(a, project_id, pretender["user_id"])
+
+    async with _client(a) as http:
+        promoted = await http.patch(
+            MEMBER_ROLE.format(pid=project_id, mid=pretender_member_id),
+            json={"role": "principal_investigator"})
+        assert promoted.status_code == 200, promoted.text
+        assert promoted.json()["role"] == "principal_investigator"
+
+        # ومع المفردة نفسها: يُوقَف، فالنسبُ لا يُشتقّ من دور.
+        suspended = await http.patch(
+            MEMBER_ACCESS.format(pid=project_id, mid=pretender_member_id),
+            json={"access_state": "suspended"})
+        assert suspended.status_code == 200, suspended.text
+
+    # وقد حُجب فعلًا — لا «رُفض الطلبُ صامتًا».
+    async with _client(pretender) as http:
+        assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 404
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_i_normal_team_administration_still_works(two_tenants):
+    """**ولا يُكسَر تدبيرُ الفريق الحقيقيّ** — الحرسُ على المالك وحده.
+
+    فمن يحمل `manage_team` يدير عضوًا عاديًّا كما كان: يغيّر دوره، ويضبط
+    صلاحياته، ويوقفه، ويعيده. وحارسٌ يمنع ما لم يُطلب منعُه عطبٌ آخر.
+    """
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ يُدار فريقُه")
+    manager = await _second_user(a["tenant_id"], email=f"ok-{uuid.uuid4().hex[:8]}@x.test")
+    ordinary = await _second_user(a["tenant_id"], email=f"c3-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, manager, project_id,
+                             permissions=["view_project", "manage_team"])
+    await _invite_and_accept(a, ordinary, project_id,
+                             permissions=["view_project", "edit_research_content"])
+    ordinary_member_id = await _member_row_id(a, project_id, ordinary["user_id"])
+
+    async with _client(manager) as http:
+        rolled = await http.patch(
+            MEMBER_ROLE.format(pid=project_id, mid=ordinary_member_id),
+            json={"role": "student"})
+        assert rolled.status_code == 200, rolled.text
+
+        permed = await http.put(
+            MEMBER_PERMS.format(pid=project_id, mid=ordinary_member_id),
+            json={"permissions": ["view_project"]})
+        assert permed.status_code == 200, permed.text
+
+    # ونزعُ التحرير وقع فعلًا: يقرأ ولا يكتب.
+    async with _client(ordinary) as http:
+        assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 200
+        denied = await http.post(THREAD_ELEMENTS.format(pid=project_id),
+                                 json=ELEMENT_BODY)
+        assert denied.status_code == 403, denied.text
+
+    async with _client(manager) as http:
+        stopped = await http.patch(
+            MEMBER_ACCESS.format(pid=project_id, mid=ordinary_member_id),
+            json={"access_state": "suspended"})
+        assert stopped.status_code == 200, stopped.text
+    async with _client(ordinary) as http:
+        assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 404
+
+    async with _client(manager) as http:
+        restored = await http.patch(
+            MEMBER_ACCESS.format(pid=project_id, mid=ordinary_member_id),
+            json={"access_state": "active"})
+        assert restored.status_code == 200, restored.text
+    async with _client(ordinary) as http:
+        assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 200
+
+    # وعضوٌ عاديّ يخرج بنفسه — والخروجُ ممنوعٌ على المالك وحده.
+    async with _client(ordinary) as http:
+        gone = await http.post(LEAVE.format(pid=project_id))
+        assert gone.status_code == 200, gone.text
+        assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 404
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_i_a_bad_owner_membership_row_is_not_a_lockout_vector(two_tenants):
+    """**وطبقتان لا واحدة.** فالحرسُ على العمليات يمنع الطلب، والتفويضُ
+    يقرأ الملكيّة — ولو سقط الأولُ يومًا بقي الثاني.
+
+    وهذه ليست حالةً نظريّة: صفوفُ ما قبل هذه الدفعة كُتبت بلا هذا الحرس،
+    وقد يكون فيها مالكٌ مُوقَفٌ أو منزوعُ الصفوف. فيُصنع الحالُ هنا في
+    القاعدة مباشرةً — لا عبر مسارٍ يرفضه الحرس — ويُثبَت أنّ صاحبَ البحث
+    يبقى صاحبَه: يرى، ويفتح، ويكتب.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectMember
+    from athera_api.services import collaboration
+
+    a = two_tenants["a"]
+    title = "بحثٌ صفُّ مالكه معطوب"
+    project_id = await _owned_project(a, title=title)
+    owner_member_id = await _owner_membership_id(a, project_id)
+
+    # ١) صفوفُ الصلاحيات تُمحى، والحالُ «نشط».
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        member = await collaboration.member_for(
+            session, project_id=project_id, user_id=a["user_id"])
+        await collaboration._grant_permissions(  # noqa: SLF001 — تجهيزةُ حالٍ معطوب
+            session, tenant_id=a["tenant_id"], member=member, keys=[],
+            granted_by=a["user_id"])
+        from sqlalchemy import delete
+
+        from athera_api.models.collaboration import ProjectMemberPermission
+        await session.execute(delete(ProjectMemberPermission).where(
+            ProjectMemberPermission.member_id == owner_member_id))
+    await _owner_still_has_their_project(a, project_id, title)
+
+    # ٢) والحالُ يُضبط على «مُوقَف» في القاعدة مباشرةً.
+    import datetime as dt
+
+    from sqlalchemy import update
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        await session.execute(update(ProjectMember)
+                              .where(ProjectMember.id == owner_member_id)
+                              .values(access_state="suspended",
+                                      suspended_at=dt.datetime.now(dt.UTC)))
+    await _owner_still_has_their_project(a, project_id, title)
+
+    # ٣) و«مُزال» كذلك — والنسبُ في السجلّ لا يُمحى بحالِ صفّ.
+    async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+        await session.execute(update(ProjectMember)
+                              .where(ProjectMember.id == owner_member_id)
+                              .values(access_state="removed", suspended_at=None,
+                                      removed_at=dt.datetime.now(dt.UTC)))
+    await _owner_still_has_their_project(a, project_id, title)
+
+    # **وغيرُ المالك لا ينال شيئًا من هذا التراخي.**
+    outsider = await _second_user(a["tenant_id"], email=f"nz-{uuid.uuid4().hex[:8]}@x.test")
+    async with _client(outsider) as http:
+        assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 404

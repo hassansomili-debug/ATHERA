@@ -247,7 +247,14 @@ async def access_for(
     project_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> Access:
-    """يقرأ ما يملكه الطالبُ في هذا البحث — ويرفض إن لم يملك عضويةً حيّة."""
+    """يقرأ ما يملكه الطالبُ في هذا البحث — ويرفض إن لم يملك عضويةً حيّة.
+
+    **وصاحبُ البحث مستثنًى من حالِ الصفّ.** فهذه الدالّةُ بوابةُ مسارات
+    الفريق، وكانت تقرأ الصفَّ وحده: فمن يحمل `manage_team` كان يوقف عضويّةَ
+    المالك، فيُقصى صاحبُ البحث عن إدارة بحثه ولا مسارَ يعيده. والملكيّةُ
+    سلطةُ جذر — وتوافقُ هذه البوابةِ مع `ensure_project_access` مقصود: بابانِ
+    يختلفان على بحثٍ واحد عطبٌ لا حالةٌ طرفيّة.
+    """
     await _project(session, project_id)
     member = await member_for(session, project_id=project_id, user_id=user_id)
     if member is None:
@@ -256,6 +263,12 @@ async def access_for(
             actor_user_id=user_id)
     if member is None:
         raise Forbidden("team.not_a_project_member", project_id=str(project_id))
+
+    # ملكيّةٌ مُثبَتة: تُردّ سلطةُ الجذر كاملةً أيًّا كان ما في الصفّ.
+    if await is_verified_owner(
+            session, project_id=project_id, user_id=user_id):
+        return Access(member=member, permissions=OWNER_IMPLIED_PERMISSIONS)
+
     if member.access_state == "suspended":
         raise Forbidden("team.access_suspended", project_id=str(project_id))
     if member.access_state == "removed":
@@ -816,6 +829,13 @@ async def change_role(
     """
     if role not in team.MEMBER_ROLES:
         raise AtheraError("team.unknown_member_role", status_code=422, role=role)
+    # وصاحبُ البحث لا يُنزَّل من موضعه بإدارةِ فريق: الدورُ لا يمنحه سلطةً
+    # ولا يسلبها، لكنّ شاشةً تقول «شكرٌ وتقدير» عن صاحب البحث تكذب على من
+    # يقرؤها. ونقلُ الملكيّة مسارٌ لم يوجد بعد.
+    if role != "principal_investigator":
+        await _refuse_if_verified_owner(
+            session, project_id=member.project_id, member=member,
+            operation="change_role")
     before = member.role
     member.role = role
     await session.flush()
@@ -845,8 +865,16 @@ async def set_permissions(
         raise AtheraError("team.unknown_permission", status_code=422,
                           detail=str(exc)) from exc
 
-    before = await permissions_of(session, member_id=member.id)
     wanted = frozenset(keys)
+    # **والبابُ الثاني يُسدّ مع الأول.** فحمايةُ `access_state` وحدها كانت
+    # تترك هذا المسار: صفوفُ المالك تُنزع فيبقى «نشطًا» بلا صلاحيةٍ واحدة.
+    # ولا يُمنع إلّا ما يُنقص — فضبطُها على سلطة الجذر كاملةً لا يُنقص شيئًا.
+    if not wanted >= OWNER_IMPLIED_PERMISSIONS:
+        await _refuse_if_verified_owner(
+            session, project_id=member.project_id, member=member,
+            operation="set_permissions")
+
+    before = await permissions_of(session, member_id=member.id)
     for row in (
         await session.execute(
             select(ProjectMemberPermission).where(
@@ -890,6 +918,14 @@ async def set_access_state(
     # عضوٍ قائم يقطع وصولَه بلا دعوةٍ يقبلها، ولا رمزَ له يعود به.
     if state not in ("active", "suspended", "removed"):
         raise AtheraError("team.unknown_access_state", status_code=422, state=state)
+    # وصاحبُ البحث لا يُوقَف ولا يُزال — **ولا يخرج بنفسه** وهو صاحبُه.
+    # فمسارُ الخروج يمرّ من هنا بـ`left_voluntarily`، وبحثٌ بلا صاحبٍ لا
+    # يُستعاد إلّا بتدخّلٍ يدويّ في القاعدة. والإعادةُ إلى «نشط» تزيد ولا
+    # تنقص، فتمرّ.
+    if state != "active":
+        await _refuse_if_verified_owner(
+            session, project_id=member.project_id, member=member,
+            operation="leave_project" if left_voluntarily else "set_access_state")
     before = member.access_state
     now = _now()
     member.access_state = state
@@ -1008,15 +1044,34 @@ OWNER_IMPLIED_PERMISSIONS: frozenset[str] = frozenset(
     team.default_permissions("principal_investigator"))
 
 
-def _decide(access_state: str | None,
+def _decide(*, is_owner: bool, access_state: str | None,
             keys: frozenset[str]) -> frozenset[str] | None:
-    """**القرارُ في موضعٍ واحد** — حالةُ العضويّة وصفوفُها إلى جوابٍ واحد.
+    """**القرارُ في موضعٍ واحد** — والملكيّةُ أوّلُ ما يُسأل عنه.
 
     ودالّتان تُحمّلان الصفوف (واحدةٌ تدمج الاستعلامات لبحثٍ قائم، وأخرى
     تقرؤها على مراحل لما في السلّة)، **وكلتاهما تقرّر من هنا**. فلو قرّرت
     كلٌّ لنفسها لافترقتا بأوّل تعديل — وبابانِ يختلفان على بحثٍ واحد هو
     العطبُ بعينه لا حالةً طرفيّة.
+
+    ## ولمَ الملكيّةُ أوّلًا، لا صفُّ العضويّة
+
+    كان هذا الفحصُ يقرأ صفَّ العضويّة أوّلًا ويعدّه المرجعَ متى وُجد — ليوافق
+    `access_for`. وكان في ذلك عطبٌ: **مديرُ فريقٍ يُقصي صاحبَ البحث عن بحثه**.
+    فمن يحمل `manage_team` كان يوقف عضويّةَ المالك أو ينزع صفوفَها، فيصير
+    البحثُ الذي أنشأه محجوبًا عنه — ولا مسارَ يُعيده إليه.
+
+    فالملكيّةُ المُثبَتة سلطةُ جذرٍ لا صفٌّ يُدار: تُشتقّ من ملفّ الباحث أو
+    من حدث الإنشاء في سجلٍّ يُضاف إليه ولا يُعدَّل، ولا يملك أحدٌ تغييرَها
+    من شاشة الفريق. وصفُّ العضويّة — حضورًا ودورًا وحالةً وصلاحيات — لا
+    يصير وسيلةً لنقض ملكيّةٍ مُثبَتة.
+
+    **والدورُ ليس ملكيّة.** فعضوٌ دورُه `principal_investigator` وليس صاحبَ
+    النسب لا يأخذ شيئًا من هذا: المقارنةُ بـ`owner_user_id` وحدها، ولا
+    تُشتقّ من مفردةٍ يكتبها مديرُ فريق.
     """
+    if is_owner:
+        # سلطةُ الجذر: ما كان `ensure_owner_membership` ليمنحه، ولا زيادة.
+        return OWNER_IMPLIED_PERMISSIONS
     if access_state != "active":
         return None
     if VIEW_PROJECT not in keys:
@@ -1024,18 +1079,59 @@ def _decide(access_state: str | None,
     return keys
 
 
+async def is_verified_owner(
+    session: AsyncSession, *, project_id: uuid.UUID, user_id: uuid.UUID | None
+) -> bool:
+    """أهذا الحسابُ صاحبُ النسب المُثبَت لهذا البحث؟
+
+    ولا يُسأل عن دورٍ ولا عن صفٍّ: `owner_user_id` وحدها، وهي تقرأ ملفَّ
+    الباحث أو فاعلَ حدثِ الإنشاء — ومصدرانِ لا تكتبهما إدارةُ الفريق.
+    """
+    if user_id is None:
+        return False
+    return await owner_user_id(session, project_id=project_id) == user_id
+
+
 async def _owner_implied(
     session: AsyncSession, *, project_id: uuid.UUID, user_id: uuid.UUID
 ) -> frozenset[str] | None:
-    """لا صفَّ عضويّةٍ بعد: تُقرأ الملكيّةُ من مصدرها الموثوق — **بلا كتابة**.
+    """الملكيّةُ تُقرأ من مصدرها الموثوق — **بلا كتابة**.
 
-    ويُمنح ما كان `ensure_owner_membership` ليمنحه، ولا زيادة. وهذا هو
-    جسرُ ما قبل العضويّات: البحوث تُنشأ في موجّهاتٍ لا تُنشئ لصاحبها صفًّا،
-    وبلا هذا الطريق يفقد كلُّ باحثٍ بحثَه.
+    وهذا هو جسرُ ما قبل العضويّات أيضًا: البحوث تُنشأ في موجّهاتٍ لا تُنشئ
+    لصاحبها صفًّا، وبلا هذا الطريق يفقد كلُّ باحثٍ بحثَه.
     """
-    if await owner_user_id(session, project_id=project_id) == user_id:
+    if await is_verified_owner(
+            session, project_id=project_id, user_id=user_id):
         return OWNER_IMPLIED_PERMISSIONS
     return None
+
+
+# ═══════════ المالكُ المُثبَت لا يُقصى عن بحثه (RC-T1A) ═══════════
+
+OWNER_IMMUTABLE = "team.owner_is_immutable"
+
+
+async def _refuse_if_verified_owner(
+    session: AsyncSession, *, project_id: uuid.UUID,
+    member: ProjectMember, operation: str,
+) -> None:
+    """يمنع كلَّ عمليةٍ تُنقص سلطةَ صاحب البحث على بحثه.
+
+    **والمنعُ صريحٌ لا صامت.** فلو مرّت العمليةُ ثم لم تُنقص شيئًا (لأنّ
+    التفويض يقرأ الملكيّة) لبقيت شاشةُ الفريق تقول «أُوقف» عن مالكٍ لم
+    يُوقَف — وحالةٌ مكتوبةٌ تخالف السلوك أسوأ من رفضٍ يُقرأ.
+
+    و٤٠٩ لا ٤٠٣: الطالبُ يملك `manage_team` فعلًا، والمانعُ ليس نقصَ إذنٍ
+    بل تناقضُ الطلب مع حقيقةٍ قائمة — لا مالكَ ثانيًا لهذا البحث.
+
+    ولا نقلَ للملكيّة في هذه الدفعة: حتى يوجد مسارٌ صريح لنقلها، صاحبُ
+    النسب ثابت.
+    """
+    if not await is_verified_owner(
+            session, project_id=project_id, user_id=member.user_id):
+        return
+    raise AtheraError(OWNER_IMMUTABLE, status_code=409, operation=operation,
+                      project_id=str(project_id))
 
 
 async def project_permissions(
@@ -1052,13 +1148,17 @@ async def project_permissions(
     الظاهر. ومن أراد الحدَّ كاملًا — المستأجرَ والحياةَ والصلاحية — فذاك
     `ensure_project_access`، وهي تُنجزه في استعلامٍ واحد.
     """
+    # **الملكيّةُ أوّلًا** — فصفُّ العضويّة لا ينقض نسبًا مُثبَتًا.
+    if await is_verified_owner(
+            session, project_id=project_id, user_id=user_id):
+        return OWNER_IMPLIED_PERMISSIONS
     member = await member_for(
         session, project_id=project_id, user_id=user_id)
     if member is None:
-        return await _owner_implied(
-            session, project_id=project_id, user_id=user_id)
-    return _decide(member.access_state,
-                   frozenset(await permissions_of(session, member_id=member.id)))
+        return None
+    return _decide(
+        is_owner=False, access_state=member.access_state,
+        keys=frozenset(await permissions_of(session, member_id=member.id)))
 
 
 async def may_view_project(
@@ -1120,10 +1220,25 @@ async def ensure_project_access(
     # الخارجيّةُ لأنّ غيابَ العضويّة جوابٌ مطلوب لا سببَ لحجب الصفّ، ثم
     # يُقرّر `_decide`. والتجميعُ على مفتاح البحث الأساسيّ، فتُقرأ أعمدتُه
     # كلُّها تحت اعتماديّةٍ وظيفية.
+    # **والملكيّةُ تُقرأ في العبارة نفسها**، لا برحلةٍ ثانية. وهي مصدرا
+    # `owner_user_id` بترتيبهما: ملفُّ الباحث، ثمّ فاعلُ حدثِ الإنشاء —
+    # و`coalesce` تُعطي أسبقيّةَ الأوّل كما تفعل تلك الدالّة بالضبط.
+    owner = func.coalesce(
+        select(ResearcherProfile.user_id)
+        .where(ResearcherProfile.id == ResearchProject.profile_id)
+        .scalar_subquery(),
+        select(AuditEvent.actor_user_id)
+        .where(AuditEvent.object_type == PROJECT_OBJECT_TYPE,
+               AuditEvent.object_id == ResearchProject.id,
+               AuditEvent.action.in_(PROJECT_CREATED_ACTIONS),
+               AuditEvent.actor_user_id.is_not(None))
+        .order_by(AuditEvent.occurred_at).limit(1)
+        .scalar_subquery(),
+    )
     keys_agg = func.array_agg(ProjectMemberPermission.permission_key)
     rows = (await session.execute(
-        select(ResearchProject, ProjectMember.id, ProjectMember.access_state,
-               keys_agg)
+        select(ResearchProject, owner.label("owner_user_id"),
+               ProjectMember.id, ProjectMember.access_state, keys_agg)
         .outerjoin(ProjectMember,
                    and_(ProjectMember.project_id == ResearchProject.id,
                         ProjectMember.tenant_id == tenant_id,
@@ -1143,8 +1258,9 @@ async def ensure_project_access(
     if not rows:
         raise NotFound(not_found_code)
 
-    project = rows[0][0]
-    memberships = [r for r in rows if r[1] is not None]
+    project, owner_id = rows[0][0], rows[0][1]
+    is_owner = owner_id is not None and owner_id == user_id
+    memberships = [r for r in rows if r[2] is not None]
     if len(memberships) > 1:
         # **ولا يُخمَّن أيُّهما المقصود.** ولا قيدَ في القاعدة يمنع صفَّين
         # لحسابٍ واحد في بحثٍ واحد (`user_id` يقبل الفراغ لمدعوٍّ بالبريد
@@ -1156,14 +1272,14 @@ async def ensure_project_access(
             f"for one user — the answer would be arbitrary")
 
     if not memberships:
-        # لا صفَّ عضويّةٍ بهذا البحث لهذا الباحث — فيُجرَّب طريقُ الملكيّة.
-        keys = await _owner_implied(
-            session, project_id=project_id, user_id=user_id)
+        # لا صفَّ عضويّةٍ بهذا البحث لهذا الباحث — فالملكيّةُ وحدها تقرّر.
+        keys = _decide(is_owner=is_owner, access_state=None, keys=frozenset())
     else:
-        _p, _mid, access_state, granted = memberships[0]
+        _p, _o, _mid, access_state, granted = memberships[0]
         # و`array_agg` على وصلةٍ بلا مطابقاتٍ تُعيد `[None]` لا `[]`.
-        keys = _decide(access_state,
-                       frozenset(k for k in (granted or ()) if k is not None))
+        keys = _decide(
+            is_owner=is_owner, access_state=access_state,
+            keys=frozenset(k for k in (granted or ()) if k is not None))
     if keys is None:
         raise NotFound(not_found_code)
     if permission not in keys:
