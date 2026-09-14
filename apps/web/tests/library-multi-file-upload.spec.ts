@@ -537,3 +537,122 @@ test("دفعةُ رفٍّ لا تظهر في رفٍّ آخر أثناء جريا
           { timeout: 30_000, message: "ملفاتُ «أ» ظهرت في الجذر" })
     .toBe(0);
 });
+
+// ══ ١٠ · حدُّ التنقّل نفسه: رفعٌ يكتمل في لحظة العبور من «أ» إلى «ب» ══
+//
+// **والنافذةُ التي تُغلق هنا أضيقُ من سابقتها.**
+//
+// كان المرجعُ يُضبط في `useEffect` بعد تغيّر `folderId`، والأثرُ يجري بعد
+// الإيداع — فتبقى لحظةٌ: التنقّلُ بدأ، والمرجعُ ما زال «أ»، ورفعٌ من «أ»
+// يكتمل فيها فيُدرَج في القائمة التي تصير «ب». وصارت النيّةُ تُسجَّل
+// تزامنيًّا في `openFolder` قبل `setFolderId`، فلا تتعلّق الصحّةُ بتوقيت أثر.
+//
+// **والفحصُ يمسك اللحظةَ بيده ولا ينتظرها.** طلبُ رفعٍ واحد يُحتجز مفتوحًا،
+// فلا يكتمل حتى يُفرَج عنه؛ ويُفرَج عنه بعد إطلاق نقرة التنقّل مباشرةً —
+// لا بعد نومٍ مقدَّر. فالتوقيتُ مصنوعٌ لا مُتَمنّى.
+test("رفعٌ يكتمل عند عبور الحدّ لا يظهر في الرفّ الجديد", async ({ page }) => {
+  const A = `${RUN}-bA`;
+  const B = `${RUN}-bB`;
+  const HELD = `${RUN}-boundary-held.txt`;
+  const NAMES = [HELD, `${RUN}-boundary-2.txt`, `${RUN}-boundary-3.txt`];
+
+  await page.goto(`/${EN}/login`);
+  await page.getByLabel(/email/i).fill(ACCOUNT);
+  await page.locator("#login-password").fill(PASSWORD);
+  await page.locator("form button[type=submit]").click();
+  await page.waitForURL(`**/${EN}`, { timeout: 60_000 });
+
+  await page.goto(`/${AR}/library`);
+  await createAndOpenFolder(page, A);
+  await page.goto(`/${AR}/library`);
+  await createAndOpenFolder(page, B);
+
+  // ── الدفعةُ تبدأ في «أ» ──
+  await page.goto(`/${AR}/library`);
+  await page.getByLabel(`فتح المجلد: ${A}`).click();
+  await expect(page.getByText(new RegExp(A)).first()).toBeVisible({ timeout: 30_000 });
+
+  // **احتجازُ إتمامٍ واحد.** الطلبُ يمضي إلى الخادم الحقيقيّ ويُحفظ فعلًا —
+  // المحتجَزُ هو لحظةُ وصول ردّه إلى المتصفّح، وهي بالضبط لحظةُ الإدراج.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let captured!: () => void;
+  const inFlight = new Promise<void>((resolve) => { captured = resolve; });
+  let heldOnce = false;
+
+  await page.route("**/api/v1/files/upload", async (route) => {
+    const body = route.request().postData() ?? "";
+    if (!heldOnce && body.includes(HELD)) {
+      heldOnce = true;
+      captured();
+      await released;
+    }
+    await route.continue();
+  });
+
+  await page.locator('input[type="file"]').first()
+    .setInputFiles(NAMES.map((n) => synthetic(n, 2)));
+  await expect(page.getByTestId("upload-row")).toHaveCount(3);
+
+  // الطلبُ المحتجَز صار في الطيران — واللحظةُ صارت في يد الفحص.
+  await inFlight;
+
+  // ── العبور: «أ» ← الجذر ← «ب»، بالمسار الحقيقيّ داخل الصفحة ──
+  await page.getByLabel("فتح المجلد: مكتبتي").click();
+  const entering = page.getByLabel(`فتح المجلد: ${B}`).click();
+
+  // **ويُفرَج عنه عند الحدّ** — قبل أن يُعوَّل على أيّ أثرٍ سلبيّ.
+  release();
+  await entering;
+
+  await expect(page.getByText(new RegExp(B)).first()).toBeVisible({ timeout: 30_000 });
+
+  // ── ولا بطاقةَ من «أ» تظهر في «ب»، ولا للحظة ──
+  let leaked = "";
+  for (let i = 0; i < 60; i += 1) {
+    const cards = await page.locator("article.card")
+      .filter({ hasText: `${RUN}-boundary-` }).count();
+    if (cards > 0) {
+      leaked = `ظهرت ${cards} بطاقةً من «أ» في «ب» عند الحدّ`;
+      break;
+    }
+    if (await page.locator('[data-upload-state="stored"]').count() === 3) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  expect(leaked, leaked || "لا تسريب عند الحدّ").toBe("");
+
+  // والدفعةُ اكتملت فعلًا — فالفحصُ لم يمرّ لأنّ شيئًا لم يقع.
+  await expect
+    .poll(async () => await page.locator('[data-upload-state="stored"]').count(),
+          { timeout: 120_000, message: "الدفعةُ لم تكتمل" })
+    .toBe(3);
+
+  // و«ب» نظيفٌ بعد الاستقرار والمصالحة أيضًا.
+  await expect
+    .poll(async () =>
+            await page.locator("article.card")
+              .filter({ hasText: `${RUN}-boundary-` }).count(),
+          { timeout: 30_000, message: "المصالحةُ أدخلت ملفاتِ «أ» إلى «ب»" })
+    .toBe(0);
+
+  // ── والعودةُ إلى «أ» تجدها كلَّها، ومنها المحتجَز ──
+  await page.unroute("**/api/v1/files/upload");
+  await page.goto(`/${AR}/library`);
+  await page.getByLabel(`فتح المجلد: ${A}`).click();
+  for (const name of NAMES) {
+    await expect
+      .poll(async () =>
+              await page.locator("article.card").filter({ hasText: name }).count(),
+            { timeout: 60_000, message: `${name} ليس في «أ»` })
+      .toBe(1);
+  }
+
+  // ── والجذرُ نظيف ──
+  await page.goto(`/${AR}/library`);
+  await expect
+    .poll(async () =>
+            await page.locator("article.card")
+              .filter({ hasText: `${RUN}-boundary-` }).count(),
+          { timeout: 30_000, message: "ملفاتُ «أ» ظهرت في الجذر" })
+    .toBe(0);
+});

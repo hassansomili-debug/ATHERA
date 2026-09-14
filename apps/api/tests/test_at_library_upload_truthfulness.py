@@ -196,3 +196,42 @@ def test_a_file_card_is_distinguishable_from_a_reference_card():
     ملفات ومكتبةٍ لم تُقرأ — وقد أُبلغ ذلك `cards=2` وهي مراجع لا ملفات."""
     page = _code("src", "app", "[locale]", "library", "page.tsx")
     assert 'data-testid="library-file-card"' in page
+
+
+def test_the_visible_shelf_is_recorded_before_the_state_not_after():
+    """نيّةُ التنقّل تُسجَّل **تزامنيًّا**، فلا نافذةَ يُدرَج فيها ملفٌ في رفٍّ ليس رفَّه.
+
+    ## لماذا حارسُ مصدرٍ وليس حارسَ متصفّح
+
+    العطبُ نافذةٌ بحجم مهمّةٍ صغرى (microtask): بين `setFolderId(next)` وبين
+    جريان `useEffect` الذي يُزامن المرجع. ورفعٌ يكتمل في تلك اللحظة يُدرَج
+    في القائمة التي تصير الرفَّ الجديد.
+
+    **وفحصُ المتصفّح لا يُميّز هذه النافذة** — جُرّب: رقعةُ الحدّ تمرّ على
+    النسختين معًا، لأنّ تسليمَ ردّ الشبكة من خارج الصفحة يقع بعد أن يكون
+    React قد أودع وأجرى آثارَه. فحارسٌ سلوكيّ هنا يُعطي خضرةً لا تُفرّق،
+    وتلك أسوأ من غياب الحارس: تُقرأ إثباتًا وليست إثباتًا.
+
+    فيُحرس الترتيبُ حيث يُقرأ يقينًا: في المصدر. والشرطُ واحد — **الضبطُ
+    قبل تغيير الحالة، داخل الفعل القانونيّ الوحيد للتنقّل**.
+    """
+    page = _code("src", "app", "[locale]", "library", "page.tsx")
+
+    opener = page.index("const openFolder = useCallback(")
+    body = page[opener:page.index("}, [", opener)]
+
+    assert "shownFolder.current = next;" in body, (
+        "التنقّل لا يسجّل الرفَّ المقصود تزامنيًّا — فالصحّةُ معلّقةٌ بتوقيت أثر")
+    assert body.index("shownFolder.current = next;") < body.index("setFolderId(next);"), (
+        "النيّةُ تُسجَّل بعد تغيير الحالة — والنافذةُ التي تُغلق هي ما بينهما")
+
+    # **ولا مسارَ ثانٍ يغيّر الرفَّ من خلف الفعل القانونيّ.** فلو وُجد،
+    # لبقي المرجعُ قديمًا فيه مهما صحّ الترتيبُ هنا. ونداءٌ واحدٌ فقط في
+    # الملفّ كلِّه، وهو الذي في `openFolder` أعلاه.
+    assert page.count("setFolderId(") == 1, (
+        "ثمّة مسارٌ آخر يضبط الرفّ غير `openFolder` — والمرجعُ يبقى قديمًا فيه")
+    assert "setFolderId(next);" in body
+
+    # والقرارُ يُقرأ من المرجع لا من قيمةٍ في غلاف الدالّة.
+    assert "(stored.folder_id ?? null) !== shownFolder.current" in page, (
+        "الإدراج المتفائل لا يقارن رفَّ الملف بالمعروض الآن")

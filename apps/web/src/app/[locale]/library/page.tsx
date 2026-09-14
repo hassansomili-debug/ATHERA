@@ -126,6 +126,17 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
 
   // ── أين يقف الباحث الآن ──
   const [folderId, setFolderId] = useState<string | null>(null);
+  /**
+   * الرفُّ الذي يقصده الباحث **الآن** — نيّةُ تنقّلٍ لا صدى إعادة عرض.
+   *
+   * ويُعرَّف بجانب الحالة لا بعيدًا عنها: هو وجهُها الآخر، ومن قرأ أحدهما
+   * يحتاج أن يرى الثاني في السطر التالي.
+   *
+   * **ولمَ مرجعٌ ولا حالة.** الإدراجُ المتفائل يقع في نداءٍ يأتي من الشبكة
+   * بعد أن أُنشئ، فـ`folderId` المقروء من غلافه يبقى على قيمته وقتَ
+   * الإنشاء. والمرجعُ يُقرأ لحظةَ الاستعمال.
+   */
+  const shownFolder = useRef<string | null>(null);
   const [breadcrumb, setBreadcrumb] = useState<Crumb[]>([]);
   const [folders, setFolders] = useState<LibraryFolder[]>([]);
   const [foldersLoad, setFoldersLoad] = useState<"loading" | "ready" | "failed">("loading");
@@ -313,6 +324,17 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    * محتوى رفٍّ في رفٍّ آخر ثوانيَ كاملة — وهو أسوأ من انتظارٍ مُعلَن.
    */
   const openFolder = useCallback((next: string | null) => {
+    // **النيّةُ تُسجَّل قبل الحالة، لا بعد إعادة العرض.**
+    //
+    // وهذا سطرُ الحدّ بعينه. كان المرجعُ يُضبط في `useEffect` بعد تغيّر
+    // `folderId`، والأثرُ يجري **بعد** الإيداع — فتبقى نافذةٌ قصيرة:
+    // التنقّلُ إلى «ب» بدأ، والمرجعُ ما زال «أ»، ورفعٌ من «أ» يكتمل في
+    // تلك اللحظة فيُدرَج في القائمة التي تصير «ب». نافذةٌ بأجزاء من
+    // الثانية، لكنّ الرفعَ المتعدّد يجعلها مأهولةً: عشرةُ ملفاتٍ تكتمل
+    // على مدى ثوانٍ، والباحثُ يتنقّل بينها.
+    //
+    // فيُسجَّل القصدُ تزامنيًّا هنا — ولا تتعلّق الصحّةُ بتوقيت أثرٍ.
+    shownFolder.current = next;
     setFolderId(next);
     setPanel(null);
     setNewFolderOpen(false);
@@ -376,15 +398,9 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    * والقراءة تُطلق بعدها فتحلّ الحقيقةُ محلّ التوقّع، ورقمُ الترتيب يُرفع
    * أولًا فلا يمحو الملفَ ردٌّ صدر قبل رفعه.
    */
-  /**
-   * الرفُّ المعروض الآن — **مرجعٌ لا حالةُ غلاف**.
-   *
-   * ودفعةُ الرفع تمضي بعد أن يتنقّل صاحبُها: يختار عشرةً في «أوراق المنهج»
-   * ثم يفتح رفًّا آخر وهي تُرفع. و`folderId` المقروء من غلاف الدالّة يبقى
-   * على قيمته وقتَ إنشائها، فيقارن الوجهةَ بموضعٍ قديم — والمرجعُ يقرأ
-   * الموضعَ الآن.
-   */
-  const shownFolder = useRef<string | null>(folderId);
+  // **مُزامنٌ احتياطيّ، لا مصدرُ الصحّة.** فالقصدُ يُسجَّل في `openFolder`
+  // تزامنيًّا؛ وهذا يمسك ما لو ضُبط `folderId` يومًا من طريقٍ آخر — ولو
+  // حُذف هذا السطرُ اليوم لبقي الحدُّ قائمًا.
   useEffect(() => {
     shownFolder.current = folderId;
   }, [folderId]);
