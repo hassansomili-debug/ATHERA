@@ -292,6 +292,10 @@ async def world(two_tenants):
                                        email=f"omgr-{suffix}@example.test")
     applicant2 = await _second_user(applicant["tenant_id"],
                                     email=f"app2-{suffix}@example.test")
+    # غريبٌ في مستأجر المتقدّمين لا يتقدّم إلى شيء — فيُقاس عليه الحدُّ
+    # العابرُ للمستأجرين وحده، بلا تقدُّمٍ يخلطه.
+    outsider = await _second_user(applicant["tenant_id"],
+                                  email=f"out-{suffix}@example.test")
 
     manager_member = await _invite_and_accept(
         owner, manager, project_id, permissions=["view_project", "manage_team"])
@@ -304,6 +308,7 @@ async def world(two_tenants):
 
     return World(
         owner=owner, applicant=applicant, applicant2=applicant2,
+        outsider=outsider,
         manager=manager, manager_member=manager_member,
         plain=plain, plain_member=plain_member,
         stranger=stranger, other_manager=other_manager,
@@ -430,10 +435,14 @@ async def test_02b_the_manager_still_reaches_the_private_metadata(world):
         assert row["tenant_id"] == world.owner["tenant_id"], label
         assert row["created_by"] == world.owner["user_id"], label
 
-    # والغريبُ في المستأجر نفسِه: لا شيء.
+    # والغريبُ في المستأجر نفسِه: لا شيء — لا قراءةً ولا إدارة.
     assert await _visible_owner_ids(world.stranger) == set()
+    assert await _manages(world.stranger, world.project_id) is False
     assert await _visible_owner_ids(world.plain) == set(), \
         "عضوٌ بلا تفويضِ فريقٍ يقرأ نسبَ الفرص"
+    # وغريبٌ في مستأجرٍ آخر كذلك — والحدّان مختلفان فيُقاسان معًا.
+    assert await _manages(world.outsider, world.project_id) is False
+    assert await _visible_owner_ids(world.outsider) == set()
 
 
 @requires_db
@@ -574,8 +583,13 @@ async def test_06_07_08_an_applicant_sees_only_their_own(world):
 
     assert await _visible_application_ids(world.applicant) == {mine}
     assert await _visible_application_ids(world.applicant2) == {theirs}
+    # غريبٌ في مستأجر الفرصة.
     assert await _visible_application_ids(world.stranger) == set()
+    # وعضوٌ في البحث بلا تفويضِ فريق.
     assert await _visible_application_ids(world.plain) == set()
+    # وغريبٌ عابرٌ للمستأجرين لم يتقدّم — وهو حدٌّ ثالثٌ لا يُستنتج من
+    # الأوّلين: لا عضويّةَ له ولا مستأجرَ مشترك.
+    assert await _visible_application_ids(world.outsider) == set()
 
 
 # ═══════ ٩–١٤ · مَن يرى المتقدّمين ═══════
@@ -1098,6 +1112,18 @@ async def test_a4_the_applicant_may_withdraw_and_only_withdraw(world):
                                   withdrawn_at=_now() - _hours(72))
     assert "written once" in str(caught.value)
 
+    # ومن «مُرشَّح» ينسحب كذلك — فالترشيحُ ليس قيدًا على صاحبه.
+    shortlisted_op = await _make_opportunity(
+        world.owner, world.project_id, title="للانسحاب بعد الترشيح")
+    shortlisted_app = await _apply(world.applicant, shortlisted_op)
+    await _update_application(world.owner, shortlisted_app, status="shortlisted",
+                              decided_at=_now(),
+                              decided_by=str(world.owner["user_id"]))
+    await _update_application(world.applicant, shortlisted_app,
+                              status="withdrawn", withdrawn_at=_now())
+    assert (await _application_row(
+        world.applicant, shortlisted_app))["status"] == "withdrawn"
+
     # ولا انسحابَ من حالٍ ليست قائمة: يُعتذر عن متقدّمٍ ثمّ يحاول الانسحاب.
     second = await _make_opportunity(world.owner, world.project_id, title="ثانية")
     other = await _apply(world.applicant, second)
@@ -1123,6 +1149,12 @@ async def test_a5_the_manager_transition_matrix_is_exactly_what_was_written(worl
     from athera_api.models.recruitment import MANAGER_TRANSITIONS
 
     # ── المسموح: كلُّ زوجٍ في المصفوفة يقع فعلًا ──
+    #
+    # **ويُقاس عددُها أيضًا**: هذا الفحصُ يمرّ على ما في المصفوفة، فزوجٌ
+    # يُزاد سهوًا يصير «مسموحًا» هنا بلا أن ينبّه أحد. والعددُ ثلاثةٌ
+    # مكتوبةٌ في التكليف، و`test_a9c` يقابل الأزواجَ بأعيانها.
+    assert len(MANAGER_TRANSITIONS) == 3, MANAGER_TRANSITIONS
+
     for before, after in MANAGER_TRANSITIONS:
         opportunity_id = await _make_opportunity(
             world.owner, world.project_id, title=f"{before}->{after}")
@@ -1131,22 +1163,21 @@ async def test_a5_the_manager_transition_matrix_is_exactly_what_was_written(worl
             await _update_application(
                 world.owner, application_id, status=before,
                 decided_at=_now(), decided_by=str(world.owner["user_id"]))
-        columns = {"status": after, "decided_at": _now(),
-                   "decided_by": str(world.owner["user_id"])}
-        if after == "invited":
-            columns["invitation_id"] = str(await _issue_invitation(
-                world.owner, world.project_id,
-                email=f"cand-{uuid.uuid4().hex[:8]}@example.test"))
-        await _update_application(world.owner, application_id, **columns)
+        await _update_application(
+            world.owner, application_id, status=after, decided_at=_now(),
+            decided_by=str(world.owner["user_id"]))
         row = await _application_row(world.owner, application_id)
         assert row["status"] == after, (before, after)
         assert row["decided_by"] == world.owner["user_id"]
 
     # ── والمرفوض: ما ليس في المصفوفة ──
+    #
+    # و«مدعوّ» لها فحصٌ قائمٌ بذاته أدناه: هي المفردةُ الوحيدةُ المحجوزة،
+    # فلا تُخلط بانتقالٍ مرفوضٍ لسببٍ آخر.
     refused = (
-        ("pending", "invited"),      # لا دعوةَ بلا ترشيح
         ("declined", "shortlisted"),  # ولا يُنقض اعتذارٌ صدر
         ("declined", "pending"),
+        ("shortlisted", "pending"),
     )
     for before, after in refused:
         opportunity_id = await _make_opportunity(
@@ -1156,14 +1187,10 @@ async def test_a5_the_manager_transition_matrix_is_exactly_what_was_written(worl
             await _update_application(
                 world.owner, application_id, status=before,
                 decided_at=_now(), decided_by=str(world.owner["user_id"]))
-        columns = {"status": after, "decided_at": _now(),
-                   "decided_by": str(world.owner["user_id"])}
-        if after == "invited":
-            columns["invitation_id"] = str(await _issue_invitation(
-                world.owner, world.project_id,
-                email=f"cand-{uuid.uuid4().hex[:8]}@example.test"))
         with pytest.raises(DBAPIError) as caught:
-            await _update_application(world.owner, application_id, **columns)
+            await _update_application(
+                world.owner, application_id, status=after, decided_at=_now(),
+                decided_by=str(world.owner["user_id"]))
         assert "no such transition" in str(caught.value), (before, after, caught.value)
 
 
@@ -1242,103 +1269,194 @@ async def test_a8_the_manager_never_rewrites_applicant_identity(world):
     assert row["opportunity_id"] == first
 
 
-# ════════════ «مدعوّ» تعني دعوةً حقيقية ════════════
+# ════════ «مدعوّ» محجوزةٌ لـRC-T1C — ولا طريقَ إليها ════════
+#
+# **والقرارُ قرارُ منتجٍ لا نقصُ تنفيذ.** فالدعوةُ الصحيحة دعوةٌ **لصاحب
+# هذا التطبيق بعينه**، و`ProjectInvitation` اليوم محلّيّةُ المستأجر:
+# إصدارُها يبحث عن الحساب داخل مستأجر البحث. وفرصُ البحث عابرةٌ
+# للمستأجرين قصدًا — فباحثٌ في مؤسسةٍ يتقدّم إلى بحثٍ في أخرى.
+#
+# فالربطُ الصحيح تصميمُ خدمةٍ في RC-T1C، **ولا يُوسَّع سلوكُ الدعوات
+# المحلّيّ خِلسةً داخل دفعةٍ أمنية**.
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_a9_invited_is_impossible_without_a_real_project_invitation(world):
-    """**٢١ من المصفوفة · ولا «مدعوّ» بلا `ProjectInvitation` خلفها.**
+@pytest.mark.parametrize("before", ["pending", "shortlisted"])
+@pytest.mark.parametrize(
+    "invitation",
+    ["none", "forged", "same_project", "other_project", "other_candidate"])
+async def test_a9_invited_has_no_transition_in_this_stage(world, before, invitation):
+    """**ولا انتقالَ إلى «مدعوّ» في RC-T1B — ولا تُجدي دعوةٌ صحيحة.**
 
-    فحالٌ اسمُها دعوةٌ بلا دعوةٍ تجعل الاستقطابَ **طريقًا ثانيةً إلى
-    الفريق** تتجاوز المسارَ الوحيدَ المُقرَّر. وثلاثُ طبقات:
+    ‏**والمانعُ هو المصفوفةُ لا صحّةُ الدعوة.** وهذا هو مقصودُ الفحص:
+    فلو كان المانعُ «دعوتُك غير صالحة» لظنّ من يأتي بعدُ أنّ دعوةً صالحةً
+    تكفي — وهي لا تكفي، لأنّ **صلاحيةَ الدعوة ليست هي المطلوب**: المطلوبُ
+    أن تكون الدعوةُ لصاحب هذا التطبيق بعينه، وذاك ما لا يُثبته المخطَّطُ
+    اليوم.
 
-      ١ قيدُ `invited_needs_an_invitation`: لا حالَ بلا مفتاح.
-      ٢ والمفتاحُ الأجنبيّ: لا مفتاحَ بلا صفِّ دعوةٍ حقيقيّ.
-      ٣ والمُشغِّل: **ولا دعوةَ من بحثٍ آخر** — دعوةٌ لا تُدخل أحدًا إلى
-        هذا الفريق كانت ستُمرّر الحالةَ.
+    فتُقاس عشرُ حالاتٍ (حالانِ قبل × خمسُ دعوات)، ومنها **دعوةٌ حقيقيةٌ
+    حيّةٌ في بحثِ الفرصة نفسِه** — والرفضُ واحدٌ في الجميع: «لا انتقالَ
+    كهذا».
     """
-    from sqlalchemy.exc import DBAPIError, IntegrityError
+    from sqlalchemy.exc import DBAPIError
 
     opportunity_id = await _make_opportunity(world.owner, world.project_id)
     application_id = await _apply(world.applicant, opportunity_id)
-    await _update_application(world.owner, application_id, status="shortlisted",
-                              decided_at=_now(),
-                              decided_by=str(world.owner["user_id"]))
+    if before == "shortlisted":
+        await _update_application(
+            world.owner, application_id, status="shortlisted",
+            decided_at=_now(), decided_by=str(world.owner["user_id"]))
 
-    # ١ · بلا مفتاحٍ إطلاقًا.
-    #
-    # **والمُشغِّلُ `BEFORE` يسبق قيدَ `CHECK`**، فالرفضُ يأتي باسمه لا
-    # باسم القيد. والقيدُ طبقةٌ ثانيةٌ تبقى لو أُسقط المُشغِّل — ووجودُه
-    # مقيسٌ في فحص أسماء القيود.
-    with pytest.raises(IntegrityError) as caught:
-        await _update_application(world.owner, application_id, status="invited",
-                                  decided_at=_now(),
-                                  decided_by=str(world.owner["user_id"]))
-    assert "requires a real ProjectInvitation" in str(caught.value)
+    columns = {"status": "invited", "decided_at": _now(),
+               "decided_by": str(world.owner["user_id"])}
+    tag = uuid.uuid4().hex[:8]
+    if invitation == "forged":
+        columns["invitation_id"] = str(uuid.uuid4())
+    elif invitation == "same_project":
+        # **دعوةٌ حقيقيةٌ حيّةٌ في البحث نفسِه** — وهي الحالةُ الحاسمة.
+        columns["invitation_id"] = str(await _issue_invitation(
+            world.owner, world.project_id, email=f"ok-{tag}@example.test"))
+    elif invitation == "other_project":
+        columns["invitation_id"] = str(await _issue_invitation(
+            world.owner, world.other_project_id, email=f"of-{tag}@example.test"))
+    elif invitation == "other_candidate":
+        # دعوةٌ صحيحةٌ في البحث نفسِه **لكنّها لمرشَّحٍ آخر** — وهو العطبُ
+        # الذي رفعته المراجعة: تطبيقُ «أ» يُوسَم مدعوًّا بدعوةِ «ب».
+        columns["invitation_id"] = str(await _issue_invitation(
+            world.owner, world.project_id, email=f"other-{tag}@example.test"))
 
-    # ٢ · وبمفتاحٍ مُختلَق.
-    with pytest.raises(IntegrityError):
-        await _update_application(world.owner, application_id, status="invited",
-                                  decided_at=_now(),
-                                  decided_by=str(world.owner["user_id"]),
-                                  invitation_id=str(uuid.uuid4()))
-
-    # ٣ · وبدعوةٍ حقيقيةٍ من بحثٍ آخر.
-    foreign = await _issue_invitation(
-        world.owner, world.other_project_id,
-        email=f"foreign-{world.suffix}@example.test")
     with pytest.raises(DBAPIError) as caught:
-        await _update_application(world.owner, application_id, status="invited",
-                                  decided_at=_now(),
-                                  decided_by=str(world.owner["user_id"]),
-                                  invitation_id=str(foreign))
-    assert "opportunity's own" in str(caught.value)
+        await _update_application(world.owner, application_id, **columns)
+    message = str(caught.value)
+    assert "no such transition" in message, (
+        f"«مدعوّ» بلغت الصفَّ بدعوةٍ من نوع {invitation!r} من حال {before!r}: "
+        f"{message}")
 
-    assert (await _application_row(world.owner, application_id))["status"] == "shortlisted"
+    row = await _application_row(world.owner, application_id)
+    assert row["status"] == before
+    assert row["invitation_id"] is None
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_a10_invited_creates_no_membership_no_authorship_no_credit(world):
-    """وحين تصحّ الدعوةُ تقع الحالُ — **ولا عضويّةَ تُنشأ ولا تأليفَ**.
+async def test_a9b_no_row_in_this_stage_can_hold_the_reserved_state(world):
+    """ولا مولودَ «مدعوًّا» أيضًا — فالبابُ مسدودٌ من طرفيه.
 
-    فالدعوةُ تُقبل بيد صاحبها، وذاك ما يصنع العضويّة — في RC-T1C. وحالُ
-    «مدعوّ» تقول «أُرسلت دعوة» لا «صار عضوًا».
+    فالانتقالُ ممنوعٌ بالمصفوفة، **والنشأةُ ممنوعةٌ بالمُشغِّل**: الصفُّ
+    يُولد في الانتظار ومعه صفرُ دعواتٍ وصفرُ حسم. فلا مدخلَ ثالثًا.
     """
-    from sqlalchemy import func, select
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    from athera_api.db import system_session
+
+    opportunity_id = await _make_opportunity(world.owner, world.project_id)
+    with pytest.raises(DBAPIError):
+        await _apply_raw(world.applicant, opportunity_id, status="invited")
+
+    # ولا صفَّ في القاعدة كلِّها يحمل المفردةَ المحجوزة.
+    async with system_session() as session:
+        held = (await session.execute(text(
+            f"SELECT count(*) FROM {APPLICATIONS} WHERE status = 'invited' "
+            "   OR invitation_id IS NOT NULL"))).scalar_one()
+    assert held == 0, f"{held} صفًّا بلغ المفردةَ المحجوزة"
+
+
+def test_a9c_the_reserved_state_is_no_transition_target_anywhere():
+    """والمفردةُ باقيةٌ في المخطَّط، **ولا هدفَ لها في أيّ مصفوفة**.
+
+    ويُقاس على الترحيل والنموذج ونصِّ المُشغِّل الثلاثةِ: فمصفوفةٌ تُعدَّل
+    في موضعٍ وتُنسى في آخر تفتح البابَ من حيث لا يُنظر.
+
+    و`APPLICANT_TRANSITIONS` تحمل `invited → withdrawn` اشتقاقًا من حالات
+    «القائم» — **وذاك غيرُ قابلٍ للبلوغ** لأنّ لا صفَّ يصل «مدعوّ» أصلًا،
+    ويبقى كي لا يُعدَّل شيءٌ يوم تُفتح.
+    """
+    import importlib.util
+
+    from athera_api.models import recruitment
+
+    spec = importlib.util.spec_from_file_location("m0034", MIGRATION)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    for label, matrix in (("النموذج", recruitment.MANAGER_TRANSITIONS),
+                          ("الترحيل", module.MANAGER_TRANSITIONS)):
+        assert matrix == (("pending", "shortlisted"), ("pending", "declined"),
+                          ("shortlisted", "declined")), f"مصفوفةُ {label}"
+        assert not any(after == "invited" for _, after in matrix), \
+            f"«مدعوّ» هدفٌ في مصفوفة {label}"
+
+    # ونصُّ المُشغِّل هو ما يعمل — فيُسأل هو أيضًا.
+    guard = module.APPLICATION_GUARD_FN
+    assert "('shortlisted','invited')" not in guard
+    assert "('pending','invited')" not in guard
+    for before, after in module.MANAGER_TRANSITIONS:
+        assert f"('{before}','{after}')" in guard, (before, after)
+
+    # والمفردةُ باقيةٌ في المخطَّط كي لا يُهاجَر مرّتين.
+    assert "invited" in recruitment.APPLICATION_STATES
+    assert "RC-T1C" in (API / "models" / "recruitment.py").read_text(encoding="utf-8")
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a10_recruitment_creates_no_member_no_authorship_no_credit(world):
+    """**ولا عضويّةَ ولا تأليفَ ولا أدوارَ CRediT من الاستقطاب — ولا بدعوة.**
+
+    فالمسارُ المُقرَّر: يُرشَّح المتقدّم، ثمّ تُصدر `ProjectInvitation`
+    له بعينه في RC-T1C، ثمّ **يقبلها هو**، وحينها تُنشأ العضويّة. وهذه
+    الدفعةُ لا تبلغ الخطوةَ الثانية.
+
+    ويُقاس ما يقع فعلًا: إصدارُ دعوةٍ حقيقيةٍ **لا يُنشئ عضوًا**، ومحاولةُ
+    الترشيح ثمّ «مدعوّ» لا تُنشئ عضوًا، ولا تُغيّر تأليفًا ولا أدوارًا —
+    ولا شيءَ من ذلك يُقاس على النصّ، بل على الصفوف قبل وبعد.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.exc import DBAPIError
 
     from athera_api.db import tenant_session
     from athera_api.models.portfolio import ProjectMember
 
-    async def members() -> int:
+    async def team() -> list[tuple]:
         async with tenant_session(world.owner["tenant_id"],
                                   world.owner["user_id"]) as session:
-            return (await session.execute(
-                select(func.count()).select_from(ProjectMember)
-                .where(ProjectMember.project_id == world.project_id))).scalar_one()
+            rows = (await session.execute(
+                select(ProjectMember.id, ProjectMember.user_id,
+                       ProjectMember.access_state, ProjectMember.is_author,
+                       ProjectMember.author_position, ProjectMember.credit_roles)
+                .where(ProjectMember.project_id == world.project_id)
+                .order_by(ProjectMember.id))).all()
+        return [tuple(r) for r in rows]
 
-    before = await members()
+    before = await team()
+    assert before, "التجهيزةُ بلا فريقٍ — فالمقارنةُ لا تُثبت شيئًا"
 
     opportunity_id = await _make_opportunity(world.owner, world.project_id)
     application_id = await _apply(world.applicant, opportunity_id)
     await _update_application(world.owner, application_id, status="shortlisted",
                               decided_at=_now(),
                               decided_by=str(world.owner["user_id"]))
+
+    # **ودعوةٌ حقيقيةٌ تُصدر ولا تُقبل** — فلا عضوَ منها.
     invitation_id = await _issue_invitation(
-        world.owner, world.project_id,
-        email=f"chosen-{world.suffix}@example.test")
-    await _update_application(world.owner, application_id, status="invited",
-                              decided_at=_now(),
-                              decided_by=str(world.owner["user_id"]),
-                              invitation_id=str(invitation_id))
+        world.owner, world.project_id, email=f"chosen-{world.suffix}@example.test")
+    assert invitation_id
+    assert await team() == before, "إصدارُ دعوةٍ أنشأ عضويّة"
 
+    # والمحاولةُ تُرفض، والفريقُ كما كان.
+    with pytest.raises(DBAPIError):
+        await _update_application(world.owner, application_id, status="invited",
+                                  decided_at=_now(),
+                                  decided_by=str(world.owner["user_id"]),
+                                  invitation_id=str(invitation_id))
+    assert await team() == before, "محاولةُ «مدعوّ» غيّرت الفريق"
+
+    # ولا تأليفَ ولا أدوارَ CRediT تحرّكت — والمقارنةُ تحملهما عمودًا عمودًا.
     row = await _application_row(world.owner, application_id)
-    assert row["status"] == "invited"
-    assert row["invitation_id"] == invitation_id
-
-    # **والدعوةُ لم تُقبل، فلا عضوَ زِيد** — والزيادةُ الوحيدةُ صفُّ دعوة.
-    assert await members() == before, "قبولُ مرشَّحٍ أنشأ عضويّةً بلا قبولِ صاحبها"
+    assert row["status"] == "shortlisted"
+    assert row["invitation_id"] is None
 
 
 # ════════════ نسبُ الفرصة: يُكتب مرّةً ولا يُنقل ════════════
