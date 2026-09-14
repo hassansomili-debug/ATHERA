@@ -56,6 +56,49 @@ async function watchPeakConcurrency(page: Page): Promise<() => number> {
   };
 }
 
+/**
+ * يُنشئ مجلَّدًا ثم يفتحه — **بإثبات كلّ خطوةٍ لا بانتظارها**.
+ *
+ * وهذا موضعُ التقلقل الذي أسقط التشغيلة الأولى في CI: كان الفحص ينقر زرَّ
+ * الفتح فورًا بعد الإرسال، فيتّكل على أنّ الطلب تمّ وأنّ قائمةَ المجلَّدات
+ * صالحت نفسها. وعلى جهازٍ سريع يصحّ الاتّكال؛ وفي CI تأخّر أحدُهما فانتظر
+ * المُحدِّدُ تسعين ثانيةً ثم سقط. **والمهلةُ الأطول لا تُصلح اتّكالًا** —
+ * تؤخّر ظهوره فقط.
+ *
+ * فيُنتظر شاهدان صريحان: ردُّ `POST /files/folders` بـ٢٠١، ثم قراءةُ
+ * `GET /files/folders` التي تليه. وعندها يكون الزرُّ موجودًا لأنّ البيانات
+ * التي تُنشئه وصلت — لا لأنّ الوقت مضى.
+ */
+async function createAndOpenFolder(page: Page, name: string): Promise<void> {
+  const created = page.waitForResponse(
+    (r) => r.url().includes("/api/v1/files/folders")
+           && r.request().method() === "POST" && r.status() === 201,
+    { timeout: 60_000 });
+  const relisted = page.waitForResponse(
+    (r) => r.url().includes("/api/v1/files/folders")
+           && r.request().method() === "GET" && r.status() === 200,
+    { timeout: 60_000 });
+
+  await page.getByTestId("library-new-folder").click();
+  // المُحدِّدُ مقصورٌ على نموذج الإنشاء: «اسم المجلد» تُطابق نموذجَ
+  // إعادة التسمية أيضًا، و`.first()` تختار بترتيب DOM لا بالقصد.
+  const form = page.locator("form.form").filter({ has: page.getByLabel(/اسم المجلد/) });
+  await form.getByLabel(/اسم المجلد/).fill(name);
+  await form.getByRole("button", { name: /^أنشئ المجلد/ }).click();
+
+  await created;
+  await relisted;
+
+  // والآن الزرُّ موجودٌ لأنّ صفَّه وصل — فيُنقر بلا مهلةٍ استثنائية.
+  const open = page.getByLabel(`فتح المجلد: ${name}`);
+  await expect(open).toBeVisible({ timeout: 30_000 });
+  await open.click();
+
+  // وشاهدُ الفتح: بطاقةُ الرفع تقول إنّ الملف ينزل في هذا الرفّ.
+  await expect(page.getByText(new RegExp(name)).first())
+    .toBeVisible({ timeout: 30_000 });
+}
+
 test.describe.configure({ mode: "serial" });
 
 test("المكتبة ترفع دفعةً واحدة، والتحليل يبقى ملفًا واحدًا", async ({ page }) => {
@@ -169,17 +212,7 @@ test("المكتبة ترفع دفعةً واحدة، والتحليل يبقى 
     const folder = `${RUN}-folder`;
     await page.goto(`/${AR}/library`);
 
-    await page.getByRole("button", { name: /مجلد جديد/ }).first().click();
-    await page.getByLabel(/اسم المجلد/).first().fill(folder);
-    await page.getByRole("button", { name: /^أنشئ المجلد/ }).first().click();
-
-    // يُفتح المجلَّد بزرِّه المعنون باسمه — لا بأوّل زرٍّ يشبهه.
-    await page.getByLabel(`فتح المجلد: ${folder}`).click();
-
-    // **والتنقّلُ حالةٌ في العميل لا مُعامِلٌ في الرابط.** فالشاهدُ ما يراه
-    // الباحث: بطاقةُ الرفع تقول في أيّ مجلَّدٍ ينزل ملفُه.
-    await expect(page.getByText(new RegExp(`${folder}`)).first())
-      .toBeVisible({ timeout: 30_000 });
+    await createAndOpenFolder(page, folder);
 
     const names = [1, 2, 3].map((n) => `${RUN}-infolder-${n}.txt`);
     await page.locator('input[type="file"]').first()
@@ -271,63 +304,236 @@ test("الإنجليزية وعرضُ الهاتف", async ({ page }) => {
   await expect(page.getByTestId("upload-batch-summary")).toContainText("6 of 6");
 });
 
-// ══ ٨ · تجديدٌ واحد في الطيران مهما تعدّدت ردود ٤٠١ ══
-test("٤٠١ متزامنة تُنتج تجديدًا واحدًا، ثم ترفع الدفعة", async ({ page }) => {
-  const refreshCalls: number[] = [];
-  page.on("request", (r) => {
-    if (r.url().endsWith("/api/v1/auth/refresh") && r.method() === "POST") {
-      refreshCalls.push(Date.now());
+// ══ ٨ · ثلاثةُ رفعاتٍ متزامنة تصطدم بـ٤٠١، فتتقاسم تجديدًا واحدًا ══
+//
+// **والحدُّ يُقاس على مسار الرفع نفسه، لا على نداءٍ آخر يسبقه.**
+//
+// وكانت النسخةُ الأولى من هذا الفحص تُبطل الرمزَ ثم تفتح المكتبة، فتردّ
+// نداءاتُ فتح الصفحة ٤٠١ ويقع التجديد قبل أن يُختار ملفٌّ واحد — فترفع
+// الدفعةُ على جلسةٍ مجدَّدة سلفًا. فكان يُثبت «تجديدَ فتح الصفحة يعمل»
+// ولا يُثبت شيئًا عن الرفع المتزامن.
+//
+// فيُجبَر هنا **طلبُ الرفع بعينه** على عبور حدّ ٤٠١: يُردّ ٤٠١ على كلّ
+// طلبِ رفعٍ حتى يقع تجديدٌ ناجح، ثم يُترك الطريقُ للخادم الحقيقيّ. وهذا
+// أصغرُ ما يكفي — ولا يُمسّ منطقُ المصادقة في المنتج ولا يُستنسخ:
+//
+//   XHR ← ٤٠١ ← `apiFetch` ← ٤٠١ ← `refreshOnce()` الواحد ← إعادةُ الطلب
+//
+// والتجديدُ نفسه والرفعُ الناجح يذهبان إلى الخادم الحقيقيّ.
+test("ثلاثُ رفعاتٍ تصطدم بـ٤٠١ فتتقاسم تجديدًا واحدًا", async ({ page }) => {
+  const NAMES = [1, 2, 3].map((n) => `${RUN}-race-${n}.txt`);
+
+  /** طلباتُ الرفع التي رُدّت ٤٠١ قبل التجديد — مفهرسةً باسم الملف. */
+  const rejected: string[] = [];
+  /** طلباتُ الرفع التي بلغت الخادمَ فنجحت. */
+  let stored201 = 0;
+  const refreshes: string[] = [];
+  let refreshed = false;
+
+  page.on("response", (r) => {
+    if (r.url().endsWith("/api/v1/auth/refresh") && r.request().method() === "POST") {
+      refreshes.push(String(r.status()));
+      if (r.status() === 200) refreshed = true;
     }
+    if (r.url().endsWith("/api/v1/files/upload") && r.status() === 201) stored201 += 1;
   });
 
   await page.goto(`/${EN}/login`);
-  // بالمعرّفات لا بالتسمية: «Password» تُطابق المدخلَ وزرَّ الإظهار معًا.
   await page.getByLabel(/email/i).fill(ACCOUNT);
   await page.locator("#login-password").fill(PASSWORD);
   await page.locator("form button[type=submit]").click();
   await page.waitForURL(`**/${EN}`, { timeout: 60_000 });
 
-  /**
-   * **رمزُ وصولٍ باطل ورمزُ تحديثٍ صالح.**
-   *
-   * و`getAccessToken` تقرأ ذاكرةَ الوحدة قبل المخزن، فإبطالُ المخزن وحده
-   * لا يكفي — إعادةُ التحميل تُفرّغ الذاكرة فيُقرأ الباطل.
-   *
-   * وما رُصد فعلًا في سجلّ الخادم أقوى من المقصود: **ثلاثةُ ٤٠١ على
-   * `POST /files/upload` نفسه، وتجديدٌ واحد في السجلّ كلِّه، وثلاثةُ ملفاتٍ
-   * حُفظت**. وهذا هو الحدُّ بعينه: رفعٌ متزامن برمزٍ منتهٍ يتقاسم تجديدًا
-   * واحدًا، فلا يُبطل رمزُ تحديثٍ أخاه ولا تُمحى جلسةٌ صالحة.
-   *
-   * والعددُ يُقاس على الطلبات لا على مصدرها: أيًّا كان أوّلُ من ردّ ٤٠١ —
-   * نداءُ فتح الصفحة أو الرفعُ — فالتجديدُ واحد.
-   */
-  await page.evaluate(() => {
-    window.localStorage.setItem("athera_access_token", "not-a-valid-jwt");
-    window.localStorage.setItem("athera_token_expiry", String(Date.now() + 600_000));
-  });
-
-  refreshCalls.length = 0;
   await page.goto(`/${AR}/library`);
-
-  // الجلسةُ صمدت: القائمةُ ظهرت بلا قذفٍ إلى صفحة الدخول.
   await expect(page.getByRole("button", { name: /اختر ملفات/ }))
     .toBeVisible({ timeout: 60_000 });
-  expect(page.url(), "الجلسةُ ضاعت بدل أن تُجدَّد").toContain("/library");
 
-  // **وتجديدٌ واحد لا أكثر** — والحارسُ الوحيد في الطيران يُثبت نفسه هنا.
-  // ولا صفر: لو لم يُجدَّد شيءٌ لكانت النداءات نجحت، فلا يكون الفحصُ فحصًا.
-  expect(refreshCalls.length,
-         `عددُ نداءات التجديد: ${refreshCalls.length}`).toBe(1);
+  // الحدُّ يُنصَب بعد أن تستقرّ الصفحة، فلا يُستهلك على نداءٍ آخر.
+  await page.route("**/api/v1/files/upload", async (route) => {
+    if (refreshed) {
+      await route.continue();
+      return;
+    }
+    const body = route.request().postData() ?? "";
+    rejected.push(NAMES.find((n) => body.includes(n)) ?? "unknown");
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      headers: { "content-language": "ar" },
+      body: JSON.stringify({
+        error: {
+          code: "auth.token_expired", locale: "ar",
+          message: "انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجددًا.",
+          messages: {
+            ar: "انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجددًا.",
+            en: "Your session has expired. Please sign in again.",
+          },
+        },
+      }),
+    });
+  });
 
-  // ثم ترفع الدفعةُ على الجلسة المجدَّدة.
-  const names = [1, 2, 3].map((n) => `${RUN}-refresh-${n}.txt`);
   await page.locator('input[type="file"]').first()
-    .setInputFiles(names.map((n) => synthetic(n, 2)));
+    .setInputFiles(NAMES.map((n) => synthetic(n, 2)));
+
+  await expect(page.getByTestId("upload-row")).toHaveCount(3);
   await expect
     .poll(async () => await page.locator('[data-upload-state="stored"]').count(),
-          { timeout: 120_000, message: "الدفعةُ بعد التجديد لم تُحفظ" })
+          { timeout: 120_000, message: "الدفعةُ لم تُحفظ بعد التجديد" })
     .toBe(3);
 
-  // ولم يُجدَّد ثانيةً بلا داعٍ.
-  expect(refreshCalls.length).toBe(1);
+  // ── العدّادات، صريحةً ──
+  //
+  // وتُطبع كما هي: حارسٌ يفشل بـ«توقّعت 3 فوجدت 2» يترك القارئ يخمّن
+  // البقيّة، والأرقامُ مطبوعةً تقول القصّة كلَّها في سطر.
+  console.log(`[auth-race] initial-401=${rejected.length}`
+              + ` files=${NAMES.filter((n) => rejected.includes(n)).length}`
+              + ` refresh=${refreshes.length} stored201=${stored201}`);
+
+
+  // ١ · كلُّ ملفٍ من الثلاثة اصطدم بـ٤٠١ على طلب رفعه هو.
+  const initial = NAMES.filter((n) => rejected.includes(n));
+  expect(initial, `الملفاتُ التي عبرت حدَّ ٤٠١: ${initial.join(", ")}`)
+    .toHaveLength(3);
+  expect(rejected, "طلبُ رفعٍ رُدّ ٤٠١ ولم يُعرف ملفُّه").not.toContain("unknown");
+
+  // **والموجةُ الثانية جزءٌ من التصميم لا خللٌ فيه.** فمسارُ المنتج هو
+  // XHR ← ٤٠١ ← `apiFetch` ← ٤٠١ ← تجديد ← إعادة. فمحاولاتُ `apiFetch`
+  // تعبر الحدَّ أيضًا، وعددُها يتبع أيَّ نداءٍ أنهى التجديد أوّلًا — فيُطلب
+  // الحدُّ الأدنى المؤكَّد: ثلاثةٌ على الأقل، واحدةٌ لكلّ ملف.
+  expect(rejected.length,
+         `طلباتُ الرفع التي عبرت حدَّ ٤٠١: ${rejected.length}`)
+    .toBeGreaterThanOrEqual(3);
+
+  // ٢ · وتجديدٌ واحد لا أكثر — وهو الحدُّ المقصود.
+  expect(refreshes, `ردودُ التجديد: ${refreshes.join(", ")}`).toEqual(["200"]);
+
+  // ٣ · وثلاثةُ رفعاتٍ نجحت على الخادم الحقيقيّ — لا أكثر، فلا تكرار.
+  expect(stored201, "عددُ الرفعات الناجحة").toBe(3);
+
+  // ٤ · والجلسةُ باقية: لا قذفَ إلى صفحة الدخول.
+  expect(page.url(), "الجلسةُ ضاعت بدل أن تُجدَّد").toContain("/library");
+  await expect(page.getByRole("button", { name: /اختر ملفات/ })).toBeVisible();
+
+  // ٥ · ولا ملفَّ مكرَّرًا في المكتبة.
+  for (const name of NAMES) {
+    await expect
+      .poll(async () =>
+              await page.locator("article.card").filter({ hasText: name }).count(),
+            { timeout: 30_000, message: `${name} مكرَّرٌ أو غائب` })
+      .toBe(1);
+  }
+
+  // ٦ · ولا تجديدَ ثانيًا بعد أن استقرّ كلُّ شيء.
+  expect(refreshes).toHaveLength(1);
+});
+
+// ══ ٩ · التنقّلُ أثناء الدفعة لا يُظهر ملفاتِ رفٍّ في رفٍّ آخر ══
+//
+// **والوجهةُ صحيحةٌ أصلًا — المعروضُ هو ما كان يكذب.**
+//
+// `folder_id` مثبَّتٌ وقتَ الاختيار، فالخادمُ يُنزل كلَّ ملفٍ في مجلَّده. لكنّ
+// الإدراج المتفائل كان يضع الملفَّ المكتمل في **القائمة المعروضة** أيًّا
+// كانت: فمن اختار عشرةً في «أ» ثم فتح «ب» وهي تُرفع رأى ملفاتَ «أ» تظهر
+// في «ب» — بطاقاتٌ كاملة بأفعالها في نطاقٍ لا تنتمي إليه، ثم تمحوها
+// المصالحةُ بعد ثوانٍ.
+//
+// **والفحصُ ينظر أثناء الجريان لا بعد الاستقرار.** مصالحةُ آخر الدفعة
+// تُصلح المعروضَ في كلّ الأحوال، فلو فُحص بعدها لمرّ العطبُ كما هو.
+test("دفعةُ رفٍّ لا تظهر في رفٍّ آخر أثناء جريانها", async ({ page }) => {
+  const A = `${RUN}-A`;
+  const B = `${RUN}-B`;
+  const NAMES = [1, 2, 3, 4, 5, 6].map((n) => `${RUN}-crossfolder-${n}.txt`);
+
+  await page.goto(`/${EN}/login`);
+  await page.getByLabel(/email/i).fill(ACCOUNT);
+  await page.locator("#login-password").fill(PASSWORD);
+  await page.locator("form button[type=submit]").click();
+  await page.waitForURL(`**/${EN}`, { timeout: 60_000 });
+
+  await page.goto(`/${AR}/library`);
+  await createAndOpenFolder(page, A);
+  // يُعاد إلى الجذر ليُنشأ «ب» بجانب «أ» لا داخله.
+  await page.goto(`/${AR}/library`);
+  await createAndOpenFolder(page, B);
+
+  // ── الدفعةُ تبدأ في «أ» ──
+  await page.goto(`/${AR}/library`);
+  await page.getByLabel(`فتح المجلد: ${A}`).click();
+  await expect(page.getByText(new RegExp(A)).first()).toBeVisible({ timeout: 30_000 });
+
+  // **ويُبطَّأ الرفعُ ليبقى جاريًا أثناء التنقّل** — تأخيرٌ في الشبكة لا
+  // اعتراضٌ للردّ: الطلبُ يمضي إلى الخادم الحقيقيّ ويُحفظ فعلًا.
+  await page.route("**/api/v1/files/upload", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    await route.continue();
+  });
+
+  await page.locator('input[type="file"]').first()
+    .setInputFiles(NAMES.map((n) => synthetic(n, 2)));
+  await expect(page.getByTestId("upload-row")).toHaveCount(6);
+
+  // ── يُنتقل إلى «ب» والدفعةُ ما زالت تجري ──
+  await expect
+    .poll(async () => await page.locator('[data-upload-state="uploading"]').count(),
+          { timeout: 30_000, message: "لم يبدأ رفعٌ إطلاقًا" })
+    .toBeGreaterThan(0);
+
+  // **والتنقّلُ داخل الصفحة لا بإعادة تحميلها.** `goto` يُعيد بناء الصفحة
+  // فيُلغي الدفعةَ الجارية — وهي بعينها موضوعُ الفحص. فيُستعمل مسارُ
+  // الباحث: خُطوةُ الجذر في شريط المسار، ثم فتحُ «ب».
+  await page.getByLabel("فتح المجلد: مكتبتي").click();
+  await page.getByLabel(`فتح المجلد: ${B}`).click();
+  await expect(page.getByText(new RegExp(B)).first()).toBeVisible({ timeout: 30_000 });
+
+  // **وهنا الفحص:** ما بقي من الدفعة يكتمل ونحن في «ب» — فلا بطاقةَ من
+  // ملفات «أ» تظهر هنا، ولا للحظةٍ واحدة. ويُراقَب حتى تستقرّ الدفعةُ كلُّها.
+  let leaked = "";
+  for (let i = 0; i < 40; i += 1) {
+    const cards = await page.locator("article.card")
+      .filter({ hasText: `${RUN}-crossfolder-` }).count();
+    if (cards > 0) {
+      leaked = `ظهرت ${cards} بطاقةً من ملفات «أ» في «ب»`;
+      break;
+    }
+    const settled = await page.locator('[data-upload-state="stored"]').count();
+    if (settled === 6) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  expect(leaked, leaked || "لا تسريب").toBe("");
+
+  // والدفعةُ اكتملت فعلًا — فالفحصُ لم يمرّ لأنّ شيئًا لم يقع.
+  await expect
+    .poll(async () => await page.locator('[data-upload-state="stored"]').count(),
+          { timeout: 120_000, message: "الدفعةُ لم تكتمل" })
+    .toBe(6);
+
+  // و«ب» ما زال خاليًا من ملفات «أ» بعد الاستقرار والمصالحة.
+  await expect
+    .poll(async () =>
+            await page.locator("article.card")
+              .filter({ hasText: `${RUN}-crossfolder-` }).count(),
+          { timeout: 30_000, message: "المصالحةُ أدخلت ملفاتِ «أ» إلى «ب»" })
+    .toBe(0);
+
+  // ── والعودةُ إلى «أ» تجدها كلَّها ──
+  await page.unroute("**/api/v1/files/upload");
+  await page.goto(`/${AR}/library`);
+  await page.getByLabel(`فتح المجلد: ${A}`).click();
+  for (const name of NAMES) {
+    await expect
+      .poll(async () =>
+              await page.locator("article.card").filter({ hasText: name }).count(),
+            { timeout: 60_000, message: `${name} ليس في «أ»` })
+      .toBe(1);
+  }
+
+  // ── والجذرُ لا يحملها ──
+  await page.goto(`/${AR}/library`);
+  await expect
+    .poll(async () =>
+            await page.locator("article.card")
+              .filter({ hasText: `${RUN}-crossfolder-` }).count(),
+          { timeout: 30_000, message: "ملفاتُ «أ» ظهرت في الجذر" })
+    .toBe(0);
 });
