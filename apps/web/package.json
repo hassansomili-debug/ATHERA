@@ -25,7 +25,8 @@
     "test:simple-surface": "playwright test tests/thesis-simple-surface.spec.ts",
     "test:brain-v1": "playwright test tests/brain-v1-journey.spec.ts",
     "test:rc0-journey": "playwright test tests/rc0-research-journey.spec.ts",
-    "test:rc0-fullstack": "playwright test tests/rc0-journey-fullstack.spec.ts"
+    "test:rc0-fullstack": "playwright test tests/rc0-journey-fullstack.spec.ts",
+    "test:library-multi-file": "playwright test tests/library-multi-file-upload.spec.ts"
   },
   "dependencies": {
     "next": "^16.0.0",

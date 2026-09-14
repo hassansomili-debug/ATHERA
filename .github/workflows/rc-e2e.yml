@@ -206,6 +206,17 @@ jobs:
         env:
           PUBRIVA_WEB_SERVER: external
 
+      # ── والرفعُ المتعدّد في المكتبة، على المكدّس نفسِه ──
+      #
+      # **موضعُها هنا لا في `ci.yml`.** الطابورُ يرفع ملفاتٍ حقيقية إلى
+      # تخزينٍ حقيقيّ، و`STORAGE_PROVIDER: memory` مضبوطٌ في هذا المشغّل
+      # وحده؛ وفي مشغّل CI تعترض الرقعاتُ الشبكةَ فلا رفعَ فيها يقع. ورقعةٌ
+      # تُعترض فيها نقطةُ الرفع تُثبت المُعترِض لا الطابور.
+      - name: Library multi-file upload (real browser · real API · real storage)
+        run: cd apps/web && npm run test:library-multi-file
+        env:
+          PUBRIVA_WEB_SERVER: external
+
       # سجلّا الخادمين يُطبعان عند الفشل — فيُعرف أين سقطت الرحلة من الطرفية
       # وحدها، قبل فتح أي ملفّ مرفوع.
       - name: Server logs (on failure)

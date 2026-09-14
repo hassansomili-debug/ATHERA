@@ -126,6 +126,17 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
 
   // ── أين يقف الباحث الآن ──
   const [folderId, setFolderId] = useState<string | null>(null);
+  /**
+   * الرفُّ الذي يقصده الباحث **الآن** — نيّةُ تنقّلٍ لا صدى إعادة عرض.
+   *
+   * ويُعرَّف بجانب الحالة لا بعيدًا عنها: هو وجهُها الآخر، ومن قرأ أحدهما
+   * يحتاج أن يرى الثاني في السطر التالي.
+   *
+   * **ولمَ مرجعٌ ولا حالة.** الإدراجُ المتفائل يقع في نداءٍ يأتي من الشبكة
+   * بعد أن أُنشئ، فـ`folderId` المقروء من غلافه يبقى على قيمته وقتَ
+   * الإنشاء. والمرجعُ يُقرأ لحظةَ الاستعمال.
+   */
+  const shownFolder = useRef<string | null>(null);
   const [breadcrumb, setBreadcrumb] = useState<Crumb[]>([]);
   const [folders, setFolders] = useState<LibraryFolder[]>([]);
   const [foldersLoad, setFoldersLoad] = useState<"loading" | "ready" | "failed">("loading");
@@ -313,6 +324,17 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    * محتوى رفٍّ في رفٍّ آخر ثوانيَ كاملة — وهو أسوأ من انتظارٍ مُعلَن.
    */
   const openFolder = useCallback((next: string | null) => {
+    // **النيّةُ تُسجَّل قبل الحالة، لا بعد إعادة العرض.**
+    //
+    // وهذا سطرُ الحدّ بعينه. كان المرجعُ يُضبط في `useEffect` بعد تغيّر
+    // `folderId`، والأثرُ يجري **بعد** الإيداع — فتبقى نافذةٌ قصيرة:
+    // التنقّلُ إلى «ب» بدأ، والمرجعُ ما زال «أ»، ورفعٌ من «أ» يكتمل في
+    // تلك اللحظة فيُدرَج في القائمة التي تصير «ب». نافذةٌ بأجزاء من
+    // الثانية، لكنّ الرفعَ المتعدّد يجعلها مأهولةً: عشرةُ ملفاتٍ تكتمل
+    // على مدى ثوانٍ، والباحثُ يتنقّل بينها.
+    //
+    // فيُسجَّل القصدُ تزامنيًّا هنا — ولا تتعلّق الصحّةُ بتوقيت أثرٍ.
+    shownFolder.current = next;
     setFolderId(next);
     setPanel(null);
     setNewFolderOpen(false);
@@ -376,10 +398,38 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
    * والقراءة تُطلق بعدها فتحلّ الحقيقةُ محلّ التوقّع، ورقمُ الترتيب يُرفع
    * أولًا فلا يمحو الملفَ ردٌّ صدر قبل رفعه.
    */
+  // **مُزامنٌ احتياطيّ، لا مصدرُ الصحّة.** فالقصدُ يُسجَّل في `openFolder`
+  // تزامنيًّا؛ وهذا يمسك ما لو ضُبط `folderId` يومًا من طريقٍ آخر — ولو
+  // حُذف هذا السطرُ اليوم لبقي الحدُّ قائمًا.
+  useEffect(() => {
+    shownFolder.current = folderId;
+  }, [folderId]);
+
   const fileUploaded = useCallback((stored: LibraryFile) => {
+    // **ولا يُدرَج ملفٌّ في رفٍّ ليس رفَّه.**
+    //
+    // الوجهةُ مثبَّتة وقتَ الاختيار، فالخادمُ يُنزله في مجلَّده الصحيح. لكنّ
+    // الإدراج المتفائل كان يضعه في **القائمة المعروضة** أيًّا كانت: فمن
+    // تنقّل إلى رفٍّ آخر ودفعتُه تجري رأى ملفاتَ الرفّ الأول تظهر في الثاني
+    // — بطاقاتٌ كاملة بأفعالها، في نطاقٍ لا تنتمي إليه. ثم تمحوها المصالحةُ
+    // بعد ثوانٍ، فيبدو كأنّ المكتبة تُقامر بما تعرضه.
+    //
+    // فيُقارَن مجلَّدُ الملف بالمعروض الآن؛ وما ليس هنا يظهر حين يُفتح رفُّه.
+    if ((stored.folder_id ?? null) !== shownFolder.current) return;
     latest.current += 1;
     setFiles((previous) => [stored, ...previous.filter((row) => row.id !== stored.id)]);
     setFilesLoad("ready");
+  }, []);
+
+  /**
+   * مصالحةُ القائمة مع الخادم — **مرّةً واحدة بعد الدفعة، لا مرّةً لكلّ ملف**.
+   *
+   * كان الإدراج المتفائل يُتبَع بقراءةٍ كاملة للمكتبة في كلّ رفع. ومع الرفع
+   * المتعدّد تصير عشرين قراءةً متتابعة لشيءٍ أدرجناه أصلًا — تُثقل الشاشة
+   * والخادم بلا أن تُظهر جديدًا. فالإدراج يُظهر كلَّ ملفٍ فور حفظه، وهذه
+   * تُسوّي الترتيب والحقول المشتقّة بعد أن يهدأ كلُّ شيء.
+   */
+  const batchSettled = useCallback(() => {
     loadFiles();
   }, [loadFiles]);
 
@@ -814,11 +864,14 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
             <p className="metric-label">
               {t("library.uploadFile")} · {t("library.uploadInto")} {here}
             </p>
+            {/* **المتعدّد للمكتبة وحدها** — وشاشةُ التحليل تبقى ملفًا واحدًا. */}
             <FileUpload
               locale={locale}
               messages={getMessages(locale)}
               folderId={folderId}
               onUploaded={fileUploaded}
+              onBatchSettled={batchSettled}
+              multiple
             />
           </div>
         </>
