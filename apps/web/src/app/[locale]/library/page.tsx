@@ -380,6 +380,17 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
     latest.current += 1;
     setFiles((previous) => [stored, ...previous.filter((row) => row.id !== stored.id)]);
     setFilesLoad("ready");
+  }, []);
+
+  /**
+   * مصالحةُ القائمة مع الخادم — **مرّةً واحدة بعد الدفعة، لا مرّةً لكلّ ملف**.
+   *
+   * كان الإدراج المتفائل يُتبَع بقراءةٍ كاملة للمكتبة في كلّ رفع. ومع الرفع
+   * المتعدّد تصير عشرين قراءةً متتابعة لشيءٍ أدرجناه أصلًا — تُثقل الشاشة
+   * والخادم بلا أن تُظهر جديدًا. فالإدراج يُظهر كلَّ ملفٍ فور حفظه، وهذه
+   * تُسوّي الترتيب والحقول المشتقّة بعد أن يهدأ كلُّ شيء.
+   */
+  const batchSettled = useCallback(() => {
     loadFiles();
   }, [loadFiles]);
 
@@ -814,11 +825,14 @@ export default function LibraryPage({ params }: { params: Promise<{ locale: stri
             <p className="metric-label">
               {t("library.uploadFile")} · {t("library.uploadInto")} {here}
             </p>
+            {/* **المتعدّد للمكتبة وحدها** — وشاشةُ التحليل تبقى ملفًا واحدًا. */}
             <FileUpload
               locale={locale}
               messages={getMessages(locale)}
               folderId={folderId}
               onUploaded={fileUploaded}
+              onBatchSettled={batchSettled}
+              multiple
             />
           </div>
         </>

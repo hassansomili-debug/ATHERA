@@ -142,13 +142,30 @@ def test_the_freshly_uploaded_file_is_shown_without_waiting_for_the_list():
 
 
 def test_stored_is_announced_only_after_the_server_answered():
-    """«تم الحفظ» في `then` وحدها — لا قبل الطلب ولا بجانبه."""
+    """«تم الحفظ» بعد ردّ الخادم وحده — لا قبل الطلب ولا بجانبه.
+
+    **والحدُّ لم يُخفَّف، بل تبعَ موضعَه.** كان المكوّن يعلنها في
+    `.then((stored) => {` فيُقاس الموضع بين `then` و`catch`. ثم صار الرفعُ
+    طابورًا بـ`async/await`، والإعلانُ `patch(item.id, { state: "stored" })`
+    بعد `await` وقبل `catch` — وهو المعنى نفسه بصياغةٍ أخرى.
+    """
     upload = _code("src", "components", "FileUpload.tsx")
-    assert upload.count('setState("stored")') == 1
-    started = upload.index(".then((stored) => {")
-    ended = upload.index(".catch((err) => {")
-    assert started < upload.index('setState("stored")') < ended, (
+
+    # موضعٌ واحد يعلن «تم الحفظ» — لا اثنان يفترقان.
+    assert upload.count('state: "stored"') == 1, (
+        "«تم الحفظ» تُعلَن في أكثر من موضع، أو لا تُعلَن")
+
+    awaited = upload.index("await uploadWithProgress<StoredFile>(")
+    announced = upload.index('state: "stored"')
+    caught = upload.index("} catch (err) {")
+    assert awaited < announced < caught, (
         "«تم الحفظ» تُعلَن خارج ردّ الخادم")
+
+    # ولا تُعلَن على حالة الطابور قبل أن يردّ الخادم: «في الانتظار» و«جارٍ»
+    # وحدهما تُكتبان قبل `await`.
+    before = upload[:awaited]
+    assert '"stored"' not in before.split("const run = useCallback")[-1], (
+        "حالةُ «تم الحفظ» تُكتب قبل إرسال الطلب")
 
 
 def test_the_upload_reports_real_bytes_not_a_spinner():
