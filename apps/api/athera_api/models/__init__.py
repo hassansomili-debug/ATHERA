@@ -106,10 +106,13 @@ from .research import (
 from .research_brain import ResearchContextSnapshot
 from .recruitment import (
     ACTIVE_APPLICATION_STATES,
+    APPLICANT_TRANSITIONS,
     APPLICATION_STATES,
+    MANAGER_TRANSITIONS,
     OPPORTUNITY_STATES,
     RecruitmentApplication,
     RecruitmentOpportunity,
+    RecruitmentOpportunityListing,
 )
 from .thesis import (
     AuthorshipAgreement,
@@ -201,7 +204,9 @@ __all__ = [
     "SYNTHESIS_STATUSES", "THEME_BASES", "CONFLICT_KINDS", "GAP_TYPES", "GAP_STRENGTHS",
     "ResearchContextSnapshot",
     "ProjectPlan", "ProjectStageEvent", "ProjectTask", "ProjectMilestone",
-    "RecruitmentOpportunity", "RecruitmentApplication",
+    "RecruitmentOpportunity", "RecruitmentOpportunityListing",
+    "RecruitmentApplication",
     "OPPORTUNITY_STATES", "APPLICATION_STATES", "ACTIVE_APPLICATION_STATES",
+    "MANAGER_TRANSITIONS", "APPLICANT_TRANSITIONS",
     "STAGES", "TASK_STATUSES", "TASK_SOURCES", "TASK_PRIORITIES", "MILESTONES",
 ]

@@ -2,68 +2,104 @@
 
 **الحدُّ الذي يُكسَر هنا لأوّل مرّة، ولمَ يجوز كسرُه.**
 
-كلُّ صفٍّ في المنصّة قبل هذا الترحيل يُقرأ ويُكتب داخل مستأجرٍ واحد:
+كلُّ صفٍّ قبل هذا الترحيل يُقرأ ويُكتب داخل مستأجرٍ واحد:
 `tenant_id = app_current_tenant()`، لا استثناء. وقرارُ المنتج في هذه
 المرحلة يستوجب أن **يكتشف باحثٌ في مؤسسةٍ فرصةَ تعاونٍ أعلنها بحثٌ في
 مؤسسةٍ أخرى، وأن يتقدّم إليها**.
 
 ولو تُرك ذلك للتطبيق — استعلامٌ بلا شرط مستأجر — لصار العزلُ سياسةَ
 كتابةِ كودٍ لا خاصيّةَ قاعدة. فالحدُّ يُكسَر **في القاعدة، وبأضيق ما
-يكفي**:
+يكفي**.
 
-  ١. الفرصةُ تبقى مملوكةً لمستأجرها، ولها سياستان لا واحدة:
-     • سياسةُ المدير — كلُّ الأفعال، داخل المستأجر، وبتفويضٍ مُثبت.
-     • سياسةُ الاكتشاف — **قراءةٌ فقط**، ومحدودةٌ بصفوفٍ بعينها:
-       `open` وغيرُ محذوفةٍ وداخلَ نافذتها الزمنية. **ولا
-       `USING (true)` في هذا الترحيل ولا في غيره.**
-  ٢. التطبيقُ — وهو الصفُّ الذي يعيش بين مستأجرَين — **حدُّه الفاعل لا
-     المستأجر**: `applicant_user_id = app_current_actor()`.
+════════════════════════════════════════════════════════════════════
 
-ولذلك سبق هذا الترحيلَ تدقيقُ مصدر الفاعل من طرفٍ إلى طرف: سياسةٌ تعتمد
-`app_current_actor()` لا تصحّ إلّا إذا كان الفاعلُ غيرَ قابلٍ للاختيار من
-العميل. وهو كذلك: يُضبط في `db.tenant_session` و`routers.auth._bind_tenant`
-وحدهما، ومصدرُه في كلّ مرّة رمزٌ مُوقَّع أو سجلُّ اعتمادٍ مُتحقَّق — لا جسمُ
-طلبٍ ولا مُعامِلُ استعلامٍ ولا ترويسة.
+## ١ · ولمَ جدولان للفرصة لا جدولٌ واحد
 
-## والفشلُ آمنٌ بالبناء لا بالاتفاق
+**وهذا تصحيحٌ لتصميمٍ سابقٍ في هذا الترحيل نفسِه، لم يُدمج ولم يُنشر.**
+
+كانت الفرصةُ جدولًا واحدًا يحمل النصَّ المُعلَن ومعه `tenant_id`
+و`project_id` و`created_by`، وعليه سياسةُ اكتشافٍ عابرةٌ للمستأجرين
+مقيَّدةٌ بالصفوف المفتوحة. وRLS تحكم **الصفوفَ لا الأعمدة** — فباحثٌ في
+مستأجرٍ آخر يستعلم الجدولَ الأصلَ مباشرةً كان يحصل، في تلك الصفوف
+وحدها، على معرّف البحث ومعرّف المؤسسة ومنشئِ الفرصة. وكان العلاجُ
+المكتوب أنّ «العرضَ الآمن هو الطريقُ المُعتمد للاكتشاف» —
+**أي اتفاقًا في التطبيق لا حدًّا في القاعدة**. ومراجعةٌ أمنيةٌ مستقلّة
+رفضت ذلك بحقّ.
+
+فانفصل **النسبُ** عن **الإعلان**:
+
+| | يحمل | مَن يقرؤه |
+|---|---|---|
+| `recruitment_opportunities` | مستأجرٌ وبحثٌ ومنشئ | **المديرُ وحده** — ولا سياسةَ عابرةً للمستأجرين عليه إطلاقًا |
+| `recruitment_opportunity_listings` | النصُّ المُعلَن وحالتُه ونافذتُه | المديرُ، **وكلُّ باحثٍ مصادقٍ للصفوف المفتوحة** |
+
+**والعمودُ غيرُ الموجود لا يُسرَّب.** فما يبلغه الغريبُ من الجدول الأصل
+مباشرةً هو نفسُه ما يبلغه من العرض: نصٌّ كُتب ليُقرأ.
+
+و«الحالةُ» على الإعلان لا على النسب **قصدًا**: شرطُ الاكتشاف يصير كلُّه
+محلّيًّا في جدولٍ واحد، فلا شرطَ يعبُر جدولين ولا نسخةٌ ثانيةٌ من
+النافذة تفترق عن أختها.
+
+والنسبُ هو **الأصل** والإعلانُ فرعُه، لا العكس: فيُكتب النسبُ أوّلًا
+بتفويضٍ يقوم على `project_id` وحده — سؤالٌ مكتملٌ بذاته — ثمّ يُكتب
+الإعلانُ بتفويضٍ يقرأ أباه. ولو انعكس الترتيبُ لاحتاج إعلانٌ إلى نسبٍ لم
+يُكتب بعد، فاستحال تفويضُ إدراجه.
+
+## ٢ · والنسبُ يُكتب مرّةً ولا يُعدَّل
+
+ولا سياسةَ تعديلٍ على `recruitment_opportunities` ولا صلاحيةَ تعديل —
+كما فعل 0003 بسجلّ التدقيق. فـ«لا تُنقل فرصةٌ إلى بحثٍ آخر» و«لا يُعاد
+كتابةُ من أنشأها» ليستا حارسًا يُفحَص بل **غيابَ الطريق**.
+
+## ٣ · و`OLD` لا تعرفها RLS — فالمُشغِّلُ يحملها
+
+سياسةُ تعديلٍ تقول «صاحبُ التطبيق يعدّله» تسمح له أن يُرشّح نفسَه
+`shortlisted`، وأن ينقل تقدُّمَه إلى فرصةٍ أخرى، وأن يكتب `decided_by`.
+و`WITH CHECK` ترى الصفَّ الجديد ولا ترى القديم، فلا تقدر على قاعدةِ
+انتقال.
+
+فمصفوفةُ الانتقالات في مُشغِّلٍ `BEFORE` — وهو النمطُ القائم في
+المستودع (`audit_events_immutable`، `forbid_row_mutation`،
+`enforce_frozen_dataset_for_run`) لا اختراعًا:
+
+  • هويّةُ التطبيق **ثابتة**: الفرصةُ والمتقدّمُ ومؤسستُه ووقتُ الإنشاء
+    ونصُّ صاحبه.
+  • والمتقدّمُ **ينسحب وحسب**. ولا يُرشّح نفسَه ولا يرفضها عن نفسه ولا
+    يكتب حسمًا.
+  • والمديرُ **يُرشّح ويعتذر ويدعو** — ولا ينسحب عن أحد، ولا ينتحل.
+  • و«مدعوّ» يستوجب `invitation_id` لدعوةٍ حقيقيةٍ **في بحثِ الفرصة
+    نفسِه** — فالاستقطابُ لا يصير طريقًا ثانيةً إلى الفريق تتجاوز
+    `ProjectInvitation`.
+
+## ٤ · والتقدّمُ لا يُقبل إلّا على بابٍ مفتوحٍ الآن
+
+ومعرّفُ فرصةٍ عُرف حين كانت مفتوحةً لا يصير مفتاحًا بعد إغلاقها. فشرطُ
+القبول **نفسُ شرطِ الاكتشاف**، مكتوبًا مرّةً في `DISCOVERABLE` ومقروءًا
+في: سياسةِ الاكتشاف، ودالّةِ القبول، والعرضِ الآمن.
+
+## ٥ · والفشلُ آمنٌ بالبناء لا بالاتفاق
 
 `app_current_actor()` تُعيد `NULL` عند غياب الضبط، وكلُّ مقارنةٍ بـ`NULL`
-تُعطي `NULL` — والسياسةُ لا تطابق. فجلسةٌ بلا فاعلٍ **لا ترى تطبيقًا ولا
-تكتبه**، وجلسةٌ بفاعلٍ مشوَّه يسقط `::uuid` فيها فتُلغى المعاملة.
+تُعطي `NULL` — والسياسةُ لا تطابق. فجلسةٌ بلا فاعلٍ لا ترى تطبيقًا ولا
+تكتبه، وجلسةٌ بفاعلٍ مشوَّه يسقط `::uuid` فيها فتُلغى المعاملة.
 
-## ولمَ دالّةٌ بحقوق المستدعي لا `SECURITY DEFINER`
+## ٦ · ولمَ دالّتا التفويض بحقوق المستدعي
 
-`app_manages_project()` تُقرأ داخل السياسات، وهي **بحقوق مستدعيها**
-قصدًا: فتبقى الجداولُ التي تقرأها (`research_projects`،
-`project_members`، `project_member_permissions`، `researcher_profiles`،
-`audit_events`) خاضعةً لـRLS بحقوق القارئ نفسِه. فلو استُدعيت من جلسة
-المتقدّم في مستأجرٍ آخر لم ترَ شيئًا وأعادت `false`.
+`app_manages_project()` و`app_manages_opportunity()` تُقرآن داخل
+السياسات، وهما **بحقوق مستدعيهما** قصدًا: فتبقى الجداولُ التي تقرآنها
+خاضعةً لـRLS بحقوق القارئ نفسِه.
 
-**وقد جُرّبت بـ`SECURITY DEFINER` فلم يتغيّر سلوكٌ واحد** — والسببُ أنّ
-الجداولَ الخمسةَ كلَّها عليها `FORCE ROW LEVEL SECURITY`، فمالكُها خاضعٌ
-لسياساتها أيضًا. فالسببُ ليس ثقبًا قائمًا بل **ألّا يتعلّق هذا الضمانُ
-بخمسة جداولٍ أخرى**: يكفي أن يسقط `FORCE` عن أحدها في ترحيلٍ لاحق، أو أن
-يصير المالكُ دورًا متجاوزًا، ليصير `DEFINER` ثقبًا بحجم الدالّة. وحقوقُ
-المستدعي لا تحتاج شيئًا من ذلك لتبقى صحيحة.
-
-وهي مرآةٌ حرفيّة لـ`services/collaboration.py`: المالكُ من نسبٍ مُثبت
-(ملفُّ الباحث، ثمّ فاعلُ حدث الإنشاء)، والمديرُ غيرُ المالك عضوٌ **نشِط**
-له `view_project` أساسًا **و**`manage_team` صريحة. **ولا دورَ يُترجم إلى
-سلطة**: `principal_investigator` اسمُ دورٍ لا تفويض.
-
-## وعرضٌ للإسقاط، وسياسةٌ للصفوف
-
-RLS تحكم الصفوفَ لا الأعمدة. فالإسقاطُ الآمن عرضٌ صريح —
-`recruitment_opportunities_public` — لا يحمل `project_id` ولا `tenant_id`
-ولا `created_by`. وهو `security_invoker` كي تُقيَّم السياساتُ بحقوق
-القارئ لا بحقوق مالك العرض، و`security_barrier` كي لا يُسرَّب شيءٌ عبر
-دالّةٍ رخيصةٍ تُدفع تحت الشرط.
+**وقد جُرّبت الأولى بـ`SECURITY DEFINER` فلم يتغيّر سلوكٌ واحد** —
+والسببُ أنّ الجداولَ التي تقرؤها عليها `FORCE ROW LEVEL SECURITY`،
+فمالكُها خاضعٌ لسياساتها. فالسببُ ليس ثقبًا قائمًا بل **ألّا يتعلّق هذا
+الضمانُ بجداولَ أخرى**: يكفي أن يسقط `FORCE` عن أحدها في ترحيلٍ لاحق،
+أو أن يصير المالكُ دورًا متجاوزًا، ليصير `DEFINER` ثقبًا بحجم الدالّة.
 
 ## توسعةٌ محضة
 
-جدولان جديدان ودالّةٌ وعرض. لا عمودَ يُحذف، ولا جدولَ قائمٌ يُغيَّر، ولا
-سياسةَ قائمةٌ تُمسّ، ولا صفَّ يُكتب. والخادمُ الذي لا يعرف هذا الترحيل
-يبقى صحيحًا بعد الصعود.
+ثلاثةُ جداولٍ جديدة، ودالّتان، ومُشغِّلان، وعرض. لا عمودَ يُحذف، ولا
+جدولَ قائمٌ يُغيَّر، ولا سياسةَ قائمةٌ تُمسّ، ولا صفَّ يُكتب. والخادمُ
+الذي لا يعرف هذا الترحيل يبقى صحيحًا بعد الصعود.
 
 **ولا يُنفَّذ في الإنتاج في هذه المرحلة.**
 
@@ -83,7 +119,8 @@ depends_on = None
 TS = sa.DateTime(timezone=True)
 UUID = postgresql.UUID(as_uuid=True)
 
-OPPORTUNITIES = "recruitment_opportunities"
+OWNERS = "recruitment_opportunities"
+LISTINGS = "recruitment_opportunity_listings"
 APPLICATIONS = "recruitment_applications"
 PUBLIC_VIEW = "recruitment_opportunities_public"
 
@@ -92,6 +129,14 @@ PUBLIC_VIEW = "recruitment_opportunities_public"
 OPPORTUNITY_STATES = ("draft", "scheduled", "open", "closed", "deleted")
 APPLICATION_STATES = ("pending", "shortlisted", "declined", "invited", "withdrawn")
 ACTIVE_APPLICATION_STATES = ("pending", "shortlisted", "invited")
+
+# مصفوفةُ انتقالات المدير — `قبل → بعد`، ولا غيرَها.
+MANAGER_TRANSITIONS = (
+    ("pending", "shortlisted"),
+    ("pending", "declined"),
+    ("shortlisted", "declined"),
+    ("shortlisted", "invited"),
+)
 
 # أفعالُ إنشاء البحث — مرآةُ `collaboration.PROJECT_CREATED_ACTIONS`.
 # **ولو زيد فعلٌ هناك ولم يُزد هنا لفقد مالكٌ سلطتَه على بحثه** — ولذلك
@@ -106,6 +151,18 @@ PROJECT_CREATED_ACTIONS = (
 
 def _quoted(values: tuple[str, ...]) -> str:
     return ", ".join(f"'{v}'" for v in values)
+
+
+# ── شرطُ الاكتشاف والقبول: **نصٌّ واحد** ──
+#
+# يُقرأ في ثلاثة مواضع: سياسةِ الاكتشاف على الإعلانات، ودالّةِ القبول،
+# والعرضِ الآمن. وثلاثُ نسخٍ منه تفترق بأوّل تعديل، وحينها يعرض العرضُ
+# ما لا تسمح به السياسة، أو يُقبل تقدُّمٌ على بابٍ لا يُرى.
+DISCOVERABLE = (
+    "status = 'open' AND deleted_at IS NULL "
+    "AND starts_at IS NOT NULL AND starts_at <= now() "
+    "AND (ends_at IS NULL OR ends_at > now())"
+)
 
 
 # ── دالّةُ الإدارة: سؤالٌ واحد، بحقوق المستدعي ──
@@ -167,22 +224,217 @@ AS $$
 $$;
 """
 
-# شرطُ الاكتشاف — **مكتوبٌ مرّةً واحدة**، يُستعمل في السياسة وفي العرض.
-# فشرطانِ متطابقانِ منسوخانِ يفترقان بأوّل تعديل، وحينها يعرض العرضُ ما
-# لا تسمح به السياسة أو العكس.
-DISCOVERABLE = (
-    "status = 'open' AND deleted_at IS NULL "
-    "AND starts_at IS NOT NULL AND starts_at <= now() "
-    "AND (ends_at IS NULL OR ends_at > now())"
-)
+# ── «هل يدير الفاعلُ هذه الفرصة؟» ──
+#
+# وتقرأ **جدولَ النسب** — وهو محكومٌ بسياسة مديره. فجلسةُ متقدّمٍ في
+# مستأجرٍ آخر لا ترى صفَّ النسب أصلًا، فتُعيد `false` بلا أن تُسأل عن
+# مستأجر. والشرطُ مكتوبٌ فوق ذلك صريحًا: حزامان لا حزام.
+MANAGES_OPPORTUNITY_FN = f"""
+CREATE OR REPLACE FUNCTION app_manages_opportunity(p_opportunity_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM {OWNERS} o
+         WHERE o.id = p_opportunity_id
+           AND o.tenant_id = app_current_tenant()
+           AND app_manages_project(o.project_id)
+    )
+$$;
+"""
+
+# ── «هل يقبل هذا البابُ تقدُّمًا الآن؟» ──
+#
+# وهي شرطُ القبول، ونصُّها نصُّ الاكتشاف نفسُه. وبحقوق المستدعي: فسياسةُ
+# الاكتشاف على الإعلانات هي التي تُسلّمها الصفَّ، فمن لا يرى إعلانًا لا
+# يتقدّم إليه.
+ADMITS_FN = f"""
+CREATE OR REPLACE FUNCTION app_opportunity_admits(p_opportunity_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM {LISTINGS}
+         WHERE opportunity_id = p_opportunity_id
+           AND {DISCOVERABLE}
+    )
+$$;
+"""
+
+# ── مُشغِّلُ الإعلان: هويّتُه ثابتة ──
+LISTING_GUARD_FN = """
+CREATE OR REPLACE FUNCTION recruitment_listing_guard() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    -- **ولا يُنقل إعلانٌ إلى فرصةٍ أخرى**: مفتاحُه الأوّلُ هو نسبُه،
+    -- وتعديلُه نقلُ نصٍّ مُعلَنٍ إلى بحثٍ لم يكتبه.
+    IF NEW.opportunity_id <> OLD.opportunity_id THEN
+        RAISE EXCEPTION
+          'a recruitment listing belongs to the opportunity it was written for'
+          USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW.created_at <> OLD.created_at THEN
+        RAISE EXCEPTION 'the birth time of a recruitment listing is not editable'
+          USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+"""
+
+# ── مُشغِّلُ التطبيق: الهويّةُ ثابتة، والانتقالُ مصفوفةٌ مكتوبة ──
+#
+# **وهذا ما لا تقدر عليه RLS**: `WITH CHECK` ترى الصفَّ الجديد ولا ترى
+# القديم، فلا تعرف «من أيّ حالٍ إلى أيّ حال» ولا «أيُّ عمودٍ تغيّر».
+APPLICATION_GUARD_FN = f"""
+CREATE OR REPLACE FUNCTION recruitment_application_guard() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    actor uuid := app_current_actor();
+    owning_project uuid;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        -- **ويُولد التطبيقُ في الانتظار**: فمن يكتب صفَّه `shortlisted`
+        -- من أوّل لحظةٍ يمنح نفسَه ما لا يملك، ولا `OLD` تمنعه.
+        IF NEW.status <> 'pending' THEN
+            RAISE EXCEPTION
+              'a recruitment application is born pending, not %', NEW.status
+              USING ERRCODE = 'check_violation';
+        END IF;
+        IF NEW.decided_at IS NOT NULL OR NEW.decided_by IS NOT NULL
+           OR NEW.withdrawn_at IS NOT NULL OR NEW.invitation_id IS NOT NULL THEN
+            RAISE EXCEPTION
+              'a new recruitment application carries no decision, no withdrawal '
+              'and no invitation'
+              USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    -- ── هويّةٌ ثابتة: لا تُنقل، ولا تُنتحل، ولا يُحرَّف نصُّ صاحبها ──
+    IF NEW.id <> OLD.id
+       OR NEW.opportunity_id <> OLD.opportunity_id
+       OR NEW.applicant_user_id <> OLD.applicant_user_id
+       OR NEW.applicant_tenant_id <> OLD.applicant_tenant_id
+       OR NEW.created_at <> OLD.created_at THEN
+        RAISE EXCEPTION 'the identity of a recruitment application is immutable'
+          USING ERRCODE = 'check_violation';
+    END IF;
+    -- ونصُّ المتقدّم لا يُعدَّل بعد الإرسال: تعديلُ المدير تحريفُ إقرارِ
+    -- غيره، وتعديلُ صاحبه بعد القراءة يُغيّر ما بُني عليه قرار.
+    IF NEW.message IS DISTINCT FROM OLD.message THEN
+        RAISE EXCEPTION 'an applicant''s own words are not edited after submission'
+          USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- ══ صاحبُ التطبيق: ينسحب وحسب ══
+    IF actor IS NOT NULL AND actor = OLD.applicant_user_id THEN
+        IF NEW.decided_at IS DISTINCT FROM OLD.decided_at
+           OR NEW.decided_by IS DISTINCT FROM OLD.decided_by
+           OR NEW.invitation_id IS DISTINCT FROM OLD.invitation_id THEN
+            RAISE EXCEPTION 'an applicant writes no decision about their own application'
+              USING ERRCODE = 'check_violation';
+        END IF;
+        IF NEW.status = OLD.status THEN
+            -- **ووقتُ الانسحاب لا يُعاد كتابتُه على حالٍ لم تتغيّر.**
+            -- وهذا وُجد بعضّ الحارس: كان البابُ مفتوحًا لصاحبِ صفٍّ
+            -- منسحبٍ أن يُقدّم وقتَ انسحابه أو يؤخّره، وذاك أثرٌ يُقرأ
+            -- في نزاعٍ على أسبقيّة.
+            IF NEW.withdrawn_at IS DISTINCT FROM OLD.withdrawn_at THEN
+                RAISE EXCEPTION 'the time of a withdrawal is written once'
+                  USING ERRCODE = 'check_violation';
+            END IF;
+            RETURN NEW;
+        END IF;
+        IF NEW.status <> 'withdrawn' THEN
+            RAISE EXCEPTION
+              'an applicant may only withdraw; ''%'' is a decision, and a decision '
+              'is never self-awarded', NEW.status
+              USING ERRCODE = 'check_violation';
+        END IF;
+        IF OLD.status NOT IN ({_quoted(ACTIVE_APPLICATION_STATES)}) THEN
+            RAISE EXCEPTION 'only a live application can be withdrawn (it was ''%'')',
+              OLD.status
+              USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    -- ══ المدير: يُرشّح ويعتذر ويدعو — ولا ينسحب عن أحد ══
+    --
+    -- وسلطتُه على هذه الفرصة أثبتتها السياسةُ قبل بلوغ هذا المُشغِّل.
+    IF NEW.status = 'withdrawn' OR NEW.withdrawn_at IS DISTINCT FROM OLD.withdrawn_at THEN
+        RAISE EXCEPTION 'withdrawal is the applicant''s own act, not a decision about them'
+          USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW.status = OLD.status THEN
+        IF NEW.decided_at IS DISTINCT FROM OLD.decided_at
+           OR NEW.decided_by IS DISTINCT FROM OLD.decided_by
+           OR NEW.invitation_id IS DISTINCT FROM OLD.invitation_id THEN
+            RAISE EXCEPTION 'a decision is not rewritten after the fact'
+              USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (OLD.status, NEW.status) NOT IN (
+        {", ".join(f"('{a}','{b}')" for a, b in MANAGER_TRANSITIONS)}
+    ) THEN
+        RAISE EXCEPTION 'no such transition on a recruitment application: ''%'' -> ''%''',
+          OLD.status, NEW.status
+          USING ERRCODE = 'check_violation';
+    END IF;
+    -- ومن حسم يُنسب إليه ما حسم — بفاعل الجلسة لا بما كُتب في الطلب.
+    IF NEW.decided_by IS DISTINCT FROM actor THEN
+        RAISE EXCEPTION 'a decision names its author, and its author is the acting session'
+          USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW.decided_at IS NULL THEN
+        RAISE EXCEPTION 'a decision has a time'
+          USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- ══ و«مدعوّ» تستوجب دعوةً حقيقيةً في بحثِ الفرصة نفسِه ══
+    --
+    -- فالقيدُ يشترط `invitation_id` غيرَ فارغة، **وهذا يشترط أن تكون
+    -- دعوةَ ذلك البحث**: دعوةٌ من بحثٍ آخر كانت ستُمرّر الحالةَ بدعوةٍ لا
+    -- تُدخل أحدًا إلى هذا الفريق.
+    IF NEW.status = 'invited' THEN
+        SELECT o.project_id INTO owning_project
+          FROM {OWNERS} o WHERE o.id = OLD.opportunity_id;
+        IF owning_project IS NULL OR NOT EXISTS (
+            SELECT 1 FROM project_invitations i
+             WHERE i.id = NEW.invitation_id
+               AND i.project_id = owning_project
+        ) THEN
+            RAISE EXCEPTION
+              'INVITED requires a real ProjectInvitation on the opportunity''s own '
+              'project — recruitment is not a second door into a research team'
+              USING ERRCODE = 'check_violation';
+        END IF;
+    ELSIF NEW.invitation_id IS DISTINCT FROM OLD.invitation_id THEN
+        RAISE EXCEPTION 'an invitation is linked only when the application becomes invited'
+          USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END
+$$;
+"""
 
 
 def upgrade() -> None:
     # ── ٠. شرطُ إصدارٍ صريح، لا مفاجأةٌ صامتة ──
     #
     # `security_invoker` على العروض من PostgreSQL 15. وعلى إصدارٍ أقدم
-    # يُتجاهل الخيارُ **بلا خطأ**، فيُقيَّم العرضُ بحقوق مالكه ويصير
-    # الإسقاطُ الآمنُ بابًا. فيُرفع الخطأُ هنا صراحةً.
+    # يُتجاهل الخيارُ **بلا خطأ**، فيُقيَّم العرضُ بحقوق مالكه.
     op.execute(
         """
         DO $$
@@ -197,15 +449,32 @@ def upgrade() -> None:
         """
     )
 
-    # ── ١. الفرص ──
+    # ══════ ١. النسب — السجلُّ الخاصُّ الذي لا يعبُر المستأجر ══════
     op.create_table(
-        OPPORTUNITIES,
+        OWNERS,
         sa.Column("id", UUID, primary_key=True),
         sa.Column("tenant_id", UUID, sa.ForeignKey("tenants.id", ondelete="RESTRICT"),
                   nullable=False),
         sa.Column("project_id", UUID,
                   sa.ForeignKey("research_projects.id", ondelete="CASCADE"),
                   nullable=False),
+        sa.Column("created_by", UUID, sa.ForeignKey("users.id", ondelete="RESTRICT"),
+                  nullable=False),
+        sa.Column("created_at", TS, server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", TS, server_default=sa.text("now()"), nullable=False),
+    )
+    op.create_index("ix_recruitment_opportunities_tenant_id", OWNERS, ["tenant_id"])
+    op.create_index("ix_recruitment_opportunities_project", OWNERS, ["project_id"])
+
+    # ══════ ٢. الإعلان — وهذا وحده ما يُقرأ من خارج المستأجر ══════
+    #
+    # **ولا `tenant_id` فيه ولا `project_id` ولا `created_by`** — وذاك هو
+    # الحدّ، لا السياسةُ وحدها.
+    op.create_table(
+        LISTINGS,
+        sa.Column("opportunity_id", UUID,
+                  sa.ForeignKey(f"{OWNERS}.id", ondelete="RESTRICT"),
+                  primary_key=True),
         sa.Column("title", sa.String(200), nullable=False),
         sa.Column("description", sa.Text, nullable=False),
         sa.Column("contributions", sa.Text, nullable=True),
@@ -213,17 +482,15 @@ def upgrade() -> None:
         sa.Column("specialization", sa.String(120), nullable=True),
         sa.Column("openings_count", sa.Integer, nullable=False, server_default="1"),
         sa.Column("collaboration_type", sa.String(40), nullable=False),
+        sa.Column("public_label", sa.String(160), nullable=True),
         sa.Column("status", sa.String(16), nullable=False, server_default="draft"),
         sa.Column("starts_at", TS, nullable=True),
         sa.Column("ends_at", TS, nullable=True),
-        sa.Column("public_label", sa.String(160), nullable=True),
-        sa.Column("created_by", UUID, sa.ForeignKey("users.id", ondelete="RESTRICT"),
-                  nullable=False),
         sa.Column("deleted_at", TS, nullable=True),
         sa.Column("created_at", TS, server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", TS, server_default=sa.text("now()"), nullable=False),
-        # **والأسماءُ قصيرةٌ عمدًا**: الاصطلاحُ يُبادئها، والتجاوزُ فوق
-        # ثلاثةٍ وستين محرفًا **يُقصّ صامتًا** (الترحيل 0032).
+        # **والأسماءُ قصيرةٌ عمدًا** — الاصطلاحُ يُبادئها، والتجاوزُ فوق
+        # ثلاثةٍ وستين محرفًا **يُقصّ صامتًا** (0032).
         sa.CheckConstraint(
             f"status IN ({_quoted(OPPORTUNITY_STATES)})",
             name="status_is_known"),
@@ -237,26 +504,22 @@ def upgrade() -> None:
             "status <> 'open' OR starts_at IS NOT NULL",
             name="open_needs_a_start"),
     )
-    op.create_index("ix_recruitment_opportunities_tenant_id", OPPORTUNITIES, ["tenant_id"])
-    op.create_index("ix_recruitment_opportunities_project", OPPORTUNITIES, ["project_id"])
-    op.create_index("ix_recruitment_opportunities_discovery", OPPORTUNITIES,
+    op.create_index("ix_recruitment_listings_discovery", LISTINGS,
                     ["status", "starts_at", "ends_at"])
 
-    # ── ٢. التطبيقات — ولا عمودَ `tenant_id` فيها ──
+    # ══════ ٣. التطبيقات — ولا عمودَ `tenant_id` حاكمًا فيها ══════
     #
     # وهذا **قصدٌ لا سهو**. الصفُّ يعيش بين مستأجرَين: المتقدّمُ في واحد،
     # والفرصةُ في آخر. فبأيِّهما يُوسم؟ لو وُسم بمستأجر الفرصة لم يرَ
     # المتقدّمُ تقدُّمَه، ولو وُسم بمستأجر المتقدّم لم يرَه صاحبُ الفرصة.
-    # فلا وسمَ مستأجرٍ يحكمه، و`applicant_tenant_id` **للأثر لا للتفويض**.
     op.create_table(
         APPLICATIONS,
         sa.Column("id", UUID, primary_key=True),
         # **و`RESTRICT` لا `CASCADE`.** الحذفُ المتسلسل كان سيجعل حذفَ صفِّ
         # فرصةٍ واحدًا يمحو تقدُّمَ باحثين في مستأجرين آخرين — ويجري
-        # بحقوق مالك الجدول، فلا RLS تراه ولا صلاحيةَ تمنعه. فالتطبيقُ
-        # يُثبّت فرصتَه، والإخفاءُ يقع بـ`deleted_at` لا بالإتلاف.
+        # بحقوق مالك الجدول، فلا RLS تراه ولا صلاحيةَ تمنعه.
         sa.Column("opportunity_id", UUID,
-                  sa.ForeignKey(f"{OPPORTUNITIES}.id", ondelete="RESTRICT"),
+                  sa.ForeignKey(f"{OWNERS}.id", ondelete="RESTRICT"),
                   nullable=False),
         sa.Column("applicant_user_id", UUID,
                   sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=False),
@@ -268,6 +531,9 @@ def upgrade() -> None:
         sa.Column("decided_at", TS, nullable=True),
         sa.Column("decided_by", UUID, sa.ForeignKey("users.id", ondelete="RESTRICT"),
                   nullable=True),
+        sa.Column("invitation_id", UUID,
+                  sa.ForeignKey("project_invitations.id", ondelete="RESTRICT"),
+                  nullable=True),
         sa.Column("created_at", TS, server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", TS, server_default=sa.text("now()"), nullable=False),
         sa.CheckConstraint(
@@ -276,13 +542,18 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(status = 'withdrawn') = (withdrawn_at IS NOT NULL)",
             name="withdrawal_has_a_time"),
+        # **و«مدعوّ» لا تُكتب بلا دعوةٍ حقيقية** — والمُشغِّل يشترط فوق
+        # ذلك أن تكون دعوةَ بحثِ الفرصة نفسِه.
+        sa.CheckConstraint(
+            "status <> 'invited' OR invitation_id IS NOT NULL",
+            name="invited_needs_an_invitation"),
     )
     op.create_index("ix_recruitment_applications_opportunity", APPLICATIONS,
                     ["opportunity_id"])
     op.create_index("ix_recruitment_applications_applicant", APPLICATIONS,
                     ["applicant_user_id"])
 
-    # **ولا تطبيقانِ قائمان لحسابٍ واحد على فرصةٍ واحدة — والقاعدةُ تمنع.**
+    # **ولا تطبيقانِ قائمان لحسابٍ واحد على فرصةٍ واحدة.**
     #
     # وفهرسٌ **جزئيّ** لا قيدٌ كامل: المنسحبُ له أن يعود، والمرفوضُ لا
     # يُحجَب عن غيرها. والمنعُ في القاعدة لا في الواجهة، فطلبانِ متزامنان
@@ -293,68 +564,87 @@ def upgrade() -> None:
         f"WHERE status IN ({_quoted(ACTIVE_APPLICATION_STATES)})"
     )
 
-    # ── ٣. دالّةُ الإدارة ──
-    op.execute(MANAGES_PROJECT_FN)
+    # ══════ ٤. دوالُّ التفويض والقبول ══════
+    for statement in (MANAGES_PROJECT_FN, MANAGES_OPPORTUNITY_FN, ADMITS_FN):
+        op.execute(statement)
     # ولا تنفيذَ عامّ: دورُ التطبيق وحده.
-    op.execute("REVOKE ALL ON FUNCTION app_manages_project(uuid) FROM PUBLIC")
-    op.execute("GRANT EXECUTE ON FUNCTION app_manages_project(uuid) TO athera_app")
+    for signature in ("app_manages_project(uuid)", "app_manages_opportunity(uuid)",
+                      "app_opportunity_admits(uuid)"):
+        op.execute(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")
+        op.execute(f"GRANT EXECUTE ON FUNCTION {signature} TO athera_app")
 
-    # ── ٤. العزل ──
-    for table in (OPPORTUNITIES, APPLICATIONS):
+    # ══════ ٥. العزل والصلاحيات ══════
+    for table in (OWNERS, LISTINGS, APPLICATIONS):
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         # FORCE: السياسةُ تنطبق على مالك الجدول أيضًا — لا بابَ خلفيًّا.
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+
+    # **والنسبُ يُكتب مرّةً**: قراءةٌ وإدراجٌ ولا شيءَ بعدهما — كما فعل
+    # 0003 بسجلّ التدقيق. فثباتُ `tenant_id` و`project_id` و`created_by`
+    # **غيابُ طريقٍ لا حارسٌ يُفحَص**.
+    op.execute(f"GRANT SELECT, INSERT ON {OWNERS} TO athera_app")
+    op.execute(f"REVOKE UPDATE, DELETE ON {OWNERS} FROM athera_app")
+    for table in (LISTINGS, APPLICATIONS):
         op.execute(f"GRANT SELECT, INSERT, UPDATE ON {table} TO athera_app")
-        # **وحزامٌ ثانٍ تحت السياسة** — كما فعل 0003 بسجلّ التدقيق: لا
-        # صلاحيةَ حذفٍ أصلًا، فلا سياسةٌ تُكتب سهوًا تُفتح بها ثغرة.
+        # وحزامٌ ثانٍ تحت السياسة: لا صلاحيةَ حذفٍ أصلًا، فلا سياسةٌ تُكتب
+        # سهوًا تُفتح بها ثغرة.
         op.execute(f"REVOKE DELETE ON {table} FROM athera_app")
 
-    # الفرص: سلطةُ المدير داخل مستأجره.
-    #
-    # **وثلاثُ سياساتٍ بأفعالها لا `FOR ALL` واحدة.** فـ`FOR ALL` تشمل
-    # `DELETE`، ودورةُ الحياة المُقرَّرة حذفٌ ناعم: `deleted_at`. ولو
-    # كُتبت شاملةً لبقي الحذفُ الصلبُ ممنوعًا بالصلاحية وحدها — ومنحٌ
-    # شاملٌ في ترحيلٍ لاحق (وهو نمطٌ قائم في 0003) كان سيفتحه صامتًا.
-    # فلا فعلَ حذفٍ مسموحٌ **في السياسة نفسها**.
-    manager = "tenant_id = app_current_tenant() AND app_manages_project(project_id)"
+    # ── ٥أ. النسب: سياسةُ مديرٍ وحدها ولا سياسةَ عابرةً للمستأجرين ──
+    owner_manager = "tenant_id = app_current_tenant() AND app_manages_project(project_id)"
     op.execute(
-        f"CREATE POLICY {OPPORTUNITIES}_manager_read ON {OPPORTUNITIES} "
-        f"FOR SELECT USING ({manager})"
+        f"CREATE POLICY {OWNERS}_manager_read ON {OWNERS} "
+        f"FOR SELECT USING ({owner_manager})"
+    )
+    # **ومن أنشأ يُنسب إليه ما أنشأ** — بفاعل الجلسة لا بما كُتب في الطلب.
+    op.execute(
+        f"CREATE POLICY {OWNERS}_manager_insert ON {OWNERS} "
+        f"FOR INSERT WITH CHECK ({owner_manager} AND created_by = app_current_actor())"
+    )
+
+    # ── ٥ب. الإعلان: مديرٌ يكتب ويعدّل، وعالَمٌ يقرأ المفتوحَ وحده ──
+    op.execute(
+        f"CREATE POLICY {LISTINGS}_manager_read ON {LISTINGS} "
+        "FOR SELECT USING (app_manages_opportunity(opportunity_id))"
     )
     op.execute(
-        f"CREATE POLICY {OPPORTUNITIES}_manager_insert ON {OPPORTUNITIES} "
-        f"FOR INSERT WITH CHECK ({manager})"
+        f"CREATE POLICY {LISTINGS}_manager_insert ON {LISTINGS} "
+        "FOR INSERT WITH CHECK (app_manages_opportunity(opportunity_id))"
     )
     op.execute(
-        f"CREATE POLICY {OPPORTUNITIES}_manager_update ON {OPPORTUNITIES} "
-        f"FOR UPDATE USING ({manager}) WITH CHECK ({manager})"
+        f"CREATE POLICY {LISTINGS}_manager_update ON {LISTINGS} "
+        "FOR UPDATE USING (app_manages_opportunity(opportunity_id)) "
+        "WITH CHECK (app_manages_opportunity(opportunity_id))"
     )
     # والاكتشافُ عبر المستأجرين: **قراءةٌ فقط، وصفوفٌ بعينها**.
     #
     # و`FOR SELECT` بلا `WITH CHECK` — فلا تُسهم هذه السياسةُ في إدراجٍ
     # ولا تعديلٍ ولا حذف. والفاعلُ شرط: الاكتشافُ لباحثٍ معروفٍ لا لجلسةٍ
-    # بلا هويّة.
+    # بلا هويّة. **ولا `USING (true)` في هذا الترحيل.**
     op.execute(
-        f"CREATE POLICY {OPPORTUNITIES}_discovery ON {OPPORTUNITIES} "
+        f"CREATE POLICY {LISTINGS}_discovery ON {LISTINGS} "
         f"FOR SELECT USING (app_current_actor() IS NOT NULL AND {DISCOVERABLE})"
     )
 
-    # التطبيقات: حدُّها الفاعل.
+    # ── ٥ج. التطبيقات: حدُّها الفاعل ──
     #
-    # وأربعُ سياساتٍ لا واحدةٌ شاملة، لأنّ الأفعالَ تختلف في شرطها:
+    # وأربعُ سياساتٍ لا واحدةٌ شاملة، لأنّ الأفعالَ تختلف في شرطها.
     op.execute(
         f"CREATE POLICY {APPLICATIONS}_self_read ON {APPLICATIONS} "
         "FOR SELECT USING (applicant_user_id = app_current_actor())"
     )
-    # وعند التقدّم يُقيَّد المستأجرُ المُعلَن بالسياق: **لا يُزوّر المتقدّم
-    # المؤسسةَ التي جاء منها**، وهي ما يُقرأ في التدقيق بعد شهور.
+    # وعند التقدّم يُقيَّد المستأجرُ المُعلَن بالسياق (**لا يُزوّر المتقدّم
+    # المؤسسةَ التي جاء منها**)، ويُشترط **بابٌ مفتوحٌ الآن**: فمعرّفُ
+    # فرصةٍ عُرف حين كانت مفتوحةً لا يصير مفتاحًا بعد إغلاقها.
     op.execute(
         f"CREATE POLICY {APPLICATIONS}_self_insert ON {APPLICATIONS} "
         "FOR INSERT WITH CHECK (applicant_user_id = app_current_actor() "
-        "AND applicant_tenant_id = app_current_tenant())"
+        "AND applicant_tenant_id = app_current_tenant() "
+        "AND app_opportunity_admits(opportunity_id))"
     )
-    # والانسحابُ تعديلٌ بيد صاحبه. ولا شرطَ مستأجرٍ هنا: من ينتمي إلى
-    # مؤسستين ويدخل بالثانية يبقى صاحبَ تقدُّمه الأوّل.
+    # والانسحابُ تعديلٌ بيد صاحبه — والمُشغِّلُ يحصره في الانسحاب. ولا
+    # شرطَ مستأجرٍ هنا: من ينتمي إلى مؤسستين ويدخل بالثانية يبقى صاحبَ
+    # تقدُّمه الأوّل.
     op.execute(
         f"CREATE POLICY {APPLICATIONS}_self_update ON {APPLICATIONS} "
         "FOR UPDATE USING (applicant_user_id = app_current_actor()) "
@@ -364,57 +654,58 @@ def upgrade() -> None:
     # تقدّم ومن رُفض هو نفسُه ما يُسأل عنه في نزاع.
     op.execute(
         f"CREATE POLICY {APPLICATIONS}_manager_read ON {APPLICATIONS} "
-        "FOR SELECT USING (EXISTS ("
-        f"  SELECT 1 FROM {OPPORTUNITIES} o "
-        "   WHERE o.id = opportunity_id "
-        "     AND o.tenant_id = app_current_tenant() "
-        "     AND app_manages_project(o.project_id)))"
+        "FOR SELECT USING (app_manages_opportunity(opportunity_id))"
     )
-    # والمديرُ يُرشّح ويعتذر — ولا **يُنشئ** تطبيقًا عن أحد. فالتقدّمُ فعلٌ
-    # شخصيّ، وتطبيقٌ يكتبه غيرُ صاحبه إقرارٌ منسوبٌ إلى من لم يُقرّ.
+    # والمديرُ يُرشّح ويعتذر ويدعو — ولا **يُنشئ** تطبيقًا عن أحد. فالتقدّمُ
+    # فعلٌ شخصيّ، وتطبيقٌ يكتبه غيرُ صاحبه إقرارٌ منسوبٌ إلى من لم يُقرّ.
     op.execute(
         f"CREATE POLICY {APPLICATIONS}_manager_update ON {APPLICATIONS} "
-        "FOR UPDATE USING (EXISTS ("
-        f"  SELECT 1 FROM {OPPORTUNITIES} o "
-        "   WHERE o.id = opportunity_id "
-        "     AND o.tenant_id = app_current_tenant() "
-        "     AND app_manages_project(o.project_id))) "
-        "WITH CHECK (EXISTS ("
-        f"  SELECT 1 FROM {OPPORTUNITIES} o "
-        "   WHERE o.id = opportunity_id "
-        "     AND o.tenant_id = app_current_tenant() "
-        "     AND app_manages_project(o.project_id)))"
+        "FOR UPDATE USING (app_manages_opportunity(opportunity_id)) "
+        "WITH CHECK (app_manages_opportunity(opportunity_id))"
     )
 
-    # ── ٥. الإسقاطُ الآمن ──
+    # ══════ ٦. المُشغِّلات — ما لا تقدر عليه RLS ══════
+    op.execute(LISTING_GUARD_FN)
+    op.execute(APPLICATION_GUARD_FN)
+    op.execute(
+        f"CREATE TRIGGER trg_{LISTINGS}_guard BEFORE UPDATE ON {LISTINGS} "
+        "FOR EACH ROW EXECUTE FUNCTION recruitment_listing_guard()"
+    )
+    op.execute(
+        f"CREATE TRIGGER trg_{APPLICATIONS}_guard "
+        f"BEFORE INSERT OR UPDATE ON {APPLICATIONS} "
+        "FOR EACH ROW EXECUTE FUNCTION recruitment_application_guard()"
+    )
+
+    # ══════ ٧. الإسقاطُ الآمن ══════
     #
-    # **وما لا يخرج من هذا العرض**: `project_id` و`tenant_id`
-    # و`created_by` و`status` و`deleted_at` و`updated_at`. فمعرّفُ البحث
-    # مفتاحٌ إلى كلِّ ما يتعلّق به، ومعرّفُ المستأجر يكشف المؤسسةَ لمن لم
-    # يُعلنها صاحبُها، ومنشئُ الفرصة اسمُ إنسانٍ لا حاجةَ به في الاكتشاف.
-    # والانتماءُ يُعلَن بـ`public_label` **إن كتبه صاحبُه** ولا يُشتقّ من
-    # عنوان البحث: عنوانٌ حقيقيّ قد يُفصح عن فكرةٍ لم تُنشر.
-    # ولا لقبَ جدولٍ هنا: `DISCOVERABLE` تُكتب مرّةً وتُستعمل حرفيًّا في
-    # السياسة وفي العرض، فلا نسختانِ تفترقان.
+    # وهو الآن **راحةٌ لا حدّ**: الحدُّ صار في المخطَّط، فالإعلانُ لا يحمل
+    # عمودًا خاصًّا أصلًا. ويبقى العرضُ لأنّه يُسمّي ما يُعرض صريحًا،
+    # ويُسقط ما لا معنى له في الاكتشاف (`status` و`deleted_at`
+    # و`updated_at`) — ولو قُرئ الجدولُ مباشرةً لم يُكشف شيءٌ خاصّ.
     op.execute(
         f"CREATE VIEW {PUBLIC_VIEW} "
         "WITH (security_invoker = true, security_barrier = true) AS "
-        "SELECT id, title, description, contributions, requirements, "
+        "SELECT opportunity_id AS id, title, description, contributions, requirements, "
         "       specialization, collaboration_type, openings_count, "
         "       public_label, starts_at, ends_at, created_at "
-        f"  FROM {OPPORTUNITIES} "
+        f"  FROM {LISTINGS} "
         f" WHERE {DISCOVERABLE}"
     )
     op.execute(f"GRANT SELECT ON {PUBLIC_VIEW} TO athera_app")
-    # **ولا كتابةَ عبر العرض.** `ALTER DEFAULT PRIVILEGES` في 0003 تمنح
-    # الكتابةَ على كلّ ما يُنشأ في المخطَّط — والعروضُ منه. وعرضُ
-    # الاكتشاف إسقاطٌ للقراءة، لا بابٌ تُكتب الفرصُ منه بأعمدةٍ ناقصة.
+    # ولا كتابةَ عبر العرض: `ALTER DEFAULT PRIVILEGES` في 0003 تمنح
+    # الكتابةَ على كلّ ما يُنشأ في المخطَّط — والعروضُ منه.
     op.execute(f"REVOKE INSERT, UPDATE, DELETE ON {PUBLIC_VIEW} FROM athera_app")
 
 
 def downgrade() -> None:
     op.execute(f"DROP VIEW IF EXISTS {PUBLIC_VIEW}")
-    for table in (APPLICATIONS, OPPORTUNITIES):
+    # والمُشغِّلاتُ تسقط مع جداولها، ودوالُّها تُسقط صريحًا بعدها.
+    for table in (APPLICATIONS, LISTINGS, OWNERS):
         op.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-    # والدالّةُ تُسقط بعد السياساتِ التي تقرؤها، لا قبلها.
+    op.execute("DROP FUNCTION IF EXISTS recruitment_application_guard()")
+    op.execute("DROP FUNCTION IF EXISTS recruitment_listing_guard()")
+    # والدوالُّ تُسقط بعد السياساتِ التي تقرؤها، لا قبلها.
+    op.execute("DROP FUNCTION IF EXISTS app_opportunity_admits(uuid)")
+    op.execute("DROP FUNCTION IF EXISTS app_manages_opportunity(uuid)")
     op.execute("DROP FUNCTION IF EXISTS app_manages_project(uuid)")

@@ -5,13 +5,10 @@
 فُتِّش أوّلًا (§34)، ووُجد اسمانِ مشغولان بمفهومَين آخرين تمامًا:
 
   • `models.synthesis.ResearchOpportunity` (جدول `research_opportunities`) —
-    **فرصةٌ بحثية مشتقّةٌ من فجوةٍ في الأدبيّات**: سؤالٌ يستحقّ أن يُدرس،
-    نصفُ مفتاحِه الأجنبيّ حالُ الفجوة. لا علاقةَ له باستقطاب أحد.
+    **فرصةٌ بحثية مشتقّةٌ من فجوةٍ في الأدبيّات**: سؤالٌ يستحقّ أن يُدرس.
+    لا علاقةَ له باستقطاب أحد.
   • `models.thesis.PublicationOpportunity` — **فرصةُ نشرٍ مستخرجةٌ من
     رسالة**: ورقةٌ يمكن أن تُكتب. ولا علاقةَ لها بالاستقطاب كذلك.
-
-فالاسمُ الثالث يلزم، ولا يجوز تحميلُ أحد القائمين معنًى ثالثًا: جدولٌ
-يحمل مفهومَين يصير كلُّ استعلامٍ عليه سؤالًا عن «أيَّ نوعٍ تقصد».
 
 ## الحدُّ الذي يميّز هذا النطاق عن كلّ ما قبله
 
@@ -19,21 +16,47 @@
 يُكتب بيد فاعلٍ لا ينتمي إلى مستأجر الصفّ — فباحثٌ في جامعةٍ يتقدّم إلى
 فرصةٍ أنشأها بحثٌ في جامعةٍ أخرى.
 
-ولذلك **لا تحمل `RecruitmentApplication` سياسةَ عزلٍ بالمستأجر.** ولو
-حملتها لاستحال المنتج: بأيّ مستأجرٍ تُوسم؟ لو وُسمت بمستأجر الفرصة لم
-يرَ المتقدّمُ تقدّمَه، ولو وُسمت بمستأجر المتقدّم لم يرَه صاحبُ الفرصة.
-فحدُّها **الفاعلُ** (`app_current_actor()`) لا المستأجر — وهو ما استوجب
-تدقيقَ مصدر الفاعل قبل كتابة سطرٍ واحد من سياساتها.
+## ولمَ جدولان للفرصة لا جدولٌ واحد
 
-و`applicant_tenant_id` يبقى عمودًا **للأثر والتدقيق لا للتفويض**: يُعرف
-منه من أيّ مؤسسةٍ جاء المتقدّم، ولا تُبنى عليه سياسة.
+**العطبُ الذي أُغلق بهذا الفصل، وقد كان قائمًا في أوّل كتابةٍ لهذا
+النطاق:** كانت الفرصةُ جدولًا واحدًا يحمل النصَّ المُعلَن ومعه
+`tenant_id` و`project_id` و`created_by`، وعليه سياسةُ اكتشافٍ عابرةٌ
+للمستأجرين. وRLS تحكم **الصفوف لا الأعمدة** — فباحثٌ في مستأجرٍ آخر
+يستعلم الجدولَ الأصلَ مباشرةً كان يحصل على معرّف البحث ومعرّف المؤسسة
+ومنشئِ الفرصة. وكان العلاجُ المكتوب «العرضُ الآمن هو الطريقُ المُعتمد»،
+أي **اتفاقًا في التطبيق لا حدًّا في القاعدة**.
+
+فانفصل النسبُ عن الإعلان:
+
+  • `RecruitmentOpportunity` — **السجلُّ الخاصّ**: هويّةُ الفرصة ونسبُها.
+    مستأجرٌ وبحثٌ ومنشئ، **ولا شيءَ غيرَ ذلك**. وسياستُه سياسةُ مديرٍ
+    وحدها، **ولا سياسةَ عابرةً للمستأجرين عليه إطلاقًا**. فما لا يُطابقه
+    غيرُ المدير لا يقرؤه بحال.
+  • `RecruitmentOpportunityListing` — **الإعلانُ العامّ**: ما كُتب ليُقرأ
+    في الاكتشاف، وحالتُه ونافذتُه. **ولا يحمل معرّفَ بحثٍ ولا مستأجرٍ ولا
+    منشئ** — فالعمودُ غيرُ الموجود لا يُسرَّب.
+
+والنسبُ هو **الأصل** والإعلانُ فرعُه: فيُكتب السجلُّ أوّلًا بتفويضٍ يقوم
+على `project_id` وحده (سؤالٌ مكتملٌ بذاته)، ثمّ يُكتب الإعلانُ بتفويضٍ
+يقرأ أباه. ولو انعكس الترتيبُ لاحتاج إعلانٌ إلى نسبٍ لم يُكتب بعد.
+
+وحالةُ الإعلان ونافذتُه على الإعلان لا على النسب **قصدًا**: شرطُ
+الاكتشاف يصير كلُّه محلّيًّا في جدولٍ واحد، فلا شرطَ عبر جدولين ولا نسخةٌ
+ثانيةٌ من النافذة تفترق عن أختها.
+
+## والسجلُّ الخاصُّ يُكتب مرّةً ولا يُعدَّل
+
+ولا سياسةَ تعديلٍ عليه ولا صلاحيةَ تعديل — كما فعل الترحيلُ 0003 بسجلّ
+التدقيق. فـ«لا تُنقل فرصةٌ إلى بحثٍ آخر» و«لا يُعاد كتابةُ من أنشأها»
+ليستا حارسًا يُفحَص بل **غيابَ الطريق**.
 
 ## وما لا يقع هنا
 
 ولا عضويّةَ تُنشأ من قبولِ تطبيق: المتقدّمُ المختار يُدعى بـ
-`ProjectInvitation` القائمة، والدعوةُ تُقبل بيد صاحبها. والعضويّةُ ليست
-تأليفًا، ولا أدوارَ CRediT تُكتب من هنا (§11 من التكليف، و§ ROLE !=
-CREDIT != AUTHORSHIP).
+`ProjectInvitation` القائمة، والدعوةُ تُقبل بيد صاحبها. و«مدعوّ» حالٌ
+**لا تُكتب بلا دعوةٍ حقيقيةٍ خلفها** — و`invitation_id` هو ما يجعل ذلك
+قيدًا في القاعدة لا وعدًا. والعضويّةُ ليست تأليفًا، ولا أدوارَ CRediT
+تُكتب من هنا.
 
 ولا مفرداتَ توظيفٍ في هذا النطاق: لا راتبَ ولا عقدَ عملٍ ولا «تعيين».
 «مساعدُ بحث» وسمُ تعاونٍ لا وظيفة.
@@ -59,10 +82,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantScoped, Timestamped, uuid_pk
 
-#: حالاتُ الفرصة — **حتميّةٌ ومغلقة**، والقاعدةُ لا تقبل غيرها.
+#: حالاتُ الإعلان — **حتميّةٌ ومغلقة**، والقاعدةُ لا تقبل غيرها.
 #:
 #: و`deleted` حالةٌ لا حذفٌ: الفرصةُ التي تقدّم إليها باحثون لا تُمحى من
-#: تحت تطبيقاتهم، فيبقى الصفُّ وتسقط الفرصةُ من كلّ اكتشاف.
+#: تحت تطبيقاتهم، فيبقى الصفُّ ويسقط الإعلانُ من كلّ اكتشاف.
 OPPORTUNITY_STATES: Final[tuple[str, ...]] = (
     "draft", "scheduled", "open", "closed", "deleted")
 
@@ -73,51 +96,95 @@ APPLICATION_STATES: Final[tuple[str, ...]] = (
 #: **ما يُعَدّ تطبيقًا قائمًا** — وعليه يقوم منعُ التكرار.
 #:
 #: والمنسحبُ والمرفوضُ ليسا قائمَين: من انسحب له أن يعود، ومن رُفض له أن
-#: يتقدّم لفرصةٍ أخرى من الفرص نفسها لو أُعيد فتحُها. أمّا `invited` فقائم:
-#: الدعوةُ أُرسلت ولم يُحسم أمرُها بعد.
+#: يتقدّم لفرصةٍ أخرى. أمّا `invited` فقائم: الدعوةُ أُرسلت ولم تُحسم.
 ACTIVE_APPLICATION_STATES: Final[tuple[str, ...]] = (
     "pending", "shortlisted", "invited")
+
+#: **مصفوفةُ الانتقالات التي يملكها المدير** — `قبل → بعد`.
+#:
+#: وهي مكتوبةٌ صريحةً لأنّ RLS لا تعرف `OLD`: سياسةُ تعديلٍ تقول «صاحبُه
+#: يعدّله» تسمح له أن يُرشّح نفسَه. فالمصفوفةُ في مُشغِّلٍ على القاعدة،
+#: ومرآتُها هنا.
+MANAGER_TRANSITIONS: Final[tuple[tuple[str, str], ...]] = (
+    ("pending", "shortlisted"),
+    ("pending", "declined"),
+    ("shortlisted", "declined"),
+    ("shortlisted", "invited"),
+)
+
+#: والانسحابُ فعلُ صاحبه وحده، من أيّ حالٍ قائمة.
+APPLICANT_TRANSITIONS: Final[tuple[tuple[str, str], ...]] = tuple(
+    (state, "withdrawn") for state in ACTIVE_APPLICATION_STATES)
 
 #: الصلاحيةُ التي تُدير الاستقطاب — صفٌّ صريح، لا دورٌ يُفسَّر.
 MANAGE_RECRUITMENT: Final = "manage_team"
 
 
 class RecruitmentOpportunity(Base, TenantScoped, Timestamped):
-    """فرصةُ تعاونٍ يُعلنها بحثٌ ليجد من يشارك فيه.
+    """نسبُ الفرصة — **السجلُّ الخاصُّ الذي لا يعبُر المستأجر**.
 
-    وهي مملوكةٌ لبحثٍ، فلها مستأجرٌ ومشروعٌ ومديرٌ. والاكتشافُ العالميّ
-    يقرأ منها **إسقاطًا آمنًا** لا الصفَّ نفسه — انظر العرض
-    `recruitment_opportunities_public` في الترحيل 0034.
+    مستأجرٌ وبحثٌ ومنشئ. ولا نصَّ معروضٌ فيه ولا حالةَ إعلان: تلك في
+    `RecruitmentOpportunityListing`. وهو الأصلُ الذي تتعلّق به التطبيقات.
+
+    **ويُكتب مرّةً ولا يُعدَّل** — لا سياسةَ تعديلٍ عليه ولا صلاحية.
     """
 
     __tablename__ = "recruitment_opportunities"
     __table_args__ = (
-        # **والأسماءُ قصيرةٌ عمدًا.** اصطلاحُ `ck_%(table_name)s_%(constraint_name)s`
-        # يُبادئ ما يُكتب هنا، واسمٌ مكتوبٌ كاملًا يتجاوز ثلاثةً وستين محرفًا
-        # **فيُقصّ صامتًا** — وهو العطبُ الذي شرحه الترحيل 0032.
-        CheckConstraint(
-            "status IN ('draft','scheduled','open','closed','deleted')",
-            name="status_is_known"),
-        # نافذةٌ لها معنًى: نهايةٌ قبل بدايةٍ فرصةٌ لا تُفتح أبدًا، وقاعدةٌ
-        # تقبلها تترك صفًّا لا يظهر ولا يُفهم سببُ غيابه.
-        CheckConstraint(
-            "ends_at IS NULL OR starts_at IS NULL OR starts_at < ends_at",
-            name="window_is_ordered"),
-        CheckConstraint("openings_count > 0", name="openings_are_positive"),
-        # و«مفتوحة» تستوجب بدايةً: بلا `starts_at` لا يُعرف متى تُكتشف.
-        CheckConstraint(
-            "status <> 'open' OR starts_at IS NOT NULL",
-            name="open_needs_a_start"),
         Index("ix_recruitment_opportunities_project", "project_id"),
-        # فهرسُ الاكتشاف: الحالةُ والنافذةُ معًا، وهما شرطا كلّ قراءةٍ عالمية.
-        Index("ix_recruitment_opportunities_discovery",
-              "status", "starts_at", "ends_at"),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     project_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("research_projects.id", ondelete="CASCADE"),
         nullable=False)
+    #: **ويُقاس بفاعل الجلسة عند الكتابة** — فلا تُنسب فرصةٌ إلى غير كاتبها.
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False)
+
+
+class RecruitmentOpportunityListing(Base, Timestamped):
+    """الإعلانُ العامّ — وهذا وحده ما يُقرأ من خارج المستأجر.
+
+    **ولا `TenantScoped` هنا، ولا `project_id`، ولا `created_by`.** وذاك
+    هو الحدّ: RLS تحكم الصفوفَ لا الأعمدة، فالعمودُ الخاصُّ الذي لا وجودَ
+    له في هذا الجدول لا يُسرَّب منه ولو قُرئ الجدولُ الأصلُ مباشرةً.
+
+    و«الحالةُ» هنا حالةُ **الإعلان**: مسوّدةٌ تُكتب، ومجدولةٌ تنتظر
+    بدايتَها، ومفتوحةٌ تُكتشف، ومغلقةٌ انتهت، ومحذوفةٌ سقطت. والمكشوفُ
+    منها للغريب `open` وحدها — وهي شرطُ رؤيته للصفّ، فلا تُخبره بشيءٍ لم
+    يعرفه من كونه رآه.
+    """
+
+    __tablename__ = "recruitment_opportunity_listings"
+    __table_args__ = (
+        # **والأسماءُ قصيرةٌ عمدًا.** اصطلاحُ `ck_%(table_name)s_%(constraint_name)s`
+        # يُبادئ ما يُكتب هنا، واسمٌ مكتوبٌ كاملًا يُبادأ مرّتين **فيُقصّ
+        # صامتًا** فوق ثلاثةٍ وستين محرفًا — وهو العطبُ الذي شرحه 0032،
+        # وقد وقع في أوّل كتابةٍ لهذا الترحيل فعلًا.
+        CheckConstraint(
+            "status IN ('draft','scheduled','open','closed','deleted')",
+            name="status_is_known"),
+        # نافذةٌ لها معنًى: نهايةٌ قبل بدايةٍ إعلانٌ لا يُفتح أبدًا.
+        CheckConstraint(
+            "ends_at IS NULL OR starts_at IS NULL OR starts_at < ends_at",
+            name="window_is_ordered"),
+        CheckConstraint("openings_count > 0", name="openings_are_positive"),
+        # و«مفتوح» يستوجب بدايةً: بلا `starts_at` لا يُعرف متى يُكتشف.
+        CheckConstraint(
+            "status <> 'open' OR starts_at IS NOT NULL",
+            name="open_needs_a_start"),
+        # فهرسُ الاكتشاف: الحالةُ والنافذةُ معًا، وهي شرطُ كلّ قراءةٍ عالمية.
+        Index("ix_recruitment_listings_discovery",
+              "status", "starts_at", "ends_at"),
+    )
+
+    #: مفتاحٌ أوّلٌ **وأجنبيٌّ معًا**: إعلانٌ واحدٌ لكلّ فرصة، ولا إعلانَ بلا نسب.
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("recruitment_opportunities.id", ondelete="RESTRICT"),
+        primary_key=True)
 
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -129,31 +196,30 @@ class RecruitmentOpportunity(Base, TenantScoped, Timestamped):
     openings_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     collaboration_type: Mapped[str] = mapped_column(String(40), nullable=False)
 
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
-    starts_at: Mapped[dt.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True)
-    ends_at: Mapped[dt.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True)
-
-    #: وسمٌ عامٌّ **يُكتب صراحةً** ليُعرض في الاكتشاف — ولا يُشتقّ من البحث.
+    #: وسمٌ عامٌّ **يُكتب صراحةً** ولا يُشتقّ من البحث.
     #:
     #: فعنوانُ البحث الحقيقيّ قد يُفصح عن فكرةٍ لم تُنشر بعد. فمن أراد أن
     #: يُظهر انتماءً كتبه بيده، ومن سكت لم يُظهر شيئًا.
     public_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"),
-        nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    starts_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    ends_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     #: حذفٌ ناعم — والصفُّ يبقى تحت تطبيقات من تقدّموا.
     deleted_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
 
 
 class RecruitmentApplication(Base, Timestamped):
-    """تقدُّمُ باحثٍ إلى فرصةٍ — **وقد يكون من مستأجرٍ آخر**.
+    """تقدُّمُ باحثٍ إلى فرصة — **وقد يكون من مستأجرٍ آخر**.
 
     ولا `TenantScoped` هنا، وذاك مقصودٌ ومشروح في رأس الوحدة: الصفُّ يعيش
-    بين مستأجرَين، فحدُّه الفاعلُ لا المستأجر.
+    بين مستأجرَين، فحدُّه الفاعلُ لا المستأجر. ولو وُسم بمستأجر الفرصة لم
+    يرَ المتقدّمُ تقدُّمَه، ولو وُسم بمستأجر المتقدّم لم يرَه صاحبُ الفرصة.
+
+    و`applicant_tenant_id` عمودٌ **للأثر والتدقيق لا للتفويض**.
     """
 
     __tablename__ = "recruitment_applications"
@@ -161,16 +227,22 @@ class RecruitmentApplication(Base, Timestamped):
         CheckConstraint(
             "status IN ('pending','shortlisted','declined','invited','withdrawn')",
             name="status_is_known"),
-        # والمنسحبُ له وقتُ انسحاب، والمحسومُ له وقتُ حسمٍ وفاعله — فحالةٌ
-        # بلا وقتها تجعل «متى انسحب؟» سؤالًا لا جواب له.
+        # والمنسحبُ له وقتُ انسحاب — فحالةٌ بلا وقتها تجعل «متى انسحب؟»
+        # سؤالًا لا جواب له.
         CheckConstraint(
             "(status = 'withdrawn') = (withdrawn_at IS NOT NULL)",
             name="withdrawal_has_a_time"),
+        # **و«مدعوّ» لا تُكتب بلا دعوةٍ حقيقية.** فحالةٌ اسمُها دعوةٌ بلا
+        # دعوةٍ خلفها تجعل الاستقطابَ طريقًا ثانيًا إلى الفريق يتجاوز
+        # `ProjectInvitation` — وهي الطريقُ الوحيدةُ المُقرَّرة.
+        CheckConstraint(
+            "status <> 'invited' OR invitation_id IS NOT NULL",
+            name="invited_needs_an_invitation"),
         # **ولا تطبيقانِ قائمان لحسابٍ واحد على فرصةٍ واحدة.**
         #
         # وفهرسٌ **جزئيّ** لا قيدٌ كامل: من انسحب له أن يعود، ومن رُفض لا
-        # يُحجَب عن فرصةٍ أخرى. فالمنعُ على القائم وحده، والقاعدةُ تحمله —
-        # لا فحصٌ في الواجهة يُتجاوَز بطلبين متزامنين.
+        # يُحجَب عن غيرها. فالمنعُ على القائم وحده، والقاعدةُ تحمله — لا
+        # فحصٌ في الواجهة يُتجاوَز بطلبين متزامنين.
         Index("uq_recruitment_applications_active",
               "opportunity_id", "applicant_user_id",
               unique=True,
@@ -199,22 +271,33 @@ class RecruitmentApplication(Base, Timestamped):
         nullable=False)
 
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    #: نصُّ صاحبه — **ولا يُعدَّل بعد الإرسال في هذه المرحلة**، لا بيده ولا
+    #: بيد مديرٍ يقرؤه. فتعديلُ المدير تحريفُ إقرارِ غيره، وتعديلُ صاحبه
+    #: بعد قراءةِ المدير يُغيّر ما بُني عليه قرار.
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     withdrawn_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     decided_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    #: ومن حسم يُنسب إليه ما حسم — ويُقاس بفاعل الجلسة في المُشغِّل.
     decided_by: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True)
+    #: الدعوةُ الحقيقيةُ خلف حال «مدعوّ» — والقيدُ أعلاه يجعلها شرطًا.
+    invitation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("project_invitations.id", ondelete="RESTRICT"),
         nullable=True)
 
 
 __all__ = [
     "ACTIVE_APPLICATION_STATES",
+    "APPLICANT_TRANSITIONS",
     "APPLICATION_STATES",
+    "MANAGER_TRANSITIONS",
     "MANAGE_RECRUITMENT",
     "OPPORTUNITY_STATES",
     "RecruitmentApplication",
     "RecruitmentOpportunity",
+    "RecruitmentOpportunityListing",
 ]
