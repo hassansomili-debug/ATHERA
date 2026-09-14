@@ -42,6 +42,8 @@ CANONICAL = frozenset({
     "ensure_project_access",   # البحثُ والعضويّةُ والصلاحيةُ في نداءٍ واحد
     "project_permissions",     # قراءةُ الصلاحيات خامًا (للمحذوف وما شابهه)
     "visible_project_ids",     # ترشيحُ القوائم بما يجوز للباحث أن يراه
+    "project_ids_with",        # وترشيحُها بصلاحيةٍ بعينها لا بالاطّلاع
+    "is_verified_owner",       # النسبُ المُثبَت — لدورة حياة البحث
     "may_view_project",
     "require_permission",      # بوابةُ الفريق القائمة قبل هذه الدفعة
     "access_for",
@@ -236,3 +238,78 @@ def test_the_gate_never_bootstraps_membership():
                 f"`{node.name}` تُنشئ عضويّة — والقراءةُ لا تكتب")
             assert "access_for" not in called, (
                 f"`{node.name}` تمرّ بـ`access_for` وهي تُنشئ عضويّة")
+
+
+# ═══════════ د · سلطةُ المالك لا تُشتقّ من دور ═══════════
+
+
+def test_owner_authority_never_derives_from_a_role():
+    """**ROLE != OWNERSHIP** — وهذا الحدُّ يُحرس نصًّا لا اتفاقًا.
+
+    كانت `OWNER_IMPLIED_PERMISSIONS` تُقرأ من
+    `team.default_permissions("principal_investigator")`، فصارت سلطةُ الجذر
+    معلَّقةً بما يُقترح لدورٍ **عند الدعوة**. وتلك افتراضاتٌ قابلةٌ للتغيير
+    لأسبابِ منتجٍ لا علاقةَ لها بالملكيّة: لو ضُيّقت افتراضاتُ الباحث الرئيس
+    غدًا — وهو تغييرٌ مشروع — لَضاقت معها سلطةُ صاحب البحث على بحثه، بلا
+    أن يقصد ذلك أحد. **واقترانٌ لا يقصده أحد هو تعريفُ العطب الصامت.**
+
+    فتُقرأ المفردةُ المعياريّة كاملةً، ولا يمرّ الاشتقاقُ بدورٍ ولا بدالّةِ
+    افتراضاته. وأنّ المجموعتين متساويتان اليوم مصادفةٌ لا اعتماد.
+    """
+    import inspect
+
+    from athera_api.services import collaboration, team
+
+    # ١) القيمةُ هي المفردةُ المعياريّة كاملةً — لا مجموعةُ دورٍ توافقها.
+    assert collaboration.OWNER_IMPLIED_PERMISSIONS == frozenset(
+        team.PROJECT_PERMISSIONS)
+
+    # ٢) والاشتقاقُ نفسه لا يذكر دورًا ولا دالّةَ افتراضات.
+    source = inspect.getsource(collaboration)
+    definition = source[source.index("OWNER_IMPLIED_PERMISSIONS: frozenset"):]
+    definition = definition[:definition.index("\n\n")]
+    assert "PROJECT_PERMISSIONS" in definition
+    assert "default_permissions" not in definition, (
+        "سلطةُ المالك تُشتقّ من افتراضات دور — والدورُ ليس ملكيّة")
+    for role in team.MEMBER_ROLES:
+        assert role not in definition, f"سلطةُ المالك تذكر الدور {role}"
+
+    # ٣) و`is_verified_owner` تقرأ النسبَ وحده.
+    owner_check = inspect.getsource(collaboration.is_verified_owner)
+    assert "owner_user_id(" in owner_check
+    assert "default_permissions" not in owner_check
+    for role in team.MEMBER_ROLES:
+        assert role not in owner_check, f"فحصُ النسب يذكر الدور {role}"
+
+    # ٤) **وبيتُ الحارس**: لو ضاقت افتراضاتُ الباحث الرئيس، لا تضيق السلطة.
+    #    يُثبَت بأنّ الاشتقاق لا يمرّ بالدالّة أصلًا — فتغييرُ جوابها لا
+    #    يغيّر شيئًا هنا.
+    narrowed = frozenset(("view_project",))
+    assert collaboration.OWNER_IMPLIED_PERMISSIONS != narrowed
+    assert len(collaboration.OWNER_IMPLIED_PERMISSIONS) == len(
+        team.PROJECT_PERMISSIONS) == 9
+
+
+def test_the_owner_only_gate_is_ownership_not_permission():
+    """دورةُ حياة البحث تُحرس بالنسب — **ولا صلاحيةَ تُختلق لها**."""
+    import inspect
+
+    from athera_api.services import collaboration, team
+    from athera_api.routers import workspace
+
+    # ولا مفردةَ صلاحيةٍ جديدة دخلت المفردةَ المعياريّة في هذه الدفعة.
+    assert len(team.PROJECT_PERMISSIONS) == 9
+    assert "manage_project" not in team.PROJECT_PERMISSIONS
+    assert "manage_lifecycle" not in team.PROJECT_PERMISSIONS
+
+    gate = inspect.getsource(collaboration.ensure_project_access)
+    assert "require_owner" in gate
+    assert "OWNER_ONLY" in gate
+
+    # والمساراتُ الثلاثة تطلبه: أرشفةً وحذفًا ظاهرًا واسترجاعًا.
+    for name in ("archive_project", "trash_project"):
+        body = inspect.getsource(getattr(workspace, name))
+        assert "owner_only=True" in body, name
+    restore = inspect.getsource(workspace.restore_project)
+    assert "is_verified_owner(" in restore and "OWNER_ONLY" in restore, (
+        "الاسترجاعُ يقع على محذوفٍ، فيقرأ النسبَ مباشرةً — ولا بوابةَ «قائم» له")

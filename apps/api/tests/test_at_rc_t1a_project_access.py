@@ -984,3 +984,225 @@ async def test_i_a_bad_owner_membership_row_is_not_a_lockout_vector(two_tenants)
     outsider = await _second_user(a["tenant_id"], email=f"nz-{uuid.uuid4().hex[:8]}@x.test")
     async with _client(outsider) as http:
         assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 404
+
+
+# ═══════════ ي · حدودٌ تُصحَّح: دورةُ الحياة، والمكتبة، والبيانات ═══════════
+#
+# **وثلاثةُ حدودٍ كانت موضوعةً في غير موضعها**، وكلُّها من نوعٍ واحد: صلاحيةٌ
+# تُقرأ لفعلٍ لا تخصّه، فتتّسع سلطتُها إلى ما لم يُقصد.
+#
+#   ١. `edit_research_content` كان يفتح **أرشفةَ البحث وحذفه واسترجاعه**.
+#      وهو صفُّ تحرير المحتوى العلميّ: فكان طالبٌ يُدعى ليحرّر فصلًا فيرمي
+#      البحث كلَّه. ولا صفَّ في المفردة لدورة الحياة، ولا يُختلق في دفعةٍ
+#      أمنية — فيُرفع الحدُّ إلى النسب المُثبَت حتى يوجد.
+#
+#   ٢. `manage_data` كان يفتح **ربطَ ملفات المكتبة بالبحث**. و`ProjectFile`
+#      علاقةُ مكتبةٍ بمشروع لا مجموعةَ بياناتٍ خامًا: قد يكون المربوطُ ورقةً
+#      مرجعية أو رسالةً. فالصفُّ الصحيح `manage_sources`.
+#
+#   ٣. `view_project` كان يفتح **قاموسَ أعمدة البيانات** — وفيه أسماءُ
+#      الأعمدة ووسمُ ما يحمل بياناتٍ شخصية. ومن دُعي ليقرأ البحث لم يُدعَ
+#      ليقرأ عمودَ الهويّات.
+
+ARCHIVE = "/api/v1/workspace/projects/{pid}/archive"
+RESTORE = "/api/v1/workspace/projects/{pid}/restore"
+TRASH = "/api/v1/workspace/projects/{pid}"
+PROJECT_FILES = "/api/v1/workspace/projects/{pid}/files"
+DATASET_VERSIONS = "/api/v1/analysis/datasets/{did}/versions"
+DICTIONARY = "/api/v1/analysis/datasets/versions/{vid}/dictionary"
+PLANS = "/api/v1/analysis/plans"
+EXPORTS = "/api/v1/analysis/exports"
+
+OWNER_ONLY = "workspace.owner_only"
+
+
+# ─────────── أ · دورةُ حياة البحث لصاحبه وحده ───────────
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_j_project_lifecycle_is_owner_only(two_tenants):
+    """**تحريرُ المحتوى لا يمنح سلطةَ رمي البحث** — و٤٠٣ لا ٤٠٤ للعضو."""
+    a = two_tenants["a"]
+    title = "بحثٌ لا يُرمى إلّا بيد صاحبه"
+    project_id = await _owned_project(a, title=title)
+    editor = await _second_user(a["tenant_id"], email=f"ed-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, editor, project_id,
+                             permissions=["view_project", "edit_research_content"])
+
+    async with _client(editor) as http:
+        # **ويحرّر المحتوى فعلًا** — فالمنعُ على دورة الحياة لا على عمله.
+        wrote = await http.post(THREAD_ELEMENTS.format(pid=project_id),
+                                json=ELEMENT_BODY)
+        assert wrote.status_code == 201, wrote.text
+
+        # ولا يؤرشف ولا يرمي — و٤٠٣: هو عضوٌ يعرف البحث، فلا يُنكَر وجودُه.
+        archived = await http.post(ARCHIVE.format(pid=project_id))
+        assert archived.status_code == 403, archived.text
+        assert archived.json()["error"]["code"] == OWNER_ONLY
+
+        trashed = await http.delete(TRASH.format(pid=project_id))
+        assert trashed.status_code == 403, trashed.text
+        assert trashed.json()["error"]["code"] == OWNER_ONLY
+
+    # والاطّلاعُ وحده كذلك — ولا فرق.
+    viewer = await _second_user(a["tenant_id"], email=f"vw-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, viewer, project_id, permissions=["view_project"])
+    async with _client(viewer) as http:
+        assert (await http.post(ARCHIVE.format(pid=project_id))).status_code == 403
+        assert (await http.delete(TRASH.format(pid=project_id))).status_code == 403
+
+    # والبحثُ ما زال قائمًا: لا محاولةٍ منها وقعت.
+    assert title in await _titles(a)
+
+    # **وصاحبُه يفعل الثلاثةَ كلَّها.**
+    async with _client(a) as http:
+        assert (await http.post(ARCHIVE.format(pid=project_id))).status_code == 200
+        assert (await http.delete(TRASH.format(pid=project_id))).status_code in (200, 204)
+    assert title not in await _titles(a)
+
+    # والاسترجاعُ لصاحبه وحده أيضًا — كالحذف الذي يعكسه.
+    async with _client(editor) as http:
+        refused = await http.post(RESTORE.format(pid=project_id))
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["error"]["code"] == OWNER_ONLY
+    async with _client(a) as http:
+        assert (await http.post(RESTORE.format(pid=project_id))).status_code == 200
+    assert title in await _titles(a)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_j_a_same_tenant_outsider_still_gets_404_on_lifecycle(two_tenants):
+    """**ولا يتحوّل الرفضُ الجديد إلى عدّادِ بحوث**: الغريبُ يبقى ٤٠٤."""
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ لا يُعَدّ وجودُه")
+    outsider = await _second_user(a["tenant_id"], email=f"os-{uuid.uuid4().hex[:8]}@x.test")
+
+    async with _client(outsider) as http:
+        assert (await http.post(ARCHIVE.format(pid=project_id))).status_code == 404
+        assert (await http.delete(TRASH.format(pid=project_id))).status_code == 404
+        assert (await http.post(RESTORE.format(pid=project_id))).status_code == 404
+
+
+# ─────────── ب · مكتبةُ البحث: إدارةُ مصادر ───────────
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_j_project_files_need_manage_sources_not_manage_data(two_tenants):
+    """**والملفُّ المربوطُ ليس مجموعةَ بيانات** — فصفُّه صفُّ المصادر."""
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ تُربط به مصادر")
+    file_id = await _file_owned_by(a, name="ورقةٌ مرجعية.pdf")
+
+    librarian = await _second_user(a["tenant_id"], email=f"lb-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, librarian, project_id,
+                             permissions=["view_project", "manage_sources"])
+    analyst = await _second_user(a["tenant_id"], email=f"an-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, analyst, project_id,
+                             permissions=["view_project", "manage_data"])
+
+    # ── مديرُ المصادر يربط ويُزيل ──
+    async with _client(librarian) as http:
+        linked = await http.post(PROJECT_FILES.format(pid=project_id),
+                                 json={"asset_id": str(file_id)})
+        assert linked.status_code == 201, linked.text
+        unlinked = await http.delete(
+            f"{PROJECT_FILES.format(pid=project_id)}/{file_id}?acknowledged=true")
+        assert unlinked.status_code == 200, unlinked.text
+
+        # **ولا مجموعةَ بياناتٍ له**: إدارةُ المصادر ليست إدارةَ بيانات.
+        dataset = await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "مجموعةٌ بلا إذن",
+            "classification": "C2", "raw_label": "خام", "raw_checksum": "e" * 64,
+            "row_count": 5})
+        assert dataset.status_code == 403, dataset.text
+
+    # ── ومديرُ البيانات لا يربط ملفَّ مكتبة ──
+    async with _client(analyst) as http:
+        refused = await http.post(PROJECT_FILES.format(pid=project_id),
+                                  json={"asset_id": str(file_id)})
+        assert refused.status_code == 403, refused.text
+
+        # ويُنشئ مجموعةً — فالصفّان منفصلان في الاتجاهين.
+        made = await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "مجموعةٌ بإذنها",
+            "classification": "C2", "raw_label": "خام", "raw_checksum": "f" * 64,
+            "row_count": 5})
+        assert made.status_code == 201, made.text
+
+
+# ─────────── ج · تقدّمٌ آمن مقابل بيانٍ تفصيليّ ───────────
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_j_view_project_sees_safe_progress_but_no_data_internals(two_tenants):
+    """**«ثمّة مجموعةُ بيانات» تُقال، وأسماءُ أعمدتها لا تُقال.**
+
+    فالرحلةُ تقرأ عدًّا لا تفصيلًا — وذاك هو الحدُّ بين حالِ تقدّمٍ يراه كلُّ
+    من في الفريق، وبين واجهةِ إدارةِ بياناتٍ لا يفتحها إلّا من يملكها.
+    """
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ له بياناتٌ ووسومُها")
+
+    async with _client(a) as http:
+        made = await http.post(DATASETS, json={
+            "project_id": str(project_id), "name_ar": "مجموعةُ المشاركين",
+            "classification": "C2", "raw_label": "خام", "raw_checksum": "a" * 64,
+            "row_count": 120})
+        assert made.status_code == 201, made.text
+        version_id = made.json()["id"]
+        dataset_id = (await http.get(DATASETS)).json()[0]["id"]
+
+        wrote = await http.put(DICTIONARY.format(vid=version_id), json=[
+            {"column_name": "national_id", "description_ar": "رقم الهوية",
+             "is_pii": True},
+            {"column_name": "score", "description_ar": "الدرجة", "is_pii": False}])
+        assert wrote.status_code == 200, wrote.text
+
+    viewer = await _second_user(a["tenant_id"], email=f"pj-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, viewer, project_id, permissions=["view_project"])
+
+    async with _client(viewer) as http:
+        # ── حالُ التقدّم الآمن: مسموح ──
+        journey = await http.get(JOURNEY.format(pid=project_id))
+        assert journey.status_code == 200, journey.text
+        blob = journey.text
+        # و«ثمّة بيانات» تُقال بعدٍّ، لا بعمودٍ ولا بوسمٍ ولا ببصمة.
+        assert "national_id" not in blob, "الرحلةُ أفشت اسمَ عمود"
+        assert "رقم الهوية" not in blob, "الرحلةُ أفشت وصفَ عمود"
+        assert "a" * 64 not in blob, "الرحلةُ أفشت بصمةَ نسخة"
+
+        # ── والبيانُ التفصيليّ: ممنوع ──
+        assert (await http.get(DICTIONARY.format(vid=version_id))).status_code == 403
+        assert (await http.get(
+            DATASET_VERSIONS.format(did=dataset_id))).status_code == 403
+        # وقوائمُ الطبقة تُرشَّح بالصلاحية، فتعود فارغةً لا ممتلئة.
+        for route in (DATASETS, PLANS, EXPORTS):
+            listed = await http.get(route)
+            assert listed.status_code == 200, listed.text
+            assert listed.json() == [], f"{route} كشف صفوفًا لمن لا يديرها"
+
+    # ── ومديرُ البيانات يقرأ التفصيل ──
+    analyst = await _second_user(a["tenant_id"], email=f"da-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, analyst, project_id,
+                             permissions=["view_project", "manage_data"])
+    async with _client(analyst) as http:
+        read = await http.get(DICTIONARY.format(vid=version_id))
+        assert read.status_code == 200, read.text
+        body = read.json()
+        assert body["pii_columns"] == 1
+        assert {e["column_name"] for e in body["entries"]} == {"national_id", "score"}
+        assert (await http.get(
+            DATASET_VERSIONS.format(did=dataset_id))).status_code == 200
+        assert len((await http.get(DATASETS)).json()) == 1
+
+    # ── والغريبُ لا يعرف أنّ شيئًا من هذا موجود ──
+    outsider = await _second_user(a["tenant_id"], email=f"ox-{uuid.uuid4().hex[:8]}@x.test")
+    async with _client(outsider) as http:
+        assert (await http.get(DICTIONARY.format(vid=version_id))).status_code == 404
+        assert (await http.get(
+            DATASET_VERSIONS.format(did=dataset_id))).status_code == 404
+        assert (await http.get(JOURNEY.format(pid=project_id))).status_code == 404

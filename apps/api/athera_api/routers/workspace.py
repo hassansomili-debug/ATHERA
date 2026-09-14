@@ -91,7 +91,8 @@ DATA = "manage_data"
 
 async def _project(session: AsyncSession, principal: Principal,
                    project_id: uuid.UUID, *,
-                   permission: str = collaboration.VIEW_PROJECT) -> ResearchProject:
+                   permission: str = collaboration.VIEW_PROJECT,
+                   owner_only: bool = False) -> ResearchProject:
     """بحثٌ قائمٌ **يجوز لهذا الباحث أن يفعل هذا فيه** — وعشرون مسارًا من هنا.
 
     **والعطبُ الأوّل الذي أُغلق:** كان الشرطُ انتماءَ البحث للمستأجر وحده،
@@ -113,7 +114,8 @@ async def _project(session: AsyncSession, principal: Principal,
     return (await collaboration.ensure_project_access(
         session, tenant_id=principal.tenant_id, project_id=project_id,
         user_id=principal.user_id, permission=permission,
-        not_found_code="workspace.project_not_found")).project
+        not_found_code="workspace.project_not_found",
+        require_owner=owner_only)).project
 
 
 async def _summary(session: AsyncSession, principal: Principal,
@@ -244,7 +246,7 @@ async def archive_project(
     session: AsyncSession = Depends(get_session),
 ) -> ProjectSummary:
     """أرشِف — **البحث المؤجَّل ليس محذوفًا**."""
-    project = await _project(session, principal, project_id, permission=EDIT)
+    project = await _project(session, principal, project_id, owner_only=True)
     project.archived_at = project.archived_at or dt.datetime.now(dt.UTC)
     await session.flush()
     await audit.record(
@@ -267,7 +269,7 @@ async def trash_project(
     فالحذفُ الظاهر تأجيلٌ لا إتلاف: صفوف البحث كلها باقية، والاستعادة
     ترجعه كما كان. وسنواتُ عملٍ لا تُعاد كتابتها بضغطةٍ واحدة.
     """
-    project = await _project(session, principal, project_id, permission=EDIT)
+    project = await _project(session, principal, project_id, owner_only=True)
     project.deleted_at = dt.datetime.now(dt.UTC)
     project.deleted_by = principal.user_id
     await session.flush()
@@ -296,17 +298,20 @@ async def restore_project(
         raise NotFound("workspace.project_not_found")
 
     # **والبوابةُ المشتركة لا تصلح هنا**: هي تشترط بحثًا قائمًا، والمُسترجَع
-    # في السلّة بتعريفها. فتُقرأ الصلاحياتُ مباشرةً — والملكيّةُ والعضويّةُ
-    # لا يزولان بالحذف الظاهر. وبلا هذا كان أيُّ زميلٍ في المؤسسة يُعيد إلى
+    # في السلّة بتعريفها. فيُقرأ الحدُّ مباشرةً — والملكيّةُ والعضويّةُ لا
+    # يزولان بالحذف الظاهر. وبلا هذا كان أيُّ زميلٍ في المؤسسة يُعيد إلى
     # الشاشات بحثًا أزاله صاحبُه، وهو نقضُ الحذف لا قراءةٌ زائدة.
-    keys = await collaboration.project_permissions(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
-        user_id=principal.user_id)
-    if keys is None:
+    #
+    # **والاسترجاعُ لصاحبه وحده** كالحذف الذي يعكسه: من لا يملك أن يرمي لا
+    # يملك أن يُعيد. والترتيب مقصود — لا مدخلَ أصلًا فـ٤٠٤، ومدخلٌ بلا نسبٍ
+    # فـ٤٠٣: العضوُ يعرف البحث سلفًا، فإنكارُ وجوده كذبٌ لا يحمي شيئًا.
+    if await collaboration.project_permissions(
+            session, tenant_id=principal.tenant_id, project_id=project_id,
+            user_id=principal.user_id) is None:
         raise NotFound("workspace.project_not_found")
-    if EDIT not in keys:
-        raise Forbidden("team.permission_required", permission=EDIT,
-                        project_id=str(project_id))
+    if not await collaboration.is_verified_owner(
+            session, project_id=project_id, user_id=principal.user_id):
+        raise Forbidden(collaboration.OWNER_ONLY, project_id=str(project_id))
 
     row.deleted_at, row.deleted_by = None, None
     await session.flush()
@@ -432,7 +437,7 @@ async def link_file(
     session: AsyncSession = Depends(get_session),
 ) -> ProjectFileView:
     """اربط ملفًّا من المكتبة بهذا البحث — **بلا نسخ**."""
-    await _project(session, principal, project_id, permission=DATA)
+    await _project(session, principal, project_id, permission=SOURCES)
     file = (await session.execute(
         select(File).where(File.id == payload.asset_id,
                            File.tenant_id == principal.tenant_id)
@@ -499,7 +504,7 @@ async def unlink_file(
     وإن كان يسند عملًا معتمَدًا لم تقع الإزالة حتى يُقرّ الباحث بما يترتب:
     فالتحذير الذي يُعرض بعد الفعل ليس تحذيرًا.
     """
-    await _project(session, principal, project_id, permission=DATA)
+    await _project(session, principal, project_id, permission=SOURCES)
     link = (await session.execute(
         select(ProjectFile).where(
             ProjectFile.tenant_id == principal.tenant_id,

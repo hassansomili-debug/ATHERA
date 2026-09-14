@@ -805,6 +805,12 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "لا يبقى البحث بلا من يديره.",
         "en": "A project cannot be left with nobody able to manage its team.",
     },
+    "workspace.owner_only": {
+        "ar": "أرشفةُ البحث وحذفه واسترجاعه لصاحبه وحده — "
+              "وتحريرُ المحتوى العلمي لا يمنح ذلك.",
+        "en": "Archiving, trashing and restoring a project belong to its owner "
+              "alone; editing research content does not grant that.",
+    },
     "team.owner_is_immutable": {
         "ar": "صاحبُ البحث لا تُنزع صلاحيته عليه ولا يُوقف وصوله. "
               "ونقلُ ملكية البحث غير متاح بعد.",

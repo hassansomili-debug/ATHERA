@@ -1018,30 +1018,52 @@ async def _member_project_ids(
     )).scalars())
 
 
-async def visible_project_ids(
-    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+async def project_ids_with(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
+    permission: str,
 ) -> set[uuid.UUID]:
-    """كلُّ بحثٍ يجوز لهذا الباحث أن يراه — **بالاتّحاد لا بالتكرار**.
+    """بحوثٌ يملك فيها هذا الباحث **هذه الصلاحيةَ بعينها** — بالاتّحاد.
+
+    وقوائمُ الأسطح التفصيلية تُرشَّح بها لا بالاطّلاع: من يرى البحث ليس
+    بالضرورة من يرى مجموعاتِ بياناته وخطط تحليله. والمالكُ داخلٌ دائمًا،
+    فسلطةُ النسب تحمل المفردةَ كلَّها.
 
     والمالكُ الذي له صفُّ عضويّةٍ أيضًا يظهر مرّةً واحدة: مجموعةٌ لا قائمة.
     """
     owned = await _owned_project_ids(
         session, tenant_id=tenant_id, user_id=user_id)
     joined = await _member_project_ids(
-        session, tenant_id=tenant_id, user_id=user_id)
+        session, tenant_id=tenant_id, user_id=user_id, permission=permission)
     return owned | joined
+
+
+async def visible_project_ids(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """كلُّ بحثٍ يجوز لهذا الباحث أن **يراه** — الاطّلاع وحده."""
+    return await project_ids_with(
+        session, tenant_id=tenant_id, user_id=user_id, permission=VIEW_PROJECT)
 
 
 # **الصلاحيّةُ تُقرأ مرّةً وتُستعمل مرارًا.** فالمسارُ الواحد يسأل عن
 # الاطّلاع ثم عن التحرير، وسؤالان يعنيان رحلتين إلى قاعدةٍ في إقليمٍ آخر.
 # فتُعاد المجموعةُ كاملةً، ويقرّر المسارُ منها بلا استعلامٍ ثانٍ.
 #
-# وصفُّ العضويّة **هو المرجع متى وُجد** — كما في `access_for` تمامًا. فلو
-# قُرئت الملكيّةُ أوّلًا لعاد المالكُ الموقوفُ يقرأ بعد إيقافه، ولاختلف
-# بابانِ على بحثٍ واحد. والملكيّةُ تُقرأ حيث لا صفَّ أصلًا: جسرُ ما قبل
-# العضويّات، لا بابٌ فوقها.
-OWNER_IMPLIED_PERMISSIONS: frozenset[str] = frozenset(
-    team.default_permissions("principal_investigator"))
+# **وسلطةُ المالك تُشتقّ من مفردةِ الصلاحيات نفسها، لا من افتراضات دور.**
+#
+# كانت تُقرأ من `default_permissions("principal_investigator")`، فصارت
+# سلطةُ الجذر معلَّقةً بما يُقترح لدورٍ عند الدعوة — وذاك سطرٌ قابلٌ
+# للتغيير لأسبابِ منتجٍ لا علاقةَ لها بالملكيّة: لو ضُيّقت افتراضاتُ
+# الباحث الرئيس غدًا (وهو تغييرٌ مشروع) لَضاقت معها سلطةُ صاحب البحث على
+# بحثه في الوقت نفسه، بلا أن يقصد ذلك أحد.
+#
+# وهو نقضٌ للحدّ الذي تقوم عليه هذه الطبقة: **الدورُ ليس ملكيّة**. فتُقرأ
+# المفردةُ المعياريّة كاملةً — كلُّ ما يُعرَّف صلاحيةَ بحثٍ في هذا النظام —
+# ولا يمرّ الاشتقاقُ بدورٍ ولا بدالّةِ افتراضاته.
+#
+# وأنها تساوي اليوم افتراضاتِ الباحث الرئيس مصادفةٌ لا اعتماد: تلك تُساوي
+# المفردةَ كلَّها الآن، وقد لا تُساويها غدًا.
+OWNER_IMPLIED_PERMISSIONS: frozenset[str] = frozenset(team.PROJECT_PERMISSIONS)
 
 
 def _decide(*, is_owner: bool, access_state: str | None,
@@ -1109,6 +1131,15 @@ async def _owner_implied(
 # ═══════════ المالكُ المُثبَت لا يُقصى عن بحثه (RC-T1A) ═══════════
 
 OWNER_IMMUTABLE = "team.owner_is_immutable"
+
+# **دورةُ حياة البحث لصاحبه وحده** — ولا صلاحيةَ تُذكر في الرفض.
+#
+# فالأرشفةُ والحذفُ الظاهر والاسترجاع أفعالٌ على البحث كلِّه لا على محتواه،
+# ولا صفَّ في مفردة الصلاحيات يخصّها: `edit_research_content` كان يفتحها،
+# وهو صفُّ **تحرير المحتوى العلميّ** — فكان طالبُ دراساتٍ عليا يُدعى ليحرّر
+# فصلًا فيرمي البحث كلَّه في السلّة. والصفُّ الصحيح لا وجود له، ولا يُختلق
+# في دفعةٍ أمنية؛ فيُرفع الحدُّ إلى النسب المُثبَت حتى يوجد.
+OWNER_ONLY = "workspace.owner_only"
 
 
 async def _refuse_if_verified_owner(
@@ -1182,6 +1213,7 @@ class ProjectAccess:
 
     project: ResearchProject
     permissions: frozenset[str]
+    is_owner: bool = False
 
     def allows(self, permission: str) -> bool:
         return permission in self.permissions
@@ -1191,6 +1223,7 @@ async def ensure_project_access(
     session: AsyncSession, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
     user_id: uuid.UUID, permission: str = VIEW_PROJECT,
     not_found_code: str = "workspace.project_not_found",
+    require_owner: bool = False,
 ) -> ProjectAccess:
     """**البوابةُ الوحيدة لكلّ مسارٍ يقبل معرّفَ بحث.**
 
@@ -1282,7 +1315,14 @@ async def ensure_project_access(
             keys=frozenset(k for k in (granted or ()) if k is not None))
     if keys is None:
         raise NotFound(not_found_code)
+
+    # **والنسبُ فوق كلّ صفّ** حيث يُطلب: دورةُ حياة البحث لصاحبه وحده، ولا
+    # صفَّ يُقرأ لها. و٤٠٣ لا ٤٠٤ هنا: الطالبُ عضوٌ يعرف البحث سلفًا، فإنكارُ
+    # وجوده كذبٌ لا يحمي شيئًا — والصدقُ يقول له إنّ الفعل ليس له.
+    if require_owner and not is_owner:
+        raise Forbidden(OWNER_ONLY, project_id=str(project_id))
+
     if permission not in keys:
         raise Forbidden("team.permission_required", permission=permission,
                         project_id=str(project_id))
-    return ProjectAccess(project=project, permissions=keys)
+    return ProjectAccess(project=project, permissions=keys, is_owner=is_owner)

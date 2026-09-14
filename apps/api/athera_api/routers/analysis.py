@@ -142,9 +142,16 @@ async def _gate_output(session: AsyncSession, principal: Principal,
     await _gate(session, principal, project_id, permission, "analysis.output_not_found")
 
 
-async def _visible(session: AsyncSession, principal: Principal) -> set[uuid.UUID]:
-    return await collaboration.visible_project_ids(
-        session, tenant_id=principal.tenant_id, user_id=principal.user_id)
+async def _managed(session: AsyncSession, principal: Principal) -> set[uuid.UUID]:
+    """بحوثٌ يملك فيها الطالبُ **إدارةَ البيانات** — لا التي يراها فقط.
+
+    فقوائمُ هذه الطبقة تفصيليّة: المجموعةُ بنسخها وحالاتها، والخطّةُ
+    باختباراتها ومتغيّراتها، والتصديرُ بأداته وحدوده. و«يرى البحث» ليس
+    «يرى بياناته» — فالمُرشِّح يقرأ الصفَّ المخصّص لها.
+    """
+    return await collaboration.project_ids_with(
+        session, tenant_id=principal.tenant_id, user_id=principal.user_id,
+        permission=DATA)
 
 
 def _pick(locale: str, arabic: str, english: str | None) -> str:
@@ -201,7 +208,7 @@ async def list_datasets(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[DatasetResponse]:
-    visible = await _visible(session, principal)
+    visible = await _managed(session, principal)
     datasets = [] if not visible else (
         await session.execute(select(Dataset)
                               .where(Dataset.project_id.in_(visible))
@@ -231,8 +238,10 @@ async def list_versions(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[DatasetVersionResponse]:
-    await _gate_dataset(session, principal, dataset_id,
-                        collaboration.VIEW_PROJECT)
+    # **ونسخُ المجموعة بيانُ إدارةٍ لا بيانُ تقدّم**: الحالاتُ والبصماتُ
+    # وأعدادُ الصفوف ومعرّفاتُ التجميد. و«أنّ للبحث مجموعةً» تقوله الرحلةُ
+    # بلا شيءٍ من هذا.
+    await _gate_dataset(session, principal, dataset_id, DATA)
     rows = (
         await session.execute(
             select(DatasetVersionRow)
@@ -346,7 +355,7 @@ async def list_plans(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[PlanResponse]:
-    visible = await _visible(session, principal)
+    visible = await _managed(session, principal)
     rows = [] if not visible else (
         await session.execute(
             select(AnalysisPlanRow)
@@ -691,8 +700,10 @@ async def read_dictionary(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> DictionaryCoverageResponse:
-    await _gate_version(session, principal, version_id,
-                        collaboration.VIEW_PROJECT)
+    # **والقاموسُ أخطرُ ما في هذه الطبقة قراءةً**: أسماءُ الأعمدة ووصفُها
+    # ومقاييسُها — **ووسمُ ما يحمل بياناتٍ شخصية**. فقراءتُه إدارةُ بيانات
+    # لا اطّلاعٌ على بحث، ومن دُعي ليقرأ البحث لم يُدعَ ليقرأ عمودَ الهويّات.
+    await _gate_version(session, principal, version_id, DATA)
     rows = (
         await session.execute(
             select(DataDictionary)
@@ -784,7 +795,7 @@ async def list_exports(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[ToolExportResponse]:
-    visible = await _visible(session, principal)
+    visible = await _managed(session, principal)
     rows = [] if not visible else (
         await session.execute(
             select(ToolExport)
