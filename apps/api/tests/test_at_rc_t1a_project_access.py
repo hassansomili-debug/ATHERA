@@ -565,3 +565,110 @@ async def test_g_a_project_linked_file_is_not_readable_by_tenant_membership(two_
         assert listed.status_code == 200, listed.text
         # ولا ينزّله: المنحةُ على الملفّ صفٌّ آخر لم يُكتب له.
         assert (await http.get(DOWNLOAD.format(fid=file_id))).status_code == 403
+
+
+# ═══════════ ح · والبوابةُ رحلةٌ واحدة ═══════════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_h_the_gate_costs_one_round_trip_for_a_member(two_tenants):
+    """**عدُّ الرحلات هو زمنُ الاستجابة هنا.**
+
+    فالتطبيق في سنغافورة والقاعدة في مومباي، وكلُّ عبارةٍ ~٦٠ms. وهذه
+    البوابةُ تقع على كلّ مسارٍ يقبل معرّفَ بحث — ٩٣ مسارًا — فثلاثةُ
+    استعلاماتٍ فيها تصير مئتَي جزءٍ من الثانية على كلّ شاشة.
+
+    ويُقاس العدُّ ولا يُوعَد به: حارسٌ يقول «واحدة» ولا يعدّ يُصدَّق حتى
+    يُضاف استعلامٌ رابع فلا يشتكي أحد.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services import collaboration
+
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ يُقاس فتحُه")
+    colleague = await _second_user(a["tenant_id"], email=f"q-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, colleague, project_id,
+                             permissions=["view_project", "edit_research_content"])
+
+    statements: list[str] = []
+
+    async with tenant_session(a["tenant_id"], colleague["user_id"]) as session:
+        original = type(session).execute
+
+        async def counting(self, statement, *args, **kwargs):
+            statements.append(str(statement))
+            return await original(self, statement, *args, **kwargs)
+
+        type(session).execute = counting
+        try:
+            access = await collaboration.ensure_project_access(
+                session, tenant_id=a["tenant_id"], project_id=project_id,
+                user_id=colleague["user_id"],
+                permission="edit_research_content")
+        finally:
+            type(session).execute = original
+
+    assert access.project.id == project_id
+    assert access.allows("edit_research_content")
+    assert len(statements) == 1, (
+        f"البوابة كلّفت {len(statements)} استعلامًا لا واحدًا:\n"
+        + "\n".join(s[:160] for s in statements))
+    # وعبارةٌ واحدة تحمل الحدود الثلاثة وصفوفَ الصلاحيات معًا.
+    only = statements[0]
+    for fragment in ("research_projects", "project_members",
+                     "project_member_permissions", "array_agg"):
+        assert fragment in only, fragment
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_h_one_account_cannot_hold_two_memberships_in_one_project(two_tenants):
+    """**والجوابُ واحدٌ لأنّ الصفَّ واحد** — بقيدٍ في القاعدة لا باتفاق.
+
+    فالبوابةُ المدموجة تقرأ العضويّةَ بوصلةٍ خارجية، ولو أمكن صفّان
+    لحسابٍ واحد في بحثٍ واحد لعاد جوابُها اختيارًا بين حالين: صفٌّ مُزالٌ
+    وآخرُ نشط. فيُثبَت هنا أنّ ذلك **ممتنعٌ في القاعدة**:
+    `uq_project_members_project_account` فريدٌ على (البحث، الحساب).
+
+    و`user_id` يقبل الفراغ لمدعوٍّ بالبريد لم يقبل بعد، فالقيدُ جزئيّ
+    (`WHERE user_id IS NOT NULL`) — ودعوتان بالبريد لا تصيران عضويّتين
+    لحسابٍ إلا بعد القبول، وعندها يبيت القيد. ولذلك يبقى في البوابة فرعٌ
+    يُعلن الخلل إن سقط القيدُ يومًا، ولا يُخمّن.
+
+    ونموذجُ SQLAlchemy لا يعلن هذا القيد في `__table_args__` — يعيشُ في
+    الترحيل 0028 وحده. فيُقرأ من الschema الحيّة لا من الشيفرة: قيدٌ
+    يُفترض وجودُه ولا يُقرأ هو قيدٌ قد لا يكون هناك.
+    """
+    import datetime as dt
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from athera_api.db import system_session, tenant_session
+    from athera_api.models.portfolio import ProjectMember
+
+    async with system_session() as session:
+        definition = (await session.execute(text(
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE indexname = 'uq_project_members_project_account'"
+        ))).scalar_one_or_none()
+    assert definition is not None, "القيدُ الفريد غائبٌ عن القاعدة الحيّة"
+    assert "UNIQUE" in definition
+    assert "project_id" in definition and "user_id" in definition
+
+    # **ويُثبَت أنه يبيت** — قيدٌ يوجد ولا يُجرَّب قيدٌ لم يُختبر.
+    a = two_tenants["a"]
+    project_id = await _owned_project(a, title="بحثٌ بعضويّةٍ واحدة")
+    colleague = await _second_user(a["tenant_id"], email=f"x-{uuid.uuid4().hex[:8]}@x.test")
+    await _invite_and_accept(a, colleague, project_id, permissions=["view_project"])
+
+    with pytest.raises(IntegrityError):
+        async with tenant_session(a["tenant_id"], a["user_id"]) as session:
+            session.add(ProjectMember(
+                tenant_id=a["tenant_id"], project_id=project_id,
+                user_id=colleague["user_id"], display_name="صفٌّ ثانٍ",
+                invited_email=f"dup-{uuid.uuid4().hex[:8]}@x.test",
+                role="acknowledged", access_state="removed",
+                removed_at=dt.datetime.now(dt.UTC),
+                consent_state="not_requested", is_author=False))

@@ -157,19 +157,27 @@ def test_the_canonical_ownership_gate_checks_both_project_and_tenant():
     import inspect
 
     from athera_api.routers import planning
-    from athera_api.services import collaboration, project_scope
+    from athera_api.services import collaboration
 
     assert "ensure_project_access" in inspect.getsource(planning._project)
 
     gate = inspect.getsource(collaboration.ensure_project_access)
-    assert "project_scope.live_project" in gate      # المستأجرُ وحياةُ البحث
-    assert "project_permissions" in gate             # والعضويّةُ والصلاحية
+    # الحدودُ الثلاثة في عبارةٍ واحدة: المستأجر، وحياةُ البحث، والمعرّف.
+    assert "ResearchProject.id == project_id" in gate
+    assert "ResearchProject.tenant_id == tenant_id" in gate
+    assert "ResearchProject.deleted_at.is_(None)" in gate
+    # والعضويّةُ وصفوفُها — ولا يُقرأ الدورُ ولا يُفسَّر.
+    assert "ProjectMember.user_id == user_id" in gate
+    assert "ProjectMemberPermission.permission_key" in gate
+    assert "_decide(" in gate and "_owner_implied(" in gate
     assert "raise NotFound" in gate and "raise Forbidden" in gate
 
-    live = inspect.getsource(project_scope.live_project)
-    assert "ResearchProject.id == project_id" in live
-    assert "ResearchProject.tenant_id == tenant_id" in live
-    assert "ResearchProject.deleted_at.is_(None)" in live
+    # **والقرارُ في موضعٍ واحد** — فلا يفترق بابانِ على بحثٍ واحد.
+    decide = inspect.getsource(collaboration._decide)
+    assert 'access_state != "active"' in decide
+    assert "VIEW_PROJECT not in keys" in decide
+    assert "project_permissions" in inspect.getsource(
+        collaboration.may_view_project)
 
     opportunity = inspect.getsource(planning._opportunity)
     for required in ("PublicationOpportunity.id == opportunity_id",

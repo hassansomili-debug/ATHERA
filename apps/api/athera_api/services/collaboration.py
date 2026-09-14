@@ -27,7 +27,8 @@ import secrets
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
+from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AtheraError, Forbidden, NotFound
@@ -40,7 +41,7 @@ from ..models.collaboration import (
 from ..models.identity import Membership, User
 from ..models.portfolio import ProjectMember, ResearchProject
 from ..models.research import ResearcherProfile
-from . import audit, project_scope, team
+from . import audit, team
 
 # أفعالُ إنشاء البحث في سجلّ التدقيق — منها يُشتقّ مالكُ بحثٍ لا ملفَّ له.
 # ومصدرُها سجلٌّ لا يُعدَّل ولا يُحذف منه، فالنسبة إليه نسبةٌ إلى واقعة.
@@ -1007,6 +1008,36 @@ OWNER_IMPLIED_PERMISSIONS: frozenset[str] = frozenset(
     team.default_permissions("principal_investigator"))
 
 
+def _decide(access_state: str | None,
+            keys: frozenset[str]) -> frozenset[str] | None:
+    """**القرارُ في موضعٍ واحد** — حالةُ العضويّة وصفوفُها إلى جوابٍ واحد.
+
+    ودالّتان تُحمّلان الصفوف (واحدةٌ تدمج الاستعلامات لبحثٍ قائم، وأخرى
+    تقرؤها على مراحل لما في السلّة)، **وكلتاهما تقرّر من هنا**. فلو قرّرت
+    كلٌّ لنفسها لافترقتا بأوّل تعديل — وبابانِ يختلفان على بحثٍ واحد هو
+    العطبُ بعينه لا حالةً طرفيّة.
+    """
+    if access_state != "active":
+        return None
+    if VIEW_PROJECT not in keys:
+        return None
+    return keys
+
+
+async def _owner_implied(
+    session: AsyncSession, *, project_id: uuid.UUID, user_id: uuid.UUID
+) -> frozenset[str] | None:
+    """لا صفَّ عضويّةٍ بعد: تُقرأ الملكيّةُ من مصدرها الموثوق — **بلا كتابة**.
+
+    ويُمنح ما كان `ensure_owner_membership` ليمنحه، ولا زيادة. وهذا هو
+    جسرُ ما قبل العضويّات: البحوث تُنشأ في موجّهاتٍ لا تُنشئ لصاحبها صفًّا،
+    وبلا هذا الطريق يفقد كلُّ باحثٍ بحثَه.
+    """
+    if await owner_user_id(session, project_id=project_id) == user_id:
+        return OWNER_IMPLIED_PERMISSIONS
+    return None
+
+
 async def project_permissions(
     session: AsyncSession, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
     user_id: uuid.UUID,
@@ -1015,21 +1046,19 @@ async def project_permissions(
 
     و`None` ليست «مجموعةً فارغة»: الفارغةُ تعني عضوًا بلا صلاحيات، وهذه
     تعني **لا مدخلَ أصلًا** — والفرقُ بينهما هو الفرق بين ٤٠٣ و٤٠٤.
+
+    **ولا تشترط بحثًا قائمًا**، فتصلح لما في السلّة: معاينةُ الإتلاف
+    والاسترجاع يقعان على محذوفٍ بحكم التعريف، والملكيّةُ لا تزول بالحذف
+    الظاهر. ومن أراد الحدَّ كاملًا — المستأجرَ والحياةَ والصلاحية — فذاك
+    `ensure_project_access`، وهي تُنجزه في استعلامٍ واحد.
     """
     member = await member_for(
         session, project_id=project_id, user_id=user_id)
     if member is None:
-        # لا صفَّ عضويّةٍ بعد: تُقرأ الملكيّةُ من مصدرها الموثوق، ويُمنح
-        # ما كان `ensure_owner_membership` ليمنحه — **بلا كتابة**.
-        if await owner_user_id(session, project_id=project_id) == user_id:
-            return OWNER_IMPLIED_PERMISSIONS
-        return None
-    if member.access_state != "active":
-        return None
-    keys = frozenset(await permissions_of(session, member_id=member.id))
-    if VIEW_PROJECT not in keys:
-        return None
-    return keys
+        return await _owner_implied(
+            session, project_id=project_id, user_id=user_id)
+    return _decide(member.access_state,
+                   frozenset(await permissions_of(session, member_id=member.id)))
 
 
 async def may_view_project(
@@ -1082,15 +1111,62 @@ async def ensure_project_access(
     ولا تكتب شيئًا. و`access_for` تُنشئ عضويّةَ المالك عند الحاجة، وذاك
     صحيحٌ في مسارٍ يُغيّر فريقًا؛ أمّا **فتحُ صفحةٍ فلا يُنشئ عضويّة**.
     """
-    row = await project_scope.live_project(
-        session, tenant_id=tenant_id, project_id=project_id)
-    if row is None:
+    # **استعلامٌ واحد لا ثلاثة.** والقاعدةُ في إقليمٍ آخر غيرِ إقليم
+    # التطبيق، فكلُّ رحلةٍ ~٦٠ms — وعدُّ الرحلات هو زمنُ الاستجابة هنا.
+    # وهذه البوابةُ تقع على كلّ مسارٍ يقبل معرّفَ بحث، فثلاثةُ استعلاماتٍ
+    # فيها تصير مئتي جزءٍ من الثانية على كلّ شاشةٍ يفتحها الباحث.
+    #
+    # فالبحثُ وحالُ العضويّة وصفوفُ الصلاحيات تُقرأ معًا بوصلتين خارجيتين:
+    # الخارجيّةُ لأنّ غيابَ العضويّة جوابٌ مطلوب لا سببَ لحجب الصفّ، ثم
+    # يُقرّر `_decide`. والتجميعُ على مفتاح البحث الأساسيّ، فتُقرأ أعمدتُه
+    # كلُّها تحت اعتماديّةٍ وظيفية.
+    keys_agg = func.array_agg(ProjectMemberPermission.permission_key)
+    rows = (await session.execute(
+        select(ResearchProject, ProjectMember.id, ProjectMember.access_state,
+               keys_agg)
+        .outerjoin(ProjectMember,
+                   and_(ProjectMember.project_id == ResearchProject.id,
+                        ProjectMember.tenant_id == tenant_id,
+                        ProjectMember.user_id == user_id))
+        .outerjoin(ProjectMemberPermission,
+                   ProjectMemberPermission.member_id == ProjectMember.id)
+        .where(ResearchProject.id == project_id,
+               ResearchProject.tenant_id == tenant_id,
+               ResearchProject.deleted_at.is_(None))
+        # **والتجميعُ على صفّ العضويّة لا على حالتها.** فلو جُمِع على
+        # الحالة لاندمج صفّان مختلفان في مجموعةٍ واحدة، واتّحدت صلاحيّاتُ
+        # عضويّةٍ مُزالة مع أخرى نشطة — منحةٌ تُركَّب من صفَّين لا تخصّ
+        # واحدًا منهما.
+        .group_by(ResearchProject.id, ProjectMember.id,
+                  ProjectMember.access_state)
+    )).all()
+    if not rows:
         raise NotFound(not_found_code)
-    keys = await project_permissions(
-        session, tenant_id=tenant_id, project_id=project_id, user_id=user_id)
+
+    project = rows[0][0]
+    memberships = [r for r in rows if r[1] is not None]
+    if len(memberships) > 1:
+        # **ولا يُخمَّن أيُّهما المقصود.** ولا قيدَ في القاعدة يمنع صفَّين
+        # لحسابٍ واحد في بحثٍ واحد (`user_id` يقبل الفراغ لمدعوٍّ بالبريد
+        # لم يقبل بعد، فلا مفتاحَ فريدًا عليه). و`member_for` تُعلن الخلل
+        # بـ`scalar_one_or_none` — فيُعلَن هنا مثلها: صفٌّ مُزالٌ وآخر نشط
+        # يجعلان الجوابَ اختيارًا عشوائيًّا، وذاك أسوأ من عطبٍ يُرى.
+        raise MultipleResultsFound(
+            f"project {project_id} has {len(memberships)} membership rows "
+            f"for one user — the answer would be arbitrary")
+
+    if not memberships:
+        # لا صفَّ عضويّةٍ بهذا البحث لهذا الباحث — فيُجرَّب طريقُ الملكيّة.
+        keys = await _owner_implied(
+            session, project_id=project_id, user_id=user_id)
+    else:
+        _p, _mid, access_state, granted = memberships[0]
+        # و`array_agg` على وصلةٍ بلا مطابقاتٍ تُعيد `[None]` لا `[]`.
+        keys = _decide(access_state,
+                       frozenset(k for k in (granted or ()) if k is not None))
     if keys is None:
         raise NotFound(not_found_code)
     if permission not in keys:
         raise Forbidden("team.permission_required", permission=permission,
                         project_id=str(project_id))
-    return ProjectAccess(project=row, permissions=keys)
+    return ProjectAccess(project=project, permissions=keys)
