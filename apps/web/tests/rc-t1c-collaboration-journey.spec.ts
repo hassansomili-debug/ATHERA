@@ -95,6 +95,23 @@ async function memberWithRole(page: Page, role: string): Promise<string> {
   throw new Error(`no team member currently holds the role ${role}`);
 }
 
+/**
+ * عنوانُ الـAPI للتهيئة — **ولا يُستعمل في الرحلة نفسِها**.
+ *
+ * فما يُقاس هو المتصفّحُ والمنتج؛ وما يُهيَّأ بالـAPI هو ما **لا واجهةَ
+ * له في هذا الإصدار لأحد**: إنشاءُ مجموعةِ بياناتٍ ونسخةٍ مشتقّة. ولا
+ * شاشةَ إنشاءٍ لها في المنتج — لا للمتعاون ولا لصاحب البحث — فتهيئتُها
+ * بالـAPI تصريحٌ بالحدّ لا تزييفٌ لرحلة.
+ */
+const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+
+async function tokenOf(page: Page): Promise<string> {
+  const token = await page.evaluate(() =>
+    localStorage.getItem("athera_access_token"));
+  expect(token, "no access token in this browser context").toBeTruthy();
+  return token!;
+}
+
 /** المهلةُ المحلّية للتاريخ — بصيغة حقل `datetime-local`. */
 function localStamp(offsetMinutes: number): string {
   const when = new Date(Date.now() + offsetMinutes * 60_000);
@@ -394,6 +411,112 @@ test("الرحلةُ الذهبية للتعاون البحثيّ عبر ثلا�
           .toBeVisible({ timeout: 30_000 });
         await researcher.page.goto(projectUrl);
         await expect(researcher.page.getByRole("heading", { name: PROJECT_TITLE }))
+          .toBeVisible({ timeout: 30_000 });
+      });
+
+    // ═════════ الخطوة ح · بياناتُ البحث المشتركة ═════════
+    //
+    // **وهذا هو ما فتحه الترحيل 0036.** قبله كان `/projects/{id}/access`
+    // يقول للإحصائيّ إنّه يحمل إدارةَ البيانات، ثمّ لا تُفتح له شاشةٌ
+    // واحدة: مساراتُ التحليل لا تحمل معرّفَ البحث، ومنها ما لا يعرفه حتى
+    // يقرأ الكيان — والقراءةُ في مستأجر البيت ترى صفرَ صفوف.
+    await test.step("STEP H — the external statistician works on the project's data",
+      async () => {
+        // ── تهيئة: مجموعةٌ ونسخةٌ مشتقّة، بالـAPI ──
+        //
+        // **ولا شاشةَ إنشاءٍ لهما في المنتج لأحد** (أربعُ نداءاتٍ فقط في
+        // شاشة التحليل: قائمتان وتجميدٌ واعتماد). فتُهيَّآن هكذا، ويبقى
+        // **الفعلُ المقيس** — التجميد — في المتصفّح.
+        const ownerToken = await tokenOf(owner.page);
+        const headers = {
+          Authorization: `Bearer ${ownerToken}`,
+          "Content-Type": "application/json",
+        };
+        const projectId = projectUrl.split("/").pop()!;
+
+        const created = await owner.page.request.post(
+          `${API}/api/v1/analysis/datasets`,
+          { headers, data: {
+              project_id: projectId, name_ar: `بياناتُ المشترك ${RUN}`,
+              classification: "C3", raw_label: "الرفع الأول",
+              raw_checksum: "a".repeat(64), row_count: 50 } });
+        expect(created.status(), await created.text()).toBe(201);
+        const raw = await created.json();
+
+        const derived = await owner.page.request.post(
+          `${API}/api/v1/analysis/datasets/${raw.dataset_id}/versions`,
+          { headers, data: {
+              parent_version_id: raw.id, state: "cleaned", label: "منقّاة",
+              checksum: "c".repeat(64), change_note_ar: "حذف صفوف ناقصة",
+              row_count: 48 } });
+        expect(derived.status(), await derived.text()).toBe(201);
+
+        // ── ومن هنا: متصفّحٌ فقط ──
+        //
+        // **والطريقُ هو طريقُ المنتج القائم**: قسمُ البيانات في صفحة
+        // البحث يفتح شاشةَ التحليل — لا شاشةٌ ثانيةٌ للمتعاونين.
+        await researcher.page.goto(`${projectUrl}?section=data`);
+        // **ورابطُ صفحةِ البحث نفسِه** — لا رابطُ القائمة الجانبية: المقصودُ
+        // إثباتُ أنّ الطريقَ من داخل البحث يبلغ الشاشةَ القائمة.
+        const toLink = researcher.page.locator("#main-content a.action")
+          .filter({ hasText: "البيانات والتحليل" });
+        await expect(toLink).toBeVisible({ timeout: 30_000 });
+        await toLink.click();
+        await researcher.page.waitForURL(/\/analysis$/, { timeout: 30_000 });
+
+        // مجموعةُ البحث المشترك ظاهرةٌ له — وهي في مؤسسةٍ أخرى.
+        const card = researcher.page.locator("article.card")
+          .filter({ hasText: `بياناتُ المشترك ${RUN}` });
+        await expect(card).toBeVisible({ timeout: 30_000 });
+
+        // **فعلٌ حقيقيٌّ بإدارة البيانات: التجميد** — من الشاشة، بلا اعتراض.
+        const freeze = card.getByRole("button", { name: /جمّد|Freeze/ }).first();
+        await expect(freeze).toBeVisible();
+        await freeze.click();
+        await expect(card.locator(".badge-ok").first())
+          .toBeVisible({ timeout: 30_000 });
+      });
+
+    // ═════════ الخطوة ط · نزعُ إدارة البيانات وإعادتها ═════════
+    await test.step("STEP I — revoking manage_data closes the data door, not the project",
+      async () => {
+        // والنزعُ من شاشة الفريق — **بالمتصفّح**، وبلا تغييرِ دور.
+        await manager.page.goto(`${projectUrl}?section=team`);
+        const bId = await memberWithRole(manager.page, "statistician");
+        await manager.page.getByTestId(`team-edit-permissions-${bId}`).click();
+        await manager.page.getByTestId(`team-permission-${bId}-manage_data`).uncheck();
+        await manager.page.getByTestId(`team-permission-save-${bId}`).click();
+        await expect(manager.page.getByTestId(`team-permission-editor-${bId}`))
+          .toHaveCount(0, { timeout: 30_000 });
+        await expect(manager.page.getByTestId(`team-role-${bId}`))
+          .toHaveValue("statistician");
+
+        // **والبابُ يُقفل في الطلب التالي** — ولا خروجٌ ولا تجديدُ رمز.
+        await researcher.page.goto(`/${AR}/analysis`);
+        await expect(researcher.page.locator("article.card")
+          .filter({ hasText: `بياناتُ المشترك ${RUN}` }))
+          .toHaveCount(0, { timeout: 30_000 });
+
+        // والبحثُ باقٍ: «أبحاثي» تعرضه، والرحلةُ تُفتح.
+        await researcher.page.goto(`/${AR}/portfolio`);
+        await expect(researcher.page.locator("article.card")
+          .filter({ hasText: PROJECT_TITLE })).toBeVisible({ timeout: 30_000 });
+        await researcher.page.goto(projectUrl);
+        await expect(researcher.page.getByTestId("research-journey"))
+          .toBeVisible({ timeout: 60_000 });
+
+        // ── وتُعاد الصلاحيةُ، فيعود البابُ — والدورُ كما كان ──
+        await manager.page.goto(`${projectUrl}?section=team`);
+        const again = await memberWithRole(manager.page, "statistician");
+        await manager.page.getByTestId(`team-edit-permissions-${again}`).click();
+        await manager.page.getByTestId(`team-permission-${again}-manage_data`).check();
+        await manager.page.getByTestId(`team-permission-save-${again}`).click();
+        await expect(manager.page.getByTestId(`team-permission-editor-${again}`))
+          .toHaveCount(0, { timeout: 30_000 });
+
+        await researcher.page.goto(`/${AR}/analysis`);
+        await expect(researcher.page.locator("article.card")
+          .filter({ hasText: `بياناتُ المشترك ${RUN}` }))
           .toBeVisible({ timeout: 30_000 });
       });
 

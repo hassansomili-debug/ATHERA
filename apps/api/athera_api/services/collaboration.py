@@ -1155,6 +1155,30 @@ async def visible_project_ids(
         session, tenant_id=tenant_id, user_id=user_id, permission=VIEW_PROJECT)
 
 
+async def project_ids_with_across_tenants(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
+    permission: str,
+) -> set[uuid.UUID]:
+    """بحوثٌ للطالب فيها **هذه الصلاحيةُ بعينها** — في أيّ مؤسسة.
+
+    وهي أختُ `project_ids_with`، وتُستعمل في القوائم التي **لا تستطيع
+    الدخولَ إلى مستأجرِ بحثٍ واحد** لأنّها تجمع بحوثًا كثيرة: قوائمُ
+    طبقة التحليل مثلًا. وصفوفُها تُرى بسياسات تحديد الموضع (0036).
+
+    **والملكيّةُ تبقى في مستأجرها**: صاحبُ البحث بحثُه في مؤسسته، ولا
+    يحتاج جسرًا — فتُقرأ ملكيّتُه كما كانت، وتُضاف إليها عضويّاتُه
+    المُثبَتة عبرَ المؤسسات.
+
+    ولا تُستعمل هذه لتوسيع قائمةٍ يُمكن أن تُقرأ في نطاق بحثٍ واحد:
+    الأضيقُ ما يكفي، والقوائمُ العامّة وحدها تحتاج الاتّحاد.
+    """
+    owned = await _owned_project_ids(
+        session, tenant_id=tenant_id, user_id=user_id)
+    joined = await _self_member_scopes(
+        session, user_id=user_id, permission=permission)
+    return owned | {project_id for project_id, _tenant, _role in joined}
+
+
 # ═════════════════ «أبحاثي» عبرَ المستأجرين ═════════════════
 
 

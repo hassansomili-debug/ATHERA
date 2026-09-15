@@ -196,6 +196,11 @@ test("٣٧٥px: لا فيضٌ أفقيّ في أسطح التعاون | no horiz
       ["project team", `${projectUrl}?section=team`],
       ["project opportunities", `${projectUrl}?section=opportunities`],
       ["global team", `/${AR}/team`],
+      // ومدخلُ البيانات الذي يستعمله المتعاونُ الخارجيّ (0036) — قسمًا
+      // في صفحة البحث وشاشةً قائمة. **ولا إعادةَ تصميمٍ لها هنا**: يُقاس
+      // ألّا تدفع الصفحةَ أفقيًّا على هاتف، لا غير.
+      ["project data section", `${projectUrl}?section=data`],
+      ["analysis screen", `/${AR}/analysis`],
     ];
     for (const [label, url] of surfaces) {
       await page.goto(url);
