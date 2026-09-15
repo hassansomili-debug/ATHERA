@@ -32,6 +32,7 @@ from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from ..db import project_session
 from ..errors import AtheraError, Forbidden, NotFound
 from ..models.audit import AuditEvent
 from ..models.collaboration import (
@@ -1128,6 +1129,157 @@ async def visible_project_ids(
     """كلُّ بحثٍ يجوز لهذا الباحث أن **يراه** — الاطّلاع وحده."""
     return await project_ids_with(
         session, tenant_id=tenant_id, user_id=user_id, permission=VIEW_PROJECT)
+
+
+# ═════════════════ «أبحاثي» عبرَ المستأجرين ═════════════════
+
+
+@dataclass(frozen=True)
+class ResearchEntry:
+    """بحثٌ في قائمة «أبحاثي» — **وصلتُه بصاحبها معلنةٌ معه**.
+
+    فالقائمةُ كانت كلُّها أبحاثَ صاحبها، فلم تحتج وسمًا. وبعد التعاون
+    عبرَ المؤسسات صار فيها بحثُ غيرِه — وبطاقةٌ لا تقول ذلك تعرض على
+    المتعاون أزرارَ أرشفةٍ وحذفٍ لبحثٍ ليس له، فيضغط ويُردّ، أو — وهو
+    الأسوأ — يظنّ أنّ البحثَ صار بحثَه.
+
+    و`project` صفٌّ **مُنفصلٌ عن جلسته** أحيانًا: أبحاثُ المستأجرات
+    الأخرى تُقرأ في جلسةٍ تُغلق قبل العودة. و`expire_on_commit=False`
+    تُبقي أعمدتَه المحمَّلة كما هي، فلا يُقرأ منه إلّا عمود — ولا علاقةٌ
+    مؤجَّلة.
+    """
+
+    project: ResearchProject
+    is_owner: bool
+    member_role: str | None
+
+    @property
+    def relationship(self) -> str:
+        """`owner` أو `collaborator` — والملكيّةُ أوّلُ ما يُسأل عنه."""
+        return "owner" if self.is_owner else "collaborator"
+
+
+async def _self_member_scopes(
+    session: AsyncSession, *, user_id: uuid.UUID,
+    permission: str = VIEW_PROJECT,
+) -> list[tuple[uuid.UUID, uuid.UUID, str]]:
+    """صفوفُ عضويّةِ **الفاعلِ نفسِه** — عبرَ المستأجرين — بعبارةٍ واحدة.
+
+    وتُعيد `(project_id, tenant_id, role)` لكلّ بحثٍ هو فيه عضوٌ **نشط**
+    يحمل `view_project` والصلاحيةَ المطلوبة معًا: الشروطُ الثلاثةُ نفسُها
+    التي يشترطها `_member_project_ids`، بلا شرطِ المستأجر.
+
+    ## ولمَ يُرى صفُّ عضويّةٍ في مستأجرٍ آخر أصلًا
+
+    بسياسةِ `project_members_self_read` من الترحيل 0035 وحدها:
+    `user_id = app_current_actor()`. وهي أضيقُ ما يكفي — **صفوفُ الفاعل
+    هو**، لا صفوفُ فريقٍ ولا بحثٍ ولا مستأجر. ولا `SECURITY DEFINER`
+    ولا `BYPASSRLS` ولا `USING (true)`: الجسرُ يعرف الفاعلَ ولا يعرف
+    غيرَه.
+
+    ## والمُرشِّحُ في SQL هو المرجع، لا السياسة
+
+    فسياساتُ PostgreSQL المُجيزةُ تتّحد بـ**OR**: سياسةُ المستأجر
+    القديمةُ باقيةٌ إلى جانب هذه، فالصفوفُ المرئيّةُ هي «صفوفي في أيّ
+    مستأجر **أو** كلُّ صفٍّ في مستأجري». ولذلك يُكتب `user_id = :user_id`
+    في العبارة صراحةً: هو ما يجعل الجوابَ «صفوفي» لا «صفوف زملائي».
+    """
+    baseline = aliased(ProjectMemberPermission)
+    wanted = aliased(ProjectMemberPermission)
+    rows = (await session.execute(
+        select(ProjectMember.project_id, ProjectMember.tenant_id,
+               ProjectMember.role)
+        .join(baseline, and_(baseline.member_id == ProjectMember.id,
+                             baseline.permission_key == VIEW_PROJECT))
+        .join(wanted, and_(wanted.member_id == ProjectMember.id,
+                           wanted.permission_key == permission))
+        .where(ProjectMember.user_id == user_id,
+               ProjectMember.access_state == "active")
+    )).all()
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+async def my_research(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
+) -> list[ResearchEntry]:
+    """كلُّ بحثٍ للباحث فيه مدخلٌ حقيقيّ — **وإن كان في مؤسسةٍ أخرى**.
+
+    وهي قائمةٌ واحدة: البحثُ الذي قُبل فيه المتعاون يظهر مع أبحاثه، لا
+    في شاشةٍ ثانية اسمها «أبحاثٌ مشتركة». فالتعاونُ ليس نوعًا آخرَ من
+    البحث.
+
+    ## وثلاثةُ أشياء لا تُخلط
+
+      الملكيّة    تُشتقّ في مستأجر الباحث وحده (كما كانت).
+      العضويّة    صفٌّ محفوظ — في أيّ مستأجر.
+      الانتماءُ   للمؤسسة: **لا يُنشأ هنا ولا يُقرأ هنا.**
+
+    ولا صفَّ `Membership` جديدٌ يُكتب في مستأجر البحث لأجل هذه القائمة.
+    فمنحُ التعاون على بحثٍ ليس انتماءً إلى مؤسسةٍ: لو كُتب لَصار
+    المتعاونُ عضوًا في كلّ ما في تلك المؤسسة، وذاك نقضُ العزل لا توسيعُ
+    منتج. (والجردُ البنيويّ في SEC-P0 يُسمّي كلَّ موضعٍ يُنشئ انتماءً —
+    وهذه الطبقةُ ليست منها.)
+
+    ## والعبورُ يقع عبر الجسر القانونيّ وحده
+
+    فبحثُ مستأجرٍ آخر لا يُقرأ من جلسةِ البيت: `research_projects` تبقى
+    معزولةً بمستأجرها، ولا سياسةَ فاعلٍ عليها. ويُقرأ بـ`project_session`
+    — الذي يُثبت بنفسه، في عبارته، أنّ للفاعل صفَّ عضويّةٍ نشطًا يحمل
+    `view_project` في ذلك البحث بعينه، ويرفض الربطَ إن لم يكن. فلو دخل
+    إلى هذه الدالّةِ معرّفُ بحثٍ لا يستحقّه الفاعل لَما رُبط، ولَما
+    رُئي الصفُّ في جلسةٍ بقيت في مستأجر البيت.
+
+    ## والثمنُ معلومٌ ومحدود
+
+    رحلةٌ لكلّ بحثٍ **خارج** مستأجر الباحث — والقاعدةُ في إقليمٍ آخر.
+    وأبحاثُ البيت كلُّها في عبارةٍ واحدة كما كانت، فالثمنُ يقع على
+    التعاون عبرَ المؤسسات وحده، وعددُه في V1 آحاد. ولا يُستبدل ببوّابةٍ
+    مميّزةٍ تقرأ أبحاثَ كلّ مستأجرٍ بضربةٍ واحدة: تلك تُشترى بحدِّ
+    العزل نفسِه، والثمنُ أغلى من الرحلة.
+    """
+    owned = await _owned_project_ids(
+        session, tenant_id=tenant_id, user_id=user_id)
+    scopes = await _self_member_scopes(session, user_id=user_id)
+
+    # صفٌّ واحدٌ لكلّ بحث: صاحبُ البحثِ العضوُ فيه يظهر مرّةً، بوسمِ
+    # الملكيّة لا بوسمِ العضويّة — `_decide` تُقدّم الملكيّةَ كذلك.
+    roles: dict[uuid.UUID, str] = {}
+    foreign: dict[uuid.UUID, uuid.UUID] = {}
+    for project_id, member_tenant, role in scopes:
+        roles.setdefault(project_id, role)
+        if member_tenant != tenant_id and project_id not in owned:
+            foreign[project_id] = member_tenant
+
+    home_ids = owned | {pid for pid, t, _ in scopes if t == tenant_id}
+    found: dict[uuid.UUID, ResearchProject] = {}
+    if home_ids:
+        for row in (await session.execute(
+            select(ResearchProject)
+            .where(ResearchProject.deleted_at.is_(None),
+                   ResearchProject.id.in_(home_ids))
+        )).scalars():
+            found[row.id] = row
+
+    for project_id, member_tenant in foreign.items():
+        async with project_session(project_id, tenant_id, user_id) as scoped:
+            crossed = (await scoped.execute(
+                select(ResearchProject)
+                .where(ResearchProject.id == project_id,
+                       ResearchProject.deleted_at.is_(None))
+            )).scalar_one_or_none()
+        # **ومستأجرُ الصفِّ يُطابق مستأجرَ العضويّة أو يُطرح.** فالعزلُ
+        # يضمن هذا أصلًا؛ وفحصُه هنا يجعل أيَّ خللٍ في الجسر غيابًا من
+        # قائمةٍ لا صفًّا من مستأجرٍ لا صلةَ للباحث به.
+        if crossed is not None and crossed.tenant_id == member_tenant:
+            found[project_id] = crossed
+
+    entries = [
+        ResearchEntry(project=row, is_owner=row.id in owned,
+                      member_role=roles.get(row.id))
+        for row in found.values()
+    ]
+    entries.sort(key=lambda e: e.project.created_at, reverse=True)
+    return entries
 
 
 # **الصلاحيّةُ تُقرأ مرّةً وتُستعمل مرارًا.** فالمسارُ الواحد يسأل عن

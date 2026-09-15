@@ -13,7 +13,7 @@ import jwt
 from fastapi import Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .db import tenant_session
+from .db import scoped_tenant, tenant_session
 from .errors import Forbidden, Unauthorized
 from .i18n.catalog import negotiate_locale
 from .services import rbac
@@ -90,6 +90,23 @@ async def get_project_session(
     async with project_session(project_id, principal.tenant_id,
                                principal.user_id) as session:
         yield session
+
+
+def project_tenant(session: AsyncSession, principal: Principal) -> uuid.UUID:
+    """مستأجرُ البحثِ النافذُ على هذه الجلسة — **لا مستأجرُ الرمز**.
+
+    فبعد عبور `get_project_session` لم يعد `principal.tenant_id` هو
+    مستأجرَ المعاملة: متعاونٌ من مؤسسةٍ أخرى يعمل في مستأجر البحث.
+    ومسارٌ يقرأ مستأجرَ رمزه بعد العبور يسأل عن المستأجر الخطأ — **فيقرأ
+    صفرَ صفوفٍ إن قرأ، ويكتب في المستأجر الخطأ إن كتب**، وهذا الثاني
+    أسوأُ من عطبٍ ظاهر: صفٌّ يُخزَّن حيث لا يراه أحد.
+
+    وفي المسار المحليّ — صاحبُ البحث وزميلُه في مؤسسته — لا ربطَ يقع
+    أصلًا، فتُعيد هذه الدالّةُ مستأجرَ الرمز نفسَه. فالسلوكُ القائم لا
+    يتغيّر، والمسارُ الواحد يخدم الحالتين بلا فرعٍ يُكتب له.
+    """
+    scoped = scoped_tenant(session)
+    return scoped if scoped is not None else principal.tenant_id
 
 
 def require_roles(*role_keys: str):

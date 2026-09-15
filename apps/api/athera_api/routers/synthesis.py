@@ -34,7 +34,12 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..deps import Principal, get_principal, get_session
+from ..deps import (
+    Principal,
+    get_principal,
+    get_project_session,
+    project_tenant,
+)
 from ..errors import AtheraError, NotFound
 from ..models.literature import Source
 from ..models.portfolio import ResearchProject
@@ -104,7 +109,7 @@ async def _project(session: AsyncSession, principal: Principal,
     على مرشَّحةٍ علمية أثرٌ في سجلّ بحثٍ ليس له.
     """
     return (await collaboration.ensure_project_access(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission=permission,
         not_found_code="synthesis.project_not_found")).project
 
@@ -116,7 +121,7 @@ async def _titles(session: AsyncSession, principal: Principal,
         return {}
     rows = (await session.execute(
         select(Source.id, Source.title).where(
-            Source.tenant_id == principal.tenant_id, Source.id.in_(source_ids))
+            Source.tenant_id == project_tenant(session, principal), Source.id.in_(source_ids))
     )).all()
     return dict(rows)
 
@@ -129,7 +134,7 @@ async def _cells(session: AsyncSession, principal: Principal, project_id: uuid.U
         return {}
     rows = (await session.execute(
         select(LiteratureMatrixCell).where(
-            LiteratureMatrixCell.tenant_id == principal.tenant_id,
+            LiteratureMatrixCell.tenant_id == project_tenant(session, principal),
             LiteratureMatrixCell.project_id == project_id,
             LiteratureMatrixCell.id.in_(wanted))
     )).scalars().all()
@@ -177,7 +182,7 @@ def _theme_view(row, *, supporting: int, contradicting: int,
 async def list_themes(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ThemesView:
     """الموضوعات — **والتجميعُ الموضوعي معها مفصولًا باسمه**.
 
@@ -186,9 +191,9 @@ async def list_themes(
     """
     await _project(session, principal, project_id)
     rows = await store.list_themes(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     supports = await store.theme_supports(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         theme_ids=[row.id for row in rows])
 
     tally: dict[uuid.UUID, dict[str, int]] = {}
@@ -235,7 +240,7 @@ async def theme_trace(
     project_id: uuid.UUID,
     theme_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ThemeTraceView:
     """المسار من الموضوع إلى الشاهد — **لا موضوع بلا أثرٍ يُتتبَّع**.
 
@@ -243,12 +248,12 @@ async def theme_trace(
     جاء، فيصدّقه أو يهمله — وكلاهما خسارة.
     """
     await _project(session, principal, project_id)
-    row = await store.theme_of(session, tenant_id=principal.tenant_id,
+    row = await store.theme_of(session, tenant_id=project_tenant(session, principal),
                                project_id=project_id, theme_id=theme_id)
     if row is None:
         raise NotFound("synthesis.theme_not_found")
     supports = await store.theme_supports(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         theme_ids=[row.id])
     titles = await _titles(session, principal, [s.source_id for s in supports])
     cells = await _cells(session, principal, project_id,
@@ -274,7 +279,7 @@ async def theme_trace(
 async def analyze(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ThemesView:
     """يعيد التحليل — **ولا يمحو حكمًا قاله الباحث**.
 
@@ -286,27 +291,27 @@ async def analyze(
     """
     await _project(session, principal, project_id, permission=EDIT)
     moment = dt.datetime.now(dt.UTC)
-    corpus = await load_corpus(session, tenant_id=principal.tenant_id,
+    corpus = await load_corpus(session, tenant_id=project_tenant(session, principal),
                                project_id=project_id, taken_at=moment)
 
     contradictions = propose_contradictions(corpus)
     keys = await store.replace_generated_contradictions(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         proposals=contradictions, generated_at=moment)
     assessment = assess_gaps(corpus, contradictions=contradictions)
     await store.replace_generated_gaps(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         proposals=assessment.proposals, contradiction_ids=keys,
         generated_at=moment)
     themes = propose_themes(corpus)
     await store.replace_generated_themes(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         proposals=themes, generated_at=moment)
 
     # **ولا محتوى مستندٍ في السجلّ** (§37): الأعداد تُسجَّل، ولا نصّ خليةٍ
     # ولا اقتباس يُنسخ إلى سجلّ التدقيق.
     await audit.record(
-        session, tenant_id=principal.tenant_id,
+        session, tenant_id=project_tenant(session, principal),
         action="synthesis.analysed", object_type="research_project",
         object_id=project_id, actor_user_id=principal.user_id,
         state_after={"corpus_size": corpus.size, "themes": len(themes),
@@ -328,7 +333,7 @@ async def _decide(session: AsyncSession, principal: Principal, row, *,
                                   actor_id=principal.user_id)
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id,
+        session, tenant_id=project_tenant(session, principal),
         action=f"{object_type}.decided", object_type=object_type, object_id=row.id,
         actor_user_id=principal.user_id, state_before=before,
         state_after={"status": row.status},
@@ -343,11 +348,11 @@ async def decide_theme(
     theme_id: uuid.UUID,
     payload: DecisionRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ThemeView:
     """حكمُ الباحث على موضوع — **ويُنسب إليه رفضًا كما اعتمادًا**."""
     await _project(session, principal, project_id, permission=EDIT)
-    row = await store.theme_of(session, tenant_id=principal.tenant_id,
+    row = await store.theme_of(session, tenant_id=project_tenant(session, principal),
                                project_id=project_id, theme_id=theme_id)
     if row is None:
         raise NotFound("synthesis.theme_not_found")
@@ -356,7 +361,7 @@ async def decide_theme(
     # **ولا تُعاد أعدادٌ صفرية بدل الحقيقية.** رقمٌ مخترَع في جوابٍ يُعرض
     # للباحث أسوأ من غيابه: يقرأ «صفر مراجع مُسنِدة» عن موضوعٍ اعتمده لتوّه.
     supports = await store.theme_supports(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         theme_ids=[row.id])
     return _theme_view(
         row,
@@ -372,14 +377,14 @@ async def decide_theme(
 async def list_contradictions(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ContradictionsView:
     """التعارضات المحتملة — **بطرفيهما وسياقهما**، ولا حكم على دراسة."""
     await _project(session, principal, project_id)
     rows = await store.list_contradictions(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     sides = await store.contradiction_sides(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         contradiction_ids=[row.id for row in rows])
     titles = await _titles(session, principal, [s.source_id for s in sides])
 
@@ -427,11 +432,11 @@ async def decide_contradiction(
     contradiction_id: uuid.UUID,
     payload: DecisionRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> DecisionRequest:
     await _project(session, principal, project_id, permission=EDIT)
     rows = await store.list_contradictions(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     row = next((r for r in rows if r.id == contradiction_id), None)
     if row is None:
         raise NotFound("synthesis.contradiction_not_found")
@@ -445,7 +450,7 @@ async def decide_contradiction(
 async def _gap_views(session: AsyncSession, principal: Principal,
                      project_id: uuid.UUID, rows) -> list[GapView]:
     refs = await store.gap_sources(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         gap_ids=[row.id for row in rows])
     titles = await _titles(session, principal, [r.source_id for r in refs])
     cells = await _cells(session, principal, project_id,
@@ -483,7 +488,7 @@ async def _gap_views(session: AsyncSession, principal: Principal,
 async def list_gaps(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> GapsView:
     """الفجوات المحتملة — **وما تعذّر الحكم فيه معها في الصفحة نفسها**.
 
@@ -493,12 +498,12 @@ async def list_gaps(
     """
     await _project(session, principal, project_id)
     rows = await store.list_gaps(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     views = await _gap_views(session, principal, project_id, rows)
 
     # ما تعذّر الحكم فيه يُحسب من اللقطة الحيّة: هو حالُ المجموعة الآن، لا
     # صفٌّ مخزَّن يتقادم بصمت.
-    corpus = await load_corpus(session, tenant_id=principal.tenant_id,
+    corpus = await load_corpus(session, tenant_id=project_tenant(session, principal),
                                project_id=project_id,
                                taken_at=dt.datetime.now(dt.UTC))
     assessment = assess_gaps(corpus, contradictions=propose_contradictions(corpus))
@@ -525,7 +530,7 @@ async def decide_gap(
     gap_id: uuid.UUID,
     payload: DecisionRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> GapView:
     """حكمُ الباحث على فجوةٍ محتملة.
 
@@ -533,14 +538,14 @@ async def decide_gap(
     نصًّا قبل الزرّ. وسحبُ الاعتماد بعد إنشاء فرصةٍ فوقه ترفضه القاعدة.
     """
     await _project(session, principal, project_id, permission=EDIT)
-    row = await store.gap_of(session, tenant_id=principal.tenant_id,
+    row = await store.gap_of(session, tenant_id=project_tenant(session, principal),
                              project_id=project_id, gap_id=gap_id)
     if row is None:
         raise NotFound("synthesis.gap_not_found")
     if row.status == "approved" and payload.status != "approved":
         spawned = (await session.execute(
             select(ResearchOpportunity.id).where(
-                ResearchOpportunity.tenant_id == principal.tenant_id,
+                ResearchOpportunity.tenant_id == project_tenant(session, principal),
                 ResearchOpportunity.project_id == project_id,
                 ResearchOpportunity.gap_candidate_id == row.id).limit(1)
         )).first()
@@ -561,14 +566,14 @@ async def opportunity_preview(
     project_id: uuid.UUID,
     gap_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> OpportunityPreviewView:
     """معاينةُ البطاقة — **ولا تكتب شيئًا**.
 
     ومعاينةٌ تكتب صفًّا تجعل كل استطلاعٍ لفكرةٍ أثرًا دائمًا في البحث.
     """
     await _project(session, principal, project_id)
-    row = await store.gap_of(session, tenant_id=principal.tenant_id,
+    row = await store.gap_of(session, tenant_id=project_tenant(session, principal),
                              project_id=project_id, gap_id=gap_id)
     if row is None:
         raise NotFound("synthesis.gap_not_found")
@@ -577,7 +582,7 @@ async def opportunity_preview(
                           status_code=status.HTTP_409_CONFLICT,
                           current_status=row.status)
     refs = await store.gap_sources(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         gap_ids=[row.id])
     titles = await _titles(session, principal, [r.source_id for r in refs])
     related = tuple(RelatedStudy(
@@ -626,13 +631,13 @@ def _opportunity_view(row, gap_type: str) -> OpportunityView:
 async def list_opportunities(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> OpportunitiesView:
     await _project(session, principal, project_id)
     rows = await store.list_opportunities(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     gaps = {row.id: row for row in await store.list_gaps(
-        session, tenant_id=principal.tenant_id, project_id=project_id)}
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)}
     return OpportunitiesView(
         project_id=project_id,
         opportunities=[
@@ -646,7 +651,7 @@ async def create_opportunity(
     project_id: uuid.UUID,
     payload: OpportunityCreateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> OpportunityView:
     """بطاقةُ فرصة — **من فجوةٍ اعتمدها إنسان، وبتأكيدٍ صريح منه**.
 
@@ -658,7 +663,7 @@ async def create_opportunity(
     if not payload.confirmed:
         raise AtheraError("synthesis.confirmation_required",
                           status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
-    gap = await store.gap_of(session, tenant_id=principal.tenant_id,
+    gap = await store.gap_of(session, tenant_id=project_tenant(session, principal),
                              project_id=project_id,
                              gap_id=payload.gap_candidate_id)
     if gap is None:
@@ -669,7 +674,7 @@ async def create_opportunity(
                           current_status=gap.status)
 
     row = ResearchOpportunity(
-        tenant_id=principal.tenant_id, project_id=project_id,
+        tenant_id=project_tenant(session, principal), project_id=project_id,
         gap_candidate_id=gap.id, gap_status=gap.status,
         phenomenon_ar=payload.phenomenon_ar, context_ar=payload.context_ar,
         population_ar=payload.population_ar, constructs_ar=payload.constructs_ar,
@@ -681,7 +686,7 @@ async def create_opportunity(
     session.add(row)
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id,
+        session, tenant_id=project_tenant(session, principal),
         action="research_opportunity.created", object_type="research_opportunity",
         object_id=row.id, actor_user_id=principal.user_id,
         state_after={"gap_candidate_id": str(gap.id), "gap_type": gap.gap_type},
@@ -696,16 +701,16 @@ async def project_preview(
     project_id: uuid.UUID,
     opportunity_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectPreviewView:
     """ما سيقع بالضبط عند «إنشاء مشروع بحثي» — **قبل أن يقع**."""
     await _project(session, principal, project_id)
     row = await store.opportunity_of(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         opportunity_id=opportunity_id)
     if row is None:
         raise NotFound("synthesis.opportunity_not_found")
-    gap = await store.gap_of(session, tenant_id=principal.tenant_id,
+    gap = await store.gap_of(session, tenant_id=project_tenant(session, principal),
                              project_id=project_id, gap_id=row.gap_candidate_id)
     if gap is None:  # pragma: no cover - المفتاح الأجنبي يمنعها
         raise NotFound("synthesis.gap_not_found")
@@ -728,7 +733,7 @@ async def create_project_from_opportunity(
     opportunity_id: uuid.UUID,
     payload: ProjectFromOpportunityRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> OpportunityView:
     """ينشئ بحثًا من فرصة — **بعد معاينةٍ وبتأكيدٍ صريح**.
 
@@ -741,18 +746,18 @@ async def create_project_from_opportunity(
         raise AtheraError("synthesis.confirmation_required",
                           status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
     row = await store.opportunity_of(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         opportunity_id=opportunity_id)
     if row is None:
         raise NotFound("synthesis.opportunity_not_found")
     if row.spawned_project_id is not None:
         raise AtheraError("synthesis.project_already_created",
                           status_code=status.HTTP_409_CONFLICT)
-    gap = await store.gap_of(session, tenant_id=principal.tenant_id,
+    gap = await store.gap_of(session, tenant_id=project_tenant(session, principal),
                              project_id=project_id, gap_id=row.gap_candidate_id)
 
     created = ResearchProject(
-        tenant_id=principal.tenant_id,
+        tenant_id=project_tenant(session, principal),
         working_title_ar=payload.working_title_ar,
         status="planned")
     session.add(created)
@@ -760,7 +765,7 @@ async def create_project_from_opportunity(
     row.spawned_project_id = created.id
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id,
+        session, tenant_id=project_tenant(session, principal),
         action="research_project.created_from_opportunity",
         object_type="research_project", object_id=created.id,
         actor_user_id=principal.user_id,

@@ -31,7 +31,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import invitation_session
-from ..deps import Principal, get_principal, get_session
+from ..deps import (
+    Principal,
+    get_principal,
+    get_project_session,
+    project_tenant,
+)
 from ..errors import AtheraError, Forbidden, NotFound
 from ..models.collaboration import ProjectInvitation, ProjectMemberEvent
 from ..models.portfolio import ProjectDecision, ProjectMember, ResearchProject
@@ -51,6 +56,7 @@ from ..schemas.team import (
     MemberResponse,
     MemberRoleRequest,
     PendingActionResponse,
+    ProjectAccessResponse,
     ProxyConsentRequest,
     SelfConsentRequest,
     VocabularyResponse,
@@ -178,16 +184,64 @@ async def _members_with_permissions(
     ]
 
 
+# ════════════════════ ما يملكه الطالبُ في البحث ════════════════════
+
+@router.get("/projects/{project_id}/access", response_model=ProjectAccessResponse)
+async def project_access(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_project_session),
+) -> ProjectAccessResponse:
+    """يقرأ ما يملكه الطالبُ في هذا البحث — **ولا يكتب شيئًا**.
+
+    وهو مسارٌ تحتاجه الشاشةُ لتكفَّ عن عرض ما لا يعمل. و«لا يُعرض» ليس
+    حدَّ أمان: كلُّ مسارٍ خلفَه يسأل عن صلاحيّته بنفسه كما منذ RC-T1A،
+    وإخفاءُ الزرّ صدقٌ في العرض لا سدٌّ في الطريق.
+
+    ## ولا يُنشئ عضويّةً
+
+    فـ`access_for` تُنشئ عضويّةَ المالك عند الحاجة — وذاك صحيحٌ في مسارٍ
+    يُغيّر فريقًا. **وفتحُ صفحةٍ لا يكتب صفًّا**، فيُقرأ عبر
+    `ensure_project_access` وحدها.
+
+    ## والوصلةُ تُعلَن كما في «أبحاثي»
+
+    فبطاقةُ البحث وصفحتُه يقرآن المفردةَ نفسَها: `owner` أو
+    `collaborator`. وافتراقُ البابين على بحثٍ واحد عطبٌ لا حالةٌ طرفيّة.
+    """
+    tenant_id = project_tenant(session, principal)
+    access = await collaboration.ensure_project_access(
+        session, tenant_id=tenant_id, project_id=project_id,
+        user_id=principal.user_id, not_found_code="team.project_not_found")
+    # الدورُ وحالُ الصفِّ للعرض وحده — **ولا يُشتقّ منهما إذنٌ**. وصاحبُ
+    # البحث قد لا يكون له صفٌّ أصلًا، فيُردّ `null` ولا تُختلق عضويّة.
+    member = await collaboration.member_for(
+        session, project_id=project_id, user_id=principal.user_id)
+    keys = sorted(access.permissions)
+    return ProjectAccessResponse(
+        project_id=project_id, is_owner=access.is_owner,
+        relationship="owner" if access.is_owner else "collaborator",
+        role=member.role if member is not None else None,
+        access_state=member.access_state if member is not None else None,
+        permissions=keys,
+        can_manage_team=access.allows("manage_team"),
+        can_manage_sources=access.allows("manage_sources"),
+        can_manage_data=access.allows("manage_data"),
+        can_manage_tasks=access.allows("manage_tasks"),
+        can_manage_submission=access.allows("manage_submission"),
+    )
+
+
 # ═══════════════════════════ الأعضاء ═══════════════════════════
 
 @router.get("/projects/{project_id}/members", response_model=list[MemberResponse])
 async def list_members(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[MemberResponse]:
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="view_project")
     return await _members_with_permissions(session, project_id, principal.locale)
 
@@ -198,7 +252,7 @@ async def add_member(
     project_id: uuid.UUID,
     payload: MemberCreateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     """يسجّل مساهمًا **باسمه وحده** — ولا يربط حسابًا.
 
@@ -206,7 +260,7 @@ async def add_member(
     المسار يقبل `user_id` من جسم الطلب، فكان يربط زميلًا ببحثٍ لم يدخله.
     """
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     if payload.role not in team.MEMBER_ROLES:
         raise AtheraError("team.unknown_member_role", status_code=422, role=payload.role)
@@ -217,7 +271,7 @@ async def add_member(
         raise AtheraError("team.invalid_member", status_code=422, detail=str(exc)) from exc
 
     row = ProjectMember(
-        tenant_id=principal.tenant_id, project_id=project_id,
+        tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=None, display_name=payload.display_name.strip(),
         role=payload.role, credit_roles=payload.credit_roles or None,
         access_state="active", consent_state="not_requested", is_author=False,
@@ -226,13 +280,13 @@ async def add_member(
     await session.flush()
 
     await collaboration.record_member_event(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         member_id=row.id, event_kind="accepted", actor_user_id=principal.user_id,
         state_after={"role": payload.role, "credit_roles": payload.credit_roles,
                      "account_linked": False},
         note_ar="مساهم بلا حساب: لا يدخل ولا يوافق حتى يُدعى ويقبل بنفسه.")
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="team.member_added",
+        session, tenant_id=project_tenant(session, principal), action="team.member_added",
         object_type="project_member", object_id=row.id, actor_user_id=principal.user_id,
         state_after={"role": payload.role, "credit_roles": payload.credit_roles,
                      "account_linked": False},
@@ -249,15 +303,15 @@ async def change_member_role(
     member_id: uuid.UUID,
     payload: MemberRoleRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     """يغيّر الدور — **ولا يمسّ الصلاحيات**؛ لكلٍّ منهما طلبُه."""
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     member = await _member_in(session, project_id, member_id)
     await collaboration.change_role(
-        session, tenant_id=principal.tenant_id, member=member,
+        session, tenant_id=project_tenant(session, principal), member=member,
         actor_user_id=principal.user_id, role=payload.role)
     return _member(member, await collaboration.permissions_of(
         session, member_id=member.id), principal.locale)
@@ -270,14 +324,14 @@ async def set_member_permissions(
     member_id: uuid.UUID,
     payload: MemberPermissionsRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     member = await _member_in(session, project_id, member_id)
     granted = await collaboration.set_permissions(
-        session, tenant_id=principal.tenant_id, member=member,
+        session, tenant_id=project_tenant(session, principal), member=member,
         actor_user_id=principal.user_id, keys=payload.permissions)
     return _member(member, granted, principal.locale)
 
@@ -289,7 +343,7 @@ async def set_member_credit(
     member_id: uuid.UUID,
     payload: MemberCreditRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     """§24 — إقرارُ أدوار CRediT.
 
@@ -301,14 +355,14 @@ async def set_member_credit(
     # صاحبُ الإقرار يعدّل إقراره بلا صلاحية إدارة — وغيرُه يحتاجها.
     if member.user_id != principal.user_id:
         await collaboration.require_permission(
-            session, tenant_id=principal.tenant_id, project_id=project_id,
+            session, tenant_id=project_tenant(session, principal), project_id=project_id,
             user_id=principal.user_id, permission="manage_team")
     else:
         await collaboration.require_permission(
-            session, tenant_id=principal.tenant_id, project_id=project_id,
+            session, tenant_id=project_tenant(session, principal), project_id=project_id,
             user_id=principal.user_id, permission="view_project")
     await collaboration.set_credit_roles(
-        session, tenant_id=principal.tenant_id, member=member,
+        session, tenant_id=project_tenant(session, principal), member=member,
         actor_user_id=principal.user_id, roles=payload.credit_roles)
     return _member(member, await collaboration.permissions_of(
         session, member_id=member.id), principal.locale)
@@ -321,18 +375,18 @@ async def declare_member_authorship(
     member_id: uuid.UUID,
     payload: AuthorshipDeclarationRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     """**عضويةُ الفريق ليست تأليفًا.** والتأليفُ إعلانٌ صريحٌ يُنسب إلى معلنه.
 
     والإعلانُ وحده لا يكفي: الموافقةُ بعده، ولا يملكها إلّا صاحبُها.
     """
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     member = await _member_in(session, project_id, member_id)
     await collaboration.declare_authorship(
-        session, tenant_id=principal.tenant_id, member=member,
+        session, tenant_id=project_tenant(session, principal), member=member,
         actor_user_id=principal.user_id, is_author=payload.is_author,
         position=payload.author_position)
     return _member(member, await collaboration.permissions_of(
@@ -346,10 +400,10 @@ async def change_member_access(
     member_id: uuid.UUID,
     payload: MemberAccessRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     member = await _member_in(session, project_id, member_id)
     # **لا يُوقف أحدٌ آخرَ مديري الفريق.** وبحثٌ بلا من يديره لا يُستعاد
@@ -357,7 +411,7 @@ async def change_member_access(
     if payload.access_state != "active" and member.user_id is not None:
         await _refuse_if_last_team_manager(session, project_id, member)
     await collaboration.set_access_state(
-        session, tenant_id=principal.tenant_id, member=member,
+        session, tenant_id=project_tenant(session, principal), member=member,
         actor_user_id=principal.user_id, state=payload.access_state)
     return _member(member, await collaboration.permissions_of(
         session, member_id=member.id), principal.locale)
@@ -389,7 +443,7 @@ async def _refuse_if_last_team_manager(
 async def leave_project(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     """يخرج الشريكُ بنفسه — **وأثرُه يبقى**.
 
@@ -397,11 +451,11 @@ async def leave_project(
     تأليفٍ سُجِّلت تبقى كما سُجِّلت: هي واقعةٌ وقعت.
     """
     access = await collaboration.access_for(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id)
     await _refuse_if_last_team_manager(session, project_id, access.member)
     await collaboration.set_access_state(
-        session, tenant_id=principal.tenant_id, member=access.member,
+        session, tenant_id=project_tenant(session, principal), member=access.member,
         actor_user_id=principal.user_id, state="removed", left_voluntarily=True)
     return _member(access.member, access.permissions, principal.locale)
 
@@ -414,15 +468,15 @@ async def request_member_consent(
     project_id: uuid.UUID,
     member_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     """يطلب الموافقة — **ولا يمنحها**. والفرقُ هو كلُّ الموضوع."""
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     member = await _member_in(session, project_id, member_id)
     await collaboration.request_consent(
-        session, tenant_id=principal.tenant_id, member=member,
+        session, tenant_id=project_tenant(session, principal), member=member,
         actor_user_id=principal.user_id)
     return _member(member, await collaboration.permissions_of(
         session, member_id=member.id), principal.locale)
@@ -433,7 +487,7 @@ async def record_own_consent(
     project_id: uuid.UUID,
     payload: SelfConsentRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     """§24 — **موافقتُك أنت، ولا يقبل هذا المسار اسمَ أحدٍ سواك.**
 
@@ -444,10 +498,10 @@ async def record_own_consent(
     ليست موافقة.
     """
     access = await collaboration.access_for(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id)
     await collaboration.record_self_consent(
-        session, tenant_id=principal.tenant_id, member=access.member,
+        session, tenant_id=project_tenant(session, principal), member=access.member,
         actor_user_id=principal.user_id, granted=payload.granted)
     return _member(access.member, access.permissions, principal.locale)
 
@@ -459,7 +513,7 @@ async def record_administrative_consent(
     member_id: uuid.UUID,
     payload: ProxyConsentRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MemberResponse:
     """المسارُ الإداري — **منفصلٌ، معلَنٌ، مُدقَّق، ويلزمه سند**.
 
@@ -471,7 +525,7 @@ async def record_administrative_consent(
     وما لا يفعله: أن يبدو ذاتيًّا. القيدُ في القاعدة يمنع ذلك ولو أمره كود.
     """
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     member = await _member_in(session, project_id, member_id)
     # **ولا يسجّل أحدٌ موافقتَه هو من هذا الباب.** فمسارٌ إداريٌّ يقبل صاحبَه
@@ -479,7 +533,7 @@ async def record_administrative_consent(
     if member.user_id is not None and member.user_id == principal.user_id:
         raise Forbidden("team.use_the_personal_consent_route")
     await collaboration.record_administrative_consent(
-        session, tenant_id=principal.tenant_id, member=member,
+        session, tenant_id=project_tenant(session, principal), member=member,
         actor_user_id=principal.user_id, evidence_ar=payload.evidence_ar)
     return _member(member, await collaboration.permissions_of(
         session, member_id=member.id), principal.locale)
@@ -505,10 +559,10 @@ def _invitation(row: ProjectInvitation, locale: str) -> InvitationResponse:
 async def list_invitations(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[InvitationResponse]:
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     rows = (
         await session.execute(
@@ -526,7 +580,7 @@ async def create_invitation(
     project_id: uuid.UUID,
     payload: InvitationCreateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> IssuedInvitationResponse:
     """يدعو باحثًا — **ولا يضيفه**. والفرقُ أنّ الطرف الآخر يملك القرار.
 
@@ -534,11 +588,11 @@ async def create_invitation(
     قراءةٍ بعدها، ولا يُخزَّن خامًا، ولا يُكتب في سجلّ تدقيق.
     """
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     await _require_project(session, project_id)
     issued = await collaboration.invite_member(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         inviter_user_id=principal.user_id, email=payload.email,
         display_name=payload.display_name, role=payload.role,
         permissions=payload.permissions)
@@ -552,13 +606,13 @@ async def revoke_invitation(
     project_id: uuid.UUID,
     invitation_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> InvitationResponse:
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="manage_team")
     row = await collaboration.revoke_invitation(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         invitation_id=invitation_id, actor_user_id=principal.user_id)
     return _invitation(row, principal.locale)
 
@@ -623,7 +677,7 @@ async def decline_invitation(
 async def list_member_events(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[MemberEventResponse]:
     """كيف صار الفريق إلى ما هو عليه — لا ما هو عليه فقط.
 
@@ -631,7 +685,7 @@ async def list_member_events(
     وما الذي كان قبله.
     """
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="view_project")
     rows = (
         await session.execute(
@@ -674,7 +728,7 @@ def _decision(row: ProjectDecision, superseded_by: dict[uuid.UUID, uuid.UUID],
 async def list_decisions(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[DecisionResponse]:
     """**سجلُّ القرارات** — السلسلة كاملة، المنسوخ والناسخ معًا.
 
@@ -685,7 +739,7 @@ async def list_decisions(
     وإخفاءُ المنسوخ يجعل السجل يبدو كأن الرأي الحالي هو الرأي الوحيد.
     """
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="view_project")
     rows = (
         await session.execute(
@@ -704,10 +758,10 @@ async def record_decision(
     project_id: uuid.UUID,
     payload: DecisionCreateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> DecisionResponse:
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="edit_research_content")
     if payload.decision_kind not in team.DECISION_KINDS:
         raise AtheraError("team.unknown_decision_kind", status_code=422,
@@ -726,7 +780,7 @@ async def record_decision(
             raise AtheraError("team.decision_other_project", status_code=422)
 
     row = ProjectDecision(
-        tenant_id=principal.tenant_id, project_id=project_id,
+        tenant_id=project_tenant(session, principal), project_id=project_id,
         decision_kind=payload.decision_kind, statement_ar=payload.statement_ar,
         statement_en=payload.statement_en, gate=payload.gate,
         supersedes_id=payload.supersedes_id,
@@ -736,7 +790,7 @@ async def record_decision(
     await session.flush()
 
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="team.decision_recorded",
+        session, tenant_id=project_tenant(session, principal), action="team.decision_recorded",
         object_type="project_decision", object_id=row.id, actor_user_id=principal.user_id,
         state_after={"kind": payload.decision_kind,
                      "supersedes": str(payload.supersedes_id) if payload.supersedes_id else None},
@@ -759,7 +813,7 @@ _PENDING_LABELS: dict[str, tuple[str, str]] = {
 async def decision_inbox(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[PendingActionResponse]:
     """**ما يحتاج فعلًا الآن** — لا ما قرّره الفريق يومًا.
 
@@ -771,7 +825,7 @@ async def decision_inbox(
     تجعل الشريك يرى بندًا لا يستطيع إغلاقه، فيتعلّم تجاهل القائمة.
     """
     await collaboration.require_permission(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission="view_project")
 
     items: list[PendingActionResponse] = []

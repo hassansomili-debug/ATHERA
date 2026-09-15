@@ -43,7 +43,13 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..deps import Principal, get_principal, get_session
+from ..deps import (
+    Principal,
+    get_principal,
+    get_project_session,
+    get_session,
+    project_tenant,
+)
 from ..errors import AtheraError, NotFound
 from ..models.portfolio import ResearchProject
 from ..models.project_management import (
@@ -166,7 +172,7 @@ async def _project(session: AsyncSession, principal: Principal,
     موجود» يسرّب وجودَ بحوث غيرك — وهو تسريبٌ بذاته.
     """
     return (await collaboration.ensure_project_access(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission=permission,
         not_found_code="project_management.project_not_found")).project
 
@@ -317,7 +323,7 @@ async def read_vocabulary(
 async def project_dashboard(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectDashboardView:
     """ما حالُ البحث، وما الذي يحتاج انتباهك الآن؟
 
@@ -325,7 +331,7 @@ async def project_dashboard(
     والخدمة في سنغافورة والقاعدة في مومباي، فكل عبارةٍ زائدة ثلث ثانية في
     شاشةٍ يُفترض أن تُجيب فورًا.
     """
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     project = await _project(session, principal, project_id)
     now = _now()
 
@@ -391,7 +397,7 @@ async def update_plan(
     project_id: uuid.UUID,
     payload: PlanUpdateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> TimelineView:
     """تواريخُ الخطّة — بدايةً وهدفًا.
 
@@ -399,7 +405,7 @@ async def update_plan(
     لا رقابةٌ على ساعاته. وتاريخُ الهدف يُكتب في العمود القائم
     `research_projects.target_date` ولا يُنسخ إلى عمودٍ ثانٍ.
     """
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     project = await _project(session, principal, project_id, permission=TASKS)
     plan = await store.ensure_plan(session, tenant_id=tid, project_id=project_id)
 
@@ -439,10 +445,10 @@ async def update_plan(
 async def project_timeline(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> TimelineView:
     """الخطُّ الزمني: تواريخُ الخطّة، والمَعالم، وتاريخُ المراحل."""
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     project = await _project(session, principal, project_id)
     plan = await store.plan_for(session, tenant_id=tid, project_id=project_id)
     milestones = await store.milestone_rows(session, tenant_id=tid,
@@ -461,10 +467,10 @@ async def project_timeline(
 async def read_stage(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectStageView:
     """المرحلةُ الحالية والمقترَحُ بعدها — **وهما حقلان لا حقل**."""
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     await _project(session, principal, project_id)
     plan = await store.plan_for(session, tenant_id=tid, project_id=project_id)
     if plan is None:
@@ -481,7 +487,7 @@ async def confirm_stage(
     project_id: uuid.UUID,
     payload: StageConfirmRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectStageView:
     """**اعتمادُ المرحلة فعلُ الباحث** — وهو المسار الوحيد الذي يغيّرها.
 
@@ -492,7 +498,7 @@ async def confirm_stage(
     وما كانت المنصّة تقترحه لحظتها يُحفظ معها، فيُقرأ بعد شهرٍ أنّ الباحث
     خالف الاقتراح، لا أنّ الاقتراح لم يكن.
     """
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     await _project(session, principal, project_id, permission=EDIT)
     plan = await store.ensure_plan(session, tenant_id=tid, project_id=project_id)
     milestones = await store.milestone_rows(session, tenant_id=tid,
@@ -535,10 +541,10 @@ async def confirm_stage(
 async def read_stage_history(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> StageHistoryView:
     """تاريخُ المراحل — **وكلُّ سطرٍ فيه اعتمادُ إنسانٍ منسوبٌ إليه**."""
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     await _project(session, principal, project_id)
     events = await store.stage_history(session, tenant_id=tid, project_id=project_id)
     return StageHistoryView(
@@ -555,7 +561,7 @@ async def list_tasks(
     task_status: str | None = Query(default=None, alias="status"),
     stage: str | None = Query(default=None),
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> TasksView:
     """قائمةُ المهامّ — **ثلاثُ عباراتٍ مهما بلغ عددها**.
 
@@ -563,7 +569,7 @@ async def list_tasks(
     مهمّة: ثلاثون مهمّة تعني ثلاثين رحلةً بين سنغافورة ومومباي، وعشرَ ثوانٍ
     في شاشةٍ تبدو بسيطة.
     """
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     await _project(session, principal, project_id)
     now = _now()
     rows = await store.list_tasks(session, tenant_id=tid, project_id=project_id,
@@ -581,7 +587,7 @@ async def create_task(
     project_id: uuid.UUID,
     payload: TaskCreateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ):
     """أنشئ مهمّة.
 
@@ -589,7 +595,7 @@ async def create_task(
     `(assignee_member_id, project_id)`. والفحص هنا يجعل الردّ رسالةً مفهومة
     بدل انتهاكِ قيدٍ يصل الباحث خطأً عامًّا.
     """
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     await _project(session, principal, project_id, permission=TASKS)
 
     if payload.assignee_member_id is not None:
@@ -638,14 +644,14 @@ async def update_task(
     task_id: uuid.UUID,
     payload: TaskUpdateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ):
     """عدِّل مهمّة — حالًا أو موعدًا أو مُسنَدًا إليه.
 
     و**«مكتملة» تحمل وقتها**: القيد في القاعدة يرفض إتمامًا بلا وقت، فلا
     يبقى حسابُ التأخّر معلَّقًا على عمودٍ فارغ.
     """
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     await _project(session, principal, project_id, permission=TASKS)
     task = await store.task_by_id(session, tenant_id=tid, project_id=project_id,
                                   task_id=task_id)
@@ -741,14 +747,14 @@ async def update_task(
 async def read_task_suggestions(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> TaskSuggestionsView:
     """**معاينةٌ لا تكتب شيئًا.**
 
     ولا صفَّ يُنشأ من هذه النقطة، ولا تُسنَد مهمّةٌ إلى أحد. والمسار كاملًا:
     اقتراح ← معاينة ← يقبله الباحث ← تُنشأ المهمّة عبر `POST /tasks`.
     """
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     await _project(session, principal, project_id)
     now = _now()
 
@@ -786,9 +792,9 @@ async def read_task_suggestions(
 async def read_milestones(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MilestonesView:
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     await _project(session, principal, project_id)
     rows = await store.milestone_rows(session, tenant_id=tid, project_id=project_id)
     return MilestonesView(project_id=project_id,
@@ -803,7 +809,7 @@ async def set_milestone(
     milestone_key: str,
     payload: MilestoneUpdateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MilestoneView:
     """اعتمِد مَعْلَمًا أو ضع له موعدًا.
 
@@ -811,7 +817,7 @@ async def set_milestone(
     الآخر. ولا يُستنتج الإتمام من زيارة صفحة ولا من رفع ملف: لو استُنتج
     لصار «اكتملت مراجعة الأدبيات» مكتوبًا في سجلٍّ لأن أحدًا فتح شاشة.
     """
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     await _project(session, principal, project_id, permission=TASKS)
     if milestone_key not in MILESTONES:
         raise NotFound("project_management.milestone_unknown")
@@ -899,7 +905,7 @@ async def read_trash(
 async def _deletion_preview(session: AsyncSession, principal: Principal,
                             project_id: uuid.UUID) -> DeletionPreviewView:
     project = await store.project_in_trash(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     if project is None:
         # بحثٌ ليس في السلّة لا يُسأل عن إتلافه — والحذف الظاهر يسبقه دائمًا.
         raise NotFound("project_management.project_not_in_trash")
@@ -910,12 +916,12 @@ async def _deletion_preview(session: AsyncSession, principal: Principal,
     # أزاله غيرُك. ومعاينةُ الإتلاف تعدّ صفوف البحث كلَّها، وهي معلومةٌ
     # عن بحثٍ لا عن سلّة.
     if await collaboration.project_permissions(
-            session, tenant_id=principal.tenant_id, project_id=project_id,
+            session, tenant_id=project_tenant(session, principal), project_id=project_id,
             user_id=principal.user_id) is None:
         raise NotFound("project_management.project_not_in_trash")
 
     counts = await store.dependency_counts(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     call = retention.verdict()
     locale = principal.locale
     return DeletionPreviewView(
@@ -940,7 +946,7 @@ async def _deletion_preview(session: AsyncSession, principal: Principal,
 async def deletion_preview(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> DeletionPreviewView:
     """**ماذا يُتلَف لو أُتلف هذا البحث؟** — بعشرة أعدادٍ باسمها، قبل الزرّ.
 
@@ -955,7 +961,7 @@ async def deletion_preview(
 async def permanent_delete(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> DeletionPreviewView:
     """الإتلاف الدائم — **موقوفٌ، ويُقال لماذا**.
 
