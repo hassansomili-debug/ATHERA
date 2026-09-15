@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from .errors import Unauthorized
 from sqlalchemy.sql import text
 
 from .config import get_settings
@@ -140,14 +142,33 @@ async def tenant_session(tenant_id: UUID | None, actor_id: UUID | None = None) -
 # **وأساسُ `view_project` شرطٌ في الجسر نفسِه**: صلاحيةُ فعلٍ وحدها لا
 # تنقل أحدًا إلى مستأجرٍ آخر. و`access_state = 'active'` كذلك — فالموقوفُ
 # والمُزال لا يعبُران.
+# **وتماسكُ الفاعل بمستأجره شرطٌ قبل كلّ شيء.**
+#
+# فالسياقُ في الإنتاج يأتي من رمزٍ واحدٍ موقَّع: الفاعلُ ومستأجرُه
+# الأصليّ من `sub` و`tid` معًا، فلا يفترقان. لكنّ **البِنيةَ الأمنيّةَ
+# نفسَها لا يصحّ أن تقبل زوجًا غيرَ متماسك** كأنّه تفويضٌ صحيح: من ينادي
+# هذه الدالّةَ بفاعلٍ ومستأجرٍ لا ينتمي إليه يجب أن يُردّ، لا أن يُخدَم.
+#
+# و`memberships` هي علاقةُ الانتماء المؤسّسيّ المُعتمدة، وهي محكومةٌ
+# بعزل المستأجر — فتُقرأ هنا **قبل** إعادة الربط، في سياق المستأجر
+# الأصليّ، حيث يرى الفاعلُ انتماءَه هو.
+#
+# وهو شرطٌ **في الاستعلام نفسِه**: لا عبارةَ ثانية، ولا ذهابَ وإياب زائد.
+# وتُقرأ الحقيقتان في **عبارةٍ واحدة**: أمتماسكٌ هذا السياق؟ وأين يعيش
+# هذا البحثُ بالنسبة لصاحبه؟ فالفصلُ بينهما لازمٌ — «لا تماسك» تُرَدّ،
+# و«لا عضويّة» تُترك للحارس — والذهابُ مرّتين ثمنُه ذهابٌ وإياب.
 _PROJECT_SCOPE = text(
-    "SELECT m.tenant_id FROM project_members m "
-    "  JOIN project_member_permissions p "
-    "    ON p.member_id = m.id AND p.permission_key = 'view_project' "
-    " WHERE m.project_id = :project_id "
-    "   AND m.user_id = app_current_actor() "
-    "   AND m.access_state = 'active' "
-    " LIMIT 1"
+    "SELECT "
+    "  EXISTS (SELECT 1 FROM memberships hm "
+    "           WHERE hm.user_id = app_current_actor() "
+    "             AND hm.tenant_id = app_current_tenant()) AS coherent, "
+    "  (SELECT m.tenant_id FROM project_members m "
+    "     JOIN project_member_permissions p "
+    "       ON p.member_id = m.id AND p.permission_key = 'view_project' "
+    "    WHERE m.project_id = :project_id "
+    "      AND m.user_id = app_current_actor() "
+    "      AND m.access_state = 'active' "
+    "    LIMIT 1) AS project_tenant"
 )
 
 
@@ -181,6 +202,12 @@ async def project_session(
 
     **وصاحبُ البحث لا يُشترط له صفُّ عضويّة**: لا مطابقةَ هنا فلا ربط،
     ويبقى في مستأجره — وهو مستأجرُ بحثه أصلًا.
+
+    ## وزوجٌ غيرُ متماسكٍ لا يُخدَم
+
+    ولا يكفي أن يكون الفاعلُ صحيحًا: يجب أن يكون **منتميًا إلى المستأجر
+    الذي فُتحت به الجلسة**. فمن نادى هذه الدالّةَ بفاعلٍ ومستأجرٍ لا صلةَ
+    بينهما رُدَّ — انظر `_PROJECT_SCOPE`.
     """
     async with SessionFactory() as session:
         async with session.begin():
@@ -205,8 +232,20 @@ async def project_session(
             # عناصر قائمة `SELECT` غيرُ مضمونٍ في PostgreSQL، والمُسنَد
             # يقرأ `app_current_actor()` — فدمجُهما يجعل الصحّةَ رهنَ
             # ترتيبٍ لم يَعِد به أحد.
-            scope = (await session.execute(
-                _PROJECT_SCOPE, {"project_id": str(project_id)})).scalar_one_or_none()
+            coherent, scope = (await session.execute(
+                _PROJECT_SCOPE, {"project_id": str(project_id)})).one()
+
+            # **وزوجٌ غيرُ متماسكٍ يُرَدّ، ولا يُخدَم بسياقٍ مُمرَّر.**
+            #
+            # ولو اكتُفي بترك الربط لَما كفى: من ينادي هذه الدالّةَ بفاعلٍ
+            # ومستأجرٍ لا صلةَ بينهما **قد يُمرّر مستأجرَ البحث نفسَه**،
+            # فتبقى الجلسةُ فيه ويُجيزه الحارسُ بحقّ — لأنّ عضويّتَه في
+            # البحث حقيقية. فالمنعُ يقع هنا، عند بناء السياق، لا بعده.
+            #
+            # وفي الإنتاج لا يقع هذا أصلًا: الفاعلُ ومستأجرُه من رمزٍ
+            # واحدٍ موقَّع. لكنّ البِنيةَ لا تتّكل على مَن يناديها.
+            if tenant_id is not None and actor_id is not None and not coherent:
+                raise Unauthorized("auth.invalid_credentials")
 
             if scope is not None and scope != tenant_id:
                 await session.execute(

@@ -74,6 +74,29 @@ async def _external_member(owner, guest, project_id, *, permissions):
     return member
 
 
+async def _member(owner, person, project_id, *, permissions, role="co_author"):
+    """عضوٌ يُنشأ بالمسار القائم — دعوةً تُصدر وتُقبل، لا صفًّا يُدسّ بيد."""
+    from athera_api.db import tenant_session
+    from athera_api.models.identity import User
+    from athera_api.services import collaboration
+
+    from sqlalchemy import select
+
+    async with tenant_session(owner["tenant_id"], owner["user_id"]) as session:
+        email = (await session.execute(
+            select(User.email).where(User.id == person["user_id"]))).scalar_one()
+        issued = await collaboration.invite_member(
+            session, tenant_id=owner["tenant_id"], project_id=project_id,
+            inviter_user_id=owner["user_id"], display_name="عضوٌ في الفريق",
+            email=email, role=role, permissions=list(permissions))
+        token = issued.token
+
+    async with tenant_session(owner["tenant_id"], person["user_id"]) as session:
+        return await collaboration.accept_invitation(
+            session, tenant_id=owner["tenant_id"], token=token,
+            accepting_user_id=person["user_id"])
+
+
 async def _set_permissions(owner, member, permissions):
     from athera_api.db import tenant_session
     from athera_api.services import collaboration
@@ -114,8 +137,18 @@ async def bridge(two_tenants):
 
     member = await _external_member(owner, guest, project_id,
                                     permissions=[VIEW, "manage_data"])
+    # **وعضوٌ حقيقيٌّ في مستأجر البحث وليس صاحبَه** — فسلوكُ المالك لا
+    # يُثبت سلوكَ العضو، والأوّلُ يمرّ من بابٍ آخر أصلًا.
+    inside = await _second_user(owner["tenant_id"], email=f"in-{suffix}@example.test")
+    inside_member = await _member(owner, inside, project_id, permissions=[VIEW])
+    # وعضوٌ في المستأجر نفسِه **بلا أساسِ الرؤية**.
+    bare = await _second_user(owner["tenant_id"], email=f"bare-{suffix}@example.test")
+    bare_member = await _member(owner, bare, project_id, permissions=["manage_data"])
+
     return World(owner=owner, guest=guest, member=member, colleague=colleague,
-                 outsider=outsider, project_id=project_id, suffix=suffix)
+                 outsider=outsider, inside=inside, inside_member=inside_member,
+                 bare=bare, bare_member=bare_member,
+                 project_id=project_id, suffix=suffix)
 
 
 # ═════════ ١–٣ · مَن يعبُر ومَن يبقى ═════════
@@ -138,23 +171,61 @@ async def test_01_the_owner_stays_in_their_own_tenant(bridge):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_02_a_same_tenant_member_stays_put(bridge):
-    """**٢ · وزميلٌ في المستأجر نفسِه كذلك: لا ربطَ ولا استعلامَ ذا أثر.**"""
-    from athera_api.db import tenant_session
+async def test_02_a_real_same_tenant_non_owner_member_stays_put(bridge):
+    """**٢ · وعضوٌ حقيقيٌّ في مستأجر البحث — لا صاحبُه — يبقى في سياقه.**
+
+    **وكان هذا الفحصُ يُثبت غيرَ ما يُسمّي**: كان يستعمل المالكَ نفسَه عبر
+    `ensure_owner_membership`، والمالكُ يمرّ من بابٍ آخر أصلًا (نسبٌ
+    مُثبت لا عضويّة). فما كان يُقاس سلوكَ عضو.
+
+    فيُقاس الآن بعضوٍ مدعوٍّ قابلَ دعوتَه، نشِطٍ، له `view_project`، **وليس
+    صاحبَ البحث**: لا جسرَ يُعبر (المستأجرُ واحد)، والفاعلُ لا يتبدّل،
+    و`ensure_project_access` يُجيزه.
+    """
+    from athera_api.db import project_session, tenant_session
     from athera_api.services import collaboration
 
+    # وليس صاحبَ البحث — يُقاس ولا يُفترض.
     async with tenant_session(bridge.owner["tenant_id"],
-                              bridge.owner["user_id"]) as session:
-        member = await collaboration.ensure_owner_membership(
-            session, tenant_id=bridge.owner["tenant_id"],
-            project_id=bridge.project_id, actor_user_id=bridge.owner["user_id"])
-    assert member is not None
+                              bridge.inside["user_id"]) as session:
+        assert await collaboration.is_verified_owner(
+            session, project_id=bridge.project_id,
+            user_id=bridge.inside["user_id"]) is False
 
     tenant, actor = await _context(
         bridge.project_id, tenant_id=bridge.owner["tenant_id"],
-        actor_id=bridge.owner["user_id"])
+        actor_id=bridge.inside["user_id"])
     assert tenant == bridge.owner["tenant_id"]
-    assert actor == bridge.owner["user_id"]
+    assert actor == bridge.inside["user_id"]
+
+    # والحارسُ خلف الجسر يُجيزه فعلًا — فلا يكفي أن يبقى السياق.
+    async with project_session(bridge.project_id, bridge.owner["tenant_id"],
+                               bridge.inside["user_id"]) as session:
+        access = await collaboration.ensure_project_access(
+            session, tenant_id=bridge.owner["tenant_id"],
+            project_id=bridge.project_id, user_id=bridge.inside["user_id"])
+    assert access.is_owner is False
+    assert VIEW in access.permissions
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_02b_a_same_tenant_member_without_the_baseline_is_denied(bridge):
+    """وعضوٌ في المستأجر نفسِه بلا `view_project` لا يدخل البحث.
+
+    فالجسرُ لا شأنَ له هنا — المستأجرُ واحد — والمانعُ هو الحارسُ نفسُه.
+    ولو مرّ لكان أساسُ الرؤية حبرًا داخل المستأجر وحدًّا خارجه.
+    """
+    from athera_api.errors import AtheraError
+    from athera_api.db import project_session
+    from athera_api.services import collaboration
+
+    async with project_session(bridge.project_id, bridge.owner["tenant_id"],
+                               bridge.bare["user_id"]) as session:
+        with pytest.raises(AtheraError):
+            await collaboration.ensure_project_access(
+                session, tenant_id=bridge.owner["tenant_id"],
+                project_id=bridge.project_id, user_id=bridge.bare["user_id"])
 
 
 @requires_db
@@ -270,35 +341,113 @@ async def test_09_the_actor_never_changes_across_the_hop(bridge):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_10_11_the_project_tenant_comes_only_from_a_persisted_row(bridge):
-    """**١٠ و١١ · مستأجرُ البحث يُشتقّ من صفٍّ محفوظ، ولا حقلَ يختاره.**
+async def test_10_an_incoherent_actor_and_home_tenant_never_cross(bridge):
+    """**١٠ · وزوجٌ غيرُ متماسكٍ لا يُخدَم — ولو كان الفاعلُ عضوًا حقًّا.**
 
-    ويُقاس بمزجٍ مصنوع: فاعلٌ صحيحٌ مع مستأجرٍ أصليٍّ **ليس مستأجرَه**.
-    فلو كان المستأجرُ المُمرَّر يُصدَّق لَعبَر بأيّ قيمةٍ تُكتب.
+    ‏**وهذا تصحيحُ فحصٍ كان يُثبت عكسَ العقد.** كان الفحصُ السابق يقرن
+    فاعلَ الضيف بـ`outsider["tenant_id"]` ويتوقّع العبور، ويُسمّي ذلك
+    «مزجًا مصنوعًا». وكان التسميةُ خاطئةً أصلًا: `outsider` يُنشأ **في
+    مستأجر الضيف نفسِه**، فالزوجُ كان متماسكًا ولم يُقَس شيء.
+
+    والعقدُ أنّ الفاعلَ ومستأجرَه الأصليَّ يأتيان من رمزٍ واحدٍ موقَّع،
+    **والبِنيةُ لا تقبل زوجًا غيرَ متماسكٍ كأنّه تفويض**.
+
+    فتُقاس الحالاتُ الأربع:
+
+      أ · الضيفُ بمستأجره هو        → يعبُر
+      ب · الضيفُ بمستأجرٍ لا انتماءَ له فيه → لا يعبُر
+      ج · الغريبُ بمستأجرٍ ينتمي إليه بلا عضويّةِ بحث → لا يعبُر
+      د · الضيفُ بمستأجرٍ مُختلَقٍ لا وجودَ له → لا يعبُر
     """
-    # ١. فاعلُ الضيف مع مستأجرٍ أصليٍّ مختلَق — يعبُر لأنّ صفَّه يقول ذلك،
-    #    والمستأجرُ المُمرَّر لا يُستعمَل إلّا كنقطة بداية.
+    # أ · الزوجُ الصحيح.
     tenant, actor = await _context(
-        bridge.project_id, tenant_id=bridge.outsider["tenant_id"],
+        bridge.project_id, tenant_id=bridge.guest["tenant_id"],
         actor_id=bridge.guest["user_id"])
-    assert tenant == bridge.owner["tenant_id"]
+    assert tenant == bridge.owner["tenant_id"], "الزوجُ الصحيحُ لم يعبُر"
     assert actor == bridge.guest["user_id"]
 
-    # ٢. وفاعلُ الغريب مع مستأجر البحث نفسِه — **لا يعبُر ولا يبقى فيه
-    #    بحقّ**: لا صفَّ له، فلا شيءَ يُشتقّ. والحارسُ خلفه يُخفي البحث.
-    tenant, actor = await _context(
+    # ب · **فاعلٌ عضوٌ حقًّا، ومستأجرٌ لا ينتمي إليه** — وهو مستأجرُ البحث
+    #     نفسُه: أخطرُ ما قد يُنتحل.
+    #
+    # **وهذا البندُ لا يُميّز بذاته**، ويُقال صريحًا: المستأجرُ المُمرَّر
+    # هنا يساوي مستأجرَ البحث أصلًا، فـ«لم يعبُر» و«كان فيه» قيمةٌ واحدة.
+    # فالتمييزُ يقع في البند (د) بمستأجرٍ مُختلَف، وفي `test_10b` على
+    # المُسنَد مباشرةً. ويبقى هذا البندُ لأنّه يُثبت أنّ الفاعلَ لا
+    # يتبدّل، وأنّ الحارسَ خلفه يمنع.
+    from athera_api.errors import AtheraError
+
+    # **ويُرَدّ عند بناء السياق — لا يُخدَم ثمّ يُمنع.**
+    #
+    # وهذا ما كشفه الفحصُ أوّلَ مرّة: تركُ الربطِ وحده لا يكفي، لأنّ
+    # المُمرَّرَ قد يكون مستأجرَ البحث نفسَه، فتبقى الجلسةُ فيه
+    # **ويُجيزه الحارسُ بحقّ** — عضويّتُه في البحث حقيقية. فالمنعُ نُقل
+    # إلى بناء السياق.
+    with pytest.raises(AtheraError) as caught:
+        await _context(bridge.project_id, tenant_id=bridge.owner["tenant_id"],
+                       actor_id=bridge.guest["user_id"])
+    assert caught.value.status_code == 401
+
+    # ج · غريبٌ متماسكٌ مع مستأجره، بلا عضويّةِ بحث.
+    tenant, _ = await _context(
         bridge.project_id, tenant_id=bridge.outsider["tenant_id"],
         actor_id=bridge.outsider["user_id"])
     assert tenant == bridge.outsider["tenant_id"]
 
-    # ٣. ولا مُعامِلَ في التوقيع يحمل مستأجرَ بحثٍ أصلًا.
+    # د · ومستأجرٌ مُختلَقٌ لا انتماءَ لأحدٍ فيه — يُرَدّ كذلك.
+    with pytest.raises(AtheraError) as caught:
+        await _context(bridge.project_id, tenant_id=uuid.uuid4(),
+                       actor_id=bridge.guest["user_id"])
+    assert caught.value.status_code == 401
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_10b_the_coherence_predicate_is_what_refuses_the_mismatch(bridge):
+    """وما يرفض الزوجَ غيرَ المتماسك هو **مُسنَدُ التماسك** لا غيرُه.
+
+    ويُقاس مباشرةً على الاستعلام: يُشغَّل بسياقٍ متماسكٍ فيُخرج مستأجرَ
+    البحث، وبسياقٍ غيرِ متماسكٍ فيُخرج صفرًا — والفرقُ وحده هو المستأجر
+    المضبوط، لا شيءَ آخر.
+    """
+    from sqlalchemy import text
+
+    from athera_api.db import SessionFactory, _PROJECT_SCOPE
+
+    async def scope_under(tenant_id, actor_id):
+        async with SessionFactory() as session:
+            async with session.begin():
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :t, true),"
+                         "       set_config('app.actor_id', :a, true)"),
+                    {"t": str(tenant_id), "a": str(actor_id)})
+                return (await session.execute(
+                    _PROJECT_SCOPE,
+                    {"project_id": str(bridge.project_id)})).one()
+
+    coherent, scope = await scope_under(bridge.guest["tenant_id"],
+                                        bridge.guest["user_id"])
+    assert coherent is True and scope == bridge.owner["tenant_id"]
+
+    coherent, _ = await scope_under(bridge.owner["tenant_id"],
+                                    bridge.guest["user_id"])
+    assert coherent is False, "المُسنَدُ قبِل فاعلًا لا ينتمي إلى المستأجر المضبوط"
+
+    coherent, _ = await scope_under(uuid.uuid4(), bridge.guest["user_id"])
+    assert coherent is False
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_11_the_project_tenant_is_never_an_input(bridge):
+    """**١١ · ولا مُعامِلَ يحمل مستأجرَ بحثٍ — فلا حقلَ يختاره.**"""
     import inspect
 
     from athera_api.db import project_session
 
     names = set(inspect.signature(project_session.__wrapped__).parameters)
     assert names == {"project_id", "tenant_id", "actor_id"}, names
-    assert "project_tenant_id" not in names
+    for forbidden in ("project_tenant_id", "project_tenant", "scope_tenant"):
+        assert forbidden not in names
 
 
 # ═════════ ١٢ · المجمَّع ═════════
@@ -423,10 +572,17 @@ def test_14b_the_bridge_predicate_requires_the_baseline_and_active_state():
                        source.index("@asynccontextmanager\nasync def project_session")]
     for fragment in ("permission_key = 'view_project'",
                      "m.access_state = 'active'",
-                     "m.user_id = app_current_actor()"):
+                     "m.user_id = app_current_actor()",
+                     "hm.tenant_id = app_current_tenant()"):
         assert fragment in predicate, f"شرطٌ ناقصٌ في الجسر: {fragment}"
-    # ولا مستأجرَ يأتي من خارج الصفّ.
-    assert ":tenant" not in predicate and "project_tenant" not in predicate
+
+    # **ولا مستأجرَ يأتي من خارج الصفّ** — ويُقاس على **مُعامِلات الربط**
+    # لا على الكلمات: `AS project_tenant` اسمُ عمودٍ يخرج، لا قيمةٌ تدخل.
+    # وحارسٌ يمنع الكلمةَ يسقط على تسميةٍ صحيحة.
+    import re
+
+    assert set(re.findall(r":(\w+)", predicate)) == {"project_id"}, \
+        "مُعامِلُ ربطٍ غيرُ متوقَّعٍ في مُسنَد الجسر"
 
 
 @requires_db
