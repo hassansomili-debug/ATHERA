@@ -319,6 +319,144 @@ async def test_13_a_manager_can_revoke(invites):
     assert invitation.state == "revoked"
 
 
+# ═════════ دورةُ حياةِ الدعوة: حالٌ مطلقةٌ لا فرقٌ بين حالَين ═════════
+#
+# **والعطبُ الذي أُغلق هنا:** كان المُشغِّلُ يُجمّد بعضَ الأعمدة ثمّ يعود
+# مبكّرًا متى بقيت الحالُ كما هي — فيمرّ كلُّ ما ليس في قائمة التجميد.
+# فيمدّ المدعوُّ مهلةَ نفسِه، أو يكتب `member_id` والحالُ `invited`، ثمّ
+# يعتذر فيحمل الصفُّ تلويثَه معه؛ لأنّ الفحصَ كان يقارن **ما تبدّل في
+# الانتقال** لا **ما صار عليه الصفّ**.
+
+
+async def _recipient_writes(invites, assignment: str, params: dict | None = None):
+    """كتابةٌ خامّةٌ بجلسة المدعوّ — فما يمنع هو القاعدةُ لا الخدمة."""
+    from sqlalchemy import text
+
+    from athera_api.db import invitation_session
+    from athera_api.services import collaboration
+
+    token_hash = collaboration.hash_invitation_token(invites.token)
+    async with invitation_session(token_hash, invites.recipient["tenant_id"],
+                                 invites.recipient["user_id"]) as session:
+        await session.execute(
+            text(f"UPDATE {INVITATIONS} SET {assignment} WHERE id = :i"),
+            {**(params or {}), "i": str(invites.invitation_id)})
+
+
+@requires_db
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "label,assignment",
+    [
+        ("expires_at", "expires_at = expires_at + interval '30 days'"),
+        ("invited_display_name", "invited_display_name = 'اسمٌ آخر'"),
+        ("proposed_role", "proposed_role = 'principal_investigator'"),
+        ("proposed_permissions", "proposed_permissions = '[\"manage_team\"]'::jsonb"),
+        ("token_hash", "token_hash = repeat('a', 64)"),
+        ("invited_by", "invited_by = invited_user_id"),
+        ("created_at", "created_at = now()"),
+    ],
+)
+async def test_the_recipient_cannot_rewrite_the_offer_or_the_deadline(
+    invites, label, assignment,
+):
+    """**ولا يمدّ المدعوُّ مهلةَ نفسِه، ولا يرفع عرضَه.**
+
+    و`expires_at` منها: من يملك تعديلَ صفّه كان يمدّ أجلَه بلا حدّ. ولا
+    حاجةَ في المنتج إلى تعديلها بعد الإصدار — دعوةٌ انتهت يُصدَر بدلُها
+    صفٌّ جديد، وذاك ما يفعله `invite_member` بالحصاد.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    with pytest.raises(DBAPIError) as caught:
+        await _recipient_writes(invites, assignment)
+    assert "written once" in str(caught.value), (label, str(caught.value))
+
+
+@requires_db
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "label,assignment",
+    [
+        ("member_id", "member_id = :m"),
+        ("accepted_user_id", "accepted_user_id = :m"),
+        ("responded_at", "responded_at = now()"),
+    ],
+)
+async def test_a_live_invitation_carries_no_answer(invites, label, assignment):
+    """**ودعوةٌ حيّةٌ لا تحمل جوابًا ولا عضويّة — وتُقاس الحالُ مطلقةً.**
+
+    فلو اكتُفي بمقارنة ما تبدّل في الانتقال لَمرّ صفٌّ لُوِّث وهو `invited`
+    ثمّ حمل تلويثَه إلى «معتذَرٌ عنه».
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    params = {"m": str(uuid.uuid4())} if ":m" in assignment else None
+    with pytest.raises(DBAPIError) as caught:
+        await _recipient_writes(invites, assignment, params)
+    message = str(caught.value)
+    assert ("carries no answer" in message or "written with its state" in message), (
+        label, message)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_settled_invitation_that_was_not_accepted_carries_no_membership(
+    invites,
+):
+    """**ولا معتذَرٌ عنها ولا منقوضةٌ ولا منتهيةٌ تحمل ارتباطَ عضويّة.**
+
+    ويُقاس بمحاولةِ اعتذارٍ يحمل `member_id` في العبارة نفسِها — وهو
+    الطريقُ الذي كان يفلت: انتقالٌ صحيحٌ يُهرّب معه حقلًا ملوَّثًا.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    with pytest.raises(DBAPIError) as caught:
+        await _recipient_writes(
+            invites,
+            "state = 'declined', responded_at = now(), member_id = :m",
+            {"m": str(uuid.uuid4())})
+    assert "carries no membership" in str(caught.value), str(caught.value)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_accepted_invitation_must_point_at_its_own_membership(invites):
+    """**والعضويّةُ المذكورةُ هي عضويّةُ هذا الحساب في هذا البحث.**
+
+    ولا يكفي مفتاحٌ أجنبيٌّ يقول إنّها موجودة: عضويّةٌ صحيحةٌ في بحثٍ آخر
+    أو لحسابٍ آخر تُرَدّ.
+    """
+    from sqlalchemy import select, text
+    from sqlalchemy.exc import DBAPIError
+
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectMember
+
+    # عضويّةٌ حقيقيّةٌ لحسابٍ آخر في البحث نفسِه.
+    async with tenant_session(invites.owner["tenant_id"],
+                              invites.owner["user_id"]) as session:
+        foreign_member = (await session.execute(
+            select(ProjectMember.id).where(
+                ProjectMember.project_id == invites.project_id,
+                ProjectMember.user_id == invites.plain["user_id"]))).scalar_one()
+
+    from athera_api.db import invitation_session
+    from athera_api.services import collaboration
+
+    token_hash = collaboration.hash_invitation_token(invites.token)
+    async with invitation_session(token_hash, invites.recipient["tenant_id"],
+                                 invites.recipient["user_id"]) as session:
+        with pytest.raises(DBAPIError) as caught:
+            await session.execute(
+                text(f"UPDATE {INVITATIONS} SET state='accepted', "
+                     "  responded_at=now(), accepted_user_id=:a, member_id=:m "
+                     "WHERE id=:i"),
+                {"a": str(invites.recipient["user_id"]),
+                 "m": str(foreign_member), "i": str(invites.invitation_id)})
+    assert "same account, project and tenant" in str(caught.value)
+
+
 # ═════════ ١٤ و١٥ · البنيةُ والانحدار ═════════
 
 

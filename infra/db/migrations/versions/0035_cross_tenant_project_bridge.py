@@ -202,26 +202,89 @@ DECLARE
     actor uuid := app_current_actor();
     is_recipient boolean;
 BEGIN
-    -- ── هويّةُ الدعوة وعرضُها يُكتبان مرّةً ──
+    -- ══ ١ · هويّةُ الدعوة وعرضُها ومهلتُها: تُكتب مرّةً ══
     --
-    -- والعرضُ (الدورُ والصلاحيات) داخلٌ في ذلك قصدًا: دعوةٌ قُبلت على
-    -- عرضٍ ثمّ أُعيدت كتابتُه تجعل من قَبِل عضوًا بما لم يَقبله.
+    -- **والمهلةُ منها.** فمن يملك تعديلَ صفّه يمدّ مهلةَ نفسِه، ولا
+    -- حاجةَ في المنتج إلى تعديلها بعد الإصدار: دعوةٌ انتهت يُصدَر
+    -- بدلُها صفٌّ جديد.
     IF NEW.id <> OLD.id
        OR NEW.tenant_id <> OLD.tenant_id
        OR NEW.project_id <> OLD.project_id
        OR NEW.invited_email IS DISTINCT FROM OLD.invited_email
+       OR NEW.invited_display_name IS DISTINCT FROM OLD.invited_display_name
        OR NEW.invited_user_id IS DISTINCT FROM OLD.invited_user_id
        OR NEW.invited_by <> OLD.invited_by
-       OR NEW.token_hash <> OLD.token_hash
-       OR NEW.created_at <> OLD.created_at
        OR NEW.proposed_role <> OLD.proposed_role
-       OR NEW.proposed_permissions IS DISTINCT FROM OLD.proposed_permissions THEN
+       OR NEW.proposed_permissions IS DISTINCT FROM OLD.proposed_permissions
+       OR NEW.token_hash <> OLD.token_hash
+       OR NEW.expires_at <> OLD.expires_at
+       OR NEW.created_at <> OLD.created_at THEN
         RAISE EXCEPTION
-          'the identity and the offer of an invitation are written once'
+          'the identity, the offer and the deadline of an invitation are written once'
           USING ERRCODE = 'check_violation';
     END IF;
 
+    -- ══ ٢ · وحالُ الصفِّ تُقاس **مطلقةً** لا بما تغيّر منها ══
+    --
+    -- وكان الفحصُ يقارن ما تبدّل في الانتقال وحده، فيمرّ صفٌّ لُوِّث
+    -- وهو `invited` ثمّ يُعتذر عنه فيحمل تلويثَه معه. فتُقاس الحالُ
+    -- النهائيّةُ في كلّ تعديل، أيًّا كان الذي تغيّر.
+    IF NEW.state = 'invited' THEN
+        IF NEW.responded_at IS NOT NULL
+           OR NEW.accepted_user_id IS NOT NULL
+           OR NEW.member_id IS NOT NULL THEN
+            RAISE EXCEPTION
+              'a live invitation carries no answer, no account and no membership'
+              USING ERRCODE = 'check_violation';
+        END IF;
+    ELSIF NEW.state = 'accepted' THEN
+        IF NEW.responded_at IS NULL
+           OR NEW.accepted_user_id IS NULL
+           OR NEW.member_id IS NULL THEN
+            RAISE EXCEPTION
+              'an accepted invitation names its time, its account and its member'
+              USING ERRCODE = 'check_violation';
+        END IF;
+        IF NEW.invited_user_id IS NOT NULL
+           AND NEW.accepted_user_id <> NEW.invited_user_id THEN
+            RAISE EXCEPTION
+              'an invitation is accepted by the account it was issued to'
+              USING ERRCODE = 'check_violation';
+        END IF;
+        -- والعضويّةُ المذكورةُ هي عضويّةُ هذا الحساب في هذا البحث
+        -- وبمستأجره — **ولا يكفي مفتاحٌ أجنبيٌّ يقول إنّها موجودة**.
+        IF NOT EXISTS (
+            SELECT 1 FROM project_members m
+             WHERE m.id = NEW.member_id
+               AND m.project_id = NEW.project_id
+               AND m.tenant_id = NEW.tenant_id
+               AND m.user_id = NEW.accepted_user_id
+        ) THEN
+            RAISE EXCEPTION
+              'the membership an accepted invitation points to must belong to the '
+              'same account, project and tenant'
+              USING ERRCODE = 'check_violation';
+        END IF;
+    ELSE
+        -- معتذَرٌ عنها أو منقوضةٌ أو منتهية: **لا ارتباطَ عضويّةٍ بحال**.
+        IF NEW.responded_at IS NULL
+           OR NEW.accepted_user_id IS NOT NULL
+           OR NEW.member_id IS NOT NULL THEN
+            RAISE EXCEPTION
+              'a settled invitation that was not accepted carries no membership'
+              USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+
+    -- ══ ٣ · وحالٌ لم تتغيّر لا تُغيّر جوابًا ══
     IF NEW.state = OLD.state THEN
+        IF NEW.responded_at IS DISTINCT FROM OLD.responded_at
+           OR NEW.accepted_user_id IS DISTINCT FROM OLD.accepted_user_id
+           OR NEW.member_id IS DISTINCT FROM OLD.member_id THEN
+            RAISE EXCEPTION
+              'the answer to an invitation is written with its state, not after it'
+              USING ERRCODE = 'check_violation';
+        END IF;
         RETURN NEW;
     END IF;
 
@@ -240,8 +303,6 @@ BEGIN
 
     IF is_recipient THEN
         -- **المدعوُّ يقبل أو يعتذر — ولا ينقض.**
-        --
-        -- فالنقضُ إخفاءٌ لأنّه دُعي، وذاك أثرٌ يخصّ الفريقَ لا المدعوَّ.
         IF NEW.state NOT IN ('accepted', 'declined') THEN
             RAISE EXCEPTION
               'the invited account may accept or decline, not %', NEW.state
@@ -255,24 +316,6 @@ BEGIN
               'revoke or expire it'
               USING ERRCODE = 'check_violation';
         END IF;
-    END IF;
-
-    -- ── والقبولُ يحمل بيّنتَه ──
-    IF NEW.state = 'accepted' THEN
-        IF NEW.accepted_user_id IS NULL OR NEW.member_id IS NULL THEN
-            RAISE EXCEPTION 'an accepted invitation names its account and its member'
-              USING ERRCODE = 'check_violation';
-        END IF;
-        IF OLD.invited_user_id IS NOT NULL
-           AND NEW.accepted_user_id <> OLD.invited_user_id THEN
-            RAISE EXCEPTION 'an invitation is accepted by the account it was issued to'
-              USING ERRCODE = 'check_violation';
-        END IF;
-    ELSIF NEW.accepted_user_id IS DISTINCT FROM OLD.accepted_user_id
-          OR NEW.member_id IS DISTINCT FROM OLD.member_id THEN
-        -- ولا تحمل المنقوضةُ ولا المعتذَرُ عنها ارتباطَ عضويّة.
-        RAISE EXCEPTION 'only an accepted invitation carries a membership binding'
-          USING ERRCODE = 'check_violation';
     END IF;
 
     RETURN NEW;

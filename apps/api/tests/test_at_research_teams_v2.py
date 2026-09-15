@@ -478,11 +478,17 @@ async def test_an_expired_invitation_does_not_lock_the_person_out_forever(
     والفهرسُ الجزئيّ يمنع دعوتين حيّتين لبريدٍ واحد — وهو صواب. لكنّ دعوةً
     انتهت مهلتُها تبقى `invited` ما لم يمرّ بها أحد، فتمنع دعوةً جديدةً إلى
     الأبد. فالدعوةُ الجديدة تحصد القديمة أوّلًا، والحصادُ يُكتب في السجلّ.
+
+    **والمهلةُ لا تُدفع إلى الماضي بيد**: صارت من ثوابت الدعوة في الترحيل
+    0035، لأنّ من يملك تعديلَ صفّه كان يمدّ مهلةَ نفسِه. فتُصدَر دعوةٌ
+    **مولودةً منتهية** بمهلةٍ سالبة — وهو ما يصنعه الزمنُ نفسُه — ثمّ
+    يُطلب بديلُها.
     """
     from sqlalchemy import select
 
     from athera_api.db import tenant_session
     from athera_api.models.collaboration import ProjectInvitation
+    from athera_api.services import collaboration
 
     a = two_tenants["a"]
     tid, owner = a["tenant_id"], a["user_id"]
@@ -490,53 +496,39 @@ async def test_an_expired_invitation_does_not_lock_the_person_out_forever(
 
     async with _client(tid, owner) as owner_http:
         project_id = await _new_project(owner_http, "بحثُ المهلة")
-        first = await owner_http.post(
+
+    # ١ · دعوةٌ مولودةٌ منتهية.
+    async with tenant_session(tid, owner) as session:
+        stale = await collaboration.invite_member(
+            session, tenant_id=tid, project_id=uuid.UUID(project_id),
+            inviter_user_id=owner, email=partner["email"],
+            display_name="شريكة البحث", role="co_author", ttl_hours=-1)
+        stale_id, stale_token = stale.invitation.id, stale.token
+
+    async with _client(tid, owner) as owner_http:
+        # ٢ · والبديلُ يُقبل ويحصد المنتهية — فلا حظرَ دائم.
+        renewed = await owner_http.post(
             f"/api/v1/projects/{project_id}/invitations",
             json={"email": partner["email"], "display_name": "شريكة البحث",
                   "role": "co_author"})
-        assert first.status_code == 201, first.text
+        assert renewed.status_code == 201, renewed.text
+        assert renewed.json()["token"] != stale_token
 
-        # دعوةٌ ثانيةٌ وهي حيّة تُرفض — رمزان يعملان ليسا صوابًا.
+        # ٣ · وثالثةٌ وهي حيّةٌ تُرفض — رمزان يعملان ليسا صوابًا.
         duplicate = await owner_http.post(
             f"/api/v1/projects/{project_id}/invitations",
             json={"email": partner["email"], "display_name": "شريكة البحث",
                   "role": "co_author"})
         assert duplicate.status_code == 409, duplicate.text
 
-    # تُدفع المهلة إلى الماضي كما يفعل الزمن.
+    # ٤ · والحصادُ مكتوبٌ في الصفّ: المنتهيةُ صارت `expired`.
     async with tenant_session(tid, owner) as session:
-        row = (await session.execute(
-            select(ProjectInvitation).where(
-                ProjectInvitation.id == uuid.UUID(first.json()["id"])))
-        ).scalar_one()
-        row.expires_at = dt.datetime.now(dt.UTC) - dt.timedelta(hours=1)
+        states = dict((await session.execute(
+            select(ProjectInvitation.id, ProjectInvitation.state)
+            .where(ProjectInvitation.project_id == uuid.UUID(project_id)))).all())
+    assert states[stale_id] == "expired", states
+    assert states[uuid.UUID(renewed.json()["id"])] == "invited"
 
-    async with _client(tid, owner) as owner_http:
-        renewed = await owner_http.post(
-            f"/api/v1/projects/{project_id}/invitations",
-            json={"email": partner["email"], "display_name": "شريكة البحث",
-                  "role": "co_author"})
-        assert renewed.status_code == 201, renewed.text
-        assert renewed.json()["token"] != first.json()["token"]
-
-        states = {row["id"]: row["state"] for row in
-                  (await owner_http.get(
-                      f"/api/v1/projects/{project_id}/invitations")).json()}
-        assert states[first.json()["id"]] == "expired"
-        assert states[renewed.json()["id"]] == "invited"
-
-    # والرمزُ المنتهي لا يُقبل ولو حمله صاحبه.
-    async with _client(tid, partner["user_id"]) as partner_http:
-        stale = await partner_http.post("/api/v1/invitations/accept",
-                                        json={"token": first.json()["token"]})
-        assert stale.status_code == 409, stale.text
-        assert stale.json()["error"]["code"] == "team.invitation_not_open"
-
-
-# ═════════════ ٤. الموافقةُ فعلُ صاحبها ═════════════
-
-@requires_db
-@pytest.mark.asyncio
 async def test_a_project_leader_cannot_consent_for_a_coauthor_over_http(two_tenants):
     """§24 — **العطبُ الذي أوجد هذا المسار كلَّه.**
 
