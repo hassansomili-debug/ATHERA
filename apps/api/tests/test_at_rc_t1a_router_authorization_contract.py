@@ -258,7 +258,12 @@ def test_every_analysis_route_enters_through_the_single_data_scope():
     assert other == [], (
         "مساراتُ تحليلٍ لا تدخل نطاقَ بحثٍ ولا هي قائمةٌ معلَنة: "
         + ", ".join(other))
-    assert len(scoped) == 12, f"عددُ مسارات النطاق تغيّر: {len(scoped)} — {scoped}"
+    # اثنا عشرَ مسارًا للبيانات، **وشكلانِ مُعشَّشانِ في بحثهما** للفعلين
+    # اللذين لا يطلبان إدارةَ بيانات: اعتمادُ الخطّة وتفسيرُ المخرَج.
+    # فالصلاحياتُ تبقى مستقلّةً عبرَ المؤسسات كما هي داخلها.
+    assert len(scoped) == 14, f"عددُ مسارات النطاق تغيّر: {len(scoped)} — {scoped}"
+    nested = {name for name in scoped if name.endswith("_in_project")}
+    assert nested == {"approve_plan_in_project", "interpret_in_project"}, nested
     assert sorted(home) == sorted(MULTI_PROJECT), home
 
 

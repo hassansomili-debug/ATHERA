@@ -454,59 +454,122 @@ async def create_plan(
                             approved_at=None, tests=payload.tests)
 
 
+async def _approve_plan_in_scope(
+    scope: _Scope, plan_id: uuid.UUID, principal: Principal,
+) -> PlanResponse:
+    """اعتمادُ الخطّة داخلَ نطاقٍ مفتوح — **نواةٌ واحدةٌ لشكلَي المسار**.
+
+    فالمسارُ القديم يُحدّد البحثَ من الخطّة، والجديدُ يأخذه في مساره.
+    والعملُ بعد ذلك واحد: نسختان منه تفترقان بأوّل تعديل، فيصير شكلٌ
+    يقفل القائمةَ بتجزئةٍ وآخرُ ينساها.
+    """
+    row = (
+        await scope.session.execute(
+            select(AnalysisPlanRow).where(AnalysisPlanRow.id == plan_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise NotFound("analysis.plan_not_found")
+
+    tests = (
+        await scope.session.execute(
+            select(PlannedTestRow).where(PlannedTestRow.plan_id == plan_id))
+    ).scalars().all()
+    domain = plan.AnalysisPlan(
+        plan_id=str(row.id),
+        tests=[
+            plan.PlannedTest(test_key=t.test_key, test_kind=t.test_kind,
+                             variables=tuple(t.variables or ()))
+            for t in tests
+        ],
+    )
+    now = dt.datetime.now(dt.UTC)
+    try:
+        domain.approve(by=str(principal.user_id), at=now)
+    except plan.PlanError as exc:
+        raise AtheraError("analysis.cannot_approve_plan", status_code=422,
+                          detail=str(exc)) from exc
+
+    row.lock_hash = domain.lock_hash
+    row.approved_by = principal.user_id
+    row.approved_at = now
+
+    await audit.record(
+        scope.session, tenant_id=scope.tenant_id, action="analysis.plan_approved",
+        object_type="analysis_plan", object_id=row.id, actor_user_id=principal.user_id,
+        state_after={"lock_hash": domain.lock_hash, "tests": len(tests)},
+        reason="G7 — tests are frozen before execution (§9)",
+    )
+    return PlanResponse(
+        id=row.id, version_label=row.version_label, is_locked=True, approved_at=now,
+        tests=[
+            PlannedTestInput(test_key=t.test_key, test_kind=t.test_kind,
+                             variables=list(t.variables or []), note_ar=t.note_ar)
+            for t in tests
+        ],
+    )
+
+
+@router.post("/projects/{project_id}/plans/{plan_id}/approve",
+             response_model=PlanResponse)
+async def approve_plan_in_project(
+    project_id: uuid.UUID,
+    plan_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+) -> PlanResponse:
+    """§9 G7 — الاعتماد في نطاق بحثه: **الصلاحياتُ مستقلّةٌ فعلًا**.
+
+    ## ولمَ شكلٌ ثانٍ لهذا المسار
+
+    الاعتمادُ يطلب `approve_scientific_candidates` — لا `manage_data`.
+    والشكلُ القديم يُعرَّف بمعرّف الخطّة وحده، فيلزمه **تحديدُ موضع**
+    ليعرف بحثَها؛ وجسرُ تحديد الموضع (0036) مشروطٌ بإدارةِ البيانات.
+    فكان المشرفُ من مؤسسةٍ أخرى — وهو من يعتمد — يحتاج صلاحيةً لا شأنَ
+    لها بعمله: `manage_data + approve`. **وذاك نقضٌ لاستقلال الصلاحيات**،
+    ولا يجوز أن يصير دلالةَ RC-T1C.
+
+    فيُمرَّر البحثُ في المسار، فلا حاجةَ إلى تحديدِ موضع: يُعبَر إليه
+    مباشرةً، ويُسأل عن **صلاحيّة الاعتماد وحدها**.
+
+    ## والبحثُ في المسار مُنتقي نطاقٍ لا سلطة
+
+    فلا يُفتح بابٌ بذكر معرّف: `ensure_project_access` تقرّر بعد العبور.
+    **ثمّ تُطابق جذورُ الخطّة بالبحث المذكور** — فمن ذكر بحثًا يعتمد فيه
+    وخطّةً من بحثٍ آخرَ يُردّ جوابَ المعدوم، ولا يُقال أيُّهما لم يُطابق.
+    """
+    async with _scope(principal, permission=APPROVE,
+                      not_found="analysis.plan_not_found",
+                      project_id=project_id) as scope:
+        root = (
+            await scope.session.execute(
+                select(AnalysisPlanRow.project_id)
+                .where(AnalysisPlanRow.id == plan_id))
+        ).scalar_one_or_none()
+        if root != project_id:
+            raise NotFound("analysis.plan_not_found")
+        return await _approve_plan_in_scope(scope, plan_id, principal)
+
+
 @router.post("/plans/{plan_id}/approve", response_model=PlanResponse)
 async def approve_plan(
     plan_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
 ) -> PlanResponse:
-    """§9 G7 — الاعتماد يقفل القائمة بتجزئة."""
+    """§9 G7 — الاعتماد يقفل القائمة بتجزئة. **والشكلُ القديم باقٍ.**
+
+    ولا يُحوَّل ولا يُحذف: من حفظ عنوانَه يجده يعمل، وسلوكُه في المستأجر
+    الواحد كما كان بحرفه.
+
+    **وحدُّه المعلَن**: عبرَ المؤسسات يلزمه `manage_data` أيضًا — لأنّ
+    تحديدَ موضع الخطّة يمرّ بجسر البيانات. والمسارُ المُعشَّشُ في بحثه
+    هو الطريقُ القانونيُّ لذلك، وهو ما تستعمله واجهةُ المنتج متى كان
+    البحثُ معلومًا.
+    """
     # **والموافقةُ تبقى `approve_scientific_candidates`** — لا يوسّعها
     # `manage_data` ولا الجسر.
     async with _scope(principal, permission=APPROVE,
                       not_found="analysis.plan_not_found",
                       plan=plan_id) as scope:
-        row = (
-            await scope.session.execute(select(AnalysisPlanRow).where(AnalysisPlanRow.id == plan_id))
-        ).scalar_one_or_none()
-        if row is None:
-            raise NotFound("analysis.plan_not_found")
-
-        tests = (
-            await scope.session.execute(select(PlannedTestRow).where(PlannedTestRow.plan_id == plan_id))
-        ).scalars().all()
-        domain = plan.AnalysisPlan(
-            plan_id=str(row.id),
-            tests=[
-                plan.PlannedTest(test_key=t.test_key, test_kind=t.test_kind,
-                                 variables=tuple(t.variables or ()))
-                for t in tests
-            ],
-        )
-        now = dt.datetime.now(dt.UTC)
-        try:
-            domain.approve(by=str(principal.user_id), at=now)
-        except plan.PlanError as exc:
-            raise AtheraError("analysis.cannot_approve_plan", status_code=422,
-                              detail=str(exc)) from exc
-
-        row.lock_hash = domain.lock_hash
-        row.approved_by = principal.user_id
-        row.approved_at = now
-
-        await audit.record(
-            scope.session, tenant_id=scope.tenant_id, action="analysis.plan_approved",
-            object_type="analysis_plan", object_id=row.id, actor_user_id=principal.user_id,
-            state_after={"lock_hash": domain.lock_hash, "tests": len(tests)},
-            reason="G7 — tests are frozen before execution (§9)",
-        )
-        return PlanResponse(
-            id=row.id, version_label=row.version_label, is_locked=True, approved_at=now,
-            tests=[
-                PlannedTestInput(test_key=t.test_key, test_kind=t.test_kind,
-                                 variables=list(t.variables or []), note_ar=t.note_ar)
-                for t in tests
-            ],
-        )
+        return await _approve_plan_in_scope(scope, plan_id, principal)
 
 
 @router.post("/runs", response_model=RunResponse, status_code=status.HTTP_201_CREATED)
@@ -643,73 +706,124 @@ async def create_output(
         return {"id": str(row.id), "run_id": str(run_id)}
 
 
+async def _interpret_in_scope(
+    scope: _Scope, output_id: uuid.UUID, payload: InterpretationRequest,
+    principal: Principal,
+) -> InterpretationResponse:
+    """التفسيرُ داخلَ نطاقٍ مفتوح — **نواةٌ واحدةٌ لشكلَي المسار**."""
+    output = (
+        await scope.session.execute(
+            select(AnalysisOutputRow).where(AnalysisOutputRow.id == output_id))
+    ).scalar_one_or_none()
+    if output is None:
+        raise NotFound("analysis.output_not_found")
+
+    try:
+        domain = interpretation.Interpretation(
+            output_id=str(output_id), result_ar=payload.result_ar,
+            result_en=payload.result_en, statistical_ar=payload.statistical_ar,
+            theoretical_ar=payload.theoretical_ar,
+            managerial_ar=payload.managerial_ar,
+        )
+    except interpretation.InterpretationError as exc:
+        raise AtheraError("analysis.invalid_interpretation", status_code=422,
+                          detail=str(exc)) from exc
+
+    now = dt.datetime.now(dt.UTC)
+    existing = (
+        await scope.session.execute(
+            select(InterpretationRow).where(InterpretationRow.output_id == output_id))
+    ).scalar_one_or_none()
+    row = existing or InterpretationRow(
+        tenant_id=scope.tenant_id, output_id=output_id, result_ar=payload.result_ar
+    )
+    row.result_ar = payload.result_ar
+    row.result_en = payload.result_en
+    row.statistical_ar = payload.statistical_ar
+    row.theoretical_ar = payload.theoretical_ar
+    row.managerial_ar = payload.managerial_ar
+    # **ودَينٌ قائمٌ يُسجَّل ولا يُعاد تصميمُه هنا**: الكتابةُ والاعتمادُ
+    # فعلٌ واحدٌ تحت `edit_research_content`، ولا بوّابةَ اعتمادٍ مستقلّةٌ
+    # للتفسير اليوم. ولا تُصلَح دلالةُ G8 في دفعةِ تعاون.
+    row.approved_by = principal.user_id
+    row.approved_at = now
+    if existing is None:
+        scope.session.add(row)
+    await scope.session.flush()
+
+    await audit.record(
+        scope.session, tenant_id=scope.tenant_id,
+        action="analysis.interpretation_approved",
+        object_type="interpretation", object_id=row.id,
+        actor_user_id=principal.user_id,
+        state_after={"layers": domain.layers_present},
+        reason="G8 — interpretation is bound to an actual output (§18.3)",
+    )
+    return InterpretationResponse(
+        output_id=output_id,
+        layers=[
+            LayerResponse(layer=v.layer,
+                          label=_pick(principal.locale, v.label_ar, v.label_en),
+                          text_ar=v.text_ar, text_en=v.text_en)
+            for v in interpretation.layers(domain)
+        ],
+        layers_present=domain.layers_present, approved_at=now,
+    )
+
+
+@router.post("/projects/{project_id}/outputs/{output_id}/interpret",
+             response_model=InterpretationResponse)
+async def interpret_in_project(
+    project_id: uuid.UUID,
+    output_id: uuid.UUID,
+    payload: InterpretationRequest,
+    principal: Principal = Depends(get_principal),
+) -> InterpretationResponse:
+    """§18.3 / §9 G8 — التفسيرُ في نطاق بحثه: **الصلاحياتُ مستقلّة**.
+
+    فالتفسيرُ تحريرُ محتوًى علميّ (`edit_research_content`)، والمؤلِّفُ
+    المشاركُ من مؤسسةٍ أخرى يحمله ولا يحمل إدارةَ البيانات. والشكلُ
+    القديمُ يُعرَّف بمعرّف المخرَج وحده فيلزمه تحديدُ موضعٍ مشروطٌ
+    بإدارة البيانات — فكان يُطلب منه ما لا شأنَ له بعمله.
+
+    **وسلسلةُ الجذر تُتبع كاملةً**: المخرَجُ إلى تشغيلته، والتشغيلةُ إلى
+    خطّتها، والخطّةُ إلى بحثها — ويُطابق ببحث المسار أو يُردّ جوابَ
+    المعدوم.
+    """
+    async with _scope(principal, permission=EDIT,
+                      not_found="analysis.output_not_found",
+                      project_id=project_id) as scope:
+        root = (
+            await scope.session.execute(
+                select(AnalysisPlanRow.project_id)
+                .join(AnalysisRun, AnalysisRun.plan_id == AnalysisPlanRow.id)
+                .join(AnalysisOutputRow, AnalysisOutputRow.run_id == AnalysisRun.id)
+                .where(AnalysisOutputRow.id == output_id))
+        ).scalar_one_or_none()
+        if root != project_id:
+            raise NotFound("analysis.output_not_found")
+        return await _interpret_in_scope(scope, output_id, payload, principal)
+
+
 @router.post("/outputs/{output_id}/interpret", response_model=InterpretationResponse)
 async def interpret(
     output_id: uuid.UUID,
     payload: InterpretationRequest,
     principal: Principal = Depends(get_principal),
 ) -> InterpretationResponse:
-    """§18.3 / §9 G8 — أربع طبقات منفصلة بسلسلة سند."""
+    """§18.3 / §9 G8 — أربع طبقات منفصلة بسلسلة سند. **والشكلُ القديم باقٍ.**
+
+    وحدُّه المعلَن كحدِّ نظيره: عبرَ المؤسسات يلزمه `manage_data` أيضًا،
+    لأنّ تحديدَ موضع المخرَج يمرّ بجسر البيانات. والمسارُ المُعشَّشُ في
+    بحثه هو الطريقُ القانونيُّ لذلك.
+    """
     # **والتفسيرُ تحريرُ محتوًى علميّ** — `edit_research_content`، لا
     # `manage_data`. فالإحصائيُّ يُخرج النتيجة، ومن يفسّرها يحمل صلاحيةَ
     # المحتوى. وهذا الفرقُ محفوظٌ عبرَ المؤسسات كما هو داخلها.
     async with _scope(principal, permission=EDIT,
                       not_found="analysis.output_not_found",
                       output=output_id) as scope:
-        output = (
-            await scope.session.execute(
-                select(AnalysisOutputRow).where(AnalysisOutputRow.id == output_id)
-            )
-        ).scalar_one_or_none()
-        if output is None:
-            raise NotFound("analysis.output_not_found")
-
-        try:
-            domain = interpretation.Interpretation(
-                output_id=str(output_id), result_ar=payload.result_ar,
-                result_en=payload.result_en, statistical_ar=payload.statistical_ar,
-                theoretical_ar=payload.theoretical_ar, managerial_ar=payload.managerial_ar,
-            )
-        except interpretation.InterpretationError as exc:
-            raise AtheraError("analysis.invalid_interpretation", status_code=422,
-                              detail=str(exc)) from exc
-
-        now = dt.datetime.now(dt.UTC)
-        existing = (
-            await scope.session.execute(
-                select(InterpretationRow).where(InterpretationRow.output_id == output_id)
-            )
-        ).scalar_one_or_none()
-        row = existing or InterpretationRow(
-            tenant_id=scope.tenant_id, output_id=output_id, result_ar=payload.result_ar
-        )
-        row.result_ar = payload.result_ar
-        row.result_en = payload.result_en
-        row.statistical_ar = payload.statistical_ar
-        row.theoretical_ar = payload.theoretical_ar
-        row.managerial_ar = payload.managerial_ar
-        row.approved_by = principal.user_id
-        row.approved_at = now
-        if existing is None:
-            scope.session.add(row)
-        await scope.session.flush()
-
-        await audit.record(
-            scope.session, tenant_id=scope.tenant_id, action="analysis.interpretation_approved",
-            object_type="interpretation", object_id=row.id, actor_user_id=principal.user_id,
-            state_after={"layers": domain.layers_present},
-            reason="G8 — interpretation is bound to an actual output (§18.3)",
-        )
-        return InterpretationResponse(
-            output_id=output_id,
-            layers=[
-                LayerResponse(layer=v.layer,
-                              label=_pick(principal.locale, v.label_ar, v.label_en),
-                              text_ar=v.text_ar, text_en=v.text_en)
-                for v in interpretation.layers(domain)
-            ],
-            layers_present=domain.layers_present, approved_at=now,
-        )
+        return await _interpret_in_scope(scope, output_id, payload, principal)
 
 
 @router.get("/tools", response_model=list[ToolCapabilityResponse])

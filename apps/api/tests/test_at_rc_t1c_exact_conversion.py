@@ -676,3 +676,63 @@ async def test_no_privileged_resolver_backs_acceptance(db_ready):
             "SELECT rolsuper, rolbypassrls FROM pg_roles "
             "WHERE rolname = 'athera_app'"))).one()
     assert row == (False, False)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_recruitment_invitation_never_falls_back_to_email_identity(flow):
+    """**ودعوةُ الاستقطاب لا تُشبع ببريدٍ يُطابق** — الحسابُ بعينه أو لا.
+
+    ## ولمَ يُعاد تثبيت هذا الآن
+
+    تبيّن بمتصفّحٍ حقيقيّ أنّ شاشةَ الفريق تُصدر دعواتٍ **ببريد**، فقد
+    يكون `invited_user_id` فارغًا فيها؛ وسياسةُ 0035 تُجيز للحساب الذي
+    يحمل ذلك البريد أن يقرأ ويردّ. **وذاك للدعوة المباشرة وحدها.**
+
+    ودعوةُ الاستقطاب شيءٌ آخر: هي نتيجةُ تطبيقٍ بعينه، ومُشغِّلُ 0035
+    يشترط `i.invited_user_id = OLD.applicant_user_id` عند الانتقال إلى
+    «مدعوّ». فلو قُبل فيها فرعُ البريد لَصار مَن يحمل بريدًا مشابهًا —
+    أو حسابٌ ثانٍ للشخص نفسِه في مؤسسةٍ أخرى — يشبع تطبيقَ غيره.
+
+    ويُقاس بالقاعدة نفسِها: تُفرَّغ هويّةُ الدعوة، ثمّ يُحاول الانتقال.
+    """
+    from sqlalchemy import text
+
+    from athera_api.db import tenant_session
+
+    await _shortlist(flow.owner, flow.application_id)
+    _token, invitation_id, _tenant, _project, invited_user = await _convert(
+        flow.owner, flow.application_id)
+
+    # ١ · الدعوةُ المُشتقّةُ من تطبيقٍ مربوطةٌ بحساب المتقدّم **بعينه**.
+    assert invited_user == flow.candidate["user_id"]
+
+    async with tenant_session(flow.owner["tenant_id"],
+                              flow.owner["user_id"]) as session:
+        bound, email = (await session.execute(text(
+            "SELECT invited_user_id, invited_email FROM project_invitations "
+            " WHERE id = :i"), {"i": invitation_id})).one()
+    assert bound == flow.candidate["user_id"]
+    assert email, "دعوةٌ بلا بريدٍ — الفحصُ لا يقيس فرعَ البريد"
+
+    # ٢ · **والهويّةُ مُجمَّدةٌ بعد الإصدار**: لا تُفرَّغ فتنحدر إلى فرع
+    #     البريد. ولو أمكن ذلك لَصار حسابٌ ثانٍ يحمل البريدَ نفسَه —
+    #     في مؤسسةٍ أخرى — يشبع تطبيقَ غيره.
+    async with tenant_session(flow.owner["tenant_id"],
+                              flow.owner["user_id"]) as session:
+        with pytest.raises(Exception) as frozen:  # noqa: PT011 — النصُّ يُفحص
+            await session.execute(text(
+                "UPDATE project_invitations SET invited_user_id = NULL "
+                " WHERE id = :i"), {"i": invitation_id})
+    assert "immutable" in str(frozen.value).lower() or "invit" in str(frozen.value).lower()
+
+    # ٣ · والمُشغِّلُ يشترط المطابقةَ بالحساب — لا بالبريد — عند الانتقال.
+    from athera_api.db import system_session
+
+    async with system_session() as session:
+        guard = (await session.execute(text(
+            "SELECT pg_get_functiondef(oid) FROM pg_proc "
+            " WHERE proname = 'recruitment_application_guard'"))).scalar_one()
+    assert "invited_user_id = OLD.applicant_user_id" in guard
+    assert "invited_email" not in guard, (
+        "حارسُ التطبيق صار يعرف البريد — ودعوةُ الاستقطاب تُشبع بالحساب وحده")

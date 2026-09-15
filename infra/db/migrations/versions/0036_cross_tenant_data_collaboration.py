@@ -130,12 +130,27 @@ EXISTS (
 )
 """
 
+# **والتصديرُ كذلك**: نسختُه إلزامية، وتشغيلتُه اختيارية. فإن حملها
+# وجب أن يكون جذرُها جذرَ النسخة — **ولا يُعرَض معرّفُ تشغيلةٍ غريبة
+# من خلال تصديرٍ مأذونٍ من جانبه الآخر**. وكان `run_id` يُقبل من
+# العميل بلا تفويضٍ أصلًا، فصفوفٌ كهذه محتملةٌ في التاريخ.
 CHILD_TOOL_EXPORTS = """
 EXISTS (
-    SELECT 1 FROM dataset_versions v
-    JOIN datasets d ON d.id = v.dataset_id
+    SELECT 1
+      FROM dataset_versions v
+      JOIN datasets d ON d.id = v.dataset_id
      WHERE v.id = tool_exports.dataset_version_id
        AND app_can_manage_project_data(d.project_id)
+       AND (
+            tool_exports.run_id IS NULL
+            OR EXISTS (
+                SELECT 1
+                  FROM analysis_runs r
+                  JOIN analysis_plans p ON p.id = r.plan_id
+                 WHERE r.id = tool_exports.run_id
+                   AND p.project_id = d.project_id
+            )
+       )
 )
 """
 
@@ -147,22 +162,223 @@ EXISTS (
 )
 """
 
+# **والتشغيلةُ لها أبوان، فيُفحصان معًا.**
+#
+# فلو اكتُفي بجذر الخطّة لَكفى أن يكون البحثُ المأذونُ فيه بحثَ الخطّة —
+# **وتظهر تشغيلةٌ نسختُها من بحثٍ آخر**. وصفوفٌ كهذه قد تكون في القاعدة
+# منذ ما قبل هذه الدفعة: المسارُ القديم كان يفوّض الخطّةَ والنسخةَ كلًّا
+# على حدة. فالسياسةُ تشترط **وحدةَ الجذر** قبل أن تسأل عن الإذن:
+#
+#   خطّةُ التشغيلة → بحثٌ   ==   نسخةُ التشغيلة → مجموعةٌ → بحث
+#
+# وصفٌّ مختلطٌ لا يُرى من أيّ الجانبين — لا من جانب الخطّة ولا من جانب
+# البيانات. **والفشلُ مغلق**: ما لا يُثبت جذرُه لا يُعرض.
 CHILD_ANALYSIS_RUNS = """
 EXISTS (
-    SELECT 1 FROM analysis_plans p
+    SELECT 1
+      FROM analysis_plans p
+      JOIN dataset_versions v ON v.id = analysis_runs.dataset_version_id
+      JOIN datasets d ON d.id = v.dataset_id
      WHERE p.id = analysis_runs.plan_id
+       AND p.project_id = d.project_id
        AND app_can_manage_project_data(p.project_id)
 )
 """
 
+# **والمخرَجُ يرث شرطَ تشغيلته كاملًا** — لا شرطَ خطّتها وحدها. فمخرَجٌ
+# من تشغيلةٍ مختلطةٍ نتيجةٌ حُسبت على بياناتِ بحثٍ آخر، وعرضُه تحت البحث
+# المأذون يجعل رقمًا من مؤسسةٍ يُقرأ نتيجةً لمؤسسةٍ أخرى.
 CHILD_ANALYSIS_OUTPUTS = """
 EXISTS (
-    SELECT 1 FROM analysis_runs r
-    JOIN analysis_plans p ON p.id = r.plan_id
+    SELECT 1
+      FROM analysis_runs r
+      JOIN analysis_plans p ON p.id = r.plan_id
+      JOIN dataset_versions v ON v.id = r.dataset_version_id
+      JOIN datasets d ON d.id = v.dataset_id
      WHERE r.id = analysis_outputs.run_id
+       AND p.project_id = d.project_id
        AND app_can_manage_project_data(p.project_id)
 )
 """
+
+# ══════════ فحصٌ قبليٌّ على التاريخ ══════════
+#
+# **الطريقُ يُقفل للجديد، والقديمُ يبقى كما تُرك.** فالمسارُ القديم كان
+# يفوّض الخطّةَ والنسخةَ كلًّا على حدة، و`run_id` في التصدير كان يُقبل
+# بلا تفويضٍ أصلًا — فصفوفٌ مختلطةُ الجذر **محتملةٌ في القاعدة**.
+#
+# وما كان مستورًا بعزل المستأجر يصير بهذا الترحيل مرئيًّا عبرَ المؤسسات
+# من جانبه المأذون. فيُسأل التاريخُ **قبل** تثبيت السياسات:
+#
+#   • أيُّ تشغيلةٍ خطّتُها في بحثٍ ونسختُها في آخر؟
+#   • أيُّ تصديرٍ نسختُه في بحثٍ وتشغيلتُه في آخر؟
+#   • وأيُّ صفٍّ لا يوافق مستأجرُه مستأجرَ أبويه؟
+#
+# **ولا يُحذف صفٌّ ولا يُعاد كتابتُه.** بياناتُ علمٍ لا تُصلَح بترحيل:
+# الترحيلُ يتوقّف، ويُقال العددُ والمعرّفاتُ والبحوثُ — ولا حمولةَ ولا
+# بصمةَ ولا اسمَ مجموعة. ويُصالحها إنسانٌ يعرف ما جرى.
+PREFLIGHT_RUNS = """
+SELECT r.id::text, p.project_id::text, d.project_id::text
+  FROM analysis_runs r
+  JOIN analysis_plans p ON p.id = r.plan_id
+  JOIN dataset_versions v ON v.id = r.dataset_version_id
+  JOIN datasets d ON d.id = v.dataset_id
+ WHERE p.project_id <> d.project_id
+    OR r.tenant_id <> p.tenant_id
+    OR r.tenant_id <> d.tenant_id
+    OR v.tenant_id <> d.tenant_id
+ ORDER BY r.id
+"""
+
+PREFLIGHT_EXPORTS = """
+SELECT e.id::text, d.project_id::text, coalesce(p.project_id::text, '-')
+  FROM tool_exports e
+  JOIN dataset_versions v ON v.id = e.dataset_version_id
+  JOIN datasets d ON d.id = v.dataset_id
+  LEFT JOIN analysis_runs r ON r.id = e.run_id
+  LEFT JOIN analysis_plans p ON p.id = r.plan_id
+ WHERE e.tenant_id <> d.tenant_id
+    OR v.tenant_id <> d.tenant_id
+    OR (e.run_id IS NOT NULL AND (
+            r.id IS NULL
+         OR p.project_id IS DISTINCT FROM d.project_id
+         OR r.tenant_id <> e.tenant_id))
+ ORDER BY e.id
+"""
+
+
+def _preflight() -> None:
+    """يقف الترحيلُ إن كان في التاريخ صفٌّ مختلطُ الجذر — **ولا يُصلحه**."""
+    bind = op.get_bind()
+    findings: list[str] = []
+
+    mixed_runs = bind.exec_driver_sql(PREFLIGHT_RUNS).fetchall()
+    if mixed_runs:
+        findings.append(
+            f"analysis_runs: {len(mixed_runs)} mixed-root row(s)\n"
+            + "\n".join(
+                f"  run={row[0]} plan_project={row[1]} data_project={row[2]}"
+                for row in mixed_runs[:50]))
+
+    mixed_exports = bind.exec_driver_sql(PREFLIGHT_EXPORTS).fetchall()
+    if mixed_exports:
+        findings.append(
+            f"tool_exports: {len(mixed_exports)} mixed-root row(s)\n"
+            + "\n".join(
+                f"  export={row[0]} data_project={row[1]} run_project={row[2]}"
+                for row in mixed_exports[:50]))
+
+    if findings:
+        raise RuntimeError(
+            "HOLD — historical mixed-project analysis rows require "
+            "reconciliation.\n\n"
+            "0036 makes analysis rows readable across tenants from their "
+            "authorised side. A row whose two parents belong to different "
+            "projects would expose results derived from another project.\n\n"
+            "Nothing was deleted or rewritten: research data is not repaired "
+            "by a migration. Reconcile these rows, then re-run.\n\n"
+            + "\n\n".join(findings))
+
+
+# ══════════ حارسانِ في القاعدة للجديد ══════════
+#
+# **والفحصُ في الموجّه ليس حدًّا.** أُضيف إلى `POST /runs` و`POST /exports`
+# شرطُ وحدةِ الجذر، وذاك صحيحٌ ولا يكفي: موجّهٌ يُكتب غدًا، أو هجرةُ
+# بيانات، أو صفٌّ يُدسّ بجلسةٍ مشروعة — كلُّها تتجاوز شيفرةَ المسار.
+#
+# والحارسُ **بحقوق المستدعي** (لا `SECURITY DEFINER`): ما يقرؤه يخضع
+# لسياساته. وفي مسار الكتابة تكون الجلسةُ في مستأجر البحث أصلًا، فترى
+# أبوَيها بسياسة العزل نفسِها.
+RUN_GUARD_FN = """
+CREATE OR REPLACE FUNCTION analysis_run_root_guard() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    plan_project uuid;
+    plan_tenant uuid;
+    data_project uuid;
+    data_tenant uuid;
+BEGIN
+    SELECT p.project_id, p.tenant_id INTO plan_project, plan_tenant
+      FROM analysis_plans p WHERE p.id = NEW.plan_id;
+    IF plan_project IS NULL THEN
+        RAISE EXCEPTION 'analysis run references an unreadable plan';
+    END IF;
+
+    SELECT d.project_id, d.tenant_id INTO data_project, data_tenant
+      FROM dataset_versions v
+      JOIN datasets d ON d.id = v.dataset_id
+     WHERE v.id = NEW.dataset_version_id;
+    IF data_project IS NULL THEN
+        RAISE EXCEPTION 'analysis run references an unreadable dataset version';
+    END IF;
+
+    -- **جذرٌ واحدٌ أو لا تشغيلة.**
+    IF plan_project <> data_project THEN
+        RAISE EXCEPTION 'analysis run would mix two projects';
+    END IF;
+
+    -- والمستأجرُ واحدٌ في الثلاثة — فالبحثُ في مستأجرٍ واحد.
+    IF NEW.tenant_id <> plan_tenant OR NEW.tenant_id <> data_tenant THEN
+        RAISE EXCEPTION 'analysis run tenant does not match its roots';
+    END IF;
+
+    RETURN NEW;
+END;
+$$
+"""
+
+EXPORT_GUARD_FN = """
+CREATE OR REPLACE FUNCTION tool_export_root_guard() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    data_project uuid;
+    data_tenant uuid;
+    run_project uuid;
+    run_tenant uuid;
+BEGIN
+    SELECT d.project_id, d.tenant_id INTO data_project, data_tenant
+      FROM dataset_versions v
+      JOIN datasets d ON d.id = v.dataset_id
+     WHERE v.id = NEW.dataset_version_id;
+    IF data_project IS NULL THEN
+        RAISE EXCEPTION 'tool export references an unreadable dataset version';
+    END IF;
+
+    IF NEW.tenant_id <> data_tenant THEN
+        RAISE EXCEPTION 'tool export tenant does not match its dataset';
+    END IF;
+
+    -- والتشغيلةُ اختيارية؛ فإن حُملت فجذرُها جذرُ النسخة.
+    IF NEW.run_id IS NOT NULL THEN
+        SELECT p.project_id, r.tenant_id INTO run_project, run_tenant
+          FROM analysis_runs r
+          JOIN analysis_plans p ON p.id = r.plan_id
+         WHERE r.id = NEW.run_id;
+        IF run_project IS NULL THEN
+            RAISE EXCEPTION 'tool export references an unreadable run';
+        END IF;
+        IF run_project <> data_project THEN
+            RAISE EXCEPTION 'tool export would bind a foreign run';
+        END IF;
+        IF run_tenant <> NEW.tenant_id THEN
+            RAISE EXCEPTION 'tool export tenant does not match its run';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$
+"""
+
+ROOT_GUARDS = (
+    ("analysis_runs", "trg_analysis_runs_root_guard", "analysis_run_root_guard"),
+    ("tool_exports", "trg_tool_exports_root_guard", "tool_export_root_guard"),
+)
+
 
 # (الجدول، اسمُ السياسة، المُسنَد) — **قراءةٌ فقط، في كلِّ سطر**.
 LOCATOR_POLICIES = (
@@ -186,7 +402,18 @@ ANALYSIS_TABLES = (
 
 
 def upgrade() -> None:
+    # **التاريخُ يُسأل قبل أن تُفتح القراءة** — لا بعدها.
+    _preflight()
+
     op.execute(CAN_MANAGE_DATA_FN)
+
+    op.execute(RUN_GUARD_FN)
+    op.execute(EXPORT_GUARD_FN)
+    for table, trigger, function in ROOT_GUARDS:
+        op.execute(f"DROP TRIGGER IF EXISTS {trigger} ON {table}")
+        op.execute(
+            f"CREATE TRIGGER {trigger} BEFORE INSERT OR UPDATE ON {table} "
+            f"FOR EACH ROW EXECUTE FUNCTION {function}()")
 
     for table, policy, predicate in LOCATOR_POLICIES:
         op.execute(f"DROP POLICY IF EXISTS {policy} ON {table}")
@@ -208,4 +435,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     for table, policy, _predicate in LOCATOR_POLICIES:
         op.execute(f"DROP POLICY IF EXISTS {policy} ON {table}")
+    for table, trigger, function in ROOT_GUARDS:
+        op.execute(f"DROP TRIGGER IF EXISTS {trigger} ON {table}")
+        op.execute(f"DROP FUNCTION IF EXISTS {function}()")
     op.execute(DROP_CAN_MANAGE_DATA_FN)

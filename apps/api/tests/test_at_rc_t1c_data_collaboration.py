@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import uuid
 
 import pytest
@@ -894,3 +895,663 @@ async def test_24_no_analysis_policy_uses_a_broad_predicate() -> None:
         assert body not in ("true", "(true)"), f"{table}.{policy} مفتوحةٌ للكلّ"
         assert ("app_current_tenant" in body
                 or "app_can_manage_project_data" in body), (table, policy, qual)
+
+
+# ═══════ ٧ · الأبوان معًا: صفوفُ التاريخ المختلطة ═══════
+#
+# **والمسارُ الجديد يمنع الجديد، ولا يمسّ ما في القاعدة.** والمسارُ
+# القديم كان يفوّض خطّةَ التشغيلة ونسختَها كلًّا على حدة، و`run_id` في
+# التصدير كان يُقبل بلا تفويضٍ أصلًا. فما كان مستورًا بعزل المستأجر يصير
+# بـ0036 مرئيًّا عبرَ المؤسسات **من جانبه المأذون** — فيُشترط في السياسة
+# أن يكون الجذرُ واحدًا، لا أن يكون أحدُ الجذرين مأذونًا.
+
+
+@contextlib.asynccontextmanager
+async def _as_owner():
+    """اتصالُ مالكِ المخطَّط — **لمحاكاةِ تاريخٍ، لا لفتحِ باب**.
+
+    فالصفُّ المختلطُ الذي نُحاكيه كُتب قبل أن يوجد المُشغِّلُ الذي يمنعه،
+    ولا سبيلَ إلى كتابته اليوم بجلسةِ تطبيقٍ — وهذا هو المقصود. فيُكتب
+    بحقوق المالك ومُشغِّلاتُ الجذر مُعطَّلةٌ في نطاق هذه الكتلة وحدها،
+    ثمّ تُعاد.
+
+    **ودورُ زمن التشغيل لا يُمسّ**: هذه جلسةٌ تُفتح وتُغلق في الاختبار،
+    ولا تدخل مصنعَ جلسات التطبيق.
+    """
+    import os
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    url = os.getenv("DATABASE_MIGRATION_URL", "")
+    if not url:
+        pytest.skip("DATABASE_MIGRATION_URL is not configured")
+    engine = create_async_engine(url.replace("+psycopg", "+asyncpg"),
+                                 poolclass=NullPool)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            async with session.begin():
+                for table in ("analysis_runs", "tool_exports"):
+                    await session.execute(text(
+                        f"ALTER TABLE {table} DISABLE TRIGGER USER"))
+                # **ولا `finally` يُعيد التمكين**: تعديلُ الجدول في
+                # PostgreSQL معامليّ، فسقوطُ الكتلة يُرجع المعاملةَ
+                # ويُعيد المُشغِّلَ معها. و`finally` هنا كان يكتب عبارةً
+                # في معاملةٍ مُجهَضة، **فيُخفي الخطأ الأصليَّ خلف خطئه**.
+                yield session
+                for table in ("analysis_runs", "tool_exports"):
+                    await session.execute(text(
+                        f"ALTER TABLE {table} ENABLE TRIGGER USER"))
+    finally:
+        await engine.dispose()
+
+
+async def _mixed_run(owner, *, plan_project, data_project, suffix):
+    """تشغيلةٌ خطّتُها في بحثٍ ونسختُها في آخر — **تُدسّ بصلاحية النظام**.
+
+    ولا تُنشأ بمسارٍ: المسارُ يرفضها اليوم، والمُشغِّلُ في القاعدة يرفضها
+    كذلك. فتُكتب بجلسةِ نظامٍ بلا مُشغِّل — لأنّ المقصودَ محاكاةُ صفٍّ
+    **تُرك في القاعدة قبل هذه الدفعة**، لا اختبارُ بابٍ مفتوح.
+    """
+    from sqlalchemy import text
+
+    async with _as_owner() as session:
+        plan = (await session.execute(text(
+            "INSERT INTO analysis_plans (id, tenant_id, project_id, version_label, "
+            "  created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :t, :p, :label, now(), now()) "
+            "RETURNING id"),
+            {"t": owner["tenant_id"], "p": plan_project,
+             "label": f"mixed-{suffix}"})).scalar_one()
+        dataset = (await session.execute(text(
+            "INSERT INTO datasets (id, tenant_id, project_id, name_ar, "
+            "  classification, created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :t, :p, :n, 'C3', now(), now()) "
+            "RETURNING id"),
+            {"t": owner["tenant_id"], "p": data_project,
+             "n": f"mixed-data-{suffix}"})).scalar_one()
+        version = (await session.execute(text(
+            "INSERT INTO dataset_versions (id, tenant_id, dataset_id, state, "
+            "  label, checksum, freeze_id, frozen_by, created_at, updated_at, "
+            "  frozen_at) "
+            # `raw` مجمَّدةٌ: القيدُ يشترط للحالِ غيرِ الخام أبًا وملاحظةَ
+            # تغيير، والمقصودُ هنا أبسطُ صفٍّ مجمَّدٍ صحيحٍ في القاعدة.
+            "VALUES (gen_random_uuid(), :t, :d, 'raw', 'v', :c, :f, :u, "
+            "        now(), now(), now()) RETURNING id"),
+            {"t": owner["tenant_id"], "d": dataset,
+             "c": ("m" * 8 + suffix)[:64],
+             "f": f"frz-{suffix}", "u": owner["user_id"]})).scalar_one()
+        run = (await session.execute(text(
+            "INSERT INTO analysis_runs (id, tenant_id, plan_id, dataset_version_id, "
+            "  dataset_freeze_id, tool, started_at, created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :t, :pl, :v, :f, 'python', now(), "
+            "        now(), now()) RETURNING id"),
+            {"t": owner["tenant_id"], "pl": plan, "v": version,
+             "f": f"frz-{suffix}"})).scalar_one()
+        output = (await session.execute(text(
+            "INSERT INTO analysis_outputs (id, tenant_id, run_id, output_kind, "
+            "  label_ar, payload, created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :t, :r, 'statistic', 'مخرَجٌ مختلط', "
+            "        '{}'::jsonb, now(), now()) RETURNING id"),
+            {"t": owner["tenant_id"], "r": run})).scalar_one()
+        export = (await session.execute(text(
+            "INSERT INTO tool_exports (id, tenant_id, dataset_version_id, run_id, "
+            "  tool, export_format, limitations_ar, limitations_en, "
+            "  created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :t, :v, :r, 'spss', 'csv', '—', '—', "
+            "        now(), now()) RETURNING id"),
+            {"t": owner["tenant_id"], "v": version, "r": run})).scalar_one()
+    return {"plan": plan, "dataset": dataset, "version": version,
+            "run": run, "output": output, "export": export,
+            "freeze_id": f"frz-{suffix}"}
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_25_a_historically_mixed_run_is_invisible_from_either_side(data):
+    """**صفٌّ مختلطُ الجذر لا يُرى من الجانب المأذون** — ولا من الآخر.
+
+    فالمتعاونُ مأذونٌ في البحث المشترك. ولو اكتفت السياسةُ بجذر الخطّة
+    لَرأى تشغيلةً **نسختُها من بحثٍ آخرَ في المؤسسة نفسِها** — ومعها
+    مخرَجُها: رقمٌ حُسب على بياناتِ بحثٍ لا يملكه، يُقرأ نتيجةً للبحث
+    الذي يملكه.
+
+    ويُقاس بلا أيّ مُرشِّح في التطبيق: ما تراه القاعدةُ نفسُها.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.analysis import (
+        AnalysisOutputRow,
+        AnalysisRun,
+        ToolExport,
+    )
+
+    # الخطّةُ في البحث المشترك، والبيانات في بحثٍ آخرَ لصاحبِه نفسِه.
+    mixed = await _mixed_run(data.owner, plan_project=data.project_id,
+                             data_project=data.other_project,
+                             suffix=data.suffix)
+
+    async with tenant_session(data.guest["tenant_id"], data.guest["user_id"]) as session:
+        runs = (await session.execute(select(AnalysisRun))).scalars().all()
+        outputs = (await session.execute(select(AnalysisOutputRow))).scalars().all()
+        exports = (await session.execute(select(ToolExport))).scalars().all()
+
+    assert mixed["run"] not in {row.id for row in runs}, (
+        "تشغيلةٌ مختلطةُ الجذر ظهرت للمتعاون من جانب خطّتها")
+    assert mixed["output"] not in {row.id for row in outputs}, (
+        "مخرَجُ تشغيلةٍ مختلطةٍ ظهر — رقمٌ من بحثٍ آخر تحت البحث المأذون")
+    assert mixed["export"] not in {row.id for row in exports}, (
+        "تصديرٌ مختلطٌ ظهر")
+
+    # والعكسُ كذلك: لو كان الإذنُ على جانب البيانات لا الخطّة.
+    reversed_mix = await _mixed_run(data.owner, plan_project=data.other_project,
+                                    data_project=data.project_id,
+                                    suffix=f"{data.suffix}b")
+    async with tenant_session(data.guest["tenant_id"], data.guest["user_id"]) as session:
+        runs = (await session.execute(select(AnalysisRun))).scalars().all()
+        exports = (await session.execute(select(ToolExport))).scalars().all()
+    assert reversed_mix["run"] not in {row.id for row in runs}, (
+        "تشغيلةٌ مختلطةُ الجذر ظهرت من جانب بياناتها")
+    assert reversed_mix["export"] not in {row.id for row in exports}
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_26_a_sound_run_is_still_visible(data):
+    """**والحارسُ لا يُعمي عن الصحيح**: تشغيلةٌ جذرُها واحدٌ تُرى.
+
+    فحارسٌ يمنع الكلَّ يمرّ في كلّ فحصِ تسريبٍ ولا يخدم أحدًا.
+    """
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.analysis import AnalysisOutputRow, AnalysisRun, ToolExport
+
+    sound = await _mixed_run(data.owner, plan_project=data.project_id,
+                             data_project=data.project_id,
+                             suffix=f"{data.suffix}s")
+    async with tenant_session(data.guest["tenant_id"], data.guest["user_id"]) as session:
+        runs = {row.id for row in (await session.execute(
+            select(AnalysisRun))).scalars().all()}
+        outputs = {row.id for row in (await session.execute(
+            select(AnalysisOutputRow))).scalars().all()}
+        exports = {row.id for row in (await session.execute(
+            select(ToolExport))).scalars().all()}
+    assert sound["run"] in runs
+    assert sound["output"] in outputs
+    assert sound["export"] in exports
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_27_a_foreign_run_on_an_authorised_export_is_concealed(data):
+    """**ولا يُعرَض معرّفُ تشغيلةٍ غريبةٍ من خلال تصديرٍ مأذونٍ بنسخته.**
+
+    فالتصديرُ نسختُه من البحث المشترك — مأذونٌ فيه — وتشغيلتُه من بحثٍ
+    آخر. ولو اكتفت السياسةُ بجذر النسخة لَظهر الصفُّ وفيه `run_id` يدلّ
+    على تشغيلةٍ لا يملكها الطالب.
+    """
+    from sqlalchemy import select, text
+
+    from athera_api.db import tenant_session
+    from athera_api.models.analysis import ToolExport
+
+    mine = await _mixed_run(data.owner, plan_project=data.project_id,
+                            data_project=data.project_id,
+                            suffix=f"{data.suffix}m")
+    theirs = await _mixed_run(data.owner, plan_project=data.other_project,
+                              data_project=data.other_project,
+                              suffix=f"{data.suffix}t")
+
+    async with _as_owner() as session:
+        crossed = (await session.execute(text(
+            "INSERT INTO tool_exports (id, tenant_id, dataset_version_id, run_id, "
+            "  tool, export_format, limitations_ar, limitations_en, "
+            "  created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :t, :v, :r, 'spss', 'csv', '—', '—', "
+            "        now(), now()) RETURNING id"),
+            {"t": data.owner["tenant_id"], "v": mine["version"],
+             "r": theirs["run"]})).scalar_one()
+
+    async with tenant_session(data.guest["tenant_id"], data.guest["user_id"]) as session:
+        seen = {row.id for row in (await session.execute(
+            select(ToolExport))).scalars().all()}
+    assert crossed not in seen, "تصديرٌ يحمل تشغيلةً غريبةً ظهر للمتعاون"
+    assert mine["export"] in seen, "والتصديرُ السليمُ اختفى — الحارسُ أعمى"
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_28_the_database_refuses_a_new_mixed_run_or_export(data):
+    """**والحدُّ في القاعدة لا في الموجّه**: مُشغِّلٌ يرفض الخلطَ الجديد.
+
+    فشرطُ المسار صحيحٌ ولا يكفي: موجّهٌ يُكتب غدًا، أو هجرةُ بيانات، أو
+    صفٌّ يُدسّ بجلسةٍ مشروعة — كلُّها تتجاوز شيفرةَ المسار.
+
+    **وعلى هذا الجدول حارسٌ قائمٌ من قبل** يُطابق معرّفَ تجميدِ التشغيلة
+    بمعرّف تجميدِ نسختها (PRD 17.3). فيُمرَّر المعرّفُ الصحيحُ هنا قصدًا:
+    المقصودُ قياسُ حارسِ **الجذر** لا الاصطدامُ بحارسٍ آخرَ قبله.
+    """
+    import pytest as _pytest
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    from athera_api.db import tenant_session
+    from athera_api.models.analysis import AnalysisPlanRow, Dataset, DatasetVersionRow
+
+    from sqlalchemy import select
+
+    # جذرانِ سليمان في بحثين، بجلسةٍ مشروعةٍ في مستأجر صاحبِهما.
+    first = await _mixed_run(data.owner, plan_project=data.project_id,
+                             data_project=data.project_id,
+                             suffix=f"{data.suffix}g1")
+    second = await _mixed_run(data.owner, plan_project=data.other_project,
+                              data_project=data.other_project,
+                              suffix=f"{data.suffix}g2")
+
+    async with tenant_session(data.owner["tenant_id"], data.owner["user_id"]) as session:
+        # تشغيلةٌ تخلط خطّةَ هذا بنسخةِ ذاك — **يرفضها المُشغِّل**.
+        with _pytest.raises(DBAPIError) as mixed:
+            await session.execute(text(
+                "INSERT INTO analysis_runs (id, tenant_id, plan_id, "
+                "  dataset_version_id, dataset_freeze_id, tool, started_at, "
+                "  created_at, updated_at) "
+                "VALUES (gen_random_uuid(), :t, :pl, :v, :f, 'python', now(), "
+                "        now(), now())"),
+                {"t": data.owner["tenant_id"], "pl": first["plan"],
+                 "v": second["version"], "f": second["freeze_id"]})
+        assert "mix two projects" in str(mixed.value)
+
+    async with tenant_session(data.owner["tenant_id"], data.owner["user_id"]) as session:
+        # وتصديرٌ يُرفق تشغيلةً غريبة — يرفضها المُشغِّل.
+        with _pytest.raises(DBAPIError) as foreign:
+            await session.execute(text(
+                "INSERT INTO tool_exports (id, tenant_id, dataset_version_id, "
+                "  run_id, tool, export_format, limitations_ar, limitations_en, "
+                "  created_at, updated_at) "
+                "VALUES (gen_random_uuid(), :t, :v, :r, 'spss', 'csv', '—', '—', "
+                "        now(), now())"),
+                {"t": data.owner["tenant_id"], "v": first["version"],
+                 "r": second["run"]})
+        assert "foreign run" in str(foreign.value)
+
+    async with tenant_session(data.owner["tenant_id"], data.owner["user_id"]) as session:
+        # **والسليمُ يمرّ** — فالحارسُ يفصل ولا يُقفل.
+        await session.execute(text(
+            "INSERT INTO analysis_runs (id, tenant_id, plan_id, "
+            "  dataset_version_id, dataset_freeze_id, tool, started_at, "
+            "  created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :t, :pl, :v, :f, 'python', now(), "
+            "        now(), now())"),
+            {"t": data.owner["tenant_id"], "pl": first["plan"],
+             "v": first["version"], "f": first["freeze_id"]})
+        # ويبقى الجذرانِ كما هما.
+        assert (await session.execute(select(AnalysisPlanRow.project_id).where(
+            AnalysisPlanRow.id == first["plan"]))).scalar_one() == data.project_id
+        assert (await session.execute(
+            select(Dataset.project_id).join(
+                DatasetVersionRow, DatasetVersionRow.dataset_id == Dataset.id)
+            .where(DatasetVersionRow.id == first["version"]))).scalar_one() \
+            == data.project_id
+
+
+# ═══════ ٨ · بوابةُ التاريخ في الترحيل نفسِه ═══════
+
+
+@requires_db
+def test_29_the_preflight_refuses_to_install_over_mixed_history() -> None:
+    """**الترحيلُ يتوقّف إن كان في القاعدة صفٌّ مختلطُ الجذر** — ولا يُصلحه.
+
+    وهذا أهمُّ فحصٍ في هذه الدفعة: المُشغِّلُ يمنع الجديد، والسياسةُ
+    تُخفي المختلط — لكنّ **تثبيتَ 0036 على قاعدةٍ فيها تاريخٌ مختلطٌ
+    قرارٌ لا يُتخذ صامتًا**. فالصفوفُ تبقى، ومن يصالحها إنسانٌ يعرف ما
+    جرى: بياناتُ علمٍ لا تُصلَح بترحيل.
+
+    ويُقاس بتشغيل دالّة الفحص القبليّ نفسِها على قاعدةٍ فيها صفٌّ مدسوسٌ
+    — لا بقراءة نصِّها. ثمّ يُزال الصفُّ ويُعاد الفحصُ فيمرّ.
+    """
+    import importlib.util
+    import os
+    import pathlib
+    import uuid as _uuid
+
+    import pytest as _pytest
+    from sqlalchemy import create_engine
+
+    url = os.getenv("DATABASE_MIGRATION_URL", "")
+    if not url:
+        _pytest.skip("DATABASE_MIGRATION_URL is not configured")
+
+    versions = (pathlib.Path(__file__).resolve().parents[3] / "infra" / "db"
+                / "migrations" / "versions")
+    spec = importlib.util.spec_from_file_location(
+        "m0036", versions / "0036_cross_tenant_data_collaboration.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    engine = create_engine(url)
+    suffix = _uuid.uuid4().hex[:8]
+
+    def reported(conn) -> set[str]:
+        """معرّفاتُ التشغيلات التي يُبلّغ عنها الفحصُ القبليّ الآن."""
+        return {row[0] for row in
+                conn.exec_driver_sql(module.PREFLIGHT_RUNS).fetchall()}
+
+    def refuse(conn) -> str:
+        class _Bind:
+            def exec_driver_sql(self, statement):
+                return conn.exec_driver_sql(statement)
+
+        class _Op:
+            @staticmethod
+            def get_bind():
+                return _Bind()
+
+        module.op = _Op  # type: ignore[attr-defined]
+        try:
+            module._preflight()
+        except RuntimeError as refusal:
+            return str(refusal)
+        return ""
+
+    planted: dict[str, str] = {}
+    projects: list = []
+    try:
+        # **ويُقاس الفرقُ لا النظافةُ المطلقة.** فحزمةُ الاختبارات نفسُها
+        # تدسّ صفوفًا مختلطةً قصدًا (فحوصُ الرؤية أعلاه)، وقاعدةُ التطوير
+        # تحمل أثرَ تشغيلاتٍ سابقة. فحصٌ يشترط قاعدةً نظيفةً يمرّ اليوم
+        # ويفشل غدًا لسببٍ لا علاقةَ له بما يحرسه.
+        with engine.connect() as conn:
+            before = reported(conn)
+
+        with engine.begin() as conn:
+            tenant = conn.exec_driver_sql(
+                "SELECT id FROM tenants LIMIT 1").scalar_one()
+            user = conn.exec_driver_sql(
+                "SELECT id FROM users LIMIT 1").scalar_one()
+            if user is None:
+                _pytest.skip("the drill database has no user to attribute a freeze to")
+            # **بحثان يُنشآن هنا** — ولا يُبحث عن بحثين موجودين: فحصٌ
+            # يتخطّى نفسَه حين لا يجد بيئتَه لا يقيس شيئًا، وقد وقع ذلك.
+            projects = [
+                conn.exec_driver_sql(
+                    "INSERT INTO research_projects (id, tenant_id, working_title_ar, "
+                    "  created_at, updated_at) "
+                    "VALUES (gen_random_uuid(), %(t)s, %(n)s, now(), now()) "
+                    "RETURNING id",
+                    {"t": tenant, "n": f"preflight-{suffix}-{index}"}).scalar_one()
+                for index in (1, 2)]
+
+            for table in ("analysis_runs", "tool_exports"):
+                conn.exec_driver_sql(f"ALTER TABLE {table} DISABLE TRIGGER USER")
+
+            plan = conn.exec_driver_sql(
+                "INSERT INTO analysis_plans (id, tenant_id, project_id, "
+                "  version_label, created_at, updated_at) "
+                "VALUES (gen_random_uuid(), %(t)s, %(p)s, %(l)s, now(), now()) "
+                "RETURNING id",
+                {"t": tenant, "p": projects[0], "l": f"pf-{suffix}"}).scalar_one()
+            dataset = conn.exec_driver_sql(
+                "INSERT INTO datasets (id, tenant_id, project_id, name_ar, "
+                "  classification, created_at, updated_at) "
+                "VALUES (gen_random_uuid(), %(t)s, %(p)s, %(n)s, 'C3', now(), now()) "
+                "RETURNING id",
+                {"t": tenant, "p": projects[1], "n": f"pf-{suffix}"}).scalar_one()
+            version = conn.exec_driver_sql(
+                "INSERT INTO dataset_versions (id, tenant_id, dataset_id, state, "
+                "  label, checksum, freeze_id, frozen_by, frozen_at, "
+                "  created_at, updated_at) "
+                "VALUES (gen_random_uuid(), %(t)s, %(d)s, 'raw', 'v', %(c)s, "
+                "        %(f)s, %(u)s, now(), now(), now()) RETURNING id",
+                {"t": tenant, "d": dataset, "c": ("p" * 8 + suffix)[:64],
+                 "f": f"pf-{suffix}", "u": user}).scalar_one()
+            run = conn.exec_driver_sql(
+                "INSERT INTO analysis_runs (id, tenant_id, plan_id, "
+                "  dataset_version_id, dataset_freeze_id, tool, started_at, "
+                "  created_at, updated_at) "
+                "VALUES (gen_random_uuid(), %(t)s, %(pl)s, %(v)s, %(f)s, "
+                "        'python', now(), now(), now()) RETURNING id",
+                {"t": tenant, "pl": plan, "v": version,
+                 "f": f"pf-{suffix}"}).scalar_one()
+            planted = {"run": str(run), "plan": str(plan),
+                       "dataset": str(dataset), "version": str(version)}
+            for table in ("analysis_runs", "tool_exports"):
+                conn.exec_driver_sql(f"ALTER TABLE {table} ENABLE TRIGGER USER")
+
+        # **والفحصُ القبليُّ يرفض** — ويقول العددَ والمعرّفاتِ والبحوثَ،
+        # ولا يُفصح عن حمولةٍ ولا بصمةٍ ولا اسمِ مجموعة.
+        with engine.connect() as conn:
+            assert reported(conn) == before | {planted["run"]}, (
+                "الفحصُ القبليُّ لم يرَ الصفَّ المدسوس")
+            message = refuse(conn)
+
+        assert "HOLD — historical mixed-project analysis rows" in message
+        assert planted["run"] in message
+        assert str(projects[0]) in message and str(projects[1]) in message
+        # ولا حمولةَ ولا بصمةَ ولا اسمَ مجموعة.
+        assert ("p" * 8 + suffix)[:64] not in message
+        assert planted["dataset"] not in message
+
+        # ── ثمّ يُزال الصفُّ المختلطُ وحدَه، فيعود البلاغُ إلى ما كان ──
+        #
+        # **ونسخةُ المجموعة لا تُحذف**: عليها حدُّ منتجٍ يمنع الحذف
+        # (`forbid_row_mutation`) — وهو حدٌّ صحيحٌ لا يُفكّ لأجل تنظيف
+        # اختبار. والفحصُ يُبلّغ عن التشغيلات والتصديرات، فحذفُ التشغيلة
+        # يُنظِّف ما دُسّ؛ وما يبقى صفوفٌ سليمةُ الجذر كلٌّ في بحثه.
+        with engine.begin() as conn:
+            conn.exec_driver_sql("DELETE FROM analysis_runs WHERE id = %(r)s",
+                                 {"r": planted["run"]})
+        with engine.connect() as conn:
+            assert reported(conn) == before, "بقي أثرُ الصفّ المدسوس"
+    finally:
+        engine.dispose()
+
+
+# ═══════ ٩ · الصلاحياتُ العلمية مستقلّةٌ عبرَ المؤسسات ═══════
+#
+# **ولا يُشترى الاعتمادُ بإدارةِ بيانات.** فالمشرفُ يعتمد ولا يمسّ
+# البيانات، والمؤلِّفُ المشاركُ يفسّر ولا يمسّها. وفي المستأجر الواحد
+# هذا قائمٌ منذ RC-T1A؛ والمقصودُ هنا أن يبقى قائمًا عبرَ المؤسسات.
+
+
+async def _external_with(owner, project_id, *, permissions, role, suffix):
+    """متعاونٌ من مؤسسةٍ ثالثةٍ بصلاحيّاتٍ صريحة — ولا `manage_data` فيها."""
+    from athera_api.db import tenant_session
+    from athera_api.services import collaboration
+
+    person = await _third_tenant(suffix)
+    async with tenant_session(owner["tenant_id"], owner["user_id"]) as session:
+        issued = await collaboration.invite_member(
+            session, tenant_id=owner["tenant_id"], project_id=project_id,
+            inviter_user_id=owner["user_id"], email=person["email"],
+            display_name="متعاونٌ علميّ", role=role,
+            permissions=list(permissions), invited_user_id=person["user_id"])
+        token = issued.token
+    async with _client(person) as http:
+        accepted = await http.post("/api/v1/invitations/accept", json={"token": token})
+        assert accepted.status_code == 200, accepted.text
+    return person
+
+
+async def _approvable_plan(owner, project_id):
+    """خطّةٌ بوسمِ نسخةٍ فريد — **والقيدُ في القاعدة: خطّةٌ لكلّ وسم**."""
+    plan = await _plan(owner, project_id, label=f"v-{uuid.uuid4().hex[:8]}")
+    assert plan.status_code == 201, plan.text
+    return plan.json()["id"]
+
+
+async def _an_output(owner, project_id, suffix):
+    """مخرَجٌ حقيقيٌّ بسلسلته: مجموعةٌ فنسخةٌ مجمّدةٌ فخطّةٌ معتمدةٌ فتشغيلة."""
+    created = await _dataset(owner, project_id, checksum=("o" * 8 + suffix)[:64])
+    dataset_id = created.json()["dataset_id"]
+    async with _client(owner) as http:
+        derived = await http.post(f"{ANALYSIS}/datasets/{dataset_id}/versions", json={
+            "parent_version_id": created.json()["id"], "state": "cleaned",
+            "label": "منقّاة", "checksum": ("q" * 8 + suffix)[:64],
+            "change_note_ar": "تنقية", "row_count": 40})
+        version_id = derived.json()["id"]
+        await http.post(f"{ANALYSIS}/datasets/versions/{version_id}/freeze")
+    plan_id = await _approvable_plan(owner, project_id)
+    async with _client(owner) as http:
+        await http.post(f"{ANALYSIS}/plans/{plan_id}/approve")
+        run = await http.post(f"{ANALYSIS}/runs", json={
+            "plan_id": plan_id, "dataset_version_id": version_id, "tool": "python",
+            "executed_test_keys": ["pearson_r"], "code_hash": ("r" * 64)})
+        run_id = run.json()["id"]
+        output = await http.post(f"{ANALYSIS}/runs/{run_id}/outputs", json={
+            "output_kind": "statistic", "label_ar": "معامل", "test_key": "pearson_r",
+            "payload": {"r": 0.3}})
+    return output.json()["id"]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_30_an_external_supervisor_approves_without_manage_data(data):
+    """**المشرفُ يعتمد ولا يملك بيانات** — والمسارُ المُعشَّشُ يجعل ذلك ممكنًا.
+
+    ولولا الشكلُ الثاني لَلزمه `manage_data` ليُحدَّد موضعُ خطّته —
+    صلاحيةٌ لا شأنَ لها بعمله، ومنحُها له يفتح له قاموسَ الأعمدة
+    وبصماتِ البيانات. **والاستقلالُ هو الحدّ.**
+    """
+    supervisor = await _external_with(
+        data.owner, data.project_id, permissions=[VIEW, APPROVE],
+        role="supervisor", suffix=f"{data.suffix}sv")
+    plan_id = await _approvable_plan(data.owner, data.project_id)
+
+    async with _client(supervisor) as http:
+        # ما يملكه: الاعتمادُ نعم، والبياناتُ لا.
+        capability = (await http.get(f"{TEAM}/{data.project_id}/access")).json()
+        assert capability["can_manage_data"] is False
+        assert APPROVE in capability["permissions"]
+
+        approved = await http.post(
+            f"{ANALYSIS}/projects/{data.project_id}/plans/{plan_id}/approve")
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["is_locked"] is True
+
+        # **ولا بياناتٍ له**: لا قائمةً ولا قراءةَ مجموعةٍ ولا إنشاء.
+        assert (await http.get(f"{ANALYSIS}/datasets")).json() == []
+        created = await _dataset(supervisor, data.project_id,
+                                 checksum=("z" * 8 + data.suffix)[:64])
+        assert created.status_code == 403, created.text
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_31_an_external_coauthor_interprets_without_manage_data(data):
+    """**والمؤلِّفُ المشاركُ يفسّر ولا يملك بيانات.**"""
+    output_id = await _an_output(data.owner, data.project_id, f"{data.suffix}o")
+    coauthor = await _external_with(
+        data.owner, data.project_id, permissions=[VIEW, EDIT],
+        role="co_author", suffix=f"{data.suffix}ca")
+
+    async with _client(coauthor) as http:
+        capability = (await http.get(f"{TEAM}/{data.project_id}/access")).json()
+        assert capability["can_manage_data"] is False
+
+        interpreted = await http.post(
+            f"{ANALYSIS}/projects/{data.project_id}/outputs/{output_id}/interpret",
+            json={"result_ar": "علاقةٌ موجبةٌ ضعيفة",
+                  "statistical_ar": "r = 0.3", "theoretical_ar": "يتّسق مع النظرية"})
+        assert interpreted.status_code == 200, interpreted.text
+        assert "statistical" in interpreted.json()["layers_present"]
+
+        assert (await http.get(f"{ANALYSIS}/datasets")).json() == []
+        blocked = await _dataset(coauthor, data.project_id,
+                                 checksum=("y" * 8 + data.suffix)[:64])
+        assert blocked.status_code == 403, blocked.text
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_32_the_nested_routes_refuse_the_wrong_permission(data):
+    """ومصفوفةُ المنع: **كلُّ فعلٍ بصلاحيّته، ولا واحدةٌ تُغني عن أخرى**."""
+    plan_id = await _approvable_plan(data.owner, data.project_id)
+    output_id = await _an_output(data.owner, data.project_id, f"{data.suffix}n")
+    body = {"result_ar": "نصٌّ لا يُكتب", "statistical_ar": "r = 0"}
+
+    # الإحصائيُّ: إدارةُ بياناتٍ بلا اعتمادٍ ولا تحرير.
+    async with _client(data.guest) as http:
+        assert (await http.post(
+            f"{ANALYSIS}/projects/{data.project_id}/plans/{plan_id}/approve")
+        ).status_code == 403
+        assert (await http.post(
+            f"{ANALYSIS}/projects/{data.project_id}/outputs/{output_id}/interpret",
+            json=body)).status_code == 403
+
+    # وباطّلاعٍ وحده: ممنوعٌ في البابين.
+    view_only = await _external_with(
+        data.owner, data.project_id, permissions=[VIEW],
+        role="acknowledged", suffix=f"{data.suffix}vo")
+    async with _client(view_only) as http:
+        assert (await http.post(
+            f"{ANALYSIS}/projects/{data.project_id}/plans/{plan_id}/approve")
+        ).status_code == 403
+        assert (await http.post(
+            f"{ANALYSIS}/projects/{data.project_id}/outputs/{output_id}/interpret",
+            json=body)).status_code == 403
+
+    # **وبالصلاحية بلا أساس الاطّلاع: لا يُعبَر الجسرُ أصلًا** — ٤٠٤.
+    no_baseline = await _external_with(
+        data.owner, data.project_id, permissions=[APPROVE],
+        role="supervisor", suffix=f"{data.suffix}nb")
+    async with _client(no_baseline) as http:
+        refused = await http.post(
+            f"{ANALYSIS}/projects/{data.project_id}/plans/{plan_id}/approve")
+    assert refused.status_code == 404, refused.text
+
+    # وغريبٌ من مؤسسةٍ ثالثة: جوابُ المعدوم.
+    async with _client(data.outsider) as http:
+        assert (await http.post(
+            f"{ANALYSIS}/projects/{data.project_id}/plans/{plan_id}/approve")
+        ).status_code == 404
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_33_the_route_project_is_a_scope_selector_not_authority(data):
+    """**وذكرُ البحث لا يمنح شيئًا**: خطّةُ بحثٍ آخرَ تُردّ جوابَ المعدوم.
+
+    ولو اكتُفي بتفويض البحث المذكور لَاعتمد المشرفُ خطّةَ بحثٍ لا يملكه
+    بذكر بحثٍ يملكه.
+    """
+    supervisor = await _external_with(
+        data.owner, data.project_id, permissions=[VIEW, APPROVE],
+        role="supervisor", suffix=f"{data.suffix}x")
+    foreign_plan = await _approvable_plan(data.owner, data.other_project)
+
+    async with _client(supervisor) as http:
+        crossed = await http.post(
+            f"{ANALYSIS}/projects/{data.project_id}/plans/{foreign_plan}/approve")
+    assert crossed.status_code == 404, crossed.text
+
+    # والخطّةُ لم تُعتمد.
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.analysis import AnalysisPlanRow
+
+    async with tenant_session(data.owner["tenant_id"], data.owner["user_id"]) as session:
+        row = (await session.execute(select(AnalysisPlanRow).where(
+            AnalysisPlanRow.id == uuid.UUID(foreign_plan)))).scalar_one()
+    assert row.approved_at is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_34_the_legacy_routes_still_work_in_the_same_tenant(data):
+    """**والشكلُ القديمُ لم يُمسّ**: صاحبُ البحث يعتمد ويفسّر بعنوانه القديم."""
+    plan_id = await _approvable_plan(data.owner, data.project_id)
+    output_id = await _an_output(data.owner, data.project_id, f"{data.suffix}L")
+
+    async with _client(data.owner) as http:
+        approved = await http.post(f"{ANALYSIS}/plans/{plan_id}/approve")
+        assert approved.status_code == 200, approved.text
+        interpreted = await http.post(
+            f"{ANALYSIS}/outputs/{output_id}/interpret",
+            json={"result_ar": "نتيجةٌ مفسَّرة", "statistical_ar": "r = 0.3"})
+        assert interpreted.status_code == 200, interpreted.text

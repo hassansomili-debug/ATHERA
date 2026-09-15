@@ -475,7 +475,31 @@ METHODS = {"get", "post", "put", "patch", "delete"}
 # مزوّدٍ خارجي (علّة S5C: اتصالٌ `idle in transaction` عبر انتظارٍ شبكي).
 # فيبني الجسرَ نفسَه في جسمه عبر `_maker` → `project_session`، ويُفحص
 # ذلك أدناه بالنصّ لا بالثقة.
-IN_BODY_BRIDGE = {("planning.py", "generate_opportunities")}
+IN_BODY_BRIDGE = {
+    ("planning.py", "generate_opportunities"),
+    # **ومسارا الفعلَين العلميَّين المُعشَّشان** (0036): الاعتمادُ والتفسير.
+    #
+    # وسببُهما غيرُ سبب الأوّل: طبقةُ التحليل تفتح جلستَين — واحدةٌ
+    # تُحدّد موضعَ الكيان وتُغلق، وأخرى تعمل في مستأجر البحث — فلا تصلح
+    # تبعيّةُ جلسةٍ واحدة. و`_scope` تبني الجسرَ القانونيَّ نفسَه في
+    # جسمها، ويُفحص ذلك أدناه بالنصّ لا بالثقة.
+    ("analysis.py", "approve_plan_in_project"),
+    ("analysis.py", "interpret_in_project"),
+}
+
+# وكيف يُثبَت الجسرُ في كلّ استثناء — **شاهدٌ في الجسم، وآخرُ في الوحدة**.
+IN_BODY_EVIDENCE = {
+    "generate_opportunities": ("_maker(project_id",
+                               "return project_session(project_id, tenant_id, actor_id)"),
+    # **والشاهدُ دخولُ البوّابة نفسِها، لا ذكرُ اسمِ مُعامِل.** وقد جُرّب
+    # شاهدٌ أضعفُ (`project_id=project_id`) فلم يعضّ: عضّةٌ أعادت المسارَ
+    # إلى جلسة البيت أبقت تلك الحروفَ في بناءٍ آخر، فمرّ الحارسُ وهو
+    # أعمى. فيُطلب استدعاءُ `_scope` بعينه.
+    "approve_plan_in_project": ("async with _scope(principal, permission=APPROVE,",
+                                "async with project_session(project_id, principal.tenant_id,"),
+    "interpret_in_project": ("async with _scope(principal, permission=EDIT,",
+                             "async with project_session(project_id, principal.tenant_id,"),
+}
 
 
 def _route_templates(node) -> list[str]:
@@ -554,11 +578,12 @@ def test_22_every_project_scoped_route_enters_through_the_canonical_bridge():
     for file_name, func_name, _templates, deps, body in _project_routes():
         if (file_name, func_name) in IN_BODY_BRIDGE:
             # والاستثناءُ يُفحص لا يُصدَّق: لا تبعيةَ جلسةٍ أصلًا، والجسرُ
-            # القانونيُّ مبنيٌّ في الجسم.
+            # القانونيُّ مبنيٌّ في الجسم — شاهدٌ فيه وشاهدٌ في وحدته.
             assert not deps, (file_name, func_name, deps)
-            assert "_maker(project_id" in body, (file_name, func_name)
-            maker = (ROUTERS / file_name).read_text()
-            assert "return project_session(project_id, tenant_id, actor_id)" in maker
+            in_body, in_module = IN_BODY_EVIDENCE[func_name]
+            assert in_body in body, (file_name, func_name, in_body)
+            module = (ROUTERS / file_name).read_text()
+            assert in_module in module, (file_name, func_name, in_module)
             continue
         if deps != {"get_project_session"}:
             offenders.append((file_name, func_name, sorted(deps)))
@@ -569,10 +594,12 @@ def test_22_every_project_scoped_route_enters_through_the_canonical_bridge():
 def test_23_the_project_route_inventory_is_pinned():
     """والعددُ مثبَّت: **مسارٌ جديد يُراجَع، لا يُضاف بصمت**."""
     routes = _project_routes()
-    assert len(routes) == 96, len(routes)
+    # ٩٦ + الشكلانِ المُعشَّشانِ للاعتماد والتفسير (0036).
+    assert len(routes) == 98, len(routes)
     bridged = [r for r in routes if r[3] == {"get_project_session"}]
     assert len(bridged) == 95, len(bridged)
-    assert len(IN_BODY_BRIDGE) == 1
+    assert len(IN_BODY_BRIDGE) == 3
+    assert set(IN_BODY_EVIDENCE) == {name for _f, name in IN_BODY_BRIDGE}
 
 
 @requires_db
