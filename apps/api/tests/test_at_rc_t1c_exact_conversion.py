@@ -438,12 +438,18 @@ async def test_the_manager_supplies_no_identity_at_all(flow):
     from athera_api.services import recruitment
 
     names = set(inspect.signature(recruitment.invite_applicant).parameters)
+    # و`expect_*` **مُنتقيا نطاقٍ لا هويّتان**: يُمرَّران من المسار
+    # لتُقابَل بهما هويّةُ الفرصة والبحث، فلا يُفوَّض مديرٌ على بحثه ثمّ
+    # يُمرّر تطبيقَ بحثٍ آخر. ولا يُشتقّ منهما مرشَّحٌ ولا مستأجر.
     assert names == {"session", "application_id", "actor_user_id", "role",
-                     "permissions", "ttl_hours"}, names
+                     "permissions", "ttl_hours",
+                     "expect_project_id", "expect_opportunity_id"}, names
     for forbidden in ("applicant_user_id", "invited_user_id", "project_id",
                       "tenant_id", "project_tenant_id", "applicant_tenant_id",
                       "accepted_user_id", "member_id"):
         assert forbidden not in names, f"مُعامِلٌ يحمل هويّة: {forbidden}"
+    # ولا مستأجرَ بحثٍ يُمرَّر بأيّ اسم.
+    assert not any("tenant" in name for name in names), names
 
 
 # ═════════ القبولُ الشخصيّ ═════════

@@ -72,17 +72,29 @@ class Selection:
 
 async def _application_for_manager(
     session: AsyncSession, *, application_id: uuid.UUID,
+    expect_project_id: uuid.UUID | None = None,
+    expect_opportunity_id: uuid.UUID | None = None,
 ) -> tuple[RecruitmentApplication, RecruitmentOpportunity]:
     """التطبيقُ ونسبُ فرصته — **ويُقفلان** قبل أيّ قرار.
 
     و`404` لا `403` لمن لا يديره: سياسةُ القراءة لا تُسلّمه الصفَّ أصلًا،
     فالمعدومُ وغيرُ المأذون يُجابان جوابًا واحدًا.
+
+    ## والنطاقُ المنتظرُ يُثبت هنا لا في الموجّه وحده
+
+    فمسارُ القرار صار يحمل البحثَ والفرصةَ والتطبيق. ولو صُدّق الترتيبُ
+    كما جاء لَأمكن أن يُفوَّض مديرٌ على بحثه ثمّ يُمرّر تطبيقَ بحثٍ آخر —
+    **فالتفويضُ يقع على ما في المسار، والفعلُ على ما في الطلب.** فتُقابَل
+    الهويّاتُ في الخدمة، فلا يُنجي موجّهًا سهوُه.
     """
     application = (await session.execute(
         select(RecruitmentApplication)
         .where(RecruitmentApplication.id == application_id)
         .with_for_update())).scalar_one_or_none()
     if application is None:
+        raise NotFound("recruitment.application_not_found")
+    if (expect_opportunity_id is not None
+            and application.opportunity_id != expect_opportunity_id):
         raise NotFound("recruitment.application_not_found")
 
     # **ولا قفلَ على صفّ النسب**: 0034 جعله يُكتب مرّةً ولا يُعدَّل، فلا
@@ -93,6 +105,8 @@ async def _application_for_manager(
         .where(RecruitmentOpportunity.id == application.opportunity_id))
     ).scalar_one_or_none()
     if owner_row is None:
+        raise NotFound("recruitment.application_not_found")
+    if expect_project_id is not None and owner_row.project_id != expect_project_id:
         raise NotFound("recruitment.application_not_found")
     return application, owner_row
 
@@ -118,6 +132,8 @@ async def invite_applicant(
     role: str,
     permissions: list[str],
     ttl_hours: int | None = None,
+    expect_project_id: uuid.UUID | None = None,
+    expect_opportunity_id: uuid.UUID | None = None,
 ) -> Selection:
     """يُختار متقدّمٌ مُرشَّح، فتُصدر له دعوةٌ **باسمه هو**.
 
@@ -137,7 +153,9 @@ async def invite_applicant(
     والفهرسُ الفريدُ على `invitation_id` حزامٌ تحت ذلك.
     """
     application, owner_row = await _application_for_manager(
-        session, application_id=application_id)
+        session, application_id=application_id,
+        expect_project_id=expect_project_id,
+        expect_opportunity_id=expect_opportunity_id)
 
     # ١ · سلطةُ المدير — مالكٌ مُثبت، أو عضوٌ نشِطٌ له تفويضُ الفريق.
     #     ولا دورَ يُفسَّر: `manage_team` صفٌّ صريح.
@@ -498,11 +516,14 @@ async def submit_application(
 
 async def decide_application(
     session: AsyncSession, *, application_id: uuid.UUID, actor_user_id: uuid.UUID,
-    decision: str,
+    decision: str, expect_project_id: uuid.UUID | None = None,
+    expect_opportunity_id: uuid.UUID | None = None,
 ) -> RecruitmentApplication:
     """ترشيحٌ أو اعتذار — والمصفوفةُ على القاعدة تقبل أو تردّ."""
     application, owner_row = await _application_for_manager(
-        session, application_id=application_id)
+        session, application_id=application_id,
+        expect_project_id=expect_project_id,
+        expect_opportunity_id=expect_opportunity_id)
     await collaboration.ensure_project_access(
         session, tenant_id=owner_row.tenant_id, project_id=owner_row.project_id,
         user_id=actor_user_id, permission="manage_team",

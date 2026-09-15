@@ -47,6 +47,12 @@ async def api(two_tenants):
                  other=other, project_id=project_id, suffix=suffix)
 
 
+def _decision(project_id, opportunity_id, application_id, verb):
+    """مسارُ قرارِ المدير — **والبحثُ فيه مُنتقي نطاقٍ لا سلطة**."""
+    return (f"{BASE}/projects/{project_id}/opportunities/{opportunity_id}"
+            f"/applications/{application_id}/{verb}")
+
+
 async def _create(slot, project_id, **fields):
     body = {"title": "مطلوب باحث مساعد لمراجعة الدراسات السابقة",
             "description": "مطلوب باحث للمساعدة في مراجعة الدراسات السابقة "
@@ -126,12 +132,12 @@ async def test_the_golden_flow_end_to_end_over_http(api):
         assert applicants.status_code == 200, applicants.text
         assert [row["application_id"] for row in applicants.json()] == [application_id]
 
-        short = await http.post(f"{BASE}/applications/{application_id}/shortlist")
+        short = await http.post(_decision(api.project_id, opportunity_id, application_id, "shortlist"))
         assert short.status_code == 200, short.text
         assert short.json()["status"] == "shortlisted"
 
         invited = await http.post(
-            f"{BASE}/applications/{application_id}/invite",
+            _decision(api.project_id, opportunity_id, application_id, "invite"),
             json={"role": "statistician", "permissions": [VIEW, "manage_data"]})
         assert invited.status_code == 200, invited.text
         token = invited.json()["token"]
@@ -428,9 +434,9 @@ async def test_withdrawal_declines_the_linked_invitation_and_kills_the_token(api
         application_id = applied.json()["application_id"]
 
     async with _client(api.owner) as http:
-        await http.post(f"{BASE}/applications/{application_id}/shortlist")
+        await http.post(_decision(api.project_id, opportunity_id, application_id, "shortlist"))
         invited = await http.post(
-            f"{BASE}/applications/{application_id}/invite",
+            _decision(api.project_id, opportunity_id, application_id, "invite"),
             json={"role": "statistician", "permissions": [VIEW]})
         token = invited.json()["token"]
 
@@ -474,9 +480,9 @@ async def test_only_the_exact_candidate_accepts_over_http(api):
         application_id = applied.json()["application_id"]
 
     async with _client(api.owner) as http:
-        await http.post(f"{BASE}/applications/{application_id}/shortlist")
+        await http.post(_decision(api.project_id, opportunity_id, application_id, "shortlist"))
         token = (await http.post(
-            f"{BASE}/applications/{application_id}/invite",
+            _decision(api.project_id, opportunity_id, application_id, "invite"),
             json={"role": "statistician", "permissions": [VIEW]})).json()["token"]
 
     for slot in (api.other, api.stranger, api.owner):
@@ -507,9 +513,9 @@ async def test_a_cross_tenant_candidate_can_decline_over_http(api):
             f"{BASE}/opportunities/{opportunity_id}/applications",
             json={})).json()["application_id"]
     async with _client(api.owner) as http:
-        await http.post(f"{BASE}/applications/{application_id}/shortlist")
+        await http.post(_decision(api.project_id, opportunity_id, application_id, "shortlist"))
         token = (await http.post(
-            f"{BASE}/applications/{application_id}/invite",
+            _decision(api.project_id, opportunity_id, application_id, "invite"),
             json={"role": "co_author", "permissions": [VIEW]})).json()["token"]
 
     async with _client(api.researcher) as http:
@@ -573,9 +579,15 @@ def test_the_recruitment_router_is_actually_mounted():
         "/api/v1/recruitment/opportunities/{opportunity_id}/applications",
         "/api/v1/recruitment/applications/me",
         "/api/v1/recruitment/applications/{application_id}/withdraw",
-        "/api/v1/recruitment/applications/{application_id}/shortlist",
-        "/api/v1/recruitment/applications/{application_id}/decline",
-        "/api/v1/recruitment/applications/{application_id}/invite",
+        # **وقرارُ المدير مُعشَّشٌ في البحث**: البحثُ يجب أن يكون معلومًا
+        # قبل حَلِّ الجلسة، وإلّا استُنبط من مستأجر المدير — وذاك يمنع
+        # متعاونًا من مؤسسةٍ أخرى قبل أن يعمل الجسر.
+        "/api/v1/recruitment/projects/{project_id}/opportunities/"
+        "{opportunity_id}/applications/{application_id}/shortlist",
+        "/api/v1/recruitment/projects/{project_id}/opportunities/"
+        "{opportunity_id}/applications/{application_id}/decline",
+        "/api/v1/recruitment/projects/{project_id}/opportunities/"
+        "{opportunity_id}/applications/{application_id}/invite",
         "/api/v1/recruitment/projects/{project_id}/opportunities",
         "/api/v1/recruitment/projects/{project_id}/opportunities/{opportunity_id}",
         "/api/v1/recruitment/projects/{project_id}/opportunities/{opportunity_id}/publish",
@@ -583,6 +595,18 @@ def test_the_recruitment_router_is_actually_mounted():
         "/api/v1/recruitment/projects/{project_id}/opportunities/{opportunity_id}/applications",
     }
     assert expected <= paths, f"مساراتٌ غيرُ مركَّبة: {sorted(expected - paths)}"
+
+    # **والمساراتُ الغامضةُ أُزيلت ولم تُترك للتوافق**: الواجهةُ لم تُنشر،
+    # فعقدٌ واحدٌ لا عقدان. وبقاءُ الشكل القديم يُبقي الاستنباطَ المعطوب
+    # طريقًا ثانية.
+    for withdrawn in ("/api/v1/recruitment/applications/{application_id}/shortlist",
+                      "/api/v1/recruitment/applications/{application_id}/decline",
+                      "/api/v1/recruitment/applications/{application_id}/invite"):
+        assert withdrawn not in paths, f"مسارٌ قديمٌ باقٍ: {withdrawn}"
+
+    # ويبقى انسحابُ المتقدّم بمعرّف تطبيقه: هو صاحبُه، وله قراءةُ نفسه
+    # عبر المستأجرين — فلا نطاقَ يلزم انتقاؤه.
+    assert "/api/v1/recruitment/applications/{application_id}/withdraw" in paths
 
 
 def test_no_raw_token_is_persisted_or_logged_by_the_recruitment_surface():
@@ -595,3 +619,228 @@ def test_no_raw_token_is_persisted_or_logged_by_the_recruitment_surface():
         "token")[0] or True
     for source in (router, service):
         assert "logger" not in source or "token" not in source.split("logger")[1][:200]
+
+
+# ═════════ مديرٌ من مؤسسةٍ ثالثة — الحدُّ الذي كان مكسورًا ═════════
+#
+# **العطبُ الذي أُغلق:** كانت مساراتُ القرار تحمل معرّفَ التطبيق وحده،
+# فتستنبط البحثَ بقراءةٍ في مستأجر المدير الأصليّ. وجدولُ النسب سياستُه
+# سياسةُ مديرٍ **داخل مستأجر البحث**، فمديرٌ متعاونٌ من مؤسسةٍ أخرى لا
+# يرى الصفَّ من مستأجره: تُعيد القراءةُ صفرًا فيُجاب ٤٠٤ **قبل أن يعمل
+# الجسرُ أصلًا**.
+#
+# فثلاثةُ مستأجرين لازمة: البحثُ في «أ»، والمتقدّمُ في «ب»، **والمديرُ في
+# «ج»** — ولا ينتمي إلى «أ» تنظيميًّا بحال.
+
+
+async def _third_tenant(suffix: str) -> dict:
+    """مستأجرٌ ثالثٌ بحسابٍ فيه — و`two_tenants` تعطي اثنين فحسب."""
+    from sqlalchemy import select
+
+    from athera_api.db import system_session
+    from athera_api.models.identity import Membership, Role, Tenant, User
+    from athera_api.security import hash_password
+
+    async with system_session() as session:
+        slug = f"third-{suffix}"
+        tenant = Tenant(slug=slug, name_ar="مؤسسةٌ ثالثة", name_en="Third tenant")
+        session.add(tenant)
+        await session.flush()
+        user = User(email=f"{slug}@example.test",
+                    password_hash=hash_password("Third-Tenant-9f3b!"),
+                    full_name_ar="مديرٌ خارجيّ", full_name_en="External manager")
+        session.add(user)
+        await session.flush()
+        role_id = (await session.execute(
+            select(Role.id).where(Role.tenant_id == tenant.id,
+                                  Role.key == "researcher"))).scalar_one()
+        session.add(Membership(tenant_id=tenant.id, user_id=user.id, role_id=role_id))
+        return {"tenant_id": tenant.id, "user_id": user.id, "email": user.email}
+
+
+async def _external_manager(owner, project_id, *, permissions, suffix):
+    """مديرٌ من مؤسسةٍ ثالثة، عضوٌ نشِطٌ في البحث — **وصفُّه في مستأجر البحث**."""
+    from athera_api.db import tenant_session
+    from athera_api.services import collaboration
+
+    manager = await _third_tenant(suffix)
+    async with tenant_session(owner["tenant_id"], owner["user_id"]) as session:
+        issued = await collaboration.invite_member(
+            session, tenant_id=owner["tenant_id"], project_id=project_id,
+            inviter_user_id=owner["user_id"], email=manager["email"],
+            display_name="مديرٌ خارجيّ", role="co_author",
+            permissions=list(permissions), invited_user_id=manager["user_id"])
+        token = issued.token
+
+    async with _client(manager) as http:
+        accepted = await http.post("/api/v1/invitations/accept",
+                                   json={"token": token})
+        assert accepted.status_code == 200, accepted.text
+    return manager
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_an_external_manager_can_run_the_selection(api):
+    """**ومديرٌ من مؤسسةٍ ثالثة يُدير الاختيارَ كاملًا.**
+
+    ولا انتماءَ تنظيميًّا له في مستأجر البحث — عضويّةُ بحثٍ فقط، نشِطةٌ
+    بأساس الرؤية وتفويضِ الفريق.
+    """
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.collaboration import ProjectInvitation
+    from athera_api.models.identity import Membership
+
+    created = await _create(api.owner, api.project_id)
+    opportunity_id = created.json()["opportunity_id"]
+    await _publish(api.owner, api.project_id, opportunity_id)
+
+    async with _client(api.researcher) as http:
+        application_id = (await http.post(
+            f"{BASE}/opportunities/{opportunity_id}/applications",
+            json={"message": "أودّ المشاركة."})).json()["application_id"]
+
+    manager = await _external_manager(
+        api.owner, api.project_id, permissions=[VIEW, "manage_team"],
+        suffix=api.suffix)
+
+    async with _client(manager) as http:
+        applicants = await http.get(
+            f"{BASE}/projects/{api.project_id}/opportunities/{opportunity_id}"
+            "/applications")
+        assert applicants.status_code == 200, applicants.text
+        assert [row["application_id"] for row in applicants.json()] == [application_id]
+
+        short = await http.post(_decision(api.project_id, opportunity_id,
+                                          application_id, "shortlist"))
+        assert short.status_code == 200, short.text
+
+        invited = await http.post(
+            _decision(api.project_id, opportunity_id, application_id, "invite"),
+            json={"role": "statistician", "permissions": [VIEW, "manage_data"]})
+        assert invited.status_code == 200, invited.text
+
+    # والدعوةُ في مستأجر البحث، لحساب المتقدّم بعينه — لا مستأجرِ المدير.
+    async with tenant_session(api.owner["tenant_id"], api.owner["user_id"]) as session:
+        row = (await session.execute(
+            select(ProjectInvitation).where(
+                ProjectInvitation.id
+                == uuid.UUID(invited.json()["invitation_id"])))).scalar_one()
+        assert row.tenant_id == api.owner["tenant_id"]
+        assert row.project_id == api.project_id
+        assert row.invited_user_id == api.researcher["user_id"]
+
+        # **ولا انتماءَ تنظيميٌّ أُنشئ للمدير في مستأجر البحث.**
+        orgs = (await session.execute(
+            select(func.count()).select_from(Membership)
+            .where(Membership.user_id == manager["user_id"],
+                   Membership.tenant_id == api.owner["tenant_id"]))).scalar_one()
+    assert orgs == 0, "إدارةُ الاختيار أنشأت انتماءً مؤسّسيًّا"
+
+
+@requires_db
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "permissions,label",
+    [([VIEW], "الرؤيةُ وحدها"), (["manage_team"], "التفويضُ بلا أساس")],
+)
+async def test_an_external_member_without_both_is_denied(api, permissions, label):
+    """**والرؤيةُ وحدها لا تُدير، والتفويضُ بلا أساسٍ لا يعبُر الجسرَ أصلًا.**"""
+    created = await _create(api.owner, api.project_id)
+    opportunity_id = created.json()["opportunity_id"]
+    await _publish(api.owner, api.project_id, opportunity_id)
+    async with _client(api.researcher) as http:
+        application_id = (await http.post(
+            f"{BASE}/opportunities/{opportunity_id}/applications",
+            json={})).json()["application_id"]
+
+    manager = await _external_manager(
+        api.owner, api.project_id, permissions=permissions, suffix=api.suffix)
+
+    async with _client(manager) as http:
+        listed = await http.get(
+            f"{BASE}/projects/{api.project_id}/opportunities/{opportunity_id}"
+            "/applications")
+        assert listed.status_code in (403, 404), (label, listed.text)
+        acted = await http.post(_decision(api.project_id, opportunity_id,
+                                          application_id, "shortlist"))
+        assert acted.status_code in (403, 404), (label, acted.text)
+
+
+@requires_db
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["suspended", "removed"])
+async def test_a_suspended_or_removed_external_manager_is_denied(api, state):
+    """والإيقافُ والإزالةُ يقطعان في الحال — ولو كان التفويضُ كاملًا."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectMember
+    from athera_api.services import collaboration
+
+    created = await _create(api.owner, api.project_id)
+    opportunity_id = created.json()["opportunity_id"]
+    await _publish(api.owner, api.project_id, opportunity_id)
+
+    manager = await _external_manager(
+        api.owner, api.project_id, permissions=[VIEW, "manage_team"],
+        suffix=api.suffix)
+
+    async with _client(manager) as http:
+        assert (await http.get(
+            f"{BASE}/projects/{api.project_id}/opportunities/{opportunity_id}"
+            "/applications")).status_code == 200
+
+    async with tenant_session(api.owner["tenant_id"], api.owner["user_id"]) as session:
+        member = (await session.execute(
+            select(ProjectMember).where(
+                ProjectMember.project_id == api.project_id,
+                ProjectMember.user_id == manager["user_id"]))).scalar_one()
+        await collaboration.set_access_state(
+            session, tenant_id=api.owner["tenant_id"], member=member,
+            actor_user_id=api.owner["user_id"], state=state)
+
+    async with _client(manager) as http:
+        after = await http.get(
+            f"{BASE}/projects/{api.project_id}/opportunities/{opportunity_id}"
+            "/applications")
+    assert after.status_code in (403, 404), (state, after.text)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_a_manager_cannot_act_on_another_projects_application(api):
+    """**ومعرّفُ بحثٍ في المسار مُنتقي نطاقٍ لا سلطة.**
+
+    فمديرٌ له تفويضٌ حقيقيٌّ على بحثٍ آخر يُمرّر تطبيقَ هذا البحث — ولا
+    يُنجيه أنّ البوابةَ أجازته على بحثه: الهويّاتُ تُقابَل في الخدمة.
+    """
+    other_project = await _owned_project(api.owner, title="بحثٌ ثانٍ للمالك")
+    created = await _create(api.owner, api.project_id)
+    opportunity_id = created.json()["opportunity_id"]
+    await _publish(api.owner, api.project_id, opportunity_id)
+    async with _client(api.researcher) as http:
+        application_id = (await http.post(
+            f"{BASE}/opportunities/{opportunity_id}/applications",
+            json={})).json()["application_id"]
+
+    async with _client(api.owner) as http:
+        # بحثٌ يُديره حقًّا + تطبيقُ بحثٍ آخر.
+        wrong = await http.post(_decision(other_project, opportunity_id,
+                                          application_id, "shortlist"))
+        assert wrong.status_code == 404, wrong.text
+
+        # وفرصةٌ أخرى في البحث نفسِه + تطبيقُ الأولى.
+        second = await _create(api.owner, api.project_id, title="فرصةٌ ثانية")
+        wrong_opportunity = await http.post(
+            _decision(api.project_id, second.json()["opportunity_id"],
+                      application_id, "shortlist"))
+        assert wrong_opportunity.status_code == 404, wrong_opportunity.text
+
+        # ولا تغييرَ وقع.
+        applicants = await http.get(
+            f"{BASE}/projects/{api.project_id}/opportunities/{opportunity_id}"
+            "/applications")
+    assert applicants.json()[0]["status"] == "pending"

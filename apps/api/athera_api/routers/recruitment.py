@@ -418,68 +418,93 @@ async def list_applicants(
     ]
 
 
-async def _decide(application_id, principal, decision):
-    """قرارُ مديرٍ — **وجلستُه جلسةُ البحث** لا جلسةُ مستأجره.
+# **ومسارُ القرار يُكتب حرفيًّا في كلّ مُزخرِف** لا مجموعًا من ثابت.
+#
+# فعقدُ RC-T1A يقرأ المسارَ من شجرة النحو (`decorator.args[0]`)، وجمعٌ
+# بعلامة `+` يصير `BinOp` لا نصًّا — **فيسقط المحلّلُ نفسُه**، ويصير
+# الحارسُ عاجزًا عن رؤية المسار الذي يحرسه. والضمُّ الضمنيُّ لسلسلتين
+# متجاورتين يبقى نصًّا واحدًا في الشجرة.
 
-    فالتطبيقُ يُقرأ بسياسةِ «أُدير فرصتَه»، وهي تستوجب سياقَ مستأجر
-    البحث. والمديرُ قد يكون متعاونًا من مؤسسةٍ أخرى، فيُعبَر بجسر البحث
-    المُشتقِّ من الفرصة نفسِها.
+
+async def _scoped_application(
+    session: AsyncSession, principal: Principal, project_id: uuid.UUID,
+) -> None:
+    """بوابةُ قرارِ المدير — **والنطاقُ يُختار في المسار لا يُستنبَط**.
+
+    ## العطبُ الذي أُغلق
+
+    كانت مساراتُ القرار تحمل معرّفَ التطبيق وحده، فتستنبط البحثَ بقراءةٍ
+    **في مستأجر المدير الأصليّ**:
+
+        tenant_session(home) → SELECT RecruitmentOpportunity.project_id …
+
+    وجدولُ النسب سياستُه سياسةُ مديرٍ داخل مستأجر البحث
+    (`tenant_id = app_current_tenant()`). فمديرٌ متعاونٌ من مؤسسةٍ أخرى —
+    عضوٌ نشِطٌ في البحث له `view_project` و`manage_team` — **لا يرى الصفَّ
+    من مستأجره**، فتُعيد القراءةُ صفرًا ويُجاب ٤٠٤ **قبل أن يعمل الجسرُ
+    أصلًا**. فكان الاستنباطُ نفسُه هو الحدّ، لا التفويض.
+
+    فصار البحثُ في المسار: يُعبَر الجسرُ به أوّلًا، ثمّ يُفوَّض.
+
+    ## و`project_id` في المسار **ليس سلطة**
+
+    هو مُنتقي نطاقٍ فحسب. والسلطةُ تُشتقّ بعده: عضويّةٌ نشِطةٌ بأساس
+    الرؤية تفتح السياق، و`manage_team` تفتح الفعل، ثمّ تُقابَل هويّاتُ
+    الفرصة والتطبيق بما في المسار — في الخدمة لا هنا وحدها.
     """
-    from ..db import project_session
-
-    async with tenant_session(principal.tenant_id, principal.user_id) as probe:
-        project_id = (await probe.execute(
-            select(RecruitmentOpportunity.project_id)
-            .join(RecruitmentApplication,
-                  RecruitmentApplication.opportunity_id == RecruitmentOpportunity.id)
-            .where(RecruitmentApplication.id == application_id))).scalar_one_or_none()
-    if project_id is None:
-        # ولا يُفصح عن سببٍ: المعدومُ وغيرُ المأذون جوابُهما واحد.
-        raise NotFound("recruitment.application_not_found")
-
-    async with project_session(project_id, principal.tenant_id,
-                               principal.user_id) as session:
-        return await recruitment.decide_application(
-            session, application_id=application_id,
-            actor_user_id=principal.user_id, decision=decision)
+    await _gate(session, principal, project_id)
 
 
-@router.post("/applications/{application_id}/shortlist",
+@router.post("/projects/{project_id}/opportunities/{opportunity_id}"
+             "/applications/{application_id}/shortlist",
              response_model=ManagerApplication)
 async def shortlist(
-    application_id: uuid.UUID,
+    project_id: uuid.UUID, opportunity_id: uuid.UUID, application_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ManagerApplication:
-    row = await _decide(application_id, principal, "shortlisted")
+    await _scoped_application(session, principal, project_id)
+    row = await recruitment.decide_application(
+        session, application_id=application_id, actor_user_id=principal.user_id,
+        decision="shortlisted", expect_project_id=project_id,
+        expect_opportunity_id=opportunity_id)
     return ManagerApplication(
         application_id=row.id, display_name="", status=row.status,
         message=row.message, submitted_at=row.created_at,
         decided_at=row.decided_at, invitation=None)
 
 
-@router.post("/applications/{application_id}/decline",
+@router.post("/projects/{project_id}/opportunities/{opportunity_id}"
+             "/applications/{application_id}/decline",
              response_model=ManagerApplication)
 async def decline_applicant(
-    application_id: uuid.UUID,
+    project_id: uuid.UUID, opportunity_id: uuid.UUID, application_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ManagerApplication:
-    row = await _decide(application_id, principal, "declined")
+    await _scoped_application(session, principal, project_id)
+    row = await recruitment.decide_application(
+        session, application_id=application_id, actor_user_id=principal.user_id,
+        decision="declined", expect_project_id=project_id,
+        expect_opportunity_id=opportunity_id)
     return ManagerApplication(
         application_id=row.id, display_name="", status=row.status,
         message=row.message, submitted_at=row.created_at,
         decided_at=row.decided_at, invitation=None)
 
 
-@router.post("/applications/{application_id}/invite",
+@router.post("/projects/{project_id}/opportunities/{opportunity_id}"
+             "/applications/{application_id}/invite",
              response_model=RecruitmentInvitationResponse)
 async def invite_applicant(
-    application_id: uuid.UUID,
+    project_id: uuid.UUID, opportunity_id: uuid.UUID, application_id: uuid.UUID,
     payload: InviteRequest,
     principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_project_session),
 ) -> RecruitmentInvitationResponse:
     """اختيارُ مرشَّح — **ولا هويّةَ في الطلب**.
 
-    فالمديرُ يُرسل دورًا وصلاحياتٍ ومهلةً. والمرشَّحُ يُشتقّ من
+    فالمديرُ يُرسل دورًا وصلاحياتٍ ومهلة. والمرشَّحُ يُشتقّ من
     `RecruitmentApplication.applicant_user_id`، والبحثُ من فرصته،
     والمستأجرُ من نسبها — كلُّها في الخادم.
 
@@ -487,29 +512,18 @@ async def invite_applicant(
     بريدَ ولا إشعار)، فيُسلّمه المديرُ بنفسه — وهو سلوكُ دعوات الفريق
     القائم. ولا يُخزَّن خامًّا ولا يُكتب في سجلٍّ ولا يعود من أيّ قراءة.
     """
-    from ..db import project_session
-
-    async with tenant_session(principal.tenant_id, principal.user_id) as probe:
-        project_id = (await probe.execute(
-            select(RecruitmentOpportunity.project_id)
-            .join(RecruitmentApplication,
-                  RecruitmentApplication.opportunity_id == RecruitmentOpportunity.id)
-            .where(RecruitmentApplication.id == application_id))).scalar_one_or_none()
-    if project_id is None:
-        raise NotFound("recruitment.application_not_found")
-
-    async with project_session(project_id, principal.tenant_id,
-                               principal.user_id) as session:
-        selection = await recruitment.invite_applicant(
-            session, application_id=application_id,
-            actor_user_id=principal.user_id, role=payload.role,
-            permissions=list(payload.permissions), ttl_hours=payload.ttl_hours)
-        return RecruitmentInvitationResponse(
-            application_id=selection.application.id,
-            application_status=selection.application.status,
-            invitation_id=selection.invitation.id,
-            invitation_state=selection.invitation.state,
-            role=selection.invitation.proposed_role,
-            permissions=list(selection.invitation.proposed_permissions or []),
-            expires_at=selection.invitation.expires_at,
-            token=selection.token)
+    await _scoped_application(session, principal, project_id)
+    selection = await recruitment.invite_applicant(
+        session, application_id=application_id, actor_user_id=principal.user_id,
+        role=payload.role, permissions=list(payload.permissions),
+        ttl_hours=payload.ttl_hours, expect_project_id=project_id,
+        expect_opportunity_id=opportunity_id)
+    return RecruitmentInvitationResponse(
+        application_id=selection.application.id,
+        application_status=selection.application.status,
+        invitation_id=selection.invitation.id,
+        invitation_state=selection.invitation.state,
+        role=selection.invitation.proposed_role,
+        permissions=list(selection.invitation.proposed_permissions or []),
+        expires_at=selection.invitation.expires_at,
+        token=selection.token)
