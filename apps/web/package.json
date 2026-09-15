@@ -27,7 +27,7 @@
     "test:rc0-journey": "playwright test tests/rc0-research-journey.spec.ts",
     "test:rc0-fullstack": "playwright test tests/rc0-journey-fullstack.spec.ts",
     "test:library-multi-file": "playwright test tests/library-multi-file-upload.spec.ts",
-    "test:collaboration": "playwright test tests/collaboration-route-domains.spec.ts tests/rc-t1c-collaboration-journey.spec.ts --retries=0 --workers=1"
+    "test:collaboration": "playwright test tests/collaboration-route-domains.spec.ts tests/rc-t1c-collaboration-journey.spec.ts tests/team-access-state-commit-race.spec.ts --retries=0 --workers=1"
   },
   "dependencies": {
     "next": "^16.0.0",

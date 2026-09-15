@@ -332,14 +332,52 @@ export function TeamWorkspace({
     );
   }
 
+  /**
+   * يُبدِّل عضوًا بعينه بما **ردّه الخادم** — لا بقراءةٍ ثانية تكتشفه.
+   *
+   * وما عداه يبقى كما هو: قراءةٌ لاحقةٌ طبيعيّة تُصالح البقيّة، ولا
+   * تدهس هذا الصفَّ بجوابٍ أقدمَ منه.
+   */
+  function mergeMember(updated: Member) {
+    setMembers((prev) =>
+      prev.map((row) => (row.id === updated.id ? updated : row)));
+  }
+
+  /**
+   * إيقافُ مدخلِ عضوٍ أو إعادتُه — **والجوابُ هو الحقيقةُ المعروضة**.
+   *
+   * ## العطبُ الذي أغلقه هذا
+   *
+   * كان الزرّان يُرسمان من قائمةٍ تُعاد قراءتُها بعد التعديل مباشرة:
+   * `PATCH` ثمّ `refresh()` ثمّ `GET /members`. وسقطت بوّابةُ الدمج على
+   * ذلك بالضبط — ردَّ الخادمُ ٢٠٠ على الإيقاف، ثمّ قرأت الشاشةُ القائمةَ
+   * على **الاتصال نفسِه** فعادت «نشِط»، فبقي زرُّ «أوقِف» ولم يظهر
+   * «أعِد» أبدًا. ولا خطأَ في الخادم ولا في القاعدة: الردُّ يسبق
+   * الإثبات (RC-T1-H1، وهو **باقٍ مفتوحًا** — هذا السطرُ يُغلق مظهرَه
+   * هنا لا أصلَه).
+   *
+   * فنقطةُ التعديل تردّ صفَّ العضو كاملًا بحاله الجديدة، ويُدمج في
+   * موضعه. **ولا تُعاد قراءةُ القائمة لاكتشاف ما ردّه الخادمُ توًّا** —
+   * وهي كذلك رحلةٌ أقلّ إلى قاعدةٍ في إقليمٍ آخر.
+   */
   async function changeAccess(memberId: string, next: string) {
-    await act(() =>
-      apiFetch(`/api/v1/projects/${projectId}/members/${memberId}/access`, {
-        method: "PATCH",
-        locale,
-        body: JSON.stringify({ access_state: next }),
-      }),
-    );
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await apiFetch<Member>(
+        `/api/v1/projects/${projectId}/members/${memberId}/access`,
+        {
+          method: "PATCH",
+          locale,
+          body: JSON.stringify({ access_state: next }),
+        },
+      );
+      mergeMember(updated);
+    } catch (err) {
+      say(err);
+    } finally {
+      setBusy(false);
+    }
   }
 
   /** **موافقتُك أنت.** ولا يقبل هذا المسار معرِّف عضوٍ سواك. */
