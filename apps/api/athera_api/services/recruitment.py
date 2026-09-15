@@ -254,7 +254,12 @@ async def withdraw_application(
             .where(ProjectInvitation.id == application.invitation_id)
             .with_for_update())).scalar_one_or_none()
         if invitation is not None and invitation.state == "invited":
-            invitation.state = "revoked"
+            # **و«معتذَرٌ عنها» لا «منقوضة».**
+            #
+            # فالنقضُ فعلُ المدير، والاعتذارُ فعلُ المدعوّ — ومُشغِّلُ
+            # الدعوات يفصل بينهما: من دُعي يقبل أو يعتذر ولا ينقض. ومن
+            # انسحب فقد اعتذر عن دعوته، وكلتا الحالَين تُميت الرمز.
+            invitation.state = "declined"
             invitation.responded_at = collaboration._now()
             await session.flush()
 

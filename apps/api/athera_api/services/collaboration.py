@@ -492,8 +492,13 @@ async def _settle(
     invitation.state = state
     invitation.responded_at = _now()
     await session.flush()
+    # **وحدثُ الدعوة يُكتب في مستأجرها لا في مستأجر من ردّ عليها.**
+    #
+    # فالمُعتذِرُ من مؤسسةٍ أخرى كان يُكتب حدثُه بمستأجره هو، فيُرفض عند
+    # سياسة العزل على `project_member_events` — وهو نفسُ العطب الذي أُصلح
+    # في `accept_invitation`.
     await record_member_event(
-        session, tenant_id=tenant_id, project_id=invitation.project_id,
+        session, tenant_id=invitation.tenant_id, project_id=invitation.project_id,
         invitation_id=invitation.id, event_kind=state,
         actor_user_id=actor_user_id, state_after={"state": state})
     return invitation

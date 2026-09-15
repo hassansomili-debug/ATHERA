@@ -103,11 +103,41 @@ app_current_tenant()` **صريحةً في كلّ فرع**، فالحدُّ يق�
 و`shortlisted → invited` تُضاف إلى مصفوفة المدير **بعد** ذلك كلِّه، لا
 قبله. و`pending → invited` تبقى ممنوعةً: الاختيارُ يمرّ بالترشيح.
 
-## توسعةٌ محضة
+════════════════════════════════════════════════════════════════════
 
-ثلاثُ سياساتِ قراءة، ودالّةُ مُشغِّلٍ تُستبدل بنسخةٍ أقوى، وفهرسٌ فريدٌ
-جزئيّ. لا جدولَ يُنشأ، ولا عمودَ يُحذف، ولا سياسةَ قائمةٌ تُسقط، ولا
-صلاحيةَ تُمنح. **ولا يُمَسّ الترحيل 0034 نفسُه** — وهو في الإنتاج.
+# ٣ · وكشفٌ قائمٌ في دعوات الفريق يُغلق
+
+**وهذا دَينٌ سابقٌ اكتُشف في أثناء RC-T1C، لا شيءٌ أحدثته.**
+
+أنشأ 0028 على `project_invitations` سياسةً واحدةً `FOR ALL` حدُّها
+`tenant_id = app_current_tenant()`. فكلُّ مصادَقٍ في مستأجرٍ يقرأ **كلَّ
+دعوات مستأجره**: مَن دُعي، وإلى أيّ بحث، وبأيّ دورٍ وصلاحيات — ولو لم يكن
+من ذلك البحث بشيء.
+
+والموجّهُ يشترط `manage_team`، لكنّ **حدَّ القاعدة كان أوسعَ من حدِّ
+الموجّه**. وسياسةُ «الدعوةُ إليّ» التي أضافها هذا الترحيل أوّلًا لم تُضيّق
+شيئًا: السياساتُ المُتاحة تتجمّع بـ«أو»، فالعريضةُ تبقى تُشبع القراءة.
+
+فتُسقط سياسةُ 0028 **ويُوضع مكانها طقمٌ مُفصَّلٌ بالأفعال**:
+
+| مَن | ماذا |
+|---|---|
+| المدعوُّ بعينه | قراءةً، وتعديلًا شخصيًّا (قبولٌ أو اعتذار) |
+| مديرُ ذلك البحث | قراءةً وإصدارًا ونقضًا |
+| غيرُهما | لا شيء — ولو كان في المستأجر نفسِه |
+
+**والمدعوُّ غيرُ المربوط بحساب**: الدعواتُ لبريدٍ لا حسابَ له في المستأجر
+تُكتب بـ`invited_user_id` فارغة، فلو اقتُصر على الحساب لَانكسر قبولُها.
+فيُقابل البريدُ بحساب الفاعل من `users` — **للمقصود وحده**.
+
+و«المدير» هو نفسُه `app_manages_project` من 0034. **ولا سياسةَ حذفٍ
+لأحد**: النقضُ حالٌ تُكتب لا صفٌّ يُمحى.
+
+## توسعةٌ محضة — إلّا موضعًا واحدًا مقصودًا
+
+**وسياسةُ 0028 على الدعوات تُسقط ويُوضع مكانها ما هو أضيق** — تضييقٌ لا
+توسيع. ولا جدولَ يُنشأ، ولا عمودَ يُحذف، ولا صلاحيةَ تُمنح. **ولا يُمَسّ
+0034 ولا 0028**، والتنازلُ يُعيد سياسةَ 0028 بنصِّها.
 
 Revision ID: 0035
 """
@@ -127,6 +157,130 @@ MEMBERS = "project_members"
 PERMISSIONS = "project_member_permissions"
 INVITATIONS = "project_invitations"
 
+RECIPIENT = (
+    "invited_user_id = app_current_actor() "
+    "OR (invited_user_id IS NULL AND EXISTS ("
+    "      SELECT 1 FROM users u WHERE u.id = app_current_actor() "
+    "        AND lower(u.email) = lower(invited_email)))"
+)
+
+INVITATION_MANAGER = (
+    "tenant_id = app_current_tenant() AND app_manages_project(project_id)"
+)
+
+#: سياسةُ 0028 بنصِّها — تُسقط في الصعود وتُعاد في التنازل.
+LEGACY_INVITATION_POLICY = (
+    "CREATE POLICY project_invitations_tenant_isolation ON project_invitations "
+    "USING (tenant_id = app_current_tenant()) "
+    "WITH CHECK (tenant_id = app_current_tenant())"
+)
+
+INVITATION_POLICIES = (
+    ("project_invitations_recipient_read", "SELECT", RECIPIENT, None),
+    ("project_invitations_manager_read", "SELECT", INVITATION_MANAGER, None),
+    ("project_invitations_manager_insert", "INSERT", None, INVITATION_MANAGER),
+    ("project_invitations_manager_update", "UPDATE", INVITATION_MANAGER,
+     INVITATION_MANAGER),
+    # والقبولُ والاعتذارُ بيد صاحبها — **ولا يقبل أحدٌ عن أحد**.
+    ("project_invitations_recipient_update", "UPDATE", RECIPIENT, RECIPIENT),
+)
+
+#: مُشغِّلُ الدعوة — **ما لا تقدر عليه سياسةُ الصفّ**.
+#:
+#: فسياسةُ تعديلِ المدعوّ تُسلّمه صفَّه، ولا تعرف **أيَّ عمودٍ** كتب ولا
+#: **من أيّ حالٍ إلى أيّ حال**. فلولا مُشغِّلٌ لَنقض المدعوُّ دعوتَه —
+#: فيُخفي أنّه دُعي — أو رفع عرضَها إلى دورٍ أعلى.
+#:
+#: وكان المانعُ الوحيدُ قبل اليوم هو الموجّه: `revoke_invitation` لا تسأل
+#: عن سلطةٍ أصلًا. **وذاك حدُّ شيفرةٍ لا حدُّ قاعدة.**
+INVITATION_GUARD_FN = """
+CREATE OR REPLACE FUNCTION project_invitation_guard() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    actor uuid := app_current_actor();
+    is_recipient boolean;
+BEGIN
+    -- ── هويّةُ الدعوة وعرضُها يُكتبان مرّةً ──
+    --
+    -- والعرضُ (الدورُ والصلاحيات) داخلٌ في ذلك قصدًا: دعوةٌ قُبلت على
+    -- عرضٍ ثمّ أُعيدت كتابتُه تجعل من قَبِل عضوًا بما لم يَقبله.
+    IF NEW.id <> OLD.id
+       OR NEW.tenant_id <> OLD.tenant_id
+       OR NEW.project_id <> OLD.project_id
+       OR NEW.invited_email IS DISTINCT FROM OLD.invited_email
+       OR NEW.invited_user_id IS DISTINCT FROM OLD.invited_user_id
+       OR NEW.invited_by <> OLD.invited_by
+       OR NEW.token_hash <> OLD.token_hash
+       OR NEW.created_at <> OLD.created_at
+       OR NEW.proposed_role <> OLD.proposed_role
+       OR NEW.proposed_permissions IS DISTINCT FROM OLD.proposed_permissions THEN
+        RAISE EXCEPTION
+          'the identity and the offer of an invitation are written once'
+          USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NEW.state = OLD.state THEN
+        RETURN NEW;
+    END IF;
+
+    -- ولا تُعاد دعوةٌ سُوّيت إلى الحياة: الجديدةُ صفٌّ جديد.
+    IF OLD.state <> 'invited' THEN
+        RAISE EXCEPTION 'a settled invitation is not reopened (it was %)', OLD.state
+          USING ERRCODE = 'check_violation';
+    END IF;
+
+    is_recipient := actor IS NOT NULL AND (
+        actor = OLD.invited_user_id
+        OR (OLD.invited_user_id IS NULL AND EXISTS (
+              SELECT 1 FROM users u WHERE u.id = actor
+                AND lower(u.email) = lower(OLD.invited_email)))
+    );
+
+    IF is_recipient THEN
+        -- **المدعوُّ يقبل أو يعتذر — ولا ينقض.**
+        --
+        -- فالنقضُ إخفاءٌ لأنّه دُعي، وذاك أثرٌ يخصّ الفريقَ لا المدعوَّ.
+        IF NEW.state NOT IN ('accepted', 'declined') THEN
+            RAISE EXCEPTION
+              'the invited account may accept or decline, not %', NEW.state
+              USING ERRCODE = 'check_violation';
+        END IF;
+    ELSE
+        -- **ولا يقبل أحدٌ عن أحد، ولا يعتذر عنه.**
+        IF NEW.state NOT IN ('revoked', 'expired') THEN
+            RAISE EXCEPTION
+              'only the invited account may answer an invitation; a manager may '
+              'revoke or expire it'
+              USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+
+    -- ── والقبولُ يحمل بيّنتَه ──
+    IF NEW.state = 'accepted' THEN
+        IF NEW.accepted_user_id IS NULL OR NEW.member_id IS NULL THEN
+            RAISE EXCEPTION 'an accepted invitation names its account and its member'
+              USING ERRCODE = 'check_violation';
+        END IF;
+        IF OLD.invited_user_id IS NOT NULL
+           AND NEW.accepted_user_id <> OLD.invited_user_id THEN
+            RAISE EXCEPTION 'an invitation is accepted by the account it was issued to'
+              USING ERRCODE = 'check_violation';
+        END IF;
+    ELSIF NEW.accepted_user_id IS DISTINCT FROM OLD.accepted_user_id
+          OR NEW.member_id IS DISTINCT FROM OLD.member_id THEN
+        -- ولا تحمل المنقوضةُ ولا المعتذَرُ عنها ارتباطَ عضويّة.
+        RAISE EXCEPTION 'only an accepted invitation carries a membership binding'
+          USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END
+$$;
+"""
+
+
 SELF_POLICIES = (
     # ── ١. «أين أنا عضو؟» ──
     #
@@ -143,13 +297,7 @@ SELF_POLICIES = (
      f"EXISTS (SELECT 1 FROM {MEMBERS} m "
      "          WHERE m.id = member_id AND m.user_id = app_current_actor())"),
 
-    # ── ٣. «وهل دُعيتُ؟» ──
-    #
-    # **وهذا لازمٌ قبل العضويّة لا بعدها**: المتقدّمُ المختار يُدعى وهو
-    # ليس عضوًا بعد، فلا سياسةَ عضويّةٍ تُريه دعوتَه. والحدُّ حسابُه
-    # بعينه — لا بريدُه: `invited_user_id` عمودٌ يُكتب في الخادم.
-    (INVITATIONS, f"{INVITATIONS}_self_read",
-     "invited_user_id = app_current_actor()"),
+
 )
 
 
@@ -240,8 +388,36 @@ def upgrade() -> None:
     )
     op.execute(_guard_v2())
 
+    # ── دعواتُ الفريق: تُسقط سياسةُ 0028 العريضة ويُوضع مكانها الأضيق ──
+    #
+    # **والإسقاطُ لازمٌ لا زيادة**: السياساتُ المُتاحة تتجمّع بـ«أو»، فلو
+    # بقيت العريضةُ لَأشبعت القراءةَ وحدها وما ضيّق شيءٌ.
+    op.execute(f"DROP POLICY {INVITATIONS}_tenant_isolation ON {INVITATIONS}")
+    for name, command, using, check in INVITATION_POLICIES:
+        clauses = f"FOR {command}"
+        if using is not None:
+            clauses += f" USING ({using})"
+        if check is not None:
+            clauses += f" WITH CHECK ({check})"
+        op.execute(f"CREATE POLICY {name} ON {INVITATIONS} {clauses}")
+    op.execute(f"REVOKE DELETE ON {INVITATIONS} FROM athera_app")
+
+    op.execute(INVITATION_GUARD_FN)
+    op.execute(
+        f"CREATE TRIGGER trg_{INVITATIONS}_guard BEFORE UPDATE ON {INVITATIONS} "
+        "FOR EACH ROW EXECUTE FUNCTION project_invitation_guard()"
+    )
+
 
 def downgrade() -> None:
+    op.execute(f"DROP TRIGGER IF EXISTS trg_{INVITATIONS}_guard ON {INVITATIONS}")
+    op.execute("DROP FUNCTION IF EXISTS project_invitation_guard()")
+    # وتُعاد سياسةُ 0028 بنصِّها — فالتنازلُ يُرجع ما كان لا ما يُشبهه.
+    op.execute(f"GRANT DELETE ON {INVITATIONS} TO athera_app")
+    for name, *_ in reversed(INVITATION_POLICIES):
+        op.execute(f"DROP POLICY IF EXISTS {name} ON {INVITATIONS}")
+    op.execute(LEGACY_INVITATION_POLICY)
+
     # وتُعاد دالّةُ 0034 بنصِّها هي — فالتنازلُ يُرجع ما كان لا ما يُشبهه.
     op.execute(_previous_guard())
     op.execute(f"DROP INDEX IF EXISTS uq_recruitment_applications_invitation")

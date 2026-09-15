@@ -451,8 +451,15 @@ async def test_an_invitation_is_refused_to_an_account_it_was_not_issued_to(
     async with _client(tid, bystander["user_id"]) as other_http:
         stolen = await other_http.post("/api/v1/invitations/accept",
                                        json={"token": token})
-        assert stolen.status_code == 403, stolen.text
-        assert stolen.json()["error"]["code"] == "team.invitation_not_yours"
+        # **وصار الجوابُ ٤٠٤ بعد تضييق سياسة الدعوات في 0035.**
+        #
+        # وكان ٤٠٣: «الدعوةُ موجودةٌ وليست لك» — وذاك يكشف وجودَ دعوةٍ
+        # لمن ليست له، فيُعَدّ الرموزُ ويُستدلّ. وبعد التضييق لا يقرأ
+        # غيرُ المقصود الصفَّ أصلًا فيُجاب جوابَ المعدوم — وهو نفسُ ما
+        # اختاره RC-T1A للأبحاث: المعدومُ وغيرُ المأذون جوابُهما واحد.
+        assert stolen.status_code == 404, stolen.text
+        # والمفتاحُ تبع الجواب: لا «ليست لك» بل «غير موجودة».
+        assert stolen.json()["error"]["code"] == "team.invitation_not_found"
 
     # والدعوةُ ما زالت قائمةً لصاحبتها — لم يُحرقها من حاول.
     async with _client(tid, invited["user_id"]) as invited_http:

@@ -520,17 +520,17 @@ async def test_a_candidate_reads_only_their_own_invitation(flow):
         seen = (await session.execute(select(ProjectInvitation.id))).scalars().all()
     assert invitation_id not in seen, "دعوةٌ عبَرت المستأجرَ إلى غير صاحبها"
 
-    # **وأمّا داخل مستأجر البحث فالحدُّ أقدمُ من هذه المرحلة**: سياسةُ
-    # العزل في 0028 تُتيح لكلّ من في المستأجر قراءةَ دعوات مستأجره. وذاك
-    # كشفٌ قائمٌ (مَن دُعي إلى أيّ بحث) **لم يُحدثه 0035 ولا يُغلقه**،
-    # ويُسجَّل في نموذج التهديد متابعةً مستقلّة. فلا يُدَّعى هنا ما ليس
-    # صحيحًا.
+    # **وداخل مستأجر البحث كذلك — وهذا ما أُغلق في هذه المرحلة.**
+    #
+    # وكان الفحصُ يُثبت العكس: سياسةُ 0028 العريضة كانت تُتيح لكلّ من في
+    # المستأجر قراءةَ دعوات مستأجره (مَن دُعي إلى أيّ بحث). وقد أُسقطت
+    # وحلّ مكانها طقمٌ مُفصَّل، فصار الغريبُ في المستأجر لا يرى شيئًا.
     async with tenant_session(flow.stranger["tenant_id"],
                               flow.stranger["user_id"]) as session:
         same_tenant = (await session.execute(
             select(ProjectInvitation.id))).scalars().all()
-    assert invitation_id in same_tenant, (
-        "تغيّر سلوكُ العزل داخل المستأجر — فيُراجَع هذا التوثيق")
+    assert invitation_id not in same_tenant, (
+        "غريبٌ في مستأجر البحث ما زال يقرأ دعوةً لا شأنَ له بها")
 
 
 @requires_db
@@ -584,7 +584,9 @@ async def test_withdrawal_revokes_the_pending_invitation_and_kills_the_token(flo
                               flow.owner["user_id"]) as session:
         state = (await session.execute(select(ProjectInvitation.state).where(
             ProjectInvitation.id == invitation_id))).scalar_one()
-    assert state == "revoked"
+    # و«معتذَرٌ عنها» لا «منقوضة»: الاعتذارُ فعلُ المدعوّ، والنقضُ فعلُ
+    # المدير — ومُشغِّلُ الدعوات يفصل بينهما. وكلتاهما تُميت الرمز.
+    assert state == "declined"
 
     with pytest.raises(AtheraError):
         await _accept(flow.candidate, token)
