@@ -129,6 +129,105 @@ async def tenant_session(tenant_id: UUID | None, actor_id: UUID | None = None) -
             yield session
 
 
+# ── جسرُ البحث عبر المؤسسات: مُسنَدُ النطاق ──
+#
+# «أين يعيش هذا البحث **بالنسبة لهذا الفاعل**؟»
+#
+# ويُقرأ بحقوق المستدعي تحت سياساتِ «النفس» التي أضافها الترحيل 0035: صفُّ
+# عضويّتِه هو، وصلاحيتُه هو. فلا يُخرج هذا الاستعلامُ صفًّا لا يخصّ صاحبَ
+# الجلسة، ولو جرى بلا مستأجرٍ أصلًا.
+#
+# **وأساسُ `view_project` شرطٌ في الجسر نفسِه**: صلاحيةُ فعلٍ وحدها لا
+# تنقل أحدًا إلى مستأجرٍ آخر. و`access_state = 'active'` كذلك — فالموقوفُ
+# والمُزال لا يعبُران.
+_PROJECT_SCOPE = text(
+    "SELECT m.tenant_id FROM project_members m "
+    "  JOIN project_member_permissions p "
+    "    ON p.member_id = m.id AND p.permission_key = 'view_project' "
+    " WHERE m.project_id = :project_id "
+    "   AND m.user_id = app_current_actor() "
+    "   AND m.access_state = 'active' "
+    " LIMIT 1"
+)
+
+
+@asynccontextmanager
+async def project_session(
+    project_id: UUID, tenant_id: UUID | None, actor_id: UUID | None,
+) -> AsyncIterator[AsyncSession]:
+    """جلسةٌ تدخل مستأجرَ البحث **إن كان للفاعل فيه مدخلٌ مُثبت**.
+
+    وهذه هي النقطةُ الوحيدةُ التي يُعاد فيها ربطُ المستأجر داخل طلب. ولا
+    تُنسخ في موجّه: خمسةَ عشرَ موجّهًا تأخذ `project_id`، ونسخةٌ من هذا
+    المنطق في كلٍّ منها تفترق بأوّل تعديل.
+
+    ## وما لا يأتي من العميل
+
+    **مستأجرُ البحث يُشتقّ من صفِّ عضويّةٍ محفوظ، لا من الطلب.** لا جسمٌ
+    ولا مُعامِلُ استعلامٍ ولا ترويسة تختار مستأجرًا. والفاعلُ يبقى هو
+    نفسَه قبل الربط وبعده — يتغيّر المستأجرُ وحده.
+
+    ## ولا يُعاد الربطُ إلّا عند الحاجة
+
+    فصاحبُ البحث وزميلُه في مستأجره يبقيان في سياقهما الأصليّ: لا استعلامَ
+    زائدَ الأثر، ولا مسارَ ثانٍ يفترق عن الأوّل في سلوكه.
+
+    ## والتفويضُ ليس هنا
+
+    هذه الدالّةُ تفتح بابَ **السياق** لا بابَ الإذن. ومَن يدخل البحثَ
+    فعلًا يقرّره `ensure_project_access` كما منذ RC-T1A: مالكٌ مُثبت، أو
+    عضوٌ نشِطٌ يحمل `view_project`. فلو أعادت هذه الدالّةُ ربطًا لا يستحقّه
+    أحدٌ لَما أفاده: الحارسُ خلفه لم يُمسّ.
+
+    **وصاحبُ البحث لا يُشترط له صفُّ عضويّة**: لا مطابقةَ هنا فلا ربط،
+    ويبقى في مستأجره — وهو مستأجرُ بحثه أصلًا.
+    """
+    async with SessionFactory() as session:
+        async with session.begin():
+            if tenant_id is not None and actor_id is not None:
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true),"
+                         "       set_config('app.actor_id', :aid, true)"),
+                    {"tid": str(tenant_id), "aid": str(actor_id)},
+                )
+            elif tenant_id is not None:
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true)"),
+                    {"tid": str(tenant_id)},
+                )
+            elif actor_id is not None:
+                await session.execute(
+                    text("SELECT set_config('app.actor_id', :aid, true)"),
+                    {"aid": str(actor_id)},
+                )
+
+            # **ولا تُدمج هذه العبارةُ مع ضبطِ السياق.** ترتيبُ تقييم
+            # عناصر قائمة `SELECT` غيرُ مضمونٍ في PostgreSQL، والمُسنَد
+            # يقرأ `app_current_actor()` — فدمجُهما يجعل الصحّةَ رهنَ
+            # ترتيبٍ لم يَعِد به أحد.
+            scope = (await session.execute(
+                _PROJECT_SCOPE, {"project_id": str(project_id)})).scalar_one_or_none()
+
+            if scope is not None and scope != tenant_id:
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true)"),
+                    {"tid": str(scope)},
+                )
+            # والمستأجرُ النافذُ يُحفظ على الجلسة نفسِها، فيقرؤه الحارسُ
+            # بعدُ بلا استعلامٍ ثانٍ ولا تخمين.
+            session.info["scoped_tenant_id"] = scope if scope is not None else tenant_id
+            yield session
+
+
+def scoped_tenant(session: AsyncSession, default: UUID | None = None) -> UUID | None:
+    """المستأجرُ الذي تعمل به هذه الجلسةُ فعلًا.
+
+    فبعد عبورِ الجسر لم يعد مستأجرُ الرمز هو مستأجرَ المعاملة، وحارسٌ
+    يقرأ `principal.tenant_id` بعدها يسأل عن المستأجر الخطأ.
+    """
+    return session.info.get("scoped_tenant_id", default)
+
+
 @asynccontextmanager
 async def system_session() -> AsyncIterator[AsyncSession]:
     """جلسة بلا مستأجر — للتسجيل والمصادقة فقط قبل تحديد السياق.
