@@ -556,12 +556,18 @@ async def accept_invitation(
     #
     # وما لا ربطَ له — الدعواتُ المحلّيّةُ ببريدٍ لحسابٍ لم يُرشَّح — يبقى
     # على حدِّه القديم بلا تغيير.
+    # **والجوابُ جوابُ المعدوم لا «ليست لك».**
+    #
+    # فـ«موجودةٌ وليست لك» تكشف وجودَ دعوةٍ لمن ليست له، فيُعَدّ الرموزُ
+    # ويُستدلّ على مَن دُعي. والمعدومُ وغيرُ المأذون يُجابان جوابًا واحدًا
+    # — وهو نفسُ ما اختاره RC-T1A للأبحاث. ومديرٌ يرى الدعوةَ بحقّ يُجاب
+    # كذلك: رؤيتُها ليست حقًّا في قبولها.
     if invitation.invited_user_id is not None:
         if accepting_user_id != invitation.invited_user_id:
-            raise Forbidden("team.invitation_not_yours")
+            raise NotFound("team.invitation_not_found")
     elif team.normalize_email(accepting.email) != team.normalize_email(
             invitation.invited_email):
-        raise Forbidden("team.invitation_not_yours")
+        raise NotFound("team.invitation_not_found")
 
     # **ومستأجرُ العضويّة مستأجرُ الدعوة، لا مستأجرُ من قَبِل.**
     #
@@ -638,9 +644,16 @@ async def decline_invitation(
     declining = (
         await session.execute(select(User).where(User.id == declining_user_id))
     ).scalar_one_or_none()
-    if declining is None or team.normalize_email(declining.email) != \
-            team.normalize_email(invitation.invited_email):
-        raise Forbidden("team.invitation_not_yours")
+    # والاعتذارُ حدُّه الحسابُ متى كانت الدعوةُ مربوطةً به — والجوابُ
+    # جوابُ المعدوم كما في القبول.
+    if declining is None:
+        raise NotFound("team.invitation_not_found")
+    if invitation.invited_user_id is not None:
+        if declining_user_id != invitation.invited_user_id:
+            raise NotFound("team.invitation_not_found")
+    elif team.normalize_email(declining.email) != team.normalize_email(
+            invitation.invited_email):
+        raise NotFound("team.invitation_not_found")
     return await _settle(session, tenant_id=tenant_id, invitation=invitation,
                          state="declined", actor_user_id=declining_user_id)
 

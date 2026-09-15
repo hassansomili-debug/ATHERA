@@ -72,6 +72,26 @@ async def get_session(principal: Principal = Depends(get_principal)) -> AsyncIte
         yield session
 
 
+async def get_project_session(
+    project_id: uuid.UUID, principal: Principal = Depends(get_principal),
+) -> AsyncIterator[AsyncSession]:
+    """جلسةُ بحثٍ — **تعبُر إلى مستأجره إن كان للفاعل فيه مدخلٌ مُثبت**.
+
+    وهي التجهيزةُ الوحيدةُ التي يُعاد بها ربطُ المستأجر داخل طلب، فلا
+    يُنسخ `set_config` في موجّه. و`project_id` يُقرأ من **مسار** الطلب،
+    و`principal` من رمزٍ موقَّع — ولا مستأجرَ بحثٍ يأتي من جسمٍ ولا ترويسة.
+
+    والتفويضُ ليس هنا: هذه تفتح بابَ السياق، و`ensure_project_access` تقف
+    خلفها. ومَن قرأ `principal.tenant_id` بعد العبور سأل عن المستأجر
+    الخطأ — فيُقرأ `scoped_tenant(session)`.
+    """
+    from .db import project_session
+
+    async with project_session(project_id, principal.tenant_id,
+                               principal.user_id) as session:
+        yield session
+
+
 def require_roles(*role_keys: str):
     async def _guard(principal: Principal = Depends(get_principal)) -> Principal:
         if not set(role_keys) & set(principal.roles):

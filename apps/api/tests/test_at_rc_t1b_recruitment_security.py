@@ -1948,12 +1948,11 @@ def test_this_stage_adds_no_router_and_no_web_surface():
     `publication-opportunities` صفحتان قائمتان منذ التوليف والرسائل، ولا
     شأنَ لهما بالاستقطاب — وحارسٌ يمنع الكلمةَ يسقط على شيءٍ لم أكتبه.
     """
-    routers = API / "routers"
-    offenders = [p.name for p in routers.glob("*.py") if "recruitment" in p.name]
-    assert offenders == [], f"موجّهٌ في مرحلةٍ لا موجّهَ فيها: {offenders}"
-
+    # **وقد تحرّك هذا الحدُّ في RC-T1C**: بُني موجّهُ الاستقطاب ورُكّب
+    # في التطبيق قصدًا، وحارسُ تركيبه في حزمة RC-T1C. فما يبقى محروسًا
+    # هنا هو **سطحُ الويب**: «فرصُ البحث» شاشةً لم تبدأ بعد.
     main = (API / "main.py").read_text(encoding="utf-8")
-    assert "recruitment" not in main, "الاستقطابُ مُركَّبٌ في التطبيق"
+    assert "recruitment_router" in main, "موجّهُ الاستقطاب غيرُ مركَّب"
 
     web = REPO / "apps" / "web" / "src"
     if web.exists():

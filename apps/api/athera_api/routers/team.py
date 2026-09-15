@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..db import invitation_session
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, Forbidden, NotFound
 from ..models.collaboration import ProjectInvitation, ProjectMemberEvent
@@ -566,31 +567,53 @@ async def revoke_invitation(
 async def accept_invitation(
     payload: InvitationTokenRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> MemberResponse:
     """يقبل المدعوُّ **بحسابه هو**.
 
     ولا مسارَ هنا يقبل عن أحد: `principal.user_id` يأتي من رمزٍ موقَّع، وهو
     ما يُكتب في `ProjectMember.user_id`. والمطابقةُ بالاسم المعروض ممنوعة —
     «د. محمد العلي» في مستأجرٍ جامعيّ قد يكون ثلاثةَ أشخاص.
+
+    ## ولا جلسةَ مستأجرٍ أصليٍّ هنا
+
+    **والقبولُ يقع قبل أن توجد العضويّة**، ودعوةُ الاستقطاب تعيش في مستأجر
+    البحث لا في مستأجر من قَبِل. فجلسةٌ مربوطةٌ بالمستأجر الأصليّ تقرأ
+    الدعوةَ (بسياسة «الدعوةُ إليّ») **ولا تقدر على كتابة العضويّة** — وهو
+    ما كان يسقط بـ«new row violates row-level security policy».
+
+    فيُعبَر بـ`invitation_session`: يُشتقّ مستأجرُ الدعوة في الخادم من صفٍّ
+    موجَّهٍ إلى هذا الفاعل بعينه، ويُعاد ربطُ المعاملة به، **والفاعلُ لا
+    يتبدّل**.
     """
-    member = await collaboration.accept_invitation(
-        session, tenant_id=principal.tenant_id, token=payload.token,
-        accepting_user_id=principal.user_id)
-    return _member(member, await collaboration.permissions_of(
-        session, member_id=member.id), principal.locale)
+    async with invitation_session(
+        collaboration.hash_invitation_token(payload.token),
+        principal.tenant_id, principal.user_id,
+    ) as session:
+        member = await collaboration.accept_invitation(
+            session, tenant_id=principal.tenant_id, token=payload.token,
+            accepting_user_id=principal.user_id)
+        return _member(member, await collaboration.permissions_of(
+            session, member_id=member.id), principal.locale)
 
 
 @router.post("/invitations/decline", response_model=InvitationResponse)
 async def decline_invitation(
     payload: InvitationTokenRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> InvitationResponse:
-    row = await collaboration.decline_invitation(
-        session, tenant_id=principal.tenant_id, token=payload.token,
-        declining_user_id=principal.user_id)
-    return _invitation(row, principal.locale)
+    """والاعتذارُ يعبُر الجسرَ نفسَه.
+
+    فلو بقي على المستأجر الأصليّ لَقبِل المرشَّحُ من مؤسسةٍ أخرى ولم
+    يستطع أن يعتذر — بابٌ يفتح ولا يُغلق.
+    """
+    async with invitation_session(
+        collaboration.hash_invitation_token(payload.token),
+        principal.tenant_id, principal.user_id,
+    ) as session:
+        row = await collaboration.decline_invitation(
+            session, tenant_id=principal.tenant_id, token=payload.token,
+            declining_user_id=principal.user_id)
+        return _invitation(row, principal.locale)
 
 
 # ═══════════════════════════ سجلّ دورة الحياة ═══════════════════════════
