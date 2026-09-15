@@ -258,6 +258,78 @@ async def project_session(
             yield session
 
 
+# ── جسرُ القبول: الدعوةُ تُبلَغ قبل العضويّة ──
+#
+# **والقبولُ يقع قبل أن يوجد عضو**، فلا مُسنَد عضويّةٍ يخدمه. وحدُّه
+# سياسةُ «الدعوةُ إليّ» من الترحيل 0035: `invited_user_id =
+# app_current_actor()` — فيرى المدعوُّ دعوتَه هو وحدها، عبر المستأجرين،
+# ولا يرى دعوةَ غيره.
+#
+# ويُقرأ التماسكُ معه في العبارة نفسِها، كما في جسر البحث: فاعلٌ ومستأجرٌ
+# لا صلةَ بينهما لا يُخدَم — ولا يجوز أن يكون بابُ القبول أضعفَ من باب
+# الوصول العاديّ.
+_INVITATION_SCOPE = text(
+    "SELECT "
+    "  EXISTS (SELECT 1 FROM memberships hm "
+    "           WHERE hm.user_id = app_current_actor() "
+    "             AND hm.tenant_id = app_current_tenant()) AS coherent, "
+    "  (SELECT i.tenant_id FROM project_invitations i "
+    "    WHERE i.token_hash = :token_hash "
+    "      AND i.invited_user_id = app_current_actor() "
+    "    LIMIT 1) AS invitation_tenant"
+)
+
+
+@asynccontextmanager
+async def invitation_session(
+    token_hash: str, tenant_id: UUID | None, actor_id: UUID | None,
+) -> AsyncIterator[AsyncSession]:
+    """جلسةٌ تدخل مستأجرَ الدعوة **إن كانت الدعوةُ لصاحب الجلسة**.
+
+    ولا تُستعمل `project_session` هنا: تلك تشترط عضويّةً نشِطة، والقبولُ
+    هو ما يُنشئ العضويّة. فبابٌ آخر، بحدٍّ آخر، **وبقوّةٍ واحدة**.
+
+    ## وما تُثبته قبل أن تنقل شيئًا
+
+      • أنّ الفاعلَ ينتمي إلى المستأجر الذي فُتحت به الجلسة؛
+      • وأنّ الدعوةَ المعنيّة **موجَّهةٌ إليه بعينه** — لا إلى بريدٍ
+        يُشبه بريدَه، ولا إلى اسمٍ يُشبه اسمَه.
+
+    والرمزُ يُمرَّر **مجزَّأً**: لا رمزَ خامٌّ يعبُر هذه الطبقة، ولا
+    يُكتب في سجلّ.
+
+    وما تعجز عنه لا تُخفيه: من لا دعوةَ له يبقى في مستأجره، ويردّه
+    `accept_invitation` بعدها — فالتفويضُ النهائيُّ ليس هنا.
+    """
+    async with SessionFactory() as session:
+        async with session.begin():
+            if tenant_id is not None and actor_id is not None:
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true),"
+                         "       set_config('app.actor_id', :aid, true)"),
+                    {"tid": str(tenant_id), "aid": str(actor_id)},
+                )
+            elif actor_id is not None:
+                await session.execute(
+                    text("SELECT set_config('app.actor_id', :aid, true)"),
+                    {"aid": str(actor_id)},
+                )
+
+            coherent, scope = (await session.execute(
+                _INVITATION_SCOPE, {"token_hash": token_hash})).one()
+
+            if tenant_id is not None and actor_id is not None and not coherent:
+                raise Unauthorized("auth.invalid_credentials")
+
+            if scope is not None and scope != tenant_id:
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true)"),
+                    {"tid": str(scope)},
+                )
+            session.info["scoped_tenant_id"] = scope if scope is not None else tenant_id
+            yield session
+
+
 def scoped_tenant(session: AsyncSession, default: UUID | None = None) -> UUID | None:
     """المستأجرُ الذي تعمل به هذه الجلسةُ فعلًا.
 

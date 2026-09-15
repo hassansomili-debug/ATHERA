@@ -72,15 +72,49 @@ app_current_tenant()` **صريحةً في كلّ فرع**، فالحدُّ يق�
 `manage_sources` أو `manage_data` أو `manage_team` — لا تنقل أحدًا إلى
 مستأجرٍ آخر.
 
+════════════════════════════════════════════════════════════════════
+
+# ٢ · وربطُ المرشَّح بعينه — الدَّينُ الذي تركه RC-T1B صريحًا
+
+أبقى الترحيلُ 0034 كتلةَ تحقّقٍ **غيرَ قابلةٍ للبلوغ** تُثبت أنّ الدعوةَ
+لبحثِ الفرصة، وكتب فيها صريحًا أنّها **ناقصة**: لا تُثبت أنّها لصاحب هذا
+التطبيق بعينه. وكان ذلك صحيحًا حينه — الدعواتُ محلّيّةُ المستأجر
+والتطبيقاتُ عابرةٌ له، فالربطُ الدقيق كان يستوجب تصميمَ خدمة.
+
+والآن بُنيت الخدمة، فيُغلق الدَّين.
+
+**ومصدرُ حقٍّ واحدٌ لا اثنان**: تُستبدل دالّةُ المُشغِّل التي أنشأها 0034
+بنسخةٍ تحمل القاعدةَ كاملة — فلا كتلةٌ قديمةٌ ناقصةٌ تبقى بجوار قاعدةٍ
+جديدة تُناقضها.
+
+وحينَ تصير الحالُ `invited` تُثبت القاعدةُ **سبعةَ أمور**:
+
+  ١ `invitation_id` غيرُ فارغة
+  ٢ وصفُّ الدعوة موجود
+  ٣ وبحثُها هو بحثُ الفرصة
+  ٤ و`invited_user_id` غيرُ فارغة
+  ٥ **وهي صاحبُ هذا التطبيق بعينه**
+  ٦ وحالُ الدعوة `invited` — لا مقبولةٌ ولا مرفوضةٌ ولا منقوضة
+  ٧ ومهلتُها لم تنتهِ
+
+**ولا دعوةَ واحدةٌ تُشبع تطبيقَين**: فهرسٌ فريدٌ جزئيّ على
+`invitation_id`.
+
+و`shortlisted → invited` تُضاف إلى مصفوفة المدير **بعد** ذلك كلِّه، لا
+قبله. و`pending → invited` تبقى ممنوعةً: الاختيارُ يمرّ بالترشيح.
+
 ## توسعةٌ محضة
 
-ثلاثُ سياساتِ قراءة. لا جدولَ يُنشأ، ولا عمودَ يُحذف، ولا سياسةَ قائمةٌ
-تُعدَّل أو تُسقط، ولا صلاحيةَ تُمنح، ولا دالّةَ ولا مُشغِّل. والخادمُ
-الذي لا يعرف هذا الترحيل يبقى صحيحًا بعد الصعود.
+ثلاثُ سياساتِ قراءة، ودالّةُ مُشغِّلٍ تُستبدل بنسخةٍ أقوى، وفهرسٌ فريدٌ
+جزئيّ. لا جدولَ يُنشأ، ولا عمودَ يُحذف، ولا سياسةَ قائمةٌ تُسقط، ولا
+صلاحيةَ تُمنح. **ولا يُمَسّ الترحيل 0034 نفسُه** — وهو في الإنتاج.
 
 Revision ID: 0035
 """
 from __future__ import annotations
+
+import importlib.util
+import pathlib
 
 from alembic import op
 
@@ -119,11 +153,97 @@ SELF_POLICIES = (
 )
 
 
+APPLICATIONS = "recruitment_applications"
+OWNERS = "recruitment_opportunities"
+
+#: مصفوفةُ انتقالات المدير — **وقد فُتحت «مدعوّ»**، وشرطُها أدناه.
+#:
+#: و`pending → invited` تبقى ممنوعة: الاختيارُ يمرّ بالترشيح، فقرارٌ
+#: يُتّخذ بلا ترشيحٍ ظاهرٍ لا أثرَ له يُراجَع.
+MANAGER_TRANSITIONS = (
+    ("pending", "shortlisted"),
+    ("pending", "declined"),
+    ("shortlisted", "declined"),
+    ("shortlisted", "invited"),
+)
+
+ACTIVE_APPLICATION_STATES = ("pending", "shortlisted", "invited")
+
+#: **ربطُ المرشَّح بعينه** — وهو ما كان ناقصًا في 0034.
+#:
+#: ويُقرأ `project_invitations` بحقوق المستدعي: المديرُ في مستأجر البحث،
+#: فسياسةُ العزل تُسلّمه الصفَّ. ومن لا يراه لا يُثبت شيئًا فيُرَدّ.
+EXACT_BINDING_SQL = """
+        SELECT o.project_id INTO owning_project
+          FROM recruitment_opportunities o WHERE o.id = OLD.opportunity_id;
+        IF owning_project IS NULL THEN
+            RAISE EXCEPTION 'the opportunity behind this application is not readable'
+              USING ERRCODE = 'check_violation';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM project_invitations i
+             WHERE i.id = NEW.invitation_id
+               AND i.project_id = owning_project
+               AND i.invited_user_id IS NOT NULL
+               AND i.invited_user_id = OLD.applicant_user_id
+               AND i.state = 'invited'
+               AND i.expires_at > now()
+        ) THEN
+            RAISE EXCEPTION
+              'INVITED requires a live ProjectInvitation on this opportunity''s own '
+              'project, issued to this exact applicant'
+              USING ERRCODE = 'check_violation';
+        END IF;
+"""
+
+
+def _guard_v2() -> str:
+    """جسمُ المُشغِّل كما يصير في 0035.
+
+    ويُبنى من جسم 0034 **بتبديلين موضعيّين** لا بنسخةٍ ثانيةٍ كاملة:
+    فنسخةٌ منسوخةٌ بيد تفترق عن أصلها بأوّل تعديلٍ هناك، ويصير للقاعدة
+    الواحدة نصّان.
+    """
+    previous = _previous_guard()
+    matrix_before = ", ".join(
+        f"('{a}','{b}')" for a, b in MANAGER_TRANSITIONS[:-1])
+    matrix_after = ", ".join(f"('{a}','{b}')" for a, b in MANAGER_TRANSITIONS)
+    assert matrix_before in previous, "مصفوفةُ 0034 لم تُوجد في جسمها"
+    body = previous.replace(matrix_before, matrix_after, 1)
+
+    # وتُستبدل كتلةُ «لا طريقَ إلى مدعوّ» بقاعدة الربط الدقيق.
+    start = body.index("    IF NEW.status = 'invited' THEN")
+    end = body.index("    ELSIF NEW.invitation_id IS DISTINCT FROM OLD.invitation_id THEN",
+                     start)
+    body = body[:start] + "    IF NEW.status = 'invited' THEN" + EXACT_BINDING_SQL         + body[end:]
+    assert "issued to this exact applicant" in body
+    return body
+
+
+def _previous_guard() -> str:
+    """جسمُ المُشغِّل كما أنشأه 0034 — يُقرأ من ملفّه لا يُنسخ."""
+    path = pathlib.Path(__file__).with_name("0034_recruitment_security_foundation.py")
+    spec = importlib.util.spec_from_file_location("_m0034", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.APPLICATION_GUARD_FN
+
+
 def upgrade() -> None:
     for table, name, predicate in SELF_POLICIES:
         op.execute(f"CREATE POLICY {name} ON {table} FOR SELECT USING ({predicate})")
 
+    # ولا دعوةَ واحدةٌ تُشبع تطبيقَين — والقاعدةُ تمنع، لا مراجعةُ شيفرة.
+    op.execute(
+        f"CREATE UNIQUE INDEX uq_recruitment_applications_invitation "
+        f"ON {APPLICATIONS} (invitation_id) WHERE invitation_id IS NOT NULL"
+    )
+    op.execute(_guard_v2())
+
 
 def downgrade() -> None:
+    # وتُعاد دالّةُ 0034 بنصِّها هي — فالتنازلُ يُرجع ما كان لا ما يُشبهه.
+    op.execute(_previous_guard())
+    op.execute(f"DROP INDEX IF EXISTS uq_recruitment_applications_invitation")
     for table, name, _ in reversed(SELF_POLICIES):
         op.execute(f"DROP POLICY IF EXISTS {name} ON {table}")

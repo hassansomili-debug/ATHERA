@@ -362,10 +362,24 @@ async def invite_member(
     role: str,
     permissions: list[str] | None = None,
     ttl_hours: int | None = None,
+    invited_user_id: uuid.UUID | None = None,
 ) -> IssuedInvitation:
     """دعوةٌ إلى بحث — بمهلةٍ، ورمزٍ مجزَّأ، واقتراحِ دورٍ وصلاحيات.
 
     والاقتراحُ اقتراح: لا يصير صلاحيةً إلّا بعد قبولٍ من حسابٍ مصادَق.
+
+    ## و`invited_user_id` ربطٌ صريحٌ يُغني عن الترشيح بالبريد
+
+    والمسارُ القائم يُرشّح بالبريد **داخل مستأجر البحث**: حسابٌ في مستأجرٍ
+    آخر لا يُرشَّح، فتُكتب دعوةٌ بلا `invited_user_id`. وذاك صحيحٌ لدعوةٍ
+    محلّيّة — وقاصرٌ عن الاستقطاب، حيث المتقدّمُ من مؤسسةٍ أخرى قصدًا.
+
+    فمن يعرف الحسابَ بعينه — **مشتقًّا في الخادم من صفِّ التطبيق** —
+    يمرّره هنا، فيصير هو الرابط. ولا يُرشَّح بالبريد حينها: البريدُ
+    للعرض والإبلاغ، والحسابُ هو الحدّ.
+
+    **ولا يُقبل هذا المُعامِلُ من عميل**: مُناديه خدمةُ التحويل، وهي
+    تقرؤه من `RecruitmentApplication.applicant_user_id`.
     """
     if role not in team.MEMBER_ROLES:
         raise AtheraError("team.unknown_member_role", status_code=422, role=role)
@@ -406,15 +420,25 @@ async def invite_member(
     # **الترشيحُ داخل المستأجر وحده.** وحسابٌ في مستأجرٍ آخر يحمل البريد
     # نفسه لا يُرشَّح: RLS تمنعه من بلوغ الدعوة أصلًا، فترشيحُه يُنتج دعوةً
     # لا يستطيع أحدٌ قبولها — ويكتب في القاعدة إشارةً إلى حسابٍ خارج المستأجر.
-    candidate = (
-        await session.execute(
-            select(User)
-            .join(Membership, Membership.user_id == User.id)
-            .where(func.lower(User.email) == normalized,
-                   Membership.tenant_id == tenant_id)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    if invited_user_id is not None:
+        # ربطٌ صريح: الحسابُ معروفٌ بعينه، ولا يُبحث عنه ببريدٍ ولا
+        # يُقيَّد بمستأجر البحث — وذاك هو المقصود.
+        candidate = (
+            await session.execute(select(User).where(User.id == invited_user_id))
+        ).scalar_one_or_none()
+        if candidate is None:
+            raise AtheraError("team.invalid_invitation", status_code=422,
+                              detail="invited_user_id")
+    else:
+        candidate = (
+            await session.execute(
+                select(User)
+                .join(Membership, Membership.user_id == User.id)
+                .where(func.lower(User.email) == normalized,
+                       Membership.tenant_id == tenant_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
     if candidate is not None:
         existing = await member_for(
             session, project_id=project_id, user_id=candidate.id)
@@ -519,11 +543,28 @@ async def accept_invitation(
     ).scalar_one_or_none()
     if accepting is None:
         raise Forbidden("team.invitation_not_yours")
-    # **الدعوةُ لبريدٍ بعينه.** ورمزٌ صحيح في يد حسابٍ آخر لا يُقبل: وإلّا
-    # صار تسريبُ الرابط في محادثةٍ عامّة بابًا إلى بيانات البحث.
-    if team.normalize_email(accepting.email) != team.normalize_email(
+    # **والحسابُ هو الحدُّ متى كانت الدعوةُ مربوطةً بحساب.**
+    #
+    # فالبريدُ حدٌّ أضعف: حسابانِ في مستأجرَين قد يحملان بريدًا واحدًا،
+    # ومطابقةُ البريد تُجيز أحدَهما مكان الآخر. ودعواتُ الاستقطاب مربوطةٌ
+    # بـ`invited_user_id` في الخادم، فلا يُسأل البريدُ فيها أصلًا.
+    #
+    # وما لا ربطَ له — الدعواتُ المحلّيّةُ ببريدٍ لحسابٍ لم يُرشَّح — يبقى
+    # على حدِّه القديم بلا تغيير.
+    if invitation.invited_user_id is not None:
+        if accepting_user_id != invitation.invited_user_id:
+            raise Forbidden("team.invitation_not_yours")
+    elif team.normalize_email(accepting.email) != team.normalize_email(
             invitation.invited_email):
         raise Forbidden("team.invitation_not_yours")
+
+    # **ومستأجرُ العضويّة مستأجرُ الدعوة، لا مستأجرُ من قَبِل.**
+    #
+    # وكان يُكتب من المُعامِل الممرَّر. ولمتعاونٍ من مؤسسةٍ أخرى كان ذلك
+    # يَسِمُ صفَّه بمستأجره هو — فلا يراه صاحبُ البحث في فريقه، ولا
+    # تُطابقه استعلاماتُ RC-T1A التي ترشّح بـ`ProjectMember.tenant_id`.
+    # فالعضويّةُ تعيش حيث يعيش البحث.
+    member_tenant_id = invitation.tenant_id
 
     existing = await member_for(
         session, project_id=invitation.project_id, user_id=accepting_user_id)
@@ -537,7 +578,7 @@ async def accept_invitation(
         member.role = invitation.proposed_role
     else:
         member = ProjectMember(
-            tenant_id=tenant_id, project_id=invitation.project_id,
+            tenant_id=member_tenant_id, project_id=invitation.project_id,
             user_id=accepting_user_id,
             display_name=invitation.invited_display_name,
             invited_email=invitation.invited_email,
@@ -550,7 +591,7 @@ async def accept_invitation(
 
     current = await permissions_of(session, member_id=member.id)
     await _grant_permissions(
-        session, tenant_id=tenant_id, member=member,
+        session, tenant_id=member_tenant_id, member=member,
         keys=[key for key in (invitation.proposed_permissions or [])
               if key not in current],
         granted_by=invitation.invited_by,
@@ -563,7 +604,7 @@ async def accept_invitation(
     await session.flush()
 
     await record_member_event(
-        session, tenant_id=tenant_id, project_id=invitation.project_id,
+        session, tenant_id=member_tenant_id, project_id=invitation.project_id,
         member_id=member.id, invitation_id=invitation.id, event_kind="accepted",
         actor_user_id=accepting_user_id, subject_user_id=accepting_user_id,
         state_after={"role": member.role,
@@ -571,7 +612,7 @@ async def accept_invitation(
         note_ar="العضوية رُبطت بالحساب المصادَق الذي قبِل الدعوة.",
     )
     await audit.record(
-        session, tenant_id=tenant_id, action="team.invitation_accepted",
+        session, tenant_id=member_tenant_id, action="team.invitation_accepted",
         object_type=MEMBER_OBJECT_TYPE, object_id=member.id,
         actor_user_id=accepting_user_id,
         state_after={"project_id": str(invitation.project_id), "role": member.role},

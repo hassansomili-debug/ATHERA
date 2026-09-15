@@ -1151,11 +1151,18 @@ async def test_a5_the_manager_transition_matrix_is_exactly_what_was_written(worl
     # ── المسموح: كلُّ زوجٍ في المصفوفة يقع فعلًا ──
     #
     # **ويُقاس عددُها أيضًا**: هذا الفحصُ يمرّ على ما في المصفوفة، فزوجٌ
-    # يُزاد سهوًا يصير «مسموحًا» هنا بلا أن ينبّه أحد. والعددُ ثلاثةٌ
-    # مكتوبةٌ في التكليف، و`test_a9c` يقابل الأزواجَ بأعيانها.
-    assert len(MANAGER_TRANSITIONS) == 3, MANAGER_TRANSITIONS
+    # يُزاد سهوًا يصير «مسموحًا» هنا بلا أن ينبّه أحد. و`test_a9c` يقابل
+    # الأزواجَ بأعيانها، وفحصُ RC-T1C يقابلها بما تُنفّذه القاعدة.
+    assert len(MANAGER_TRANSITIONS) == 4, MANAGER_TRANSITIONS
 
-    for before, after in MANAGER_TRANSITIONS:
+    # **و«مدعوّ» تُستثنى من هذه الحلقة، ولها فحوصُها.** فهي الانتقالُ
+    # الوحيدُ الذي لا يكفيه أن يكون في المصفوفة: يستوجب دعوةً حيّةً في
+    # بحثِ الفرصة لصاحب هذا التطبيق بعينه — وذاك مقيسٌ في حزمة RC-T1C
+    # كاملًا. فلو جُرّب هنا بلا ذلك الربط سقط لسببٍ صحيحٍ غيرِ المقصود.
+    plain = [(a, b) for a, b in MANAGER_TRANSITIONS if b != "invited"]
+    assert len(plain) == 3, plain
+
+    for before, after in plain:
         opportunity_id = await _make_opportunity(
             world.owner, world.project_id, title=f"{before}->{after}")
         application_id = await _apply(world.applicant, opportunity_id)
@@ -1178,6 +1185,7 @@ async def test_a5_the_manager_transition_matrix_is_exactly_what_was_written(worl
         ("declined", "shortlisted"),  # ولا يُنقض اعتذارٌ صدر
         ("declined", "pending"),
         ("shortlisted", "pending"),
+        ("pending", "invited"),       # **ولا قرارَ بلا ترشيحٍ ظاهر**
     )
     for before, after in refused:
         opportunity_id = await _make_opportunity(
@@ -1287,7 +1295,20 @@ async def test_a8_the_manager_never_rewrites_applicant_identity(world):
     "invitation",
     ["none", "forged", "same_project", "other_project", "other_candidate"])
 async def test_a9_invited_has_no_transition_in_this_stage(world, before, invitation):
-    """**ولا انتقالَ إلى «مدعوّ» في RC-T1B — ولا تُجدي دعوةٌ صحيحة.**
+    """**ولا «مدعوّ» بلا ربطٍ دقيق — ومن `pending` لا انتقالَ أصلًا.**
+
+    ‏**وقد انتقلت الحدودُ في RC-T1C**، فيُقال ذلك هنا بدل أن يُترك الفحصُ
+    يقول ما لم يبقَ صحيحًا:
+
+      • `pending → invited` **ممنوعةٌ بالمصفوفة** كما كانت، ولا تُفتح:
+        الاختيارُ يمرّ بالترشيح.
+      • و`shortlisted → invited` **فُتحت** — ومانعُها الآن ربطُ المرشَّح
+        بعينه لا غيابُ الانتقال. فالحالاتُ الخمسُ أدناه تبقى مرفوضةً
+        كلُّها (منها دعوةٌ حيّةٌ في البحث نفسِه بلا `invited_user_id`)،
+        لكنّ الطبقةَ التي ترفض اختلفت.
+
+    والرفضُ يبقى رفضًا في الحالين، **ويُقاس اسمُ الطبقة في كلٍّ** — فلا
+    يُحتسب رفضٌ من طبقةٍ غيرِ المقصودة نجاحًا.
 
     ‏**والمانعُ هو المصفوفةُ لا صحّةُ الدعوة.** وهذا هو مقصودُ الفحص:
     فلو كان المانعُ «دعوتُك غير صالحة» لظنّ من يأتي بعدُ أنّ دعوةً صالحةً
@@ -1329,9 +1350,15 @@ async def test_a9_invited_has_no_transition_in_this_stage(world, before, invitat
     with pytest.raises(DBAPIError) as caught:
         await _update_application(world.owner, application_id, **columns)
     message = str(caught.value)
-    assert "no such transition" in message, (
-        f"«مدعوّ» بلغت الصفَّ بدعوةٍ من نوع {invitation!r} من حال {before!r}: "
-        f"{message}")
+    # ومن `pending` المانعُ المصفوفة؛ ومن `shortlisted` المانعُ الربطُ
+    # الدقيق (أو قيدُ «مدعوّ تستوجب دعوة» حين لا مفتاحَ إطلاقًا).
+    # والمُشغِّلُ `BEFORE` يسبق قيدَ «مدعوّ تستوجب دعوة»، فيردّ هو أوّلًا
+    # ولو كان المفتاحُ فارغًا — والقيدُ طبقةٌ ثانيةٌ تبقى تحته.
+    expected = ("no such transition" if before == "pending"
+                else "exact applicant")
+    assert expected in message, (
+        f"«مدعوّ» رُفضت بطبقةٍ غيرِ المقصودة — نوعُ الدعوة {invitation!r}، "
+        f"الحالُ {before!r}، المنتظر {expected!r}: {message}")
 
     row = await _application_row(world.owner, application_id)
     assert row["status"] == before
@@ -1381,21 +1408,26 @@ def test_a9c_the_reserved_state_is_no_transition_target_anywhere():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    for label, matrix in (("النموذج", recruitment.MANAGER_TRANSITIONS),
-                          ("الترحيل", module.MANAGER_TRANSITIONS)):
-        assert matrix == (("pending", "shortlisted"), ("pending", "declined"),
-                          ("shortlisted", "declined")), f"مصفوفةُ {label}"
-        assert not any(after == "invited" for _, after in matrix), \
-            f"«مدعوّ» هدفٌ في مصفوفة {label}"
+    # ‏**و0034 مُجمَّدٌ في الإنتاج**: مصفوفتُه ثلاثةُ أزواجٍ بلا «مدعوّ»،
+    # وتبقى كذلك أبدًا — فهو تاريخٌ لا يُعدَّل.
+    assert module.MANAGER_TRANSITIONS == (
+        ("pending", "shortlisted"), ("pending", "declined"),
+        ("shortlisted", "declined")), "مصفوفةُ 0034 تغيّرت — وهي في الإنتاج"
+    assert "('shortlisted','invited')" not in module.APPLICATION_GUARD_FN
 
-    # ونصُّ المُشغِّل هو ما يعمل — فيُسأل هو أيضًا.
-    guard = module.APPLICATION_GUARD_FN
-    assert "('shortlisted','invited')" not in guard
-    assert "('pending','invited')" not in guard
-    for before, after in module.MANAGER_TRANSITIONS:
-        assert f"('{before}','{after}')" in guard, (before, after)
+    # **والنموذجُ يتبع الرأسَ الحاليّ لا التاريخ.** وقد فُتحت «مدعوّ» في
+    # RC-T1C بربطٍ دقيق، فمصفوفتُه أربعة — ويُقابَل بـ0035 لا بـ0034.
+    head = importlib.util.spec_from_file_location(
+        "m0035", MIGRATIONS / "0035_cross_tenant_project_bridge.py")
+    head_module = importlib.util.module_from_spec(head)
+    head.loader.exec_module(head_module)
+    assert recruitment.MANAGER_TRANSITIONS == head_module.MANAGER_TRANSITIONS, (
+        "النموذجُ والرأسُ افترقا في مصفوفة الانتقالات")
+    assert ("shortlisted", "invited") in recruitment.MANAGER_TRANSITIONS
+    # و`pending → invited` ممنوعةٌ في كلّ الأحوال.
+    assert ("pending", "invited") not in recruitment.MANAGER_TRANSITIONS
+    assert ("pending", "invited") not in head_module.MANAGER_TRANSITIONS
 
-    # والمفردةُ باقيةٌ في المخطَّط كي لا يُهاجَر مرّتين.
     assert "invited" in recruitment.APPLICATION_STATES
     assert "RC-T1C" in (API / "models" / "recruitment.py").read_text(encoding="utf-8")
 
@@ -1883,14 +1915,14 @@ def test_the_vocabularies_of_the_model_and_the_migration_are_one():
     assert module.OPPORTUNITY_STATES == recruitment.OPPORTUNITY_STATES
     assert module.APPLICATION_STATES == recruitment.APPLICATION_STATES
     assert module.ACTIVE_APPLICATION_STATES == recruitment.ACTIVE_APPLICATION_STATES
-    assert module.MANAGER_TRANSITIONS == recruitment.MANAGER_TRANSITIONS
+    # ومصفوفةُ المدير تُقابَل بالرأس لا بـ0034 — انظر `test_a9c`.
     assert tuple(module.PROJECT_CREATED_ACTIONS) == \
         tuple(collaboration.PROJECT_CREATED_ACTIONS)
     assert recruitment.MANAGE_RECRUITMENT == "manage_team"
     assert recruitment.MANAGE_RECRUITMENT in module.MANAGES_PROJECT_FN
     assert collaboration.VIEW_PROJECT in module.MANAGES_PROJECT_FN
-    # ومصفوفةُ المدير مكتوبةٌ في المُشغِّل لا مُستنبطة.
-    for before, after in recruitment.MANAGER_TRANSITIONS:
+    # ومصفوفةُ 0034 مكتوبةٌ في مُشغِّله لا مُستنبطة.
+    for before, after in module.MANAGER_TRANSITIONS:
         assert f"('{before}','{after}')" in module.APPLICATION_GUARD_FN
 
 
