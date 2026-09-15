@@ -38,7 +38,13 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 WEB = REPO / "apps" / "web"
 MIGRATION = (REPO / "infra" / "db" / "migrations" / "versions"
              / "0028_research_teams_v2.py")
-SCREEN = WEB / "src" / "app" / "[locale]" / "team" / "page.tsx"
+# **وشاشةُ الفريق صارت مكوّنًا مشتركًا** (RC-T1C): صفحةُ `/team` غلافٌ
+# يختار البحثَ، وقسمُ البحث `?section=team` يُثبّته — والمحرّكُ واحد. فما
+# يُحاسَب هنا هو المحرّك، ويُثبَت أنّه معروضٌ في البابين لا شيفرةً ميتة.
+SCREEN = WEB / "src" / "components" / "TeamWorkspace.tsx"
+TEAM_PAGE = WEB / "src" / "app" / "[locale]" / "team" / "page.tsx"
+PROJECT_PAGE = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
+                / "page.tsx")
 
 EVIDENCE = "إقرار تأليف موقَّع بخطّ اليد، محفوظ لدى عمادة البحث العلمي"
 
@@ -1075,3 +1081,39 @@ def test_the_screen_can_only_ever_ask_to_consent_as_itself():
     for forbidden in ("recordConsent(memberId", "consentAll(", "approveAll(",
                       "consentFor("):
         assert forbidden not in source, forbidden
+
+
+def test_the_shared_team_workspace_is_the_only_team_engine() -> None:
+    """**محرّكٌ واحدٌ لبابين** — ولا نسخةَ ثانية تفترق بأوّل تعديل.
+
+    فبعد أن صار لقسم البحث فريقٌ أيضًا (RC-T1C) كان أسهلُ طريقٍ نسخَ
+    الصفحة. ونسختان من إدارة فريقٍ تفترقان: تصير إحداهما تعرض زرَّ
+    موافقةٍ عن غير صاحبه، أو تبتلع دعوةً تقولها الأخرى. **والفروقُ
+    الأربعة التي تحرسها هذه الحزمة تُحرَس في موضعٍ واحدٍ أو لا تُحرَس.**
+
+    ويُثبَت الأمران: أنّ المحرّكَ معروضٌ في البابين، وأنّ الغلافَ لا
+    يحمل منطقًا — فحارسٌ يقرأ المحرّكَ وحده قد يقرأ شيفرةً ميتة.
+    """
+    page = TEAM_PAGE.read_text(encoding="utf-8")
+    project = PROJECT_PAGE.read_text(encoding="utf-8")
+    assert "<TeamWorkspace" in page, "صفحةُ /team لا تُصيّر المحرّكَ المشترك"
+    assert "<TeamWorkspace" in project, "قسمُ البحث لا يُصيّر المحرّكَ المشترك"
+
+    # والوحدةُ العامّةُ تُبقي مُنتقيها، والقسمُ يُثبّت بحثَه — فرقٌ في
+    # المُدخَل لا في المنطق.
+    #
+    # **ويُقاس الوسمُ نفسُه لا نصُّ الملفّ**: شرحٌ في رأس الصفحة يذكر اسمَ
+    # المُدخَل، وحارسٌ يبحث عنه في النصّ يسقط على تعليقٍ يشرحه.
+    import re
+
+    def rendered(source: str) -> str:
+        match = re.search(r"<TeamWorkspace\b[^>]*>", source)
+        assert match is not None, "لا وسمَ للمحرّك المشترك"
+        return match.group(0)
+
+    assert "fixedProjectId={projectId}" in rendered(project)
+    assert "fixedProjectId" not in rendered(page)
+
+    # **ولا منطقَ فريقٍ في الغلاف**: لا نداءَ مسارٍ ولا حالَ أعضاء.
+    for forbidden in ("apiFetch", "useState", "/members", "/invitations"):
+        assert forbidden not in page, f"غلافُ /team يحمل منطقًا: {forbidden}"

@@ -25,6 +25,9 @@ import {
 import { listLibraryFiles, type LibraryFile } from "@/lib/library";
 import { ResearchJourney } from "@/components/ResearchJourney";
 import { type ProjectJourney, projectJourney } from "@/lib/researchBrain";
+import { TeamWorkspace } from "@/components/TeamWorkspace";
+import { ProjectRecruitment } from "@/components/ProjectRecruitment";
+import { projectAccess, type ProjectAccess } from "@/lib/recruitment";
 
 /**
  * مساحة عمل البحث — **البحث هو الشيء المركزي، لا الوحدة**.
@@ -44,6 +47,16 @@ const SECTIONS = [
   "outputs",
   "manuscript",
   "publishing",
+  // **الفريقُ والفرصُ البحثية أدواتُ تعاونٍ حول البحث، لا مرحلتان منه.**
+  //
+  // فلا تُحسبان في اكتمالٍ علميّ، ولا تفتحان بوابة، ولا تدخلان الخيطَ
+  // الذهبي — ولذلك تقعان قسمين في هذه الصفحة ولا تُضافان إلى المراحل
+  // التسع. والرحلةُ العلميةُ لم تُمسّ.
+  //
+  // **ولا هيكلَ ثانيًا لصفحة البحث**: القسمان يعملان بـ`?section=` نفسِه،
+  // فيصحّ التحديثُ والرجوعُ والرابطُ العميق بلا شيءٍ يُكتب لهما.
+  "team",
+  "opportunities",
   "activity",
 ] as const;
 
@@ -133,6 +146,18 @@ export default function ProjectWorkspacePage({
   // الأخرى، وسقوطُها يُقال بنصّه — شاشةٌ بلا خطوةٍ تالية تُقرأ «لا شيء
   // مطلوب»، وذاك أسوأ من رسالة خطأ (§73، §74).
   const [journey, setJourney] = useState<ProjectJourney | null>(null);
+  /**
+   * ما يملكه الطالبُ في هذا البحث — **إجابةُ خادمٍ لا حالُ شاشة**.
+   *
+   * وبعد التعاون عبرَ المؤسسات صار من يفتح هذه الصفحة قد لا يكون صاحبَها:
+   * متعاونٌ له `view_project` وحدها يرى البحثَ ولا يمسّ مراجعه. فعرضُ زرّ
+   * «+» له كذبٌ صغيرٌ يتكرّر عند كلّ مرجع — ويُردّ عند كلّ نقرة.
+   *
+   * **وهذا صدقٌ في العرض لا حدُّ أمان**: الخادمُ يسأل عن الصلاحية في كلّ
+   * مسار، كما منذ RC-T1A. و`null` تعني «لم يُقرأ بعد»، فلا يُفترض المنعُ
+   * ولا الإذن قبل الجواب.
+   */
+  const [access, setAccess] = useState<ProjectAccess | null>(null);
   const [journeyLoad, setJourneyLoad] =
     useState<"loading" | "ready" | "failed">("loading");
   const [overview, setOverview] = useState<ProjectOverview | null>(null);
@@ -198,6 +223,11 @@ export default function ProjectWorkspacePage({
         setLinkedSourcesLoad("failed");
         say(err);
       });
+    // **وما يملكه الطالبُ يُقرأ مع الصفحة، لا عند كلّ زرّ.** وسقوطُها لا
+    // يُظهر خطأً عامًّا: تبقى `null`، فلا يُعرض ما يحتاج إثباتًا.
+    projectAccess(locale, projectId)
+      .then(setAccess)
+      .catch(() => setAccess(null));
   // **ومُحدِّثُ الحال مذكورٌ وإن كان ثابتًا.** مُصرِّفُ React يقابل ما
   // يستنتجه بما يُكتب، فيتخلّى عن التحسين عند أوّل اختلاف — ولو كان
   // الاختلافُ في ثابتٍ لا يتغيّر.
@@ -560,11 +590,27 @@ export default function ProjectWorkspacePage({
         </>
       ) : null}
 
+      {/* ══ الفريق — **بمحرّكِ `/team` نفسِه، بلا مُنتقٍ ثانٍ** ══
+          فالبحثُ معلومٌ من المسار، ومُنتقٍ داخل صفحته يسمح بتغييرٍ صامتٍ
+          للسياق تحت عنوانٍ يقول بحثًا آخر. */}
+      {section === "team" ? <TeamWorkspace locale={locale} fixedProjectId={projectId} /> : null}
+
+      {section === "opportunities" ? (
+        <ProjectRecruitment locale={locale} projectId={projectId} />
+      ) : null}
+
       {section === "literature" ? (
         <section aria-label={t("project.addSource")} style={{ marginBlockStart: 26 }}>
           <h2>{t("project.addSource")}</h2>
 
-          {sourcesLoad === "loading" ? (
+          {/* **ولا يُعرض ما لا يملكه الطالب.** ومن لا يحمل «إدارة
+              المصادر» يقرأ مراجعَ البحث ولا يُضيف — والعلّةُ تُقال
+              باسمها، لا بزرٍّ يُضغط فيُردّ. */}
+          {access && !access.can_manage_sources ? (
+            <p data-testid="sources-read-only" style={{ color: "var(--muted)" }}>
+              {t("project.noManageSources")}
+            </p>
+          ) : sourcesLoad === "loading" ? (
             <p data-testid="sources-candidates-loading" style={{ color: "var(--muted)" }}>
               {t("app.loading")}
             </p>

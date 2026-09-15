@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import and_, func, select
-from sqlalchemy.exc import MultipleResultsFound
+from sqlalchemy.exc import IntegrityError, MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -196,6 +196,20 @@ async def ensure_owner_membership(
     «عضوٌ ما»، ولا «من يعرف المعرِّف». وما يُمنح هو ما كان الترحيل ليمنحه
     لو عرف البحث — لا زيادةَ صلاحيةٍ ولا استثناء. والحدث يُكتب في السجلّ
     باسمه، فلا تنشأ عضويةٌ لا يعرف أحدٌ من أين جاءت.
+
+    ## وطلبانِ متزامنان لا يُسقطان الصفحة
+
+    **«اقرأ ثمّ اكتب» في طلبين متوازيين يُنتج ٥٠٠.** وشاشةُ الفريق تفتح
+    أربعةَ طلباتٍ معًا — الأعضاءَ والقرارات والصندوقَ وما أملكه — وكلُّها
+    تمرّ بهذه البوابة. فيقرأ اثنان «لا عضوية»، ويكتب كلٌّ منهما، ويصطدم
+    الثاني بـ`uq_project_members_project_account`. وقد وقع ذلك فعلًا في
+    أوّل تشغيلةٍ بمتصفّحٍ حقيقيّ: صفحةٌ تُصيَّر وخلفها خطآن.
+    ولا يُرى ذلك في اختبارٍ يُنادي الدالّةَ مرّةً.
+
+    **والقيدُ هو مَن يفصل**، لا قراءةٌ قبله: يُحاول الإدخالُ داخل نقطةِ
+    حفظٍ، فإن رفضه القيدُ رُجع إليها وأُعيدت القراءة — ومَن كتبه قد
+    أتمَّ معاملتَه (وإلّا لَانتظر القيدُ نتيجتَها). فالجوابُ صفٌّ واحدٌ
+    صحيحٌ في الحالين، ولا صفَّ مكرَّر ولا طلبٌ يسقط.
     """
     if await owner_user_id(session, project_id=project_id) != actor_user_id:
         return None
@@ -216,8 +230,18 @@ async def ensure_owner_membership(
         role="principal_investigator", access_state="active",
         consent_state="not_requested", is_author=False,
     )
-    session.add(member)
-    await session.flush()
+    try:
+        async with session.begin_nested():
+            session.add(member)
+            await session.flush()
+    except IntegrityError:
+        # سبقني غيري إلى الصفّ نفسِه — فالصفُّ موجودٌ، والمنحُ والسجلُّ
+        # كُتبا في معاملته. ولا يُعاد شيءٌ منها هنا.
+        raced = await member_for(
+            session, project_id=project_id, user_id=actor_user_id)
+        if raced is not None:
+            return raced
+        raise
 
     await _grant_permissions(
         session, tenant_id=tenant_id, member=member,

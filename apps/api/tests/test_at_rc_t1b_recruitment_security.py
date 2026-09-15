@@ -1941,27 +1941,61 @@ def test_the_discovery_predicate_is_written_once():
         assert fragment in source, f"شرطٌ ناقصٌ في الاكتشاف: {fragment}"
 
 
-def test_this_stage_adds_no_router_and_no_web_surface():
-    """و«فرصُ البحث» لم تبدأ — وهي دعوى تُثبَت لا تُقال.
+def test_the_recruitment_web_surface_never_takes_the_publication_map_route():
+    """**والاستقطابُ صار شاشةً — ولا يقع على مسارٍ مملوكٍ لغيره.**
+
+    وكان هذا الحارسُ يقول «لا سطحَ ويب بعد»، وقد صار ذلك باطلًا بالبناء:
+    شاشاتُ التعاون بُنيت في RC-T1C Phase 4. **فانتقل الحدُّ ولم يُرفع**،
+    وهو الآن الحدُّ الذي يستحقّ الحراسة فعلًا: فصلُ المجالات.
 
     **ويُقاس هذا النطاقُ باسمه لا بكلمةٍ عامّة**: `opportunities` و
-    `publication-opportunities` صفحتان قائمتان منذ التوليف والرسائل، ولا
-    شأنَ لهما بالاستقطاب — وحارسٌ يمنع الكلمةَ يسقط على شيءٍ لم أكتبه.
+    `publication-opportunities` و`research-opportunities` مساراتٌ قائمة
+    منذ التوليف والرسائل — خريطةُ نشرٍ وفجواتٌ علمية — ولا شأنَ لها
+    بالاستقطاب. فلو نزل الاستقطامُ على أحدها لَوجد الباحثُ خلف رابطٍ
+    يعرفه شيئًا آخر، **والصفحتان تعملان فلا خطأَ يُرى**.
+
+    فالحدُّ: مقطعُ الاستقطاب هو `collaboration-opportunities` وحده، ولا
+    شيءَ من الاستقطاب في الصفحات الثلاث المُجمَّدة.
     """
-    # **وقد تحرّك هذا الحدُّ في RC-T1C**: بُني موجّهُ الاستقطاب ورُكّب
-    # في التطبيق قصدًا، وحارسُ تركيبه في حزمة RC-T1C. فما يبقى محروسًا
-    # هنا هو **سطحُ الويب**: «فرصُ البحث» شاشةً لم تبدأ بعد.
     main = (API / "main.py").read_text(encoding="utf-8")
     assert "recruitment_router" in main, "موجّهُ الاستقطاب غيرُ مركَّب"
 
     web = REPO / "apps" / "web" / "src"
-    if web.exists():
-        touched = [
-            str(path.relative_to(web))
-            for path in web.rglob("*.ts*")
-            if "recruitment" in path.read_text(encoding="utf-8", errors="ignore").lower()
-        ]
-        assert touched == [], f"الويبُ يلمس الاستقطاب: {touched}"
+    if not web.exists():
+        return
+
+    pages = web / "app" / "[locale]"
+    assert (pages / "collaboration-opportunities" / "page.tsx").exists()
+    assert (pages / "collaboration-opportunities" / "[opportunityId]"
+            / "page.tsx").exists()
+
+    # **والصفحاتُ الثلاثُ المُجمَّدة لا تلمس الاستقطاب** — لا نداءً ولا
+    # مكوّنًا ولا مفردةً.
+    frozen = [
+        pages / "opportunities" / "page.tsx",
+        pages / "portfolio" / "[projectId]" / "research-opportunities" / "page.tsx",
+        pages / "portfolio" / "[projectId]" / "publication-opportunities" / "page.tsx",
+    ]
+    for path in frozen:
+        if not path.exists():
+            continue
+        source = path.read_text(encoding="utf-8")
+        for forbidden in ("api/v1/recruitment", "lib/recruitment",
+                          "ProjectRecruitment", "collaboration-opportunities"):
+            assert forbidden not in source, f"{path.name} يلمس الاستقطاب: {forbidden}"
+
+    # **ولا شاشةَ استقطابٍ تحت المقطع المملوك لخريطة النشر.**
+    recruitment_pages = sorted(
+        str(path.relative_to(web))
+        for path in web.rglob("*.tsx")
+        if "api/v1/recruitment" in path.read_text(encoding="utf-8", errors="ignore")
+        or "lib/recruitment" in path.read_text(encoding="utf-8", errors="ignore")
+    )
+    leaked = [rel for rel in recruitment_pages
+              if "app/[locale]/opportunities" in rel
+              or "research-opportunities" in rel
+              or "publication-opportunities" in rel]
+    assert leaked == [], f"الاستقطابُ نزل على مسارٍ مملوكٍ لغيره: {leaked}"
 
 
 def test_nothing_here_creates_membership_authorship_or_credit():

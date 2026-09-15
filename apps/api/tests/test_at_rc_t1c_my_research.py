@@ -588,3 +588,134 @@ def test_24_no_project_route_reads_the_token_tenant_after_the_bridge():
         if "principal.tenant_id" in body:
             offenders.append((file_name, func_name))
     assert not offenders, offenders
+
+
+# ═══════ ٥ · طلبانِ متزامنان على بوابةٍ تكتب ═══════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_25_parallel_first_requests_do_not_collide_on_owner_bootstrap(world):
+    """**شاشةٌ تفتح أربعةَ طلباتٍ معًا لا تُسقط أيَّها.**
+
+    وهذا عطبٌ لم يظهر في أيّ اختبارٍ يُنادي الدالّةَ مرّةً: `access_for`
+    تُنشئ عضويّةَ المالك عند الحاجة — «اقرأ ثمّ اكتب» — وقسمُ الفريق
+    يفتح الأعضاءَ والقرارات والصندوقَ وما أملكه في طلبٍ واحدٍ متوازٍ.
+    فيقرأ اثنان «لا عضوية»، ويكتب كلٌّ منهما، ويصطدم الثاني بالقيد
+    الفريد. وقد وقع في أوّل تشغيلةٍ بمتصفّحٍ حقيقيّ: صفحةٌ تُصيَّر
+    وخلفها ٥٠٠ في بابين.
+
+    ويُقاس هنا كما يقع: **بحثٌ لا عضويّةَ لمالكه فيه**، وأربعةُ طلباتٍ
+    حقيقيّةٍ معًا. والجوابُ أن تنجح كلُّها، وأن يبقى الصفُّ واحدًا.
+    """
+    import asyncio
+
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.portfolio import ProjectMember
+
+    fresh = await _owned_project(world.owner, title="بحثٌ بلا عضويّةٍ لمالكه")
+
+    async with _client(world.owner) as http:
+        responses = await asyncio.gather(
+            http.get(f"{TEAM}/{fresh}/members"),
+            http.get(f"{TEAM}/{fresh}/decisions"),
+            http.get(f"{TEAM}/{fresh}/decisions/inbox"),
+            http.get(f"{TEAM}/{fresh}/access"),
+        )
+    codes = [r.status_code for r in responses]
+    assert codes == [200, 200, 200, 200], [(r.status_code, r.text[:160]) for r in responses]
+
+    async with tenant_session(world.owner["tenant_id"], world.owner["user_id"]) as session:
+        rows = (await session.execute(
+            select(func.count()).select_from(ProjectMember)
+            .where(ProjectMember.project_id == fresh,
+                   ProjectMember.user_id == world.owner["user_id"]))).scalar_one()
+    assert rows == 1, f"عضويّةُ المالك كُتبت {rows} مرّة"
+
+
+# ═════ ٦ · الدعوةُ بالبريد عبرَ المؤسسات (المسارُ الشائع) ═════
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_26_an_email_addressed_cross_tenant_invitation_can_be_accepted(world):
+    """**ودعوةُ البريد هي ما تُصدره الشاشةُ فعلًا** — فلتُقبل.
+
+    وهذا العطبُ لم يظهر في اختبارٍ واحدٍ من اختباراتنا لأنّها كلَّها
+    كانت تُمرّر `invited_user_id` صريحًا. والشاشةُ لا تفعل: تدعو
+    ببريد، والبحثُ عن الحساب في `invite_member` مقيَّدٌ بمستأجر الداعي
+    — فمدعوٌّ من مؤسسةٍ أخرى يُكتب صفُّه بربطٍ **فارغ**.
+
+    وكانت النتيجةُ أسوأَ ما يكون: **يقرأ دعوتَه ثمّ يُردّ ٥٠٠** عند
+    القبول. فسياسةُ 0035 تُجيز فرعَ البريد فيرى الصفَّ، وجسرُ الجلسة
+    كان يعرف الربطَ الصريحَ وحده فلا يعبُر — فتُكتب العضويّةُ في مستأجر
+    البحث والجلسةُ في مستأجره، فترفضها RLS.
+
+    وقد ظهر في أوّل تشغيلةٍ بمتصفّحٍ حقيقيّ. **ولذلك يُقاس هنا كما يقع
+    في المنتج: بالبريد، وعبر HTTP، ومن مؤسسةٍ ثالثة.**
+    """
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.identity import Membership
+    from athera_api.models.portfolio import ProjectMember
+    from athera_api.services import collaboration
+
+    async with tenant_session(world.owner["tenant_id"], world.owner["user_id"]) as session:
+        issued = await collaboration.invite_member(
+            session, tenant_id=world.owner["tenant_id"], project_id=world.project_id,
+            inviter_user_id=world.owner["user_id"], display_name="مدعوٌّ ببريده",
+            email=world.outsider["email"], role="co_author", permissions=[VIEW])
+        token = issued.token
+        # **ولا ربطَ صريح**: هذه هي الحالُ التي تُنتجها الشاشة.
+        assert issued.invitation.invited_user_id is None
+
+    async with _client(world.outsider) as http:
+        accepted = await http.post("/api/v1/invitations/accept", json={"token": token})
+    assert accepted.status_code == 200, accepted.text
+
+    # والعضويّةُ في مستأجر **البحث**، لا في مستأجر القابل.
+    async with tenant_session(world.owner["tenant_id"], world.owner["user_id"]) as session:
+        row = (await session.execute(
+            select(ProjectMember).where(
+                ProjectMember.project_id == world.project_id,
+                ProjectMember.user_id == world.outsider["user_id"]))).scalar_one()
+        assert row.tenant_id == world.owner["tenant_id"]
+        assert row.access_state == "active"
+        # ولا انتماءَ تنظيميًّا نشأ في مستأجر البحث.
+        organisational = (await session.execute(
+            select(func.count()).select_from(Membership)
+            .where(Membership.tenant_id == world.owner["tenant_id"],
+                   Membership.user_id == world.outsider["user_id"]))).scalar_one()
+    assert organisational == 0
+
+    # والبحثُ يظهر في «أبحاثي» عنده.
+    assert str(world.project_id) in await _titles(world.outsider)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_27_an_email_invitation_is_not_acceptable_by_a_lookalike(world):
+    """**وبريدٌ يُشبه بريدَك ليس بريدَك.** والجسرُ يربط الفرعَ بحسابِ الفاعل.
+
+    فلو قُرئ البريدُ من صفّ الدعوة وحده — بلا `u.id = app_current_actor()`
+    — لَعبَر كلُّ من يحمل الرمزَ إلى مستأجر البحث. والرمزُ يمرّ بيد إنسان،
+    فليس سرًّا يُعتمد عليه وحده.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services import collaboration
+
+    async with tenant_session(world.owner["tenant_id"], world.owner["user_id"]) as session:
+        issued = await collaboration.invite_member(
+            session, tenant_id=world.owner["tenant_id"], project_id=world.project_id,
+            inviter_user_id=world.owner["user_id"], display_name="مدعوٌّ ببريده",
+            email=f"nobody-{world.suffix}@example.test", role="co_author",
+            permissions=[VIEW])
+        token = issued.token
+
+    # والضيفُ يحمل الرمزَ ولا الدعوةُ له — **٤٠٤ لا ٤٠٣**.
+    async with _client(world.guest) as http:
+        stolen = await http.post("/api/v1/invitations/accept", json={"token": token})
+    assert stolen.status_code == 404, stolen.text

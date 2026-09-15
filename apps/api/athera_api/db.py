@@ -268,6 +268,20 @@ async def project_session(
 # ويُقرأ التماسكُ معه في العبارة نفسِها، كما في جسر البحث: فاعلٌ ومستأجرٌ
 # لا صلةَ بينهما لا يُخدَم — ولا يجوز أن يكون بابُ القبول أضعفَ من باب
 # الوصول العاديّ.
+# **والمُسنَدُ هو مُسنَدُ السياسة نفسُه، حرفًا بحرف** (الترحيل 0035):
+# الدعوةُ إليّ إمّا بربطٍ صريح إلى حسابي، أو ببريدٍ **هو بريدُ حسابي أنا**.
+#
+# وكان هذا الجسرُ يعرف الأوّلَ وحده، فانكسر المنتجُ في أكثر حالاته شيوعًا:
+# شاشةُ الفريق تدعو **ببريد**، والبحثُ عن الحساب فيها مقيَّدٌ بمستأجر
+# الداعي — فمدعوٌّ من مؤسسةٍ أخرى يُكتب صفُّه بـ`invited_user_id` فارغًا.
+# فكان يقرأ دعوتَه (السياسةُ تُجيز فرعَ البريد) ثمّ **يُردّ ٥٠٠ عند
+# القبول**: الجلسةُ بقيت في مستأجره، والعضويّةُ تُكتب في مستأجر البحث،
+# فترفضها RLS. وقد ظهر ذلك في أوّل تشغيلةٍ بمتصفّحٍ حقيقيّ، ولم يظهر في
+# اختبارٍ واحدٍ من اختباراتنا: كلُّها كانت تُمرّر الربطَ الصريح.
+#
+# **ولا يوسّع هذا الجسرُ شيئًا**: السياسةُ في القاعدة هي الحدُّ، وهي
+# تُجيز الفرعين أصلًا؛ فمن لا دعوةَ له لا يرى صفًّا هنا ولا يُنقل.
+# والبريدُ مربوطٌ بـ`u.id = app_current_actor()` — فلا يُنتحل بريدُ غيره.
 _INVITATION_SCOPE = text(
     "SELECT "
     "  EXISTS (SELECT 1 FROM memberships hm "
@@ -275,7 +289,11 @@ _INVITATION_SCOPE = text(
     "             AND hm.tenant_id = app_current_tenant()) AS coherent, "
     "  (SELECT i.tenant_id FROM project_invitations i "
     "    WHERE i.token_hash = :token_hash "
-    "      AND i.invited_user_id = app_current_actor() "
+    "      AND (i.invited_user_id = app_current_actor() "
+    "           OR (i.invited_user_id IS NULL AND EXISTS ("
+    "                 SELECT 1 FROM users u "
+    "                  WHERE u.id = app_current_actor() "
+    "                    AND lower(u.email) = lower(i.invited_email)))) "
     "    LIMIT 1) AS invitation_tenant"
 )
 
