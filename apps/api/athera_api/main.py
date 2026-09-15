@@ -32,6 +32,7 @@ from .routers import memory as memory_router
 from .routers import planning as planning_router
 from .routers import portfolio as portfolio_router
 from .routers import profile as profile_router
+from .routers import recruitment as recruitment_router
 from .routers import project_management as project_management_router
 from .routers import publishing as publishing_router
 from .routers import settings as settings_router
@@ -157,6 +158,7 @@ app.include_router(files_router.router)
 app.include_router(audit_router.router)
 app.include_router(inbox_router.router)
 app.include_router(profile_router.router)
+app.include_router(recruitment_router.router)
 app.include_router(memory_router.router)
 app.include_router(brain_router.router)
 app.include_router(ai_router.router)

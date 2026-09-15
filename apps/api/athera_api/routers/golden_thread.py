@@ -13,7 +13,12 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..deps import Principal, get_principal, get_session
+from ..deps import (
+    Principal,
+    get_principal,
+    get_project_session,
+    project_tenant,
+)
 from ..errors import AtheraError, NotFound
 from ..research_brain import BY_ID
 from ..models.analysis import (
@@ -88,7 +93,7 @@ async def _project(
     (`acknowledged`) يرى ولا يمسّ — وهذا موضعُ الفرق.
     """
     return (await collaboration.ensure_project_access(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission=permission)).project
 
 
@@ -225,18 +230,18 @@ async def create_element(
     project_id: uuid.UUID,
     payload: ElementCreateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ElementResponse:
     await _project(session, principal, project_id, permission=EDIT)
     element = ThreadElement(
-        tenant_id=principal.tenant_id, project_id=project_id,
+        tenant_id=project_tenant(session, principal), project_id=project_id,
         element_type=payload.element_type, label_ar=payload.label_ar,
         label_en=payload.label_en, detail_ar=payload.detail_ar, ordinal=payload.ordinal,
     )
     session.add(element)
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="thread.element_created",
+        session, tenant_id=project_tenant(session, principal), action="thread.element_created",
         object_type="thread_element", object_id=element.id, actor_user_id=principal.user_id,
         state_after={"type": payload.element_type, "label": payload.label_ar[:120]},
     )
@@ -252,11 +257,11 @@ async def create_link(
     project_id: uuid.UUID,
     payload: LinkCreateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     await _project(session, principal, project_id, permission=EDIT)
     link = ThreadLink(
-        tenant_id=principal.tenant_id, project_id=project_id,
+        tenant_id=project_tenant(session, principal), project_id=project_id,
         source_element_id=payload.source_element_id,
         target_element_id=payload.target_element_id,
         link_type=payload.link_type, note_ar=payload.note_ar,
@@ -264,7 +269,7 @@ async def create_link(
     session.add(link)
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="thread.link_created",
+        session, tenant_id=project_tenant(session, principal), action="thread.link_created",
         object_type="thread_link", object_id=link.id, actor_user_id=principal.user_id,
         state_after={"link_type": payload.link_type},
     )
@@ -275,7 +280,7 @@ async def create_link(
 async def consistency(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ConsistencyResponse:
     await _project(session, principal, project_id)
     result = score.compute(await _build_graph(session, project_id))
@@ -445,7 +450,7 @@ async def _thread_snapshot(session: AsyncSession, tenant_id: uuid.UUID,
 async def golden_view(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> GoldenThreadView:
     """الخيط الذهبي مرسومًا — **ولا خطّ إلا خلفه صفّ**.
 
@@ -455,7 +460,7 @@ async def golden_view(
     """
     project = await _project(session, principal, project_id)
 
-    woven = weave.weave(await _thread_snapshot(session, principal.tenant_id, project_id))
+    woven = weave.weave(await _thread_snapshot(session, project_tenant(session, principal), project_id))
     arabic = principal.locale != "en"
 
     # **العنوان يمرّ بعقد العرض ولا يُقرأ من العمود مباشرةً.** وعمودٌ يُعرض
@@ -524,7 +529,7 @@ async def _suggested_actions(session: AsyncSession, principal: Principal,
     مستأجرٍ آخر تقول «فُحص فلم يوجد» عمّا لم يُفحص أصلًا.
     """
     snapshot = await research_assessment.build_project_assessment(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     if snapshot is None:
         raise NotFound("workspace.project_not_found")
     _report, view = research_assessment.assess(snapshot)
@@ -536,7 +541,7 @@ async def _suggested_actions(session: AsyncSession, principal: Principal,
 async def suggested_actions(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> SuggestedActionsResponse:
     """الأفعال المقترحة على كشوفات العقل البحثي — **اقتراحٌ يُقرأ، لا مهمّةٌ نشأت**.
 
@@ -562,7 +567,7 @@ async def suggested_action_preview(
     project_id: uuid.UUID,
     action_key: str,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> TaskPreviewView:
     """معاينةُ المهمّة التي **ستنشأ لو** قَبِل الباحث — ولا صفَّ يُكتب.
 
@@ -638,11 +643,11 @@ async def create_protocol(
     project_id: uuid.UUID,
     payload: ProtocolCreateRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProtocolResponse:
     await _project(session, principal, project_id, permission=EDIT)
     protocol = Protocol(
-        tenant_id=principal.tenant_id, project_id=project_id,
+        tenant_id=project_tenant(session, principal), project_id=project_id,
         version_label=payload.version_label, title_ar=payload.title_ar,
         summary_ar=payload.summary_ar, summary_en=payload.summary_en,
         current_gate="G2", status="draft",
@@ -650,7 +655,7 @@ async def create_protocol(
     session.add(protocol)
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="protocol.created",
+        session, tenant_id=project_tenant(session, principal), action="protocol.created",
         object_type="protocol", object_id=protocol.id, actor_user_id=principal.user_id,
         state_after={"version": payload.version_label, "gate": "G2"},
     )
@@ -666,7 +671,7 @@ async def submit_gate(
     project_id: uuid.UUID,
     payload: GateSubmitRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProtocolResponse:
     """§9 — البوابة تُفتح بغياب العيوب الحاجبة، لا ببلوغ درجة.
 
@@ -695,7 +700,7 @@ async def submit_gate(
     if not result.can_pass_gate:
         protocol.consistency_snapshot = snapshot
         await audit.record(
-            session, tenant_id=principal.tenant_id, action="protocol.gate_refused",
+            session, tenant_id=project_tenant(session, principal), action="protocol.gate_refused",
             object_type="protocol", object_id=protocol.id, actor_user_id=principal.user_id,
             state_after=snapshot,
             reason="blocking consistency findings or missing thread elements (§15.2)",
@@ -711,7 +716,7 @@ async def submit_gate(
     protocol.consistency_snapshot = snapshot
 
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="protocol.gate_approved",
+        session, tenant_id=project_tenant(session, principal), action="protocol.gate_approved",
         object_type="protocol", object_id=protocol.id, actor_user_id=principal.user_id,
         state_after={**snapshot, "gate": payload.gate},
         reason=payload.reason or "researcher approved the protocol gate",

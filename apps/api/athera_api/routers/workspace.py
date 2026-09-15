@@ -16,7 +16,13 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..deps import Principal, get_principal, get_session
+from ..deps import (
+    Principal,
+    get_principal,
+    get_project_session,
+    get_session,
+    project_tenant,
+)
 from ..errors import AtheraError, Forbidden, NotFound
 from ..models.files import File
 from ..models.literature import Source
@@ -112,7 +118,7 @@ async def _project(session: AsyncSession, principal: Principal,
     واحدًا. أمّا العضوُ الذي ينقصه صفٌّ فيُجاب `403`: الوجودُ معلومٌ له.
     """
     return (await collaboration.ensure_project_access(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission=permission,
         not_found_code="workspace.project_not_found",
         require_owner=owner_only)).project
@@ -121,7 +127,7 @@ async def _project(session: AsyncSession, principal: Principal,
 async def _summary(session: AsyncSession, principal: Principal,
                    row: ResearchProject) -> ProjectSummary:
     """ملخّصٌ بأعدادٍ محسوبة، لا بحقولٍ مخزَّنة تتقادم بصمت."""
-    tid = principal.tenant_id
+    tid = project_tenant(session, principal)
     files = (await session.execute(
         select(func.count(ProjectFile.id)).where(
             ProjectFile.tenant_id == tid, ProjectFile.project_id == row.id,
@@ -224,14 +230,14 @@ async def rename_project(
     project_id: uuid.UUID,
     payload: ProjectRenameRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectSummary:
     project = await _project(session, principal, project_id, permission=EDIT)
     before = project.working_title_ar
     project.working_title_ar = payload.title_ar
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="workspace.project_renamed",
+        session, tenant_id=project_tenant(session, principal), action="workspace.project_renamed",
         object_type="research_project", object_id=project.id,
         actor_user_id=principal.user_id, state_before={"title": before[:120]},
         state_after={"title": payload.title_ar[:120]},
@@ -243,14 +249,14 @@ async def rename_project(
 async def archive_project(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectSummary:
     """أرشِف — **البحث المؤجَّل ليس محذوفًا**."""
     project = await _project(session, principal, project_id, owner_only=True)
     project.archived_at = project.archived_at or dt.datetime.now(dt.UTC)
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="workspace.project_archived",
+        session, tenant_id=project_tenant(session, principal), action="workspace.project_archived",
         object_type="research_project", object_id=project.id,
         actor_user_id=principal.user_id,
         state_after={"archived_at": project.archived_at.isoformat()},
@@ -262,7 +268,7 @@ async def archive_project(
 async def trash_project(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ImpactView:
     """انقل إلى السلّة — **ولا يُتلَف شيء**.
 
@@ -274,7 +280,7 @@ async def trash_project(
     project.deleted_by = principal.user_id
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="workspace.project_trashed",
+        session, tenant_id=project_tenant(session, principal), action="workspace.project_trashed",
         object_type="research_project", object_id=project.id,
         actor_user_id=principal.user_id,
         state_after={"deleted_at": project.deleted_at.isoformat()},
@@ -287,12 +293,12 @@ async def trash_project(
 async def restore_project(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectSummary:
     row = (await session.execute(
         select(ResearchProject).where(
             ResearchProject.id == project_id,
-            ResearchProject.tenant_id == principal.tenant_id)
+            ResearchProject.tenant_id == project_tenant(session, principal))
     )).scalar_one_or_none()
     if row is None:
         raise NotFound("workspace.project_not_found")
@@ -306,7 +312,7 @@ async def restore_project(
     # يملك أن يُعيد. والترتيب مقصود — لا مدخلَ أصلًا فـ٤٠٤، ومدخلٌ بلا نسبٍ
     # فـ٤٠٣: العضوُ يعرف البحث سلفًا، فإنكارُ وجوده كذبٌ لا يحمي شيئًا.
     if await collaboration.project_permissions(
-            session, tenant_id=principal.tenant_id, project_id=project_id,
+            session, tenant_id=project_tenant(session, principal), project_id=project_id,
             user_id=principal.user_id) is None:
         raise NotFound("workspace.project_not_found")
     if not await collaboration.is_verified_owner(
@@ -316,7 +322,7 @@ async def restore_project(
     row.deleted_at, row.deleted_by = None, None
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="workspace.project_restored",
+        session, tenant_id=project_tenant(session, principal), action="workspace.project_restored",
         object_type="research_project", object_id=row.id,
         actor_user_id=principal.user_id, state_after={"deleted_at": None},
         reason="restoring returns the project with every relation intact")
@@ -329,7 +335,7 @@ async def restore_project(
 async def project_overview(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectOverview:
     """حالُ البحث — **بحالاتٍ صادقة لا بنسبةٍ واحدة**.
 
@@ -338,9 +344,9 @@ async def project_overview(
     """
     project = await _project(session, principal, project_id)
     brain = await workspace.research_brain(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     action = await workspace.next_action(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
 
     blockers = [e.label_ar for e in brain
                 if e.state == "missing" and e.key in {"problem", "question", "method"}]
@@ -358,7 +364,7 @@ async def project_overview(
 async def project_assessment(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectAssessmentView:
     """تقييمُ العقل البحثي لهذا البحث — **مشورةٌ تُقرأ لا بوابةٌ تُغلق**.
 
@@ -371,7 +377,7 @@ async def project_assessment(
     """
     await _project(session, principal, project_id)
     snapshot = await research_assessment.build_project_assessment(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     if snapshot is None:  # pragma: no cover - `_project` سبق أن أثبت وجوده
         raise NotFound("workspace.project_not_found")
 
@@ -404,13 +410,13 @@ async def project_assessment(
 async def project_files(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[ProjectFileView]:
     await _project(session, principal, project_id)
     rows = (await session.execute(
         select(ProjectFile, File)
         .join(File, File.id == ProjectFile.file_id)
-        .where(ProjectFile.tenant_id == principal.tenant_id,
+        .where(ProjectFile.tenant_id == project_tenant(session, principal),
                ProjectFile.project_id == project_id)
         .order_by(ProjectFile.created_at.desc())
     )).all()
@@ -418,7 +424,7 @@ async def project_files(
     out: list[ProjectFileView] = []
     for link, file in rows:
         processing, candidates, reviewed, thesis_id = await workspace.file_processing_state(
-            session, tenant_id=principal.tenant_id, file_id=file.id)
+            session, tenant_id=project_tenant(session, principal), file_id=file.id)
         out.append(ProjectFileView(
             file_id=file.id, filename=file.original_filename,
             content_type=file.content_type, size_bytes=file.size_bytes,
@@ -434,20 +440,20 @@ async def link_file(
     project_id: uuid.UUID,
     payload: LinkRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectFileView:
     """اربط ملفًّا من المكتبة بهذا البحث — **بلا نسخ**."""
     await _project(session, principal, project_id, permission=SOURCES)
     file = (await session.execute(
         select(File).where(File.id == payload.asset_id,
-                           File.tenant_id == principal.tenant_id)
+                           File.tenant_id == project_tenant(session, principal))
     )).scalar_one_or_none()
     if file is None:
         raise NotFound("workspace.file_not_found")
 
     existing = (await session.execute(
         select(ProjectFile).where(
-            ProjectFile.tenant_id == principal.tenant_id,
+            ProjectFile.tenant_id == project_tenant(session, principal),
             ProjectFile.project_id == project_id,
             ProjectFile.file_id == file.id)
     )).scalar_one_or_none()
@@ -455,13 +461,13 @@ async def link_file(
         existing.state = ProjectFile.ACTIVE
         link = existing
     else:
-        link = ProjectFile(tenant_id=principal.tenant_id, project_id=project_id,
+        link = ProjectFile(tenant_id=project_tenant(session, principal), project_id=project_id,
                            file_id=file.id, state=ProjectFile.ACTIVE,
                            added_by=principal.user_id)
         session.add(link)
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="workspace.file_linked",
+        session, tenant_id=project_tenant(session, principal), action="workspace.file_linked",
         object_type="project_file", object_id=link.id, actor_user_id=principal.user_id,
         state_after={"project_id": str(project_id), "file_id": str(file.id)},
         reason="a library file is linked to a project, never copied into it")
@@ -476,12 +482,12 @@ async def file_removal_impact(
     project_id: uuid.UUID,
     file_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ImpactView:
     """ماذا يترتب على إزالته — **قبل أن تقع، لا بعد**."""
     await _project(session, principal, project_id)
     impact = await workspace.file_impact(
-        session, tenant_id=principal.tenant_id, project_id=project_id, file_id=file_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id, file_id=file_id)
     return ImpactView(
         is_safe=impact.is_safe, breaks_approved_work=impact.breaks_approved_work,
         summary=impact.summary_ar(),
@@ -497,7 +503,7 @@ async def unlink_file(
     acknowledged: bool = Query(default=False,
                                description="أقرّ الباحث بما يترتب على الإزالة"),
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ImpactView:
     """أزِل الملف من البحث — **ولا يُحذف من المكتبة**.
 
@@ -507,14 +513,14 @@ async def unlink_file(
     await _project(session, principal, project_id, permission=SOURCES)
     link = (await session.execute(
         select(ProjectFile).where(
-            ProjectFile.tenant_id == principal.tenant_id,
+            ProjectFile.tenant_id == project_tenant(session, principal),
             ProjectFile.project_id == project_id, ProjectFile.file_id == file_id)
     )).scalar_one_or_none()
     if link is None:
         raise NotFound("workspace.file_not_linked")
 
     impact = await workspace.file_impact(
-        session, tenant_id=principal.tenant_id, project_id=project_id, file_id=file_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id, file_id=file_id)
     view = ImpactView(
         is_safe=impact.is_safe, breaks_approved_work=impact.breaks_approved_work,
         summary=impact.summary_ar(),
@@ -529,7 +535,7 @@ async def unlink_file(
     link.state = ProjectFile.ARCHIVED
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="workspace.file_unlinked",
+        session, tenant_id=project_tenant(session, principal), action="workspace.file_unlinked",
         object_type="project_file", object_id=link.id, actor_user_id=principal.user_id,
         state_after={"state": ProjectFile.ARCHIVED, "acknowledged": acknowledged,
                      "consequences": len(impact.consequences)},
@@ -566,13 +572,13 @@ def _source_view(link: ProjectSource, source: Source) -> ProjectSourceView:
 async def project_sources(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[ProjectSourceView]:
     await _project(session, principal, project_id)
     rows = (await session.execute(
         select(ProjectSource, Source)
         .join(Source, Source.id == ProjectSource.source_id)
-        .where(ProjectSource.tenant_id == principal.tenant_id,
+        .where(ProjectSource.tenant_id == project_tenant(session, principal),
                ProjectSource.project_id == project_id)
         .order_by(ProjectSource.created_at.desc())
     )).all()
@@ -585,7 +591,7 @@ async def link_source(
     project_id: uuid.UUID,
     payload: LinkRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectSourceView:
     """أضِف مرجعًا — **محفوظًا فقط حتى يقرأه الباحث**.
 
@@ -595,25 +601,25 @@ async def link_source(
     await _project(session, principal, project_id, permission=SOURCES)
     source = (await session.execute(
         select(Source).where(Source.id == payload.asset_id,
-                             Source.tenant_id == principal.tenant_id)
+                             Source.tenant_id == project_tenant(session, principal))
     )).scalar_one_or_none()
     if source is None:
         raise NotFound("workspace.source_not_found")
 
     link = (await session.execute(
         select(ProjectSource).where(
-            ProjectSource.tenant_id == principal.tenant_id,
+            ProjectSource.tenant_id == project_tenant(session, principal),
             ProjectSource.project_id == project_id,
             ProjectSource.source_id == source.id)
     )).scalar_one_or_none()
     if link is None:
-        link = ProjectSource(tenant_id=principal.tenant_id, project_id=project_id,
+        link = ProjectSource(tenant_id=project_tenant(session, principal), project_id=project_id,
                              source_id=source.id, use_state="saved_only",
                              added_by=principal.user_id)
         session.add(link)
         await session.flush()
         await audit.record(
-            session, tenant_id=principal.tenant_id, action="workspace.source_linked",
+            session, tenant_id=project_tenant(session, principal), action="workspace.source_linked",
             object_type="project_source", object_id=link.id,
             actor_user_id=principal.user_id,
             state_after={"project_id": str(project_id), "use_state": "saved_only"},
@@ -628,7 +634,7 @@ async def set_source_use(
     source_id: uuid.UUID,
     payload: SourceUseRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectSourceView:
     """قرّر حال المرجع في هذا البحث — **والقرار يُنسب إلى صاحبه**.
 
@@ -646,7 +652,7 @@ async def set_source_use(
     row = (await session.execute(
         select(ProjectSource, Source)
         .join(Source, Source.id == ProjectSource.source_id)
-        .where(ProjectSource.tenant_id == principal.tenant_id,
+        .where(ProjectSource.tenant_id == project_tenant(session, principal),
                ProjectSource.project_id == project_id,
                ProjectSource.source_id == source_id)
     )).first()
@@ -663,7 +669,7 @@ async def set_source_use(
             raise AtheraError("workspace.exclusion_needs_reason",
                               status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
         impact = await workspace.source_impact(
-            session, tenant_id=principal.tenant_id, project_id=project_id,
+            session, tenant_id=project_tenant(session, principal), project_id=project_id,
             source_id=source_id)
         if impact.breaks_approved_work:
             raise AtheraError(
@@ -683,7 +689,7 @@ async def set_source_use(
     # مغلقة تُعدّ وتُقارن؛ أما ملاحظة الباحث فقد تقتبس من الورقة، ومحتوى
     # المستندات لا يدخل سجلّ التدقيق (§37).
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="workspace.source_use_set",
+        session, tenant_id=project_tenant(session, principal), action="workspace.source_use_set",
         object_type="project_source", object_id=link.id,
         actor_user_id=principal.user_id,
         state_before={"use_state": before, "reason_code": before_reason},
@@ -721,7 +727,7 @@ async def screening_workspace(
     possible_duplicate: bool | None = Query(
         default=None, description="ما يشترك مع مرجعٍ آخر في هذا البحث"),
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ScreeningView:
     """شاشة الفرز — **بطاقةٌ تُعرَف بها الدراسة، لا سطرٌ بمعرّف**.
 
@@ -746,10 +752,10 @@ async def screening_workspace(
         has_abstract=has_abstract, has_full_text=has_full_text,
         possible_duplicate=possible_duplicate)
     result = await screening.screening_page(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         filters=filters, page=page, page_size=page_size)
     facets = await screening.screening_facets(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
 
     return ScreeningView(
         project_id=project_id,
@@ -774,7 +780,7 @@ async def batch_decide(
     project_id: uuid.UUID,
     payload: BatchDecisionRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> BatchDecisionView:
     """قرارُ فرزٍ على مجموعة — **يقع كلُّه أو لا يقع منه شيء**.
 
@@ -801,7 +807,7 @@ async def batch_decide(
 
     rows = (await session.execute(
         select(ProjectSource).where(
-            ProjectSource.tenant_id == principal.tenant_id,
+            ProjectSource.tenant_id == project_tenant(session, principal),
             ProjectSource.project_id == project_id,
             ProjectSource.source_id.in_(wanted))
     )).scalars().all()
@@ -818,7 +824,7 @@ async def batch_decide(
     if payload.use_state == "excluded":
         for source_id in wanted:
             impact = await workspace.source_impact(
-                session, tenant_id=principal.tenant_id, project_id=project_id,
+                session, tenant_id=project_tenant(session, principal), project_id=project_id,
                 source_id=source_id)
             if impact.breaks_approved_work:
                 raise AtheraError(
@@ -834,7 +840,7 @@ async def batch_decide(
             reason_code=payload.reason_code, reason_ar=payload.reason_ar,
             actor_user_id=principal.user_id, now=now)
         await audit.record(
-            session, tenant_id=principal.tenant_id,
+            session, tenant_id=project_tenant(session, principal),
             action="workspace.source_use_set",
             object_type="project_source", object_id=link.id,
             actor_user_id=principal.user_id, state_before=before,
@@ -854,7 +860,7 @@ async def source_abstracts(
     project_id: uuid.UUID,
     source_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> SourceAbstractsView:
     """ملخّصات هذا المرجع — **كلُّها منسوبةً، ولا يُطوى اثنان في واحد**.
 
@@ -866,15 +872,15 @@ async def source_abstracts(
     row = (await session.execute(
         select(Source)
         .join(ProjectSource, ProjectSource.source_id == Source.id)
-        .where(Source.tenant_id == principal.tenant_id,
-               ProjectSource.tenant_id == principal.tenant_id,
+        .where(Source.tenant_id == project_tenant(session, principal),
+               ProjectSource.tenant_id == project_tenant(session, principal),
                ProjectSource.project_id == project_id,
                ProjectSource.source_id == source_id)
     )).scalar_one_or_none()
     if row is None:
         raise NotFound("workspace.source_not_linked")
     stored = (await screening.stored_abstracts_by_source(
-        session, tenant_id=principal.tenant_id, source_ids=[source_id])
+        session, tenant_id=project_tenant(session, principal), source_ids=[source_id])
     ).get(source_id, [])
     records = screening.abstracts_of(row, stored)
     return SourceAbstractsView(
@@ -897,7 +903,7 @@ async def literature_matrix(
     page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE,
                            description="عدد الدراسات في الصفحة"),
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MatrixView:
     """مصفوفة الأدبيات — **للدراسات المدرجة وحدها**.
 
@@ -909,12 +915,12 @@ async def literature_matrix(
     """
     await _project(session, principal, project_id)
     rows = await screening.matrix_rows(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         page=page, page_size=page_size)
     # العدد من القاعدة لا من طول الصفحة: ستةَ عشرَ عمودًا في ألف صفٍّ ستةَ
     # عشرَ ألف خلية، والمتصفّح يتوقّف قبل أن يُنهي رسمها.
     total = await screening.included_source_count(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     size = max(1, min(page_size, MAX_PAGE_SIZE))
     return MatrixView(
         project_id=project_id,
@@ -935,7 +941,7 @@ async def _included_link(session: AsyncSession, principal: Principal,
     """المرجع المُدرَج وحده تُكتب له خلية — والباقي يُردّ بسببه مفهومًا."""
     link = (await session.execute(
         select(ProjectSource).where(
-            ProjectSource.tenant_id == principal.tenant_id,
+            ProjectSource.tenant_id == project_tenant(session, principal),
             ProjectSource.project_id == project_id,
             ProjectSource.source_id == source_id)
     )).scalar_one_or_none()
@@ -953,7 +959,7 @@ async def extract_matrix(
     project_id: uuid.UUID,
     payload: MatrixExtractionRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MatrixExtractionView:
     """اقرأ ما هو متاحٌ لهذه المراجع واكتب مرشّحاتها — **مرشّحاتٍ لا معرفة**.
 
@@ -981,7 +987,7 @@ async def extract_matrix(
     sources = {
         row.id: row
         for row in (await session.execute(
-            select(Source).where(Source.tenant_id == principal.tenant_id,
+            select(Source).where(Source.tenant_id == project_tenant(session, principal),
                                  Source.id.in_(wanted))
         )).scalars().all()
     }
@@ -990,9 +996,9 @@ async def extract_matrix(
         raise NotFound("workspace.source_not_found", source_id=str(absent[0]))
 
     files = await screening.readable_project_file_ids(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     stored = await screening.stored_abstracts_by_source(
-        session, tenant_id=principal.tenant_id, source_ids=wanted)
+        session, tenant_id=project_tenant(session, principal), source_ids=wanted)
 
     results: list[SourceExtractionView] = []
     for source_id in wanted:
@@ -1001,13 +1007,13 @@ async def extract_matrix(
         scope = screening.reading_scope(
             source, project_file_ids=files, stored_abstracts=rows)
         outcome = await matrix_extraction.extract_for_source(
-            session, tenant_id=principal.tenant_id, project_id=project_id,
+            session, tenant_id=project_tenant(session, principal), project_id=project_id,
             source=source, scope=scope, actor_user_id=principal.user_id,
             stored_abstracts=rows)
         results.append(SourceExtractionView(**asdict(outcome)))
         # **الأثر يحمل العدد والمدى ولا يحمل نصًّا من المستند** (§37).
         await audit.record(
-            session, tenant_id=principal.tenant_id,
+            session, tenant_id=project_tenant(session, principal),
             action="literature_matrix.extraction_run",
             object_type="project_source", object_id=source_id,
             actor_user_id=principal.user_id,
@@ -1026,7 +1032,7 @@ async def set_matrix_cell(
     field_key: str,
     payload: MatrixCellRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MatrixCellView:
     """اكتب خليةً — **ولا تُخمَّن خلية أبدًا**.
 
@@ -1052,13 +1058,13 @@ async def set_matrix_cell(
 
     source = (await session.execute(
         select(Source).where(Source.id == source_id,
-                             Source.tenant_id == principal.tenant_id)
+                             Source.tenant_id == project_tenant(session, principal))
     )).scalar_one_or_none()
     if source is None:
         raise NotFound("workspace.source_not_found")
 
     files = await screening.project_file_ids(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     scope = screening.reading_scope(source, project_file_ids=files)
     if not scope.permits(payload.source_scope):
         raise AtheraError("workspace.scope_not_available",
@@ -1088,13 +1094,13 @@ async def set_matrix_cell(
                           status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                           scope=payload.source_scope)
     if payload.source_file_id is not None and not await screening.file_is_in_project(
-            session, tenant_id=principal.tenant_id, project_id=project_id,
+            session, tenant_id=project_tenant(session, principal), project_id=project_id,
             file_id=payload.source_file_id):
         raise NotFound("workspace.file_not_linked")
 
     cell = (await session.execute(
         select(LiteratureMatrixCell).where(
-            LiteratureMatrixCell.tenant_id == principal.tenant_id,
+            LiteratureMatrixCell.tenant_id == project_tenant(session, principal),
             LiteratureMatrixCell.project_id == project_id,
             LiteratureMatrixCell.source_id == source_id,
             LiteratureMatrixCell.field_key == field_key)
@@ -1104,7 +1110,7 @@ async def set_matrix_cell(
         "verification_status": cell.verification_status}
     if cell is None:
         cell = LiteratureMatrixCell(
-            tenant_id=principal.tenant_id, project_id=project_id,
+            tenant_id=project_tenant(session, principal), project_id=project_id,
             source_id=source_id, field_key=field_key,
             updated_by=principal.user_id)
         session.add(cell)
@@ -1134,7 +1140,7 @@ async def set_matrix_cell(
     # **ولا محتوى مستندٍ في السجلّ** (§37): الحال والمدى والعمود تُسجَّل،
     # وقيمةُ الخلية واقتباسها لا يُنسخان إلى سجلّ التدقيق.
     await audit.record(
-        session, tenant_id=principal.tenant_id,
+        session, tenant_id=project_tenant(session, principal),
         action="literature_matrix.cell_recorded",
         object_type="literature_matrix_cell", object_id=cell.id,
         actor_user_id=principal.user_id, state_before=before,
@@ -1154,7 +1160,7 @@ async def verify_matrix_cell(
     field_key: str,
     payload: MatrixCellVerifyRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> MatrixCellView:
     """احكم على خليةٍ مكتوبة — **والحكم فعلٌ ثانٍ مستقلّ عن الكتابة**.
 
@@ -1167,7 +1173,7 @@ async def verify_matrix_cell(
         raise NotFound("workspace.matrix_field_unknown", field=field_key)
     cell = (await session.execute(
         select(LiteratureMatrixCell).where(
-            LiteratureMatrixCell.tenant_id == principal.tenant_id,
+            LiteratureMatrixCell.tenant_id == project_tenant(session, principal),
             LiteratureMatrixCell.project_id == project_id,
             LiteratureMatrixCell.source_id == source_id,
             LiteratureMatrixCell.field_key == field_key)
@@ -1181,7 +1187,7 @@ async def verify_matrix_cell(
     cell.verified_at = dt.datetime.now(dt.UTC)
     await session.flush()
     await audit.record(
-        session, tenant_id=principal.tenant_id,
+        session, tenant_id=project_tenant(session, principal),
         action="literature_matrix.cell_reviewed",
         object_type="literature_matrix_cell", object_id=cell.id,
         actor_user_id=principal.user_id,
@@ -1231,7 +1237,7 @@ _JOURNEY_NOTE_EN = (
 async def project_journey(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ProjectJourneyView:
     """أين يقف هذا البحث، وما الخطوةُ التالية، ولماذا.
 
@@ -1252,12 +1258,12 @@ async def project_journey(
     """
     await _project(session, principal, project_id)
     snapshot = await research_assessment.build_project_assessment(
-        session, tenant_id=principal.tenant_id, project_id=project_id)
+        session, tenant_id=project_tenant(session, principal), project_id=project_id)
     if snapshot is None:  # pragma: no cover - `_project` سبق أن أثبت وجوده
         raise NotFound("workspace.project_not_found")
 
     outcome = await orchestrator.advance(
-        session, tenant_id=principal.tenant_id, snapshot=snapshot)
+        session, tenant_id=project_tenant(session, principal), snapshot=snapshot)
     _rules, report = research_assessment.assess(snapshot)
     arabic = principal.locale == "ar"
 
