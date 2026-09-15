@@ -212,6 +212,38 @@ export function ProjectRecruitment({
     }
   }
 
+  /**
+   * **الجوابُ هو الحقيقة — ولا تُعاد القراءة بعد الكتابة.**
+   *
+   * فنقطةُ القرار تردّ الصفَّ المُحدَّث كاملًا، وقراءةٌ ثانيةٌ بعدها
+   * ليست تأكيدًا: هي رحلةٌ زائدةٌ إلى قاعدةٍ في إقليمٍ آخر (**وعدُّ
+   * الرحلات هو زمنُ الاستجابة هنا**)، وهي كذلك **قراءةٌ قد تسبق الإثبات**.
+   *
+   * وهذا مقيسٌ لا مُخمَّن. سقطت رحلةُ CI عند هذه النقطة بالضبط: ردَّ
+   * الخادمُ ٢٠٠ ومعه «في القائمة المختصرة»، فقرأت الشاشةُ بعده بجزءٍ من
+   * الألف من الثانية فعادت «قيد النظر». والسببُ في ترتيب FastAPI نفسِه
+   * (`routing.py`)::
+   *
+   *     async with AsyncExitStack() as request_stack:   # التبعيّةُ هنا
+   *         ...
+   *         await response(scope, receive, send)        # ← يُرسَل الردّ
+   *     # ← تُفكّ الحزمةُ الآن، وهنا **تُثبَّت المعاملة**
+   *
+   * فالردُّ يبلغ العميلَ قبل `COMMIT`. والنافذةُ دون المليّ ثانية، فلا
+   * تُرى على جهازٍ سريع وتُرى على مُشغِّل CI — وهو أسوأُ أنواع العطب:
+   * يعمل عندك ويكذب على المستعمِل.
+   *
+   * **فلا يُبنى شيءٌ على قراءةٍ تتبع كتابةً.** والصفُّ الذي ردّه الخادمُ
+   * يُدمج في موضعه، ويبقى ما عداه. وهذا حدٌّ مُعلَنٌ في نموذج التهديد.
+   */
+  function merge(updated: ManagerApplication) {
+    setApplicants((prev) =>
+      prev.map((row) =>
+        row.application_id === updated.application_id ? updated : row,
+      ),
+    );
+  }
+
   async function decide(
     opportunityId: string,
     applicationId: string,
@@ -220,8 +252,8 @@ export function ProjectRecruitment({
     setBusy(true);
     setError(null);
     try {
-      await decideApplication(locale, projectId, opportunityId, applicationId, decision);
-      setApplicants(await listApplicants(locale, projectId, opportunityId));
+      merge(await decideApplication(
+        locale, projectId, opportunityId, applicationId, decision));
     } catch (err) {
       say(err);
     } finally {
@@ -243,7 +275,25 @@ export function ProjectRecruitment({
       });
       setIssued(result);
       setInviteFor(null);
-      setApplicants(await listApplicants(locale, projectId, opportunityId));
+      // **وحالُ الطلب تُشتقّ من جواب الدعوة نفسِه** — لا بقراءةٍ ثانية.
+      // والدعوةُ المرتبطةُ تُعرض بحالها كما ردّها الخادم.
+      setApplicants((prev) =>
+        prev.map((row) =>
+          row.application_id === applicationId
+            ? {
+                ...row,
+                status: result.application_status,
+                invitation: {
+                  invitation_id: result.invitation_id,
+                  state: result.invitation_state,
+                  usable: result.invitation_state === "invited",
+                  expires_at: result.expires_at,
+                  membership_created: false,
+                },
+              }
+            : row,
+        ),
+      );
       reload();
     } catch (err) {
       say(err);

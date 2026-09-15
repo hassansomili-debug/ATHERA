@@ -466,6 +466,7 @@ async def test_21_the_cross_tenant_listing_costs_one_bridge_per_foreign_project(
 
 # ═══════════ ٤ · تدقيقُ مسارات البحث (بنيويّ) ═══════════
 
+REPO = pathlib.Path(__file__).resolve().parents[3]
 ROUTERS = pathlib.Path(__file__).resolve().parents[1] / "athera_api" / "routers"
 METHODS = {"get", "post", "put", "patch", "delete"}
 
@@ -719,3 +720,74 @@ async def test_27_an_email_invitation_is_not_acceptable_by_a_lookalike(world):
     async with _client(world.guest) as http:
         stolen = await http.post("/api/v1/invitations/accept", json={"token": token})
     assert stolen.status_code == 404, stolen.text
+
+
+# ═════ ٧ · الردُّ يسبق الإثبات — فلا يُبنى على قراءةٍ بعد كتابة ═════
+
+
+def test_28_the_response_is_sent_before_the_dependency_transaction_commits() -> None:
+    """**الردُّ يبلغ العميلَ قبل `COMMIT`** — وهذا مقيسٌ من مصدر FastAPI.
+
+    وليس هذا تفصيلًا نظريًّا: سقطت رحلةُ المتصفّح في CI عند هذه النقطة
+    بالضبط. ردَّ الخادمُ ٢٠٠ على قرارِ مديرٍ ومعه الحالُ الجديدة، فقرأت
+    الشاشةُ القائمةَ بعده بجزءٍ من الألف من الثانية **فعادت الحالُ
+    القديمة** — والخادمُ لم يُخطئ، والقاعدةُ لم تُخطئ.
+
+    والسببُ ترتيبُ `fastapi/routing.py`:
+
+        async with AsyncExitStack() as request_stack:   # التبعيّةُ هنا
+            ...
+            await response(scope, receive, send)        # ← يُرسَل الردّ
+        # ← تُفكّ الحزمةُ الآن، و`async with session.begin()` يُثبِّت هنا
+
+    فالنافذةُ دون المليّ ثانية: لا تُرى على جهازٍ سريع، وتُرى على مُشغِّلٍ
+    مزدحم. **وهذا أسوأُ أنواع العطب** — يعمل عندك ويكذب على المستعمِل.
+
+    ولا يُصلَح هنا: تقديمُ الإثبات يعني إعادةَ بناء إدارة المعاملات في
+    كلّ مسار، وهو تغييرٌ لا يجوز أن يقع عَرَضًا في طورِ واجهة. **فيُعلَن
+    الحدُّ ويُبنى عليه**: ما تردّه نقطةُ الكتابة هو الحقيقةُ المعروضة،
+    ولا تُعاد القراءة بعدها.
+
+    ويُقرأ هذا من الحزمة المُثبَّتة لا من ذاكرتي — فلو غيّرت FastAPI
+    ترتيبَها غدًا سقط هذا الفحصُ ووجب إعادةُ النظر في الحدّ كلِّه.
+    """
+    import inspect
+
+    from fastapi import routing
+
+    source = inspect.getsource(routing.request_response)
+    lines = source.split("\n")
+
+    def line_of(needle: str) -> tuple[int, int]:
+        for index, line in enumerate(lines):
+            if needle in line:
+                return index, len(line) - len(line.lstrip())
+        raise AssertionError(f"بنيةُ FastAPI تغيّرت: لم يُعثر {needle!r}")
+
+    stack_at, stack_indent = line_of("async with AsyncExitStack() as request_stack:")
+    send_at, send_indent = line_of("await response(scope, receive, send)")
+
+    # **الإرسالُ داخلَ متنِ الحزمة** — فتُفكّ بعده، والإثباتُ في فكّها.
+    assert send_at > stack_at, "ترتيبُ FastAPI تغيّر"
+    assert send_indent > stack_indent, (
+        "الإرسالُ خرج من متن حزمة التبعيّات — فربّما صار الإثباتُ قبل الردّ، "
+        "وحينها يجب إعادةُ النظر في هذا الحدّ كلِّه")
+
+
+def test_29_the_recruitment_screen_never_re_reads_after_a_write() -> None:
+    """**ولا شاشةَ تبني حالَها على قراءةٍ تتبع كتابةً.**
+
+    فالحدُّ المُعلَن أعلاه لا ينفع ما لم يُحرَس: أوّلُ `await list…()`
+    يُكتب بعد `await decide…()` يُعيد العطبَ نفسَه — ولن يظهر إلّا في
+    مُشغِّلٍ بطيء، بعد الشحن.
+    """
+    import re
+
+    web = REPO / "apps" / "web" / "src" / "components" / "ProjectRecruitment.tsx"
+    source = web.read_text(encoding="utf-8")
+
+    decide = re.search(r"async function decide\([\s\S]*?\n  \}", source)
+    assert decide is not None, "لم تُعثر دالّةُ القرار"
+    body = decide.group(0)
+    assert "listApplicants" not in body, "القرارُ يقرأ بعد الكتابة"
+    assert "merge(await decideApplication(" in body, "القرارُ لا يستعمل ما ردّه الخادم"
