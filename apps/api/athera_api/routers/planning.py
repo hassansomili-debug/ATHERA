@@ -15,8 +15,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..brain.orchestrator import Orchestrator
-from ..db import tenant_session
-from ..deps import Principal, get_principal, get_session
+from ..db import project_session
+from ..deps import (
+    Principal,
+    get_principal,
+    get_project_session,
+    project_tenant,
+)
 from ..errors import AtheraError, NotFound
 from ..models.planning import (
     ManuscriptOutline,
@@ -84,7 +89,7 @@ async def _project(session: AsyncSession, principal: Principal,
     و404 لا 403: وجودُ بحثٍ ليس لك معلومةٌ لا تُفشى.
     """
     return (await collaboration.ensure_project_access(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id, permission=permission,
         not_found_code="planning.project_not_found")).project
 
@@ -98,7 +103,7 @@ async def _opportunity(session: AsyncSession, principal: Principal,
             select(PublicationOpportunity).where(
                 PublicationOpportunity.id == opportunity_id,
                 PublicationOpportunity.project_id == project_id,
-                PublicationOpportunity.tenant_id == principal.tenant_id,
+                PublicationOpportunity.tenant_id == project_tenant(session, principal),
             )
         )
     ).scalar_one_or_none()
@@ -110,7 +115,7 @@ async def _opportunity(session: AsyncSession, principal: Principal,
 async def _build_context(session: AsyncSession, principal: Principal,
                          project_id: uuid.UUID) -> ctx.ResearchContext:
     return await ctx.build(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         capability=consent.PLANNING_CAPABILITY,
     )
 
@@ -119,13 +124,13 @@ async def _build_context(session: AsyncSession, principal: Principal,
 async def publication_context(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ContextState:
     """حال الأدلة — **قبل أي نداء، ومهما كان الإذن**."""
     await _project(session, principal, project_id)
     context = await _build_context(session, principal, project_id)
     state = await consent.planning_state(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         context_fingerprint=context.fingerprint)
 
     if context.sufficient:
@@ -162,7 +167,7 @@ async def planning_consent(
     project_id: uuid.UUID,
     payload: PlanningConsentDecision,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ContextState:
     """إذن إرسال المعرفة الموثقة لبناء فرص النشر (§6، §7).
 
@@ -179,7 +184,7 @@ async def planning_consent(
                           expected=context.fingerprint[:12])
 
     await consent.record_planning_decision(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         actor_user_id=principal.user_id, granted=payload.decision == "grant",
         provider=provider_readiness()[0], model=active_model(),
         context_fingerprint=context.fingerprint, evidence_count=len(context.items),
@@ -206,11 +211,20 @@ async def generate_opportunities(
     transaction` عبر انتظارٍ شبكي. فتُدار الجلسات هنا صراحةً: قصيرةٌ قبل
     النداء، وقصيرةٌ بعده، ولا شيء مفتوح أثناءه.
     """
-    tenant_id, actor_id = principal.tenant_id, principal.user_id
-    maker = _maker(tenant_id, actor_id)
+    #
+    # **والجلساتُ هنا جلساتُ بحثٍ لا جلساتُ مستأجر.** فمتعاونٌ من مؤسسةٍ
+    # أخرى يحمل `edit_research_content` في هذا البحث لا مدخلَ له بجلسةِ
+    # بيته: يُقرأ صفرُ صفوفٍ فيُردّ ٤٠٤ على بحثٍ هو عضوٌ فيه. و`_maker`
+    # يبني الجسرَ القانونيَّ نفسَه في كلّ معاملةٍ من الثلاث.
+    actor_id = principal.user_id
+    maker = _maker(project_id, principal.tenant_id, actor_id)
 
     # ── معاملة (1): اللقطة والإذن والتشغيلة — ثم تُغلق ──
     async with maker() as opening:
+        # والمستأجرُ النافذُ يُقرأ من الجلسة بعد العبور، لا من الرمز. وهو
+        # واحدٌ في المعاملات الثلاث: البحثُ واحدٌ، والجسرُ يُشتقّ من صفِّ
+        # عضويّةٍ محفوظ لا من زمنٍ ولا من طلب.
+        tenant_id = project_tenant(opening, principal)
         await _project(opening, principal, project_id, permission=EDIT)
         context = await _build_context(opening, principal, project_id)
         if not context.sufficient:
@@ -279,9 +293,17 @@ async def generate_opportunities(
         return await list_opportunities(project_id, principal=principal, session=reading)
 
 
-def _maker(tenant_id: uuid.UUID, actor_id: uuid.UUID):
+def _maker(project_id: uuid.UUID, tenant_id: uuid.UUID, actor_id: uuid.UUID):
+    """مصنعُ جلساتٍ **مربوطةٍ بمستأجر البحث** — لا بمستأجر الرمز.
+
+    وهو الاستثناءُ الوحيدُ المُعلَن في تدقيق مسارات البحث: هذا المسار لا
+    يأخذ `get_project_session` تبعيةً لأنّ تبعيةً واحدةً تُبقي معاملةً
+    مفتوحةً طوال انتظارِ مزوّدٍ خارجي (علّة S5C). فيُبنى الجسرُ نفسُه
+    هنا صراحةً، في كلّ معاملةٍ قصيرة — والحدُّ هو الحدُّ نفسُه:
+    `project_session` تُثبت عضويّةَ الفاعل في البحث قبل أن تربط.
+    """
     def _make():
-        return tenant_session(tenant_id, actor_id)
+        return project_session(project_id, tenant_id, actor_id)
     return _make
 
 
@@ -312,14 +334,14 @@ def _view(row: PublicationOpportunity, locale: str, evidence_count: int = 0
 async def list_opportunities(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> OpportunityList:
     await _project(session, principal, project_id)
     rows = (
         await session.execute(
             select(PublicationOpportunity)
             .where(PublicationOpportunity.project_id == project_id,
-                   PublicationOpportunity.tenant_id == principal.tenant_id)
+                   PublicationOpportunity.tenant_id == project_tenant(session, principal))
             .order_by(PublicationOpportunity.evidence_readiness_score.desc().nullslast(),
                       PublicationOpportunity.created_at.desc())
         )
@@ -333,7 +355,7 @@ async def list_opportunities(
             await session.execute(
                 select(OpportunityEvidenceLink.opportunity_id,
                        func.count(OpportunityEvidenceLink.id))
-                .where(OpportunityEvidenceLink.tenant_id == principal.tenant_id,
+                .where(OpportunityEvidenceLink.tenant_id == project_tenant(session, principal),
                        OpportunityEvidenceLink.opportunity_id.in_([r.id for r in rows]))
                 .group_by(OpportunityEvidenceLink.opportunity_id)
             )
@@ -341,7 +363,7 @@ async def list_opportunities(
     run = (
         await session.execute(
             select(PlanningRun).where(PlanningRun.project_id == project_id,
-                                      PlanningRun.tenant_id == principal.tenant_id)
+                                      PlanningRun.tenant_id == project_tenant(session, principal))
             .order_by(PlanningRun.started_at.desc()).limit(1)
         )
     ).scalar_one_or_none()
@@ -361,7 +383,7 @@ async def decide_opportunity(
     opportunity_id: uuid.UUID,
     payload: PlanningDecision,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> OpportunityView:
     """اختيار الباحث أو استبعاده (§18) — **ولا يختار النموذج**.
 
@@ -376,7 +398,7 @@ async def decide_opportunity(
     # تُختار من موجّه الرسائل ولا مشروعَ لها بعد، فلو بقيت الكتابةُ هنا
     # لصار للقرار الواحد كاتبان يفترقان.
     await selection.decide(
-        session, tenant_id=principal.tenant_id, opportunity=row,
+        session, tenant_id=project_tenant(session, principal), opportunity=row,
         actor_user_id=principal.user_id, decision=payload.decision,
         reason=payload.reason, request_id=principal.request_id)
     return _view(row, principal.locale)
@@ -407,7 +429,7 @@ async def build_thread(
     project_id: uuid.UUID,
     opportunity_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ThreadView:
     """يبني الخيط الذهبي من الأدلة ويشغّل المدقّق القائم (§22، §24).
 
@@ -419,12 +441,12 @@ async def build_thread(
     context = await _build_context(session, principal, project_id)
 
     await thread.assemble(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         opportunity=opportunity, context=context, actor_user_id=principal.user_id)
     await session.flush()
 
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="planning.thread_generated",
+        session, tenant_id=project_tenant(session, principal), action="planning.thread_generated",
         object_type="publication_opportunity", object_id=opportunity_id,
         actor_user_id=principal.user_id,
         state_after={"evidence_count": len(context.items),
@@ -442,13 +464,13 @@ async def read_thread(
     project_id: uuid.UUID,
     opportunity_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> ThreadView:
     await _project(session, principal, project_id)
     opportunity = await _selected(session, principal, project_id, opportunity_id)
     context = await _build_context(session, principal, project_id)
 
-    graph = await thread.to_graph(session, tenant_id=principal.tenant_id,
+    graph = await thread.to_graph(session, tenant_id=project_tenant(session, principal),
                                   project_id=project_id,
                                   opportunity=opportunity, context=context)
     findings = thread.validate(graph)
@@ -459,7 +481,7 @@ async def read_thread(
                     message_ar=f.detail_ar, message_en=f.detail_en)
         for f in findings
     ]
-    mapped = await thread.evidence_map(session, tenant_id=principal.tenant_id,
+    mapped = await thread.evidence_map(session, tenant_id=project_tenant(session, principal),
                                        project_id=project_id,
                                        opportunity_id=opportunity_id)
     entries = [
@@ -492,7 +514,7 @@ async def build_outline(
     project_id: uuid.UUID,
     opportunity_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> OutlineView:
     """هيكل الورقة — **بعد الاختيار والخيط والتدقيق** (§27).
 
@@ -510,7 +532,7 @@ async def build_outline(
 
     sections = outline.build(context, opportunity)
     row = ManuscriptOutline(
-        tenant_id=principal.tenant_id, opportunity_id=opportunity_id,
+        tenant_id=project_tenant(session, principal), opportunity_id=opportunity_id,
         project_id=project_id, sections=sections,
         article_type=opportunity.paper_kind,
         generation_run_id=opportunity.generation_run_id, status="draft",
@@ -519,7 +541,7 @@ async def build_outline(
     await session.flush()
 
     await audit.record(
-        session, tenant_id=principal.tenant_id, action="planning.outline_generated",
+        session, tenant_id=project_tenant(session, principal), action="planning.outline_generated",
         object_type="publication_opportunity", object_id=opportunity_id,
         actor_user_id=principal.user_id,
         state_after={"sections": len(sections), "outline_id": str(row.id),
@@ -543,7 +565,7 @@ async def read_outline(
     project_id: uuid.UUID,
     opportunity_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> OutlineView:
     await _project(session, principal, project_id)
     row = (
@@ -551,7 +573,7 @@ async def read_outline(
             select(ManuscriptOutline).where(
                 ManuscriptOutline.opportunity_id == opportunity_id,
                 ManuscriptOutline.project_id == project_id,
-                ManuscriptOutline.tenant_id == principal.tenant_id,
+                ManuscriptOutline.tenant_id == project_tenant(session, principal),
             ).order_by(ManuscriptOutline.created_at.desc()).limit(1)
         )
     ).scalar_one_or_none()

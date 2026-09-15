@@ -929,6 +929,13 @@ test.describe("the brand sheet's own content, and the four things left out", () 
       "My Library",
       "Search & Reference Discovery",
       "Research Radar",
+      // **وعنصرٌ سادسٌ في «الاستكشاف» منذ RC-T1C**: الفرصُ البحثية —
+      // دعواتُ التعاون على أبحاثٍ قائمة. وموضعُه في مجموعة الاستكشاف
+      // مقصود: هو اكتشافٌ كالمراجع والرادار، لا بناءٌ ولا نشر.
+      //
+      // **ومقطعُه `collaboration-opportunities` لا `opportunities`** —
+      // وذاك الأخيرُ مملوكٌ لخريطة فرص النشر، ويملكه عنصرُ «أبحاثي».
+      "Research Opportunities",
       // والاسمُ المعتمد — وكان «Theses»، وهذه مطابقةٌ تامّة لا جزئية.
       "Thesis Center",
       "Data & Analysis",

@@ -201,10 +201,17 @@ def test_the_canonical_ownership_gate_checks_both_project_and_tenant():
     assert "project_permissions" in inspect.getsource(
         collaboration.may_view_project)
 
+    # **والمستأجرُ صار مستأجرَ البحثِ النافذَ، لا مستأجرَ الرمز** (RC-T1C).
+    #
+    # فبعد جسرِ التعاون عبر المؤسسات يعمل هذا المسارُ في مستأجر البحث:
+    # متعاونٌ من مؤسسةٍ أخرى يحمل `edit_research_content` يقرأ فرصَ هذا
+    # البحث، ومستأجرُ رمزه ليس مستأجرَها. والشروطُ ثلاثةٌ كما كانت —
+    # المعرّفُ والبحثُ والمستأجر — ولم يُحذف منها شرط: انتقل مصدرُ
+    # المستأجر من الرمز إلى الجلسة، وهو أضبطُ لا أوسع.
     opportunity = inspect.getsource(planning._opportunity)
     for required in ("PublicationOpportunity.id == opportunity_id",
                      "PublicationOpportunity.project_id == project_id",
-                     "PublicationOpportunity.tenant_id == principal.tenant_id"):
+                     "PublicationOpportunity.tenant_id == project_tenant(session, principal)"):
         assert required in opportunity, required
 
 

@@ -12,7 +12,13 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..deps import Principal, get_principal, get_session
+from ..deps import (
+    Principal,
+    get_principal,
+    get_project_session,
+    get_session,
+    project_tenant,
+)
 from ..discovery import (
     DiscoveryProvider,
     ParsedQuery,
@@ -528,10 +534,10 @@ async def get_claim(
 async def evidence_ledger(
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> LedgerResponse:
     await collaboration.ensure_project_access(
-        session, tenant_id=principal.tenant_id, project_id=project_id,
+        session, tenant_id=project_tenant(session, principal), project_id=project_id,
         user_id=principal.user_id)
     claims = (
         await session.execute(select(Claim).where(Claim.project_id == project_id))
@@ -540,7 +546,7 @@ async def evidence_ledger(
     entries: list[LedgerEntry] = []
     gaps = contradicted = 0
     for claim in claims:
-        state = await ledger.claim_status(session, tenant_id=principal.tenant_id, claim_id=claim.id)
+        state = await ledger.claim_status(session, tenant_id=project_tenant(session, principal), claim_id=claim.id)
         links = (
             await session.execute(
                 select(ClaimEvidenceLink).where(ClaimEvidenceLink.claim_id == claim.id)

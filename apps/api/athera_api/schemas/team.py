@@ -194,3 +194,31 @@ class VocabularyResponse(BaseModel):
 
     key: str
     label: str
+
+
+class ProjectAccessResponse(BaseModel):
+    """ما يملكه الطالبُ في بحثٍ بعينه — **إجابةُ الخادم، لا حالةُ الشاشة**.
+
+    والشاشةُ تحتاجها لتكفَّ عن عرض زرٍّ لا يعمل: من لا يحمل
+    `manage_sources` لا يُعرض له زرُّ إضافةِ مصدرٍ ليُردَّ عند الضغط.
+    و«لا يُعرض» تحسينُ تجربةٍ لا حدُّ أمان — الحدُّ في الخادم كما كان،
+    وكلُّ مسارٍ يسأل عن صلاحيّته بنفسه.
+
+    ولا تُقبل واحدةٌ من هذه القيم من العميل: كلُّها تُشتقّ من صفوفٍ
+    محفوظة — ملكيّةٌ مُثبَتة، وصفُّ عضويّةٍ حيّ، وصفوفُ صلاحيّاتٍ صريحة.
+    """
+
+    project_id: uuid.UUID
+    is_owner: bool
+    relationship: str
+    role: str | None
+    access_state: str | None
+    # **الصلاحيةُ مفتاحٌ يُقرأ، لا دورٌ يُفسَّر.** والقائمةُ هي المرجع؛
+    # والأعلامُ الخمسةُ أدناه اختصارُ عرضٍ مشتقٌّ منها في الخادم، فلا
+    # تشتقّها الشاشةُ من دورٍ ولا تخترع مفرداتٍ ثانية.
+    permissions: list[str]
+    can_manage_team: bool
+    can_manage_sources: bool
+    can_manage_data: bool
+    can_manage_tasks: bool
+    can_manage_submission: bool

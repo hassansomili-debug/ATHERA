@@ -253,7 +253,10 @@ def test_load_is_never_handed_out_except_to_the_hook() -> None:
     [
         "app/[locale]/theses/page.tsx",
         "app/[locale]/audit/page.tsx",
-        "app/[locale]/team/page.tsx",
+        # وفريقُ المشروع في مكوّنه المشترك منذ RC-T1C — و`load` فيه
+        # تحمل الفرعين الداخليَّين (الدعوات والسجلّ)، وهما أكثرُ ما
+        # يُنسى: `catch` متداخلة تكتب حالةً بعد `await`.
+        "components/TeamWorkspace.tsx",
         "components/SectionWorkspace.tsx",
     ],
 )

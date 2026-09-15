@@ -211,7 +211,11 @@ def test_every_screen_that_claims_emptiness_can_first_say_it_is_loading():
         "app/[locale]/analysis/page.tsx",
         "app/[locale]/theses/page.tsx",
         "app/[locale]/manuscripts/page.tsx",
-        "app/[locale]/team/page.tsx",
+        # **وفريقُ المشروع انتقل إلى مكوّنه المشترك** (RC-T1C): صفحةُ
+        # `/team` صارت غلافًا، ومحرّكُها واحدٌ تستعمله هي وقسمُ
+        # البحث `?section=team`. فيُحاسَب المحرّكُ لا الغلاف —
+        # وإلّا حرس الحارسُ ملفًّا لا انتظارَ فيه أصلًا.
+        "components/TeamWorkspace.tsx",
         "app/[locale]/trends/page.tsx",
         "app/[locale]/portfolio/page.tsx",
     ],

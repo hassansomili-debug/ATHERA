@@ -28,10 +28,11 @@ import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import and_, func, select
-from sqlalchemy.exc import MultipleResultsFound
+from sqlalchemy.exc import IntegrityError, MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from ..db import project_session
 from ..errors import AtheraError, Forbidden, NotFound
 from ..models.audit import AuditEvent
 from ..models.collaboration import (
@@ -195,6 +196,20 @@ async def ensure_owner_membership(
     «عضوٌ ما»، ولا «من يعرف المعرِّف». وما يُمنح هو ما كان الترحيل ليمنحه
     لو عرف البحث — لا زيادةَ صلاحيةٍ ولا استثناء. والحدث يُكتب في السجلّ
     باسمه، فلا تنشأ عضويةٌ لا يعرف أحدٌ من أين جاءت.
+
+    ## وطلبانِ متزامنان لا يُسقطان الصفحة
+
+    **«اقرأ ثمّ اكتب» في طلبين متوازيين يُنتج ٥٠٠.** وشاشةُ الفريق تفتح
+    أربعةَ طلباتٍ معًا — الأعضاءَ والقرارات والصندوقَ وما أملكه — وكلُّها
+    تمرّ بهذه البوابة. فيقرأ اثنان «لا عضوية»، ويكتب كلٌّ منهما، ويصطدم
+    الثاني بـ`uq_project_members_project_account`. وقد وقع ذلك فعلًا في
+    أوّل تشغيلةٍ بمتصفّحٍ حقيقيّ: صفحةٌ تُصيَّر وخلفها خطآن.
+    ولا يُرى ذلك في اختبارٍ يُنادي الدالّةَ مرّةً.
+
+    **والقيدُ هو مَن يفصل**، لا قراءةٌ قبله: يُحاول الإدخالُ داخل نقطةِ
+    حفظٍ، فإن رفضه القيدُ رُجع إليها وأُعيدت القراءة — ومَن كتبه قد
+    أتمَّ معاملتَه (وإلّا لَانتظر القيدُ نتيجتَها). فالجوابُ صفٌّ واحدٌ
+    صحيحٌ في الحالين، ولا صفَّ مكرَّر ولا طلبٌ يسقط.
     """
     if await owner_user_id(session, project_id=project_id) != actor_user_id:
         return None
@@ -215,8 +230,18 @@ async def ensure_owner_membership(
         role="principal_investigator", access_state="active",
         consent_state="not_requested", is_author=False,
     )
-    session.add(member)
-    await session.flush()
+    try:
+        async with session.begin_nested():
+            session.add(member)
+            await session.flush()
+    except IntegrityError:
+        # سبقني غيري إلى الصفّ نفسِه — فالصفُّ موجودٌ، والمنحُ والسجلُّ
+        # كُتبا في معاملته. ولا يُعاد شيءٌ منها هنا.
+        raced = await member_for(
+            session, project_id=project_id, user_id=actor_user_id)
+        if raced is not None:
+            return raced
+        raise
 
     await _grant_permissions(
         session, tenant_id=tenant_id, member=member,
@@ -362,10 +387,24 @@ async def invite_member(
     role: str,
     permissions: list[str] | None = None,
     ttl_hours: int | None = None,
+    invited_user_id: uuid.UUID | None = None,
 ) -> IssuedInvitation:
     """دعوةٌ إلى بحث — بمهلةٍ، ورمزٍ مجزَّأ، واقتراحِ دورٍ وصلاحيات.
 
     والاقتراحُ اقتراح: لا يصير صلاحيةً إلّا بعد قبولٍ من حسابٍ مصادَق.
+
+    ## و`invited_user_id` ربطٌ صريحٌ يُغني عن الترشيح بالبريد
+
+    والمسارُ القائم يُرشّح بالبريد **داخل مستأجر البحث**: حسابٌ في مستأجرٍ
+    آخر لا يُرشَّح، فتُكتب دعوةٌ بلا `invited_user_id`. وذاك صحيحٌ لدعوةٍ
+    محلّيّة — وقاصرٌ عن الاستقطاب، حيث المتقدّمُ من مؤسسةٍ أخرى قصدًا.
+
+    فمن يعرف الحسابَ بعينه — **مشتقًّا في الخادم من صفِّ التطبيق** —
+    يمرّره هنا، فيصير هو الرابط. ولا يُرشَّح بالبريد حينها: البريدُ
+    للعرض والإبلاغ، والحسابُ هو الحدّ.
+
+    **ولا يُقبل هذا المُعامِلُ من عميل**: مُناديه خدمةُ التحويل، وهي
+    تقرؤه من `RecruitmentApplication.applicant_user_id`.
     """
     if role not in team.MEMBER_ROLES:
         raise AtheraError("team.unknown_member_role", status_code=422, role=role)
@@ -406,15 +445,25 @@ async def invite_member(
     # **الترشيحُ داخل المستأجر وحده.** وحسابٌ في مستأجرٍ آخر يحمل البريد
     # نفسه لا يُرشَّح: RLS تمنعه من بلوغ الدعوة أصلًا، فترشيحُه يُنتج دعوةً
     # لا يستطيع أحدٌ قبولها — ويكتب في القاعدة إشارةً إلى حسابٍ خارج المستأجر.
-    candidate = (
-        await session.execute(
-            select(User)
-            .join(Membership, Membership.user_id == User.id)
-            .where(func.lower(User.email) == normalized,
-                   Membership.tenant_id == tenant_id)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    if invited_user_id is not None:
+        # ربطٌ صريح: الحسابُ معروفٌ بعينه، ولا يُبحث عنه ببريدٍ ولا
+        # يُقيَّد بمستأجر البحث — وذاك هو المقصود.
+        candidate = (
+            await session.execute(select(User).where(User.id == invited_user_id))
+        ).scalar_one_or_none()
+        if candidate is None:
+            raise AtheraError("team.invalid_invitation", status_code=422,
+                              detail="invited_user_id")
+    else:
+        candidate = (
+            await session.execute(
+                select(User)
+                .join(Membership, Membership.user_id == User.id)
+                .where(func.lower(User.email) == normalized,
+                       Membership.tenant_id == tenant_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
     if candidate is not None:
         existing = await member_for(
             session, project_id=project_id, user_id=candidate.id)
@@ -468,8 +517,13 @@ async def _settle(
     invitation.state = state
     invitation.responded_at = _now()
     await session.flush()
+    # **وحدثُ الدعوة يُكتب في مستأجرها لا في مستأجر من ردّ عليها.**
+    #
+    # فالمُعتذِرُ من مؤسسةٍ أخرى كان يُكتب حدثُه بمستأجره هو، فيُرفض عند
+    # سياسة العزل على `project_member_events` — وهو نفسُ العطب الذي أُصلح
+    # في `accept_invitation`.
     await record_member_event(
-        session, tenant_id=tenant_id, project_id=invitation.project_id,
+        session, tenant_id=invitation.tenant_id, project_id=invitation.project_id,
         invitation_id=invitation.id, event_kind=state,
         actor_user_id=actor_user_id, state_after={"state": state})
     return invitation
@@ -519,11 +573,34 @@ async def accept_invitation(
     ).scalar_one_or_none()
     if accepting is None:
         raise Forbidden("team.invitation_not_yours")
-    # **الدعوةُ لبريدٍ بعينه.** ورمزٌ صحيح في يد حسابٍ آخر لا يُقبل: وإلّا
-    # صار تسريبُ الرابط في محادثةٍ عامّة بابًا إلى بيانات البحث.
-    if team.normalize_email(accepting.email) != team.normalize_email(
+    # **والحسابُ هو الحدُّ متى كانت الدعوةُ مربوطةً بحساب.**
+    #
+    # فالبريدُ حدٌّ أضعف: حسابانِ في مستأجرَين قد يحملان بريدًا واحدًا،
+    # ومطابقةُ البريد تُجيز أحدَهما مكان الآخر. ودعواتُ الاستقطاب مربوطةٌ
+    # بـ`invited_user_id` في الخادم، فلا يُسأل البريدُ فيها أصلًا.
+    #
+    # وما لا ربطَ له — الدعواتُ المحلّيّةُ ببريدٍ لحسابٍ لم يُرشَّح — يبقى
+    # على حدِّه القديم بلا تغيير.
+    # **والجوابُ جوابُ المعدوم لا «ليست لك».**
+    #
+    # فـ«موجودةٌ وليست لك» تكشف وجودَ دعوةٍ لمن ليست له، فيُعَدّ الرموزُ
+    # ويُستدلّ على مَن دُعي. والمعدومُ وغيرُ المأذون يُجابان جوابًا واحدًا
+    # — وهو نفسُ ما اختاره RC-T1A للأبحاث. ومديرٌ يرى الدعوةَ بحقّ يُجاب
+    # كذلك: رؤيتُها ليست حقًّا في قبولها.
+    if invitation.invited_user_id is not None:
+        if accepting_user_id != invitation.invited_user_id:
+            raise NotFound("team.invitation_not_found")
+    elif team.normalize_email(accepting.email) != team.normalize_email(
             invitation.invited_email):
-        raise Forbidden("team.invitation_not_yours")
+        raise NotFound("team.invitation_not_found")
+
+    # **ومستأجرُ العضويّة مستأجرُ الدعوة، لا مستأجرُ من قَبِل.**
+    #
+    # وكان يُكتب من المُعامِل الممرَّر. ولمتعاونٍ من مؤسسةٍ أخرى كان ذلك
+    # يَسِمُ صفَّه بمستأجره هو — فلا يراه صاحبُ البحث في فريقه، ولا
+    # تُطابقه استعلاماتُ RC-T1A التي ترشّح بـ`ProjectMember.tenant_id`.
+    # فالعضويّةُ تعيش حيث يعيش البحث.
+    member_tenant_id = invitation.tenant_id
 
     existing = await member_for(
         session, project_id=invitation.project_id, user_id=accepting_user_id)
@@ -537,7 +614,7 @@ async def accept_invitation(
         member.role = invitation.proposed_role
     else:
         member = ProjectMember(
-            tenant_id=tenant_id, project_id=invitation.project_id,
+            tenant_id=member_tenant_id, project_id=invitation.project_id,
             user_id=accepting_user_id,
             display_name=invitation.invited_display_name,
             invited_email=invitation.invited_email,
@@ -550,7 +627,7 @@ async def accept_invitation(
 
     current = await permissions_of(session, member_id=member.id)
     await _grant_permissions(
-        session, tenant_id=tenant_id, member=member,
+        session, tenant_id=member_tenant_id, member=member,
         keys=[key for key in (invitation.proposed_permissions or [])
               if key not in current],
         granted_by=invitation.invited_by,
@@ -563,7 +640,7 @@ async def accept_invitation(
     await session.flush()
 
     await record_member_event(
-        session, tenant_id=tenant_id, project_id=invitation.project_id,
+        session, tenant_id=member_tenant_id, project_id=invitation.project_id,
         member_id=member.id, invitation_id=invitation.id, event_kind="accepted",
         actor_user_id=accepting_user_id, subject_user_id=accepting_user_id,
         state_after={"role": member.role,
@@ -571,7 +648,7 @@ async def accept_invitation(
         note_ar="العضوية رُبطت بالحساب المصادَق الذي قبِل الدعوة.",
     )
     await audit.record(
-        session, tenant_id=tenant_id, action="team.invitation_accepted",
+        session, tenant_id=member_tenant_id, action="team.invitation_accepted",
         object_type=MEMBER_OBJECT_TYPE, object_id=member.id,
         actor_user_id=accepting_user_id,
         state_after={"project_id": str(invitation.project_id), "role": member.role},
@@ -592,9 +669,16 @@ async def decline_invitation(
     declining = (
         await session.execute(select(User).where(User.id == declining_user_id))
     ).scalar_one_or_none()
-    if declining is None or team.normalize_email(declining.email) != \
-            team.normalize_email(invitation.invited_email):
-        raise Forbidden("team.invitation_not_yours")
+    # والاعتذارُ حدُّه الحسابُ متى كانت الدعوةُ مربوطةً به — والجوابُ
+    # جوابُ المعدوم كما في القبول.
+    if declining is None:
+        raise NotFound("team.invitation_not_found")
+    if invitation.invited_user_id is not None:
+        if declining_user_id != invitation.invited_user_id:
+            raise NotFound("team.invitation_not_found")
+    elif team.normalize_email(declining.email) != team.normalize_email(
+            invitation.invited_email):
+        raise NotFound("team.invitation_not_found")
     return await _settle(session, tenant_id=tenant_id, invitation=invitation,
                          state="declined", actor_user_id=declining_user_id)
 
@@ -1069,6 +1153,181 @@ async def visible_project_ids(
     """كلُّ بحثٍ يجوز لهذا الباحث أن **يراه** — الاطّلاع وحده."""
     return await project_ids_with(
         session, tenant_id=tenant_id, user_id=user_id, permission=VIEW_PROJECT)
+
+
+async def project_ids_with_across_tenants(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
+    permission: str,
+) -> set[uuid.UUID]:
+    """بحوثٌ للطالب فيها **هذه الصلاحيةُ بعينها** — في أيّ مؤسسة.
+
+    وهي أختُ `project_ids_with`، وتُستعمل في القوائم التي **لا تستطيع
+    الدخولَ إلى مستأجرِ بحثٍ واحد** لأنّها تجمع بحوثًا كثيرة: قوائمُ
+    طبقة التحليل مثلًا. وصفوفُها تُرى بسياسات تحديد الموضع (0036).
+
+    **والملكيّةُ تبقى في مستأجرها**: صاحبُ البحث بحثُه في مؤسسته، ولا
+    يحتاج جسرًا — فتُقرأ ملكيّتُه كما كانت، وتُضاف إليها عضويّاتُه
+    المُثبَتة عبرَ المؤسسات.
+
+    ولا تُستعمل هذه لتوسيع قائمةٍ يُمكن أن تُقرأ في نطاق بحثٍ واحد:
+    الأضيقُ ما يكفي، والقوائمُ العامّة وحدها تحتاج الاتّحاد.
+    """
+    owned = await _owned_project_ids(
+        session, tenant_id=tenant_id, user_id=user_id)
+    joined = await _self_member_scopes(
+        session, user_id=user_id, permission=permission)
+    return owned | {project_id for project_id, _tenant, _role in joined}
+
+
+# ═════════════════ «أبحاثي» عبرَ المستأجرين ═════════════════
+
+
+@dataclass(frozen=True)
+class ResearchEntry:
+    """بحثٌ في قائمة «أبحاثي» — **وصلتُه بصاحبها معلنةٌ معه**.
+
+    فالقائمةُ كانت كلُّها أبحاثَ صاحبها، فلم تحتج وسمًا. وبعد التعاون
+    عبرَ المؤسسات صار فيها بحثُ غيرِه — وبطاقةٌ لا تقول ذلك تعرض على
+    المتعاون أزرارَ أرشفةٍ وحذفٍ لبحثٍ ليس له، فيضغط ويُردّ، أو — وهو
+    الأسوأ — يظنّ أنّ البحثَ صار بحثَه.
+
+    و`project` صفٌّ **مُنفصلٌ عن جلسته** أحيانًا: أبحاثُ المستأجرات
+    الأخرى تُقرأ في جلسةٍ تُغلق قبل العودة. و`expire_on_commit=False`
+    تُبقي أعمدتَه المحمَّلة كما هي، فلا يُقرأ منه إلّا عمود — ولا علاقةٌ
+    مؤجَّلة.
+    """
+
+    project: ResearchProject
+    is_owner: bool
+    member_role: str | None
+
+    @property
+    def relationship(self) -> str:
+        """`owner` أو `collaborator` — والملكيّةُ أوّلُ ما يُسأل عنه."""
+        return "owner" if self.is_owner else "collaborator"
+
+
+async def _self_member_scopes(
+    session: AsyncSession, *, user_id: uuid.UUID,
+    permission: str = VIEW_PROJECT,
+) -> list[tuple[uuid.UUID, uuid.UUID, str]]:
+    """صفوفُ عضويّةِ **الفاعلِ نفسِه** — عبرَ المستأجرين — بعبارةٍ واحدة.
+
+    وتُعيد `(project_id, tenant_id, role)` لكلّ بحثٍ هو فيه عضوٌ **نشط**
+    يحمل `view_project` والصلاحيةَ المطلوبة معًا: الشروطُ الثلاثةُ نفسُها
+    التي يشترطها `_member_project_ids`، بلا شرطِ المستأجر.
+
+    ## ولمَ يُرى صفُّ عضويّةٍ في مستأجرٍ آخر أصلًا
+
+    بسياسةِ `project_members_self_read` من الترحيل 0035 وحدها:
+    `user_id = app_current_actor()`. وهي أضيقُ ما يكفي — **صفوفُ الفاعل
+    هو**، لا صفوفُ فريقٍ ولا بحثٍ ولا مستأجر. ولا `SECURITY DEFINER`
+    ولا `BYPASSRLS` ولا `USING (true)`: الجسرُ يعرف الفاعلَ ولا يعرف
+    غيرَه.
+
+    ## والمُرشِّحُ في SQL هو المرجع، لا السياسة
+
+    فسياساتُ PostgreSQL المُجيزةُ تتّحد بـ**OR**: سياسةُ المستأجر
+    القديمةُ باقيةٌ إلى جانب هذه، فالصفوفُ المرئيّةُ هي «صفوفي في أيّ
+    مستأجر **أو** كلُّ صفٍّ في مستأجري». ولذلك يُكتب `user_id = :user_id`
+    في العبارة صراحةً: هو ما يجعل الجوابَ «صفوفي» لا «صفوف زملائي».
+    """
+    baseline = aliased(ProjectMemberPermission)
+    wanted = aliased(ProjectMemberPermission)
+    rows = (await session.execute(
+        select(ProjectMember.project_id, ProjectMember.tenant_id,
+               ProjectMember.role)
+        .join(baseline, and_(baseline.member_id == ProjectMember.id,
+                             baseline.permission_key == VIEW_PROJECT))
+        .join(wanted, and_(wanted.member_id == ProjectMember.id,
+                           wanted.permission_key == permission))
+        .where(ProjectMember.user_id == user_id,
+               ProjectMember.access_state == "active")
+    )).all()
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+async def my_research(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
+) -> list[ResearchEntry]:
+    """كلُّ بحثٍ للباحث فيه مدخلٌ حقيقيّ — **وإن كان في مؤسسةٍ أخرى**.
+
+    وهي قائمةٌ واحدة: البحثُ الذي قُبل فيه المتعاون يظهر مع أبحاثه، لا
+    في شاشةٍ ثانية اسمها «أبحاثٌ مشتركة». فالتعاونُ ليس نوعًا آخرَ من
+    البحث.
+
+    ## وثلاثةُ أشياء لا تُخلط
+
+      الملكيّة    تُشتقّ في مستأجر الباحث وحده (كما كانت).
+      العضويّة    صفٌّ محفوظ — في أيّ مستأجر.
+      الانتماءُ   للمؤسسة: **لا يُنشأ هنا ولا يُقرأ هنا.**
+
+    ولا صفَّ `Membership` جديدٌ يُكتب في مستأجر البحث لأجل هذه القائمة.
+    فمنحُ التعاون على بحثٍ ليس انتماءً إلى مؤسسةٍ: لو كُتب لَصار
+    المتعاونُ عضوًا في كلّ ما في تلك المؤسسة، وذاك نقضُ العزل لا توسيعُ
+    منتج. (والجردُ البنيويّ في SEC-P0 يُسمّي كلَّ موضعٍ يُنشئ انتماءً —
+    وهذه الطبقةُ ليست منها.)
+
+    ## والعبورُ يقع عبر الجسر القانونيّ وحده
+
+    فبحثُ مستأجرٍ آخر لا يُقرأ من جلسةِ البيت: `research_projects` تبقى
+    معزولةً بمستأجرها، ولا سياسةَ فاعلٍ عليها. ويُقرأ بـ`project_session`
+    — الذي يُثبت بنفسه، في عبارته، أنّ للفاعل صفَّ عضويّةٍ نشطًا يحمل
+    `view_project` في ذلك البحث بعينه، ويرفض الربطَ إن لم يكن. فلو دخل
+    إلى هذه الدالّةِ معرّفُ بحثٍ لا يستحقّه الفاعل لَما رُبط، ولَما
+    رُئي الصفُّ في جلسةٍ بقيت في مستأجر البيت.
+
+    ## والثمنُ معلومٌ ومحدود
+
+    رحلةٌ لكلّ بحثٍ **خارج** مستأجر الباحث — والقاعدةُ في إقليمٍ آخر.
+    وأبحاثُ البيت كلُّها في عبارةٍ واحدة كما كانت، فالثمنُ يقع على
+    التعاون عبرَ المؤسسات وحده، وعددُه في V1 آحاد. ولا يُستبدل ببوّابةٍ
+    مميّزةٍ تقرأ أبحاثَ كلّ مستأجرٍ بضربةٍ واحدة: تلك تُشترى بحدِّ
+    العزل نفسِه، والثمنُ أغلى من الرحلة.
+    """
+    owned = await _owned_project_ids(
+        session, tenant_id=tenant_id, user_id=user_id)
+    scopes = await _self_member_scopes(session, user_id=user_id)
+
+    # صفٌّ واحدٌ لكلّ بحث: صاحبُ البحثِ العضوُ فيه يظهر مرّةً، بوسمِ
+    # الملكيّة لا بوسمِ العضويّة — `_decide` تُقدّم الملكيّةَ كذلك.
+    roles: dict[uuid.UUID, str] = {}
+    foreign: dict[uuid.UUID, uuid.UUID] = {}
+    for project_id, member_tenant, role in scopes:
+        roles.setdefault(project_id, role)
+        if member_tenant != tenant_id and project_id not in owned:
+            foreign[project_id] = member_tenant
+
+    home_ids = owned | {pid for pid, t, _ in scopes if t == tenant_id}
+    found: dict[uuid.UUID, ResearchProject] = {}
+    if home_ids:
+        for row in (await session.execute(
+            select(ResearchProject)
+            .where(ResearchProject.deleted_at.is_(None),
+                   ResearchProject.id.in_(home_ids))
+        )).scalars():
+            found[row.id] = row
+
+    for project_id, member_tenant in foreign.items():
+        async with project_session(project_id, tenant_id, user_id) as scoped:
+            crossed = (await scoped.execute(
+                select(ResearchProject)
+                .where(ResearchProject.id == project_id,
+                       ResearchProject.deleted_at.is_(None))
+            )).scalar_one_or_none()
+        # **ومستأجرُ الصفِّ يُطابق مستأجرَ العضويّة أو يُطرح.** فالعزلُ
+        # يضمن هذا أصلًا؛ وفحصُه هنا يجعل أيَّ خللٍ في الجسر غيابًا من
+        # قائمةٍ لا صفًّا من مستأجرٍ لا صلةَ للباحث به.
+        if crossed is not None and crossed.tenant_id == member_tenant:
+            found[project_id] = crossed
+
+    entries = [
+        ResearchEntry(project=row, is_owner=row.id in owned,
+                      member_role=roles.get(row.id))
+        for row in found.values()
+    ]
+    entries.sort(key=lambda e: e.project.created_at, reverse=True)
+    return entries
 
 
 # **الصلاحيّةُ تُقرأ مرّةً وتُستعمل مرارًا.** فالمسارُ الواحد يسأل عن

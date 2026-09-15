@@ -33,6 +33,17 @@ interface Project {
   target_index_tier: string | null;
   current_gate: string | null;
   is_thesis_derived: boolean;
+  /**
+   * وصلةُ الطالبِ بهذا البحث — **مُشتقّةٌ في الخادم، لا مُخمَّنةٌ هنا**.
+   *
+   * كانت هذه القائمةُ كلَّها أبحاثَ صاحبها، فكان زرُّ «نقل إلى السلّة»
+   * على كلّ بطاقةٍ صحيحًا. وبعد التعاون عبر المؤسسات صار فيها بحثُ
+   * غيره — **وزرُّ حذفٍ على بحثِ غيرك ليس زرًّا لا يعمل**: هو دعوى
+   * ملكيّةٍ تقولها الشاشة، ويقرؤها الباحثُ على أنّها صحيحة.
+   */
+  is_owner: boolean;
+  relationship: string;
+  member_role: string | null;
 }
 
 interface ReferencePlan {
@@ -202,6 +213,18 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
               </Link>
               <span className="chip chip-stage">{t(`stages.${stageKeyFor(project.current_gate)}`)}</span>
             </div>
+            {/* **والوسمُ دورٌ حين يوجد، لا «مؤلّف».** فالعضويةُ ليست تأليفًا،
+                وبطاقةٌ تكتب «مؤلّف» على عضوٍ لم يُعلَن تأليفُه تُزوّر نسبة. */}
+            {!project.is_owner ? (
+              <p
+                className="metric-label"
+                style={{ marginBlock: 6 }}
+                data-testid={`project-relationship-${project.id}`}
+              >
+                <span className="chip chip-muted">{t("portfolio.collaboratorBadge")}</span>{" "}
+                {t("portfolio.collaboratorNote")}
+              </p>
+            ) : null}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockStart: 10 }}>
               {project.study_type ? <span className="chip chip-muted">{project.study_type}</span> : null}
               {project.target_journal_name ? (
@@ -222,14 +245,21 @@ export default function PortfolioPage({ params }: { params: Promise<{ locale: st
               >
                 {t("researchJourney.continueResearch")}
               </Link>
-              <button
-                type="button"
-                className="chip chip-muted"
-                disabled={busy}
-                onClick={() => moveToTrash(project.id)}
-              >
-                {t("project.trash")}
-              </button>
+              {/* **أفعالُ دورة الحياة لصاحب البحث وحده.** والخادمُ هو
+                  الحدُّ (`require_owner`)، وهذا صدقٌ في العرض: زرٌّ يُعرض
+                  ثمّ يُردّ يُعلّم الباحثَ أنّ المنصّة تُخطئ، لا أنّه
+                  ليس له. */}
+              {project.is_owner ? (
+                <button
+                  type="button"
+                  className="chip chip-muted"
+                  data-testid={`project-trash-${project.id}`}
+                  disabled={busy}
+                  onClick={() => moveToTrash(project.id)}
+                >
+                  {t("project.trash")}
+                </button>
+              ) : null}
             </div>
           </article>
         ))}

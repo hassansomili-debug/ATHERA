@@ -59,6 +59,17 @@ function groups(t: (key: string) => string): NavGroup[] {
           owns: ["search"],
         },
         { key: "nav.trends", label: t("nav.trends"), segment: "trends" },
+        // **والمقطعُ `collaboration-opportunities` لا `opportunities`.**
+        //
+        // فـ`opportunities` مملوكٌ لخريطة فرص النشر — وهي شاشةٌ علميةٌ
+        // قائمة تعرض جاهزيةَ ورقةٍ وتداخلَها وبوابةَ حقوقها، ويملكها
+        // عنصرُ «المحفظة» في هذه القائمة. فعنصرٌ ثانٍ يقصدها كان
+        // سيُهبط الباحثَ على خريطةِ نشرٍ وهو يطلب تعاونًا بحثيًّا.
+        {
+          key: "nav.collaborationOpportunities",
+          label: t("nav.collaborationOpportunities"),
+          segment: "collaboration-opportunities",
+        },
       ],
     },
     {

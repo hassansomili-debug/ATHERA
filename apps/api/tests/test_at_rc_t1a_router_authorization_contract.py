@@ -179,11 +179,14 @@ def test_the_contract_actually_sees_routes():
 # ونسخةُ بياناتٍ إلى مجموعتها إلى بحثها. والعقدُ أعلاه لا يراها، فتُحرس
 # بواباتُها المشتقّة بعينها — وهي قليلةٌ ومعدودة.
 
+# **وبواباتُ التحليل الستُّ صارت بوابةً واحدة** (0036): كانت كلُّ واحدةٍ
+# تمشي السلسلةَ بنفسها ثمّ تُنادي البوابةَ المشتركة، وصارت `_scope` تُحدّد
+# الموضعَ ثمّ تعبُر مستأجرَ البحث ثمّ تُنادي البوابةَ نفسَها. والعددُ نقص
+# والحدُّ لم ينقص — ويُثبَت ذلك بفحصٍ إضافيٍّ أدناه لا بحذف هذا السطر.
 DERIVED_GATES = {
     "publishing": ["manuscript_for_tenant"],
     "manuscript_drafting": ["manuscript_for_tenant_edit"],
-    "analysis": ["_gate", "_gate_dataset", "_gate_version", "_gate_plan",
-                 "_gate_run", "_gate_output"],
+    "analysis": ["_scope", "_scope_pair"],
     "literature": ["_claim_gate"],
 }
 
@@ -198,6 +201,70 @@ def test_derived_gates_reach_the_canonical_gate(module: str, helper: str):
     assert helper in _gating(tree), (
         f"{module}.{helper} بوابةٌ مشتقّة لا تبلغ `collaboration` — "
         "فكلُّ مسارٍ خلفها مفتوح")
+
+
+def test_every_analysis_route_enters_through_the_single_data_scope():
+    """**ولا مسارَ تحليلٍ يحرس نفسَه بيده** — ولا يعود إلى جلسة البيت.
+
+    وهذا الحارسُ يقوم مقام الستّة التي كانت: يُفحص أنّ كلَّ مسارٍ يملك
+    بحثًا يدخل من `_scope`/`_scope_pair`، وأنّ **ما عداها ثلاثُ قوائمَ
+    عامّةٍ ومسارُ قدرات** — لا رابعَ يُضاف بصمت.
+
+    ويُقاس بالبنية لا بالنصّ: يُقرأ جسمُ كلِّ مسارٍ من الشجرة، فلا
+    يُسكَّن الحارسُ بإعادة تسميةٍ ولا بتقسيم سطر.
+    """
+    import ast as _ast
+
+    source = (ROUTERS / "analysis.py").read_text(encoding="utf-8")
+    tree = _ast.parse(source)
+    methods = {"get", "post", "put", "patch", "delete"}
+
+    # مساراتٌ لا تملك بحثًا واحدًا بطبيعتها — **وتُسمّى بأسمائها**:
+    #   ثلاثُ قوائمَ تجمع بحوثَ الطالب كلَّها (فلا مستأجرَ واحدٌ تدخله،
+    #   وتُرشَّح بمجموعة البحوث المُدارة + سياسات تحديد الموضع)،
+    #   ومسارُ قدراتِ الأدوات ولا بيانَ بحثٍ فيه.
+    MULTI_PROJECT = {"list_datasets", "list_plans", "list_exports"}
+    NO_PROJECT = {"tool_capabilities"}
+
+    scoped, home, other = [], [], []
+    for node in _ast.walk(tree):
+        if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        if not any(isinstance(d, _ast.Call) and isinstance(d.func, _ast.Attribute)
+                   and d.func.attr in methods for d in node.decorator_list):
+            continue
+        body = _ast.get_source_segment(source, node) or ""
+        calls = {n.func.id for n in _ast.walk(node)
+                 if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)}
+        if {"_scope", "_scope_pair"} & calls:
+            scoped.append(node.name)
+            # **ولا يُقرأ مستأجرُ الرمز بعد العبور** — وإلّا كُتب الصفُّ
+            # في مستأجرٍ لا يراه أحد.
+            assert "principal.tenant_id" not in body, (
+                f"{node.name} يقرأ مستأجرَ الرمز بعد دخول نطاق البحث")
+            assert "Depends(get_session)" not in body, (
+                f"{node.name} يفتح جلسةَ البيت ومعه نطاقُ بحث")
+        elif node.name in MULTI_PROJECT:
+            home.append(node.name)
+            # القوائمُ العامّةُ تُرشَّح بمجموعةِ البحوث المُدارة — وهي
+            # عابرةٌ للمستأجرين، ولا تُرشَّح بمستأجرٍ واحد.
+            assert "_managed(" in body, f"{node.name} قائمةٌ بلا مُرشِّح بحوث"
+            assert "principal.tenant_id" not in body, node.name
+        elif node.name in NO_PROJECT:
+            continue
+        else:
+            other.append(f"{node.name}")
+
+    assert other == [], (
+        "مساراتُ تحليلٍ لا تدخل نطاقَ بحثٍ ولا هي قائمةٌ معلَنة: "
+        + ", ".join(other))
+    # اثنا عشرَ مسارًا للبيانات، **وشكلانِ مُعشَّشانِ في بحثهما** للفعلين
+    # اللذين لا يطلبان إدارةَ بيانات: اعتمادُ الخطّة وتفسيرُ المخرَج.
+    # فالصلاحياتُ تبقى مستقلّةً عبرَ المؤسسات كما هي داخلها.
+    assert len(scoped) == 14, f"عددُ مسارات النطاق تغيّر: {len(scoped)} — {scoped}"
+    nested = {name for name in scoped if name.endswith("_in_project")}
+    assert nested == {"approve_plan_in_project", "interpret_in_project"}, nested
+    assert sorted(home) == sorted(MULTI_PROJECT), home
 
 
 # ═════════════════ ج · لا بابَ جانبيّ ═════════════════

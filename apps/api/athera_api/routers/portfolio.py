@@ -26,9 +26,14 @@ REFERENCE_PLAN = {
 }
 
 
-def _to_response(row: ResearchProject, locale: str) -> ProjectResponse:
+def _to_response(
+    row: ResearchProject, locale: str, *,
+    is_owner: bool = True, relationship: str = "owner",
+    member_role: str | None = None,
+) -> ProjectResponse:
     title = (row.working_title_en or row.working_title_ar) if locale == "en" else row.working_title_ar
     return ProjectResponse(
+        is_owner=is_owner, relationship=relationship, member_role=member_role,
         id=row.id, working_title=title, working_title_ar=row.working_title_ar,
         working_title_en=row.working_title_en, program_id=row.program_id,
         study_type=row.study_type, status=row.status,
@@ -51,17 +56,22 @@ async def list_projects(
     # فكانت تردّ كلَّ بحثٍ في المستأجر: عناوينَ الزملاء ومجلّاتِهم المستهدفة
     # ومخاطرَهم وتواريخَهم. وهي شاشةٌ ثانيةٌ للقائمة نفسها، ففاتت السدَّ
     # الذي وُضع في `workspace` — **والحدُّ يُوضع في كلّ باب، لا في أشهرها**.
-    visible = await collaboration.visible_project_ids(
+    #
+    # **وبحثُ مستأجرٍ آخرَ يظهر هنا أيضًا** — إن كان للباحث فيه صفُّ
+    # عضويّةٍ نشطٌ يحمل `view_project`. فالقبولُ في فريقِ بحثٍ في مؤسسةٍ
+    # أخرى يُنشئ عضويّةً حقيقيّة، وقائمةٌ لا تعرضها تجعل القبولَ بلا أثر:
+    # يقبل الباحثُ الدعوةَ ثم لا يجد البحثَ في أيّ شاشةٍ يفتحها.
+    #
+    # ولا يُحلّ ذلك بانتماءٍ تنظيميّ ولا بقراءةٍ مميّزة — انظر
+    # `collaboration.my_research`.
+    entries = await collaboration.my_research(
         session, tenant_id=principal.tenant_id, user_id=principal.user_id)
-    rows = [] if not visible else (
-        await session.execute(
-            select(ResearchProject)
-            .where(ResearchProject.deleted_at.is_(None),
-                   ResearchProject.id.in_(visible))
-            .order_by(ResearchProject.created_at.desc())
-        )
-    ).scalars().all()
-    return [_to_response(row, principal.locale) for row in rows]
+    return [
+        _to_response(entry.project, principal.locale,
+                     is_owner=entry.is_owner, relationship=entry.relationship,
+                     member_role=entry.member_role)
+        for entry in entries
+    ]
 
 
 @router.post("/projects", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
