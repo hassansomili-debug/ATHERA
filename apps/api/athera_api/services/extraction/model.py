@@ -77,11 +77,45 @@ def _confidence(raw: dict) -> float:
 class ModelExtractor(Extractor):
     name = "model"
 
-    def __init__(self, gateway, session, tenant_id: uuid.UUID, classification: str = "C2") -> None:
+    def __init__(self, gateway, session_or_maker, tenant_id: uuid.UUID,
+                 classification: str = "C2") -> None:
+        """**دالّةُ جلسةٍ أو جلسة** — والأولى وحدها تُبقي الحدَّ سليمًا.
+
+        وكان هذا المُستخرِج يمسك `AsyncSession` ويُمرّرها إلى
+        `gateway.generate_structured` — أي **نداءُ نموذجٍ داخل معاملةٍ
+        حيّة**، وهو RC-T1-H3 بعينه. ولم يره الماسحُ الساكن لأنّ
+        `Extractor` واجهةٌ تُمرَّر مُعامِلًا.
+
+        فإن أُعطي **دالّةً** تُنشئ جلسةً، انفصل النداء: إذنٌ ثمّ شبكةٌ بلا
+        معاملة، ثمّ معاملةٌ قصيرةٌ تُسجّل `ModelRun`. وإن أُعطي جلسةً
+        (نصوصٌ ومهامُّ خلفيّةٍ تملك معاملتها) عمل كما كان.
+        """
         self._gateway = gateway
-        self._session = session
+        self._session_maker = session_or_maker if callable(session_or_maker) else None
+        self._session = None if self._session_maker else session_or_maker
         self._tenant_id = tenant_id
         self._classification = classification
+
+    async def _call(self, request):
+        """النداءُ ثمّ التسجيل — منفصلَين إن أمكن، مجتمعَين إن لزم."""
+        if self._session is not None:
+            return await self._gateway.generate_structured(
+                self._session, tenant_id=self._tenant_id, request=request)
+
+        # ── بلا معاملة: الإذن ثمّ الشبكة ──
+        self._gateway.authorize(request)
+        call = await self._gateway.invoke(request)
+
+        # ── معاملةٌ قصيرة: التسجيل، نجح النداء أم أخفق ──
+        #
+        # **والرفعُ بعد إغلاق المعاملة لا داخله**: الرفعُ داخلها يُلغي
+        # السجلَّ الذي كتب الإخفاقَ للتوّ.
+        async with self._session_maker() as session:
+            model_run = await self._gateway.record(
+                session, tenant_id=self._tenant_id, call=call)
+        if call.exception is not None:
+            raise call.exception
+        return call.response, model_run
 
     def _render(self, chunks: list[ParsedChunk]) -> str:
         parts = [
@@ -102,9 +136,7 @@ class ModelExtractor(Extractor):
             # التصنيف موروث من الملف — البوابة تمنع الإرسال إن تجاوز السقف (§36.3).
             classification=self._classification,
         )
-        response, model_run = await self._gateway.generate_structured(
-            self._session, tenant_id=self._tenant_id, request=request
-        )
+        response, model_run = await self._call(request)
 
         payload = response.structured
         if payload is None and response.content:

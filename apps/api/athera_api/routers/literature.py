@@ -12,6 +12,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..db import tenant_session_maker
 from ..deps import (
     Principal,
     get_principal,
@@ -169,12 +170,17 @@ async def list_sources(
 async def search_sources(
     payload: SourceSearchRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> list[SourceCandidate]:
     """البحث يُسجَّل لأنه إفصاح خارجي.
 
     نص الاستعلام يغادر المستأجر إلى خدمة طرف ثالث — وقد يحمل عنوان بحث غير
     منشور أو فكرة قيد التطوير. تسجيله واجب تدقيق وخصوصية (§36.2)، لا شكلية.
+
+    **ولا `Depends(get_session)`** (RC-T1-H3): التبعيّةُ تفتح معاملةَ الطلب
+    **قبل** أن يعمل المتن، فتبقى حيّةً طوال نداء الفهارس — والاتصالُ
+    `idle in transaction` حتى يعود الطرفُ الثالث. ولا قراءةَ قاعدةٍ يحتاجها
+    هذا المسار قبل النداء أصلًا: الصلاحيةُ من الرمز، ولا نطاقَ بحثٍ ولا
+    مشروع. فالشبكةُ أوّلًا بلا معاملة، ثمّ معاملةٌ قصيرةٌ للتدقيق.
     """
     results: list[SourceCandidate] = []
     used_registry: str | None = None
@@ -199,21 +205,23 @@ async def search_sources(
             used_registry = source_registry.name
             break
 
-    await audit.record(
-        session,
-        tenant_id=principal.tenant_id,
-        action="evidence.registry_searched",
-        object_type="source_registry",
-        actor_user_id=principal.user_id,
-        state_after={
-            "query": payload.query[:200],
-            "registry": used_registry,
-            "results": len(results),
-            "failed_registries": failed,
-        },
-        reason="query text disclosed to an external scholarly registry (§36.2)",
-        request_id=principal.request_id,
-    )
+    # ── معاملةٌ قصيرةٌ **بعد** الشبكة: الإفصاحُ وقع فيُسجَّل ──
+    async with tenant_session_maker(principal.tenant_id, principal.user_id)() as session:
+        await audit.record(
+            session,
+            tenant_id=principal.tenant_id,
+            action="evidence.registry_searched",
+            object_type="source_registry",
+            actor_user_id=principal.user_id,
+            state_after={
+                "query": payload.query[:200],
+                "registry": used_registry,
+                "results": len(results),
+                "failed_registries": failed,
+            },
+            reason="query text disclosed to an external scholarly registry (§36.2)",
+            request_id=principal.request_id,
+        )
     return results[: payload.limit]
 
 
@@ -221,7 +229,6 @@ async def search_sources(
 async def discover_references(
     payload: ReferenceSearchRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> ReferenceSearchResponse:
     """اكتشاف المراجع: عنوانٌ أو كلماتٌ مفتاحية أو DOI.
 
@@ -267,30 +274,32 @@ async def discover_references(
         accepted_terms=payload.accepted_terms,
     )
 
-    await audit.record(
-        session,
-        tenant_id=principal.tenant_id,
-        action="evidence.references_discovered",
-        object_type="reference_discovery",
-        actor_user_id=principal.user_id,
-        state_after={
-            "query": payload.query[:200],
-            # **ما غادر المستأجر هو `sent` لا `query`.** لو سُجّل نصّ الباحث
-            # وحده لبقي المصطلح الذي قبِله خارج السجلّ، والإفصاح يُسجَّل بما
-            # أُفصح به فعلًا لا بما قصده صاحبه (§36.2).
-            "sent": (result.query.sent[:200] if result.query else payload.query[:200]),
-            "accepted_terms": list(payload.accepted_terms),
-            "providers": [status_.provider for status_ in result.provider_statuses],
-            "failed_providers": [
-                status_.provider for status_ in result.provider_statuses if not status_.ok
-            ],
-            "results": len(result.candidates),
-            # الرابط الممنوع جمعه يُسجَّل أنه لم يُطلب — لا أنه طُلب فمُنع.
-            "external_link_host": result.external_link.host if result.external_link else None,
-        },
-        reason="query text disclosed to external scholarly indexes (§36.2)",
-        request_id=principal.request_id,
-    )
+    # ── معاملةٌ قصيرةٌ **بعد** نداء الفهرسَين (RC-T1-H3) ──
+    async with tenant_session_maker(principal.tenant_id, principal.user_id)() as session:
+        await audit.record(
+            session,
+            tenant_id=principal.tenant_id,
+            action="evidence.references_discovered",
+            object_type="reference_discovery",
+            actor_user_id=principal.user_id,
+            state_after={
+                "query": payload.query[:200],
+                # **ما غادر المستأجر هو `sent` لا `query`.** لو سُجّل نصّ الباحث
+                # وحده لبقي المصطلح الذي قبِله خارج السجلّ، والإفصاح يُسجَّل بما
+                # أُفصح به فعلًا لا بما قصده صاحبه (§36.2).
+                "sent": (result.query.sent[:200] if result.query else payload.query[:200]),
+                "accepted_terms": list(payload.accepted_terms),
+                "providers": [status_.provider for status_ in result.provider_statuses],
+                "failed_providers": [
+                    status_.provider for status_ in result.provider_statuses if not status_.ok
+                ],
+                "results": len(result.candidates),
+                # الرابط الممنوع جمعه يُسجَّل أنه لم يُطلب — لا أنه طُلب فمُنع.
+                "external_link_host": result.external_link.host if result.external_link else None,
+            },
+            reason="query text disclosed to external scholarly indexes (§36.2)",
+            request_id=principal.request_id,
+        )
 
     return ReferenceSearchResponse(
         candidates=[
@@ -334,32 +343,62 @@ async def discover_references(
 async def import_source(
     payload: SourceImportRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> SourceResponse:
-    """TC-02 — DOI لا يُحلّ يعيد خطأً واضحًا، ولا يُخزَّن مصدر مختلق."""
+    """TC-02 — DOI لا يُحلّ يعيد خطأً واضحًا، ولا يُخزَّن مصدر مختلق.
+
+    **وحلُّ المعرّف يقع بلا معاملة** (RC-T1-H3). وكان ترتيبُ المتن صحيحًا
+    أصلًا — الشبكةُ قبل الكتابة — لكنّ `Depends(get_session)` تفتح المعاملةَ
+    **قبل** أن يعمل المتن، فتبقى مفتوحةً طوال حلِّ المعرّف عند الفهرس.
+    فلا تبعيّةَ جلسةٍ الآن: الشبكةُ أوّلًا، ثمّ معاملةٌ قصيرةٌ تكتب وتُودِع.
+
+    **وإخفاقُ الإيداع بعد النداء لا يُردّ نجاحًا** (RC-T1-H1): الخطأُ يصعد
+    من المعالج نفسِه. ونداءُ الفهرس لا يُرجَع — وذاك اتّساقُ الأثر
+    الخارجيّ، مفتوحٌ مُعلَن (RC-T1-H2).
+    """
     try:
         record, registry_name = await verification.resolve_doi(_registries(), payload.doi)
     except registry.SourceNotFound as exc:
         raise AtheraError("evidence.doi_not_resolved", status_code=404, doi=payload.doi) from exc
 
-    source = await verification.import_source(
-        session, tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
-        record=record, registry_name=registry_name,
-    )
-    return await _source_response(session, source)
+    async with tenant_session_maker(principal.tenant_id, principal.user_id)() as session:
+        source = await verification.import_source(
+            session, tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+            record=record, registry_name=registry_name,
+        )
+        return await _source_response(session, source)
 
 
 @router.post("/sources/{source_id}/verify", response_model=SourceResponse)
 async def revalidate_source(
     source_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> SourceResponse:
-    source, _changed = await verification.revalidate(
-        session, tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
-        source_id=source_id, registries=_registries(),
-    )
-    return await _source_response(session, source)
+    """إعادةُ فحصِ مصدر — **بثلاثة أطوار، والشبكةُ بلا معاملة** (RC-T1-H3).
+
+        (١) معاملةٌ قصيرة : المصدرُ يوجد وله DOI ⇒ يُحمَل DOI **نصًّا**
+        (٢) بلا معاملة    : يُسأل الفهرس
+        (٣) معاملةٌ قصيرة : يُعاد تحميلُ الصفّ، ثمّ يُثبَّت الفحص
+
+    **ولا صفُّ ORM يعبُر الحدّ**: الصفُّ يموت بموت معاملته. وما يعبُر نصٌّ.
+
+    **وفجوةُ الزمن تُحسب لا تُهمَل**: الحالُ تُقاس على القاعدة وقت الكتابة،
+    ومصدرٌ حُذف أثناء الانتظار يردّ ٤٠٤، ومصدرٌ تغيّر معرّفُه يردّ ٤٠٩ —
+    فلا يُكتب فحصُ ورقةٍ على ورقةٍ أخرى.
+    """
+    session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+
+    async with session_maker() as session:
+        doi = await verification.revalidation_doi(session, source_id=source_id)
+
+    record, registry_name = await verification.resolve_doi(_registries(), doi)
+
+    async with session_maker() as session:
+        source, _changed = await verification.apply_revalidation(
+            session, tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+            source_id=source_id, record=record, registry_name=registry_name,
+            resolved_doi=doi,
+        )
+        return await _source_response(session, source)
 
 
 @router.post("/evidence/excerpts", response_model=ExcerptResponse,

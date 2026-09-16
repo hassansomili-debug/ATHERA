@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..db import tenant_session_maker
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.files import File
@@ -493,7 +494,6 @@ async def _remember_failure(
 async def parse_thesis(
     thesis_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> ParseResponse:
     """§23.3 — التفكيك يعيد استخدام مفكِّك Sprint 1 وحاجزه: كل قسم بموضعه.
 
@@ -513,21 +513,35 @@ async def parse_thesis(
         الكتابة لا وقت القراءة (`processing.settle_after_legacy_parse`)،
         فلا تُكتب قيمةٌ بائتة ولو تقدّم الخطُّ الحديث أثناء التفكيك.
     """
-    thesis = await _thesis_or_404(session, principal, thesis_id, action="write")
-    if thesis.file_id is None:
-        raise AtheraError("thesis.no_file", status_code=422)
-    _refuse_if_in_flight(thesis, principal.locale)
+    # ══ الطورُ (١): معاملةٌ قصيرة — الإذنُ والحالُ وموضعُ الملفّ ══
+    #
+    # **ولا `Depends(get_session)`** (RC-T1-H3): قراءةُ التخزين غيرُ محدودةِ
+    # الزمن، وكانت معاملةُ الطلب تبقى مفتوحةً طوالها. فما يلزم يُقرأ هنا
+    # ويُحمَل **قيمًا**: لا `Thesis` ولا `File` يعبُران الحدّ.
+    session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+    async with session_maker() as session:
+        thesis = await _thesis_or_404(session, principal, thesis_id, action="write")
+        if thesis.file_id is None:
+            raise AtheraError("thesis.no_file", status_code=422)
+        _refuse_if_in_flight(thesis, principal.locale)
 
-    record = (await session.execute(select(File).where(
-        File.id == thesis.file_id, File.tenant_id == principal.tenant_id
-    ))).scalar_one_or_none()
-    if record is None:
-        raise NotFound("file.not_found")
+        record = (await session.execute(select(File).where(
+            File.id == thesis.file_id, File.tenant_id == principal.tenant_id
+        ))).scalar_one_or_none()
+        if record is None:
+            raise NotFound("file.not_found")
+        storage_key = record.storage_key
+        content_type = record.content_type
+        filename = record.original_filename
 
-    from ..services.ingestion import _load_bytes  # noqa: PLC0415
+    # ══ الطورُ (٢): التخزينُ ثمّ التفكيك — **بلا معاملة** ══
+    #
+    # ومسالكُ الإخفاق تكتب في معاملةٍ مستقلّةٍ أصلًا (`_remember_failure`)،
+    # فهي سليمةٌ بحكم بنيتها ولم تتغيّر.
+    from ..services.ingestion import load_object_bytes  # noqa: PLC0415
 
     try:
-        chunks = parse(await _load_bytes(record), record.content_type, record.original_filename)
+        chunks = parse(await load_object_bytes(storage_key), content_type, filename)
     except NoTextLayer as exc:
         # **مستندٌ ممسوح ضوئيًّا يُسمَّى باسمه، ولا يُترك «نوعًا غير مدعوم».**
         await _remember_failure(
@@ -565,6 +579,31 @@ async def parse_thesis(
                    "rather than surfacing as a server error")
         raise AtheraError("thesis.parse_failed", status_code=422) from exc
 
+    # ══ الطورُ (٣): معاملةٌ قصيرة — الأقسامُ والحالُ والتدقيق ══
+    #
+    # **والإذنُ يُعاد التحقّقُ منه**: فجوةُ الزمن تفصل الطورَ الأوّل عن هذا،
+    # وهذه كتابةٌ لا قراءة. فلا تُكتب بصلاحيةٍ قُرِّرت قبل الانتظار: تُقرأ
+    # الرسالةُ من جديد بالحارس نفسِه (`_thesis_or_404(..., action="write")`)،
+    # فتُحذف الرسالةُ أثناء الانتظار ⇒ ٤٠٤، وتُسحب الصلاحيةُ ⇒ ٤٠٣.
+    async with session_maker() as session:
+        thesis = await _thesis_or_404(session, principal, thesis_id, action="write")
+        sections = await _persist_parse(session, principal, thesis, thesis_id, chunks)
+        results = (await session.execute(
+            select(ThesisResult).where(ThesisResult.thesis_id == thesis_id)
+        )).scalars().all()
+
+        await audit.record(
+            session, tenant_id=principal.tenant_id, action="thesis.parsed",
+            object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
+            state_after={"chunks": len(chunks), "sections": sections},
+            reason="thesis sections extracted as unverified candidates (§23.3)",
+        )
+    return ParseResponse(thesis_id=thesis_id, chunks_parsed=len(chunks),
+                         sections_extracted=sections, results_extracted=len(results))
+
+
+async def _persist_parse(session, principal, thesis, thesis_id, chunks) -> int:
+    """يكتب الأقسامَ ويُثبّت الحال — **متنُ التفكيك كما كان، بلا تغيير**."""
     # قسم بلا موضع لا يُخزَّن: نفس قاعدة §29.2.
     sections = 0
     for chunk in chunks:
@@ -598,19 +637,7 @@ async def parse_thesis(
     # **والقاعدة تُقيَّم وقت الكتابة لا وقت القراءة** — انظر شرحَ الدالّة.
     await processing.settle_after_legacy_parse(
         session, tenant_id=principal.tenant_id, thesis_id=thesis_id)
-
-    results = (
-        await session.execute(select(ThesisResult).where(ThesisResult.thesis_id == thesis_id))
-    ).scalars().all()
-
-    await audit.record(
-        session, tenant_id=principal.tenant_id, action="thesis.parsed",
-        object_type="thesis", object_id=thesis_id, actor_user_id=principal.user_id,
-        state_after={"chunks": len(chunks), "sections": sections},
-        reason="thesis sections extracted as unverified candidates (§23.3)",
-    )
-    return ParseResponse(thesis_id=thesis_id, chunks_parsed=len(chunks),
-                         sections_extracted=sections, results_extracted=len(results))
+    return sections
 
 
 @router.post("/theses/{thesis_id}/mine-opportunities", response_model=MineResponse,
