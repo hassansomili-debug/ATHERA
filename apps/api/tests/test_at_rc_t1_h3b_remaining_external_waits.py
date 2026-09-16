@@ -878,3 +878,352 @@ def test_21_the_h3a_remaining_set_is_now_empty() -> None:
     from tests.test_at_rc_t1_h3_ai_long_transactions import KNOWN_REMAINING
 
     assert KNOWN_REMAINING == set(), KNOWN_REMAINING
+
+
+# ════════ ٥ · ذرّيّةُ الإخفاق: لا كتابةَ جزئيّةٌ على استيرادٍ فاشل ════════
+#
+# **وهذا عطبٌ أدخله RC-T1-H3-B نفسُه، وكشفته المراجعة.** كان
+# `_get_or_create_profile` في طور التحضير — وهو **كتابة** — فتُودَع قبل
+# قراءة التخزين. فإن أخفق الاستيراد بقي مِلفٌّ شخصيٌّ جديدٌ أثرًا لطلبٍ
+# فاشل. وقبل هذا الطور كان الإنشاءُ والاستخراجُ في معاملةِ الطلب نفسِها
+# فيرجعان معًا.
+#
+# **وتقصيرُ المعاملات لا يجوز أن يُضعف ذرّيّةً قائمة.**
+
+
+async def _profile_count(tenant_id) -> int:
+    """عددُ المِلفّات الشخصيّة — بحقوق المالك، فلا تُخفيها RLS."""
+    from sqlalchemy import text
+
+    engine, factory = await _observer()
+    try:
+        async with factory() as session:
+            return (await session.execute(text(
+                "SELECT count(*) FROM researcher_profiles WHERE tenant_id = :t"),
+                {"t": str(tenant_id)})).scalar_one()
+    finally:
+        await engine.dispose()
+
+
+async def _extraction_counts(tenant_id) -> dict[str, int]:
+    from sqlalchemy import text
+
+    engine, factory = await _observer()
+    try:
+        async with factory() as session:
+            out = {}
+            for table in ("extraction_runs", "document_chunks", "fact_candidates"):
+                out[table] = (await session.execute(text(
+                    f"SELECT count(*) FROM {table} WHERE tenant_id = :t"),
+                    {"t": str(tenant_id)})).scalar_one()
+            return out
+    finally:
+        await engine.dispose()
+
+
+async def test_22_a_storage_failure_leaves_no_new_researcher_profile(
+    two_tenants, monkeypatch,
+):
+    """**إخفاقُ التخزين لا يُخلّف مِلفًّا شخصيًّا جديدًا** ولا صفَّ استخراج."""
+    from athera_api.services import ingestion
+
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    profiles_before = await _profile_count(slot["tenant_id"])
+    rows_before = await _extraction_counts(slot["tenant_id"])
+    assert profiles_before == 0, "المستأجرُ يملك مِلفًّا قبل الطلب — فالفحصُ لا يقيس"
+
+    async def refuse(_key):
+        raise RuntimeError("storage refused on purpose")
+
+    monkeypatch.setattr(ingestion, "load_object_bytes", refuse)
+
+    async with _client(slot) as http:
+        response = await http.post(PROFILE_IMPORT,
+                                   json={"file_id": str(file_id),
+                                         "extractor": "rules"})
+
+    assert response.status_code >= 400, (
+        f"إخفاقُ التخزين رُدَّ نجاحًا: HTTP {response.status_code}")
+    assert await _profile_count(slot["tenant_id"]) == profiles_before, (
+        "بقي مِلفٌّ شخصيٌّ جديدٌ أثرًا لاستيرادٍ فاشل — كتابةٌ جزئيّة")
+    assert await _extraction_counts(slot["tenant_id"]) == rows_before, (
+        "بقيت صفوفُ استخراجٍ من استيرادٍ فاشل")
+
+
+async def test_23_a_model_failure_leaves_no_new_researcher_profile(
+    two_tenants, monkeypatch,
+):
+    """**وإخفاقُ النموذج كذلك** — والمُستخرِجُ النموذجيُّ يُنادى قبل الإنشاء."""
+    import importlib.util
+
+    from athera_api.config import get_settings
+    from athera_api.providers import gateway
+    from athera_api.services import ingestion
+
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    profiles_before = await _profile_count(slot["tenant_id"])
+    rows_before = await _extraction_counts(slot["tenant_id"])
+    assert profiles_before == 0, "المستأجرُ يملك مِلفًّا قبل الطلب"
+
+    async def read(_key):
+        return DOCUMENT
+
+    monkeypatch.setattr(ingestion, "load_object_bytes", read)
+
+    class RefusingProvider:
+        name = "refusing"
+
+        async def generate_structured(self, request):
+            raise RuntimeError("model refused on purpose")
+
+        async def embed(self, texts, *, model=None):
+            return [[0.0] * 4 for _ in texts]
+
+        async def stream(self, request):
+            yield ""
+
+        async def tool_call(self, request):
+            return await self.generate_structured(request)
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "model_provider", "openai", raising=False)
+    monkeypatch.setattr(settings, "openai_api_key", "test-only", raising=False)
+    monkeypatch.setattr(settings, "model_external_send_max_classification", "C2",
+                        raising=False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(gateway, "build_provider", lambda: RefusingProvider())
+
+    async with _client(slot) as http:
+        response = await http.post(PROFILE_IMPORT,
+                                   json={"file_id": str(file_id),
+                                         "extractor": "model"})
+
+    assert response.status_code >= 400, (
+        f"إخفاقُ النموذج رُدَّ نجاحًا: HTTP {response.status_code}")
+    assert await _profile_count(slot["tenant_id"]) == profiles_before, (
+        "بقي مِلفٌّ شخصيٌّ جديدٌ أثرًا لاستخراجٍ أخفق نموذجُه")
+    assert await _extraction_counts(slot["tenant_id"]) == rows_before, (
+        "بقيت صفوفُ استخراجٍ من استخراجٍ أخفق")
+
+
+async def test_24_a_successful_import_creates_the_profile_and_the_extraction(
+    two_tenants, monkeypatch,
+):
+    """**والنجاحُ يُنشئ الاثنين معًا** — فالذرّيّةُ ليست منعًا للنجاح."""
+    from athera_api.services import ingestion
+
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    assert await _profile_count(slot["tenant_id"]) == 0
+    rows_before = await _extraction_counts(slot["tenant_id"])
+
+    async def read(_key):
+        return DOCUMENT
+
+    monkeypatch.setattr(ingestion, "load_object_bytes", read)
+
+    async with _client(slot) as http:
+        response = await http.post(PROFILE_IMPORT,
+                                   json={"file_id": str(file_id),
+                                         "extractor": "rules"})
+
+    assert response.status_code == 202, response.text
+    assert await _profile_count(slot["tenant_id"]) == 1, "لم يُنشأ المِلفُّ الشخصيّ"
+    rows_after = await _extraction_counts(slot["tenant_id"])
+    assert rows_after["extraction_runs"] == rows_before["extraction_runs"] + 1, (
+        rows_before, rows_after)
+    assert rows_after["document_chunks"] > rows_before["document_chunks"], (
+        rows_before, rows_after)
+
+
+async def test_25_an_existing_profile_is_never_removed_by_a_failed_import(
+    two_tenants, monkeypatch,
+):
+    """ومِلفٌّ كان قائمًا قبل الطلب لا يُحذف عند الإخفاق — ولا تعويضَ يُختلق."""
+    from athera_api.services import ingestion
+
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    async with _client(slot) as http:
+        warm = await http.get("/api/v1/profile")
+        assert warm.status_code == 200, warm.text
+    assert await _profile_count(slot["tenant_id"]) == 1
+
+    async def refuse(_key):
+        raise RuntimeError("storage refused on purpose")
+
+    monkeypatch.setattr(ingestion, "load_object_bytes", refuse)
+    async with _client(slot) as http:
+        response = await http.post(PROFILE_IMPORT,
+                                   json={"file_id": str(file_id),
+                                         "extractor": "rules"})
+    assert response.status_code >= 400, response.text
+    assert await _profile_count(slot["tenant_id"]) == 1, (
+        "حُذف مِلفٌّ كان قائمًا — والتعويضُ ليس مطلوبًا هنا أصلًا")
+
+
+async def test_26_persistence_cannot_reach_outside_the_process_by_construction(
+) -> None:
+    """**والبنيةُ تمنع المسلك، لا الاتّفاق** — `ingest_file` تخزينٌ محضّ.
+
+    وكانت `raw_bytes` و`proposal` اختياريّتَين و`extractor` كائنَ واجهة،
+    فبقي فيها مسلكانِ يخرجان من العمليّة: قراءةُ تخزينٍ ونداءُ نموذج. وهي
+    تُنادى **داخل معاملةٍ قصيرة** — فمستدعٍ ينسى أحدَ المُعطَيين غدًا
+    يُمسك معاملةً عبر الشبكة. فصارت الثلاثةُ مطلوبة.
+    """
+    import inspect
+
+    from athera_api.services.ingestion import ingest_file
+
+    parameters = inspect.signature(ingest_file).parameters
+    for name in ("extractor_name", "raw_bytes", "proposal"):
+        assert name in parameters, (name, list(parameters))
+        assert parameters[name].default is inspect.Parameter.empty, (
+            f"`{name}` اختياريّةٌ — فالمسلكُ الخارجيُّ ما زال قائمًا")
+    assert "extractor" not in parameters, (
+        "كائنُ المُستخرِج ما زال يُمرَّر — والمسلكُ يعود من الباب الخلفيّ")
+
+    source = inspect.getsource(ingest_file)
+    assert ".propose(" not in source, "ما زالت تنادي مُستخرِجًا"
+    assert "load_object_bytes" not in source and "_load_bytes" not in source, (
+        "ما زالت تقرأ التخزين")
+
+
+# ══════════ ٦ · الحارسُ يرى نمطَ مصنعِ الجلسات — وقد كان أعمى عنه ══════════
+#
+# **وهذه ثغرةٌ في الحارس نفسِه كشفتها المراجعة.** كان يطابق أسماءَ سياقٍ
+# حرفيّةً، فلم يرَ النمطَ الذي أدخله هذا الطور:
+#
+#     session_maker = tenant_session_maker(...)
+#     async with session_maker() as session:
+#         await external_call()          ← مخالفةٌ لم تُكشف
+#
+# فصار يكتشف المصانعَ **من الشيفرة**: دالّةٌ تُعيد دالّةً تُعيد سياقَ جلسة.
+
+
+def _staged_tree(tmp_path, probe_source: str, name: str = "zz_probe.py"):
+    """شجرةٌ حقيقيّةٌ مُستنسخةٌ ومعها مسارٌ مُصطنَع — ثمّ تُمسح."""
+    import pathlib
+    import shutil
+
+    from tests.external_wait_audit import audit
+
+    real = pathlib.Path(__file__).resolve().parents[1] / "athera_api"
+    staged = tmp_path / "athera_api"
+    if not staged.exists():
+        shutil.copytree(real, staged,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    (staged / "routers" / name).write_text(probe_source, encoding="utf-8")
+    return audit(staged).offenders()
+
+
+_HEAD = (
+    "from fastapi import APIRouter, Depends\n"
+    "from sqlalchemy.ext.asyncio import AsyncSession\n"
+    "from ..db import tenant_session, tenant_session_maker\n"
+    "from ..deps import Principal, get_principal, get_session\n"
+    "from ..services.ingestion import load_object_bytes\n"
+    "from ..services.literature import verification\n"
+    "from ..transaction import TransactionalRoute\n"
+    "router = APIRouter(route_class=TransactionalRoute)\n\n"
+)
+
+
+def test_27_a_direct_tenant_session_context_offender_is_detected(tmp_path) -> None:
+    """(ب) سياقٌ مباشرٌ يملكه المتن — `async with tenant_session(...)`."""
+    offenders = _staged_tree(tmp_path, _HEAD + (
+        "@router.post('/zz-direct')\n"
+        "async def zz_direct(principal: Principal = Depends(get_principal)) -> dict:\n"
+        "    async with tenant_session(principal.tenant_id, principal.user_id) as s:\n"
+        "        await load_object_bytes('k')\n"
+        "    return {}\n"), name="zz_direct.py")
+    assert [o.key for o in offenders] == [("zz_direct.py", "zz_direct")], (
+        [o.key for o in offenders])
+    assert offenders[0].held_by == "handler body", offenders[0].held_by
+
+
+def test_28_a_session_maker_alias_offender_is_detected(tmp_path) -> None:
+    """(ج) **متغيّرُ مصنعٍ** — وهو ما كان الحارسُ أعمى عنه."""
+    offenders = _staged_tree(tmp_path, _HEAD + (
+        "@router.post('/zz-maker')\n"
+        "async def zz_maker(principal: Principal = Depends(get_principal)) -> dict:\n"
+        "    session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)\n"
+        "    async with session_maker() as session:\n"
+        "        await load_object_bytes('k')\n"
+        "    return {}\n"), name="zz_maker.py")
+    assert [o.key for o in offenders] == [("zz_maker.py", "zz_maker")], (
+        [o.key for o in offenders])
+    assert offenders[0].kind == "STORAGE", offenders[0].kind
+
+
+def test_29_a_renamed_maker_alias_is_detected(tmp_path) -> None:
+    """(د) وبأيِّ اسم — فالمصنعُ يُعرَف بشكله لا باسم متغيّره."""
+    offenders = _staged_tree(tmp_path, _HEAD + (
+        "@router.post('/zz-renamed')\n"
+        "async def zz_renamed(principal: Principal = Depends(get_principal)) -> dict:\n"
+        "    whatever = tenant_session_maker(principal.tenant_id, principal.user_id)\n"
+        "    async with whatever() as session:\n"
+        "        await verification.resolve_doi([], '10.1/x')\n"
+        "    return {}\n"), name="zz_renamed.py")
+    assert [o.key for o in offenders] == [("zz_renamed.py", "zz_renamed")], (
+        [o.key for o in offenders])
+    assert offenders[0].kind == "NETWORK", offenders[0].kind
+
+
+def test_30_a_direct_maker_expression_is_detected(tmp_path) -> None:
+    """(هـ) ومصنعٌ يُنادى في موضعه — `async with tenant_session_maker(...)()`."""
+    offenders = _staged_tree(tmp_path, _HEAD + (
+        "@router.post('/zz-inline')\n"
+        "async def zz_inline(principal: Principal = Depends(get_principal)) -> dict:\n"
+        "    async with tenant_session_maker(\n"
+        "            principal.tenant_id, principal.user_id)() as session:\n"
+        "        await load_object_bytes('k')\n"
+        "    return {}\n"), name="zz_inline.py")
+    assert [o.key for o in offenders] == [("zz_inline.py", "zz_inline")], (
+        [o.key for o in offenders])
+
+
+def test_31_the_safe_detached_pattern_is_not_flagged(tmp_path) -> None:
+    """**والنمطُ الصحيحُ لا يُتَّهم** — وهذه الدعوى الفارقة.
+
+    فعمرُ متغيّرِ المصنع يمتدّ إلى آخر المعالج، أمّا **مدى المعاملة** فداخل
+    `async with` وحدَه. ولو خلط الحارسُ بينهما لاتّهم كلَّ مسارٍ أصلحناه —
+    فيصير عاجزًا عن التفريق بين العطب وعلاجه.
+    """
+    offenders = _staged_tree(tmp_path, _HEAD + (
+        "from sqlalchemy import text\n\n"
+        "@router.post('/zz-safe')\n"
+        "async def zz_safe(principal: Principal = Depends(get_principal)) -> dict:\n"
+        "    session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)\n"
+        "    async with session_maker() as session:\n"
+        "        row = (await session.execute(text('SELECT 1'))).scalar_one()\n"
+        "    payload = await load_object_bytes(str(row))\n"
+        "    async with session_maker() as session:\n"
+        "        await session.execute(text('SELECT 2'))\n"
+        "    return {'bytes': len(payload)}\n"), name="zz_safe.py")
+    assert offenders == [], (
+        "اتُّهم النمطُ المنفصلُ الصحيح — فالحارسُ يخلط عمرَ المتغيّر بمدى "
+        f"المعاملة: {[o.describe() for o in offenders]}")
+
+
+def test_32_the_scanner_declares_what_it_discovered_and_what_it_lost() -> None:
+    """وما يُكتشف يُقال، وما يُفقد يُقال — فلا حارسٌ يمرّ وهو أعمى.
+
+    وواجهةٌ أو سياقٌ أُعيد تشكيلُه يُسقط الحارسَ صامتًا لو أُهمل.
+    """
+    from tests.external_wait_audit import audit
+
+    result = audit()
+    assert not result.missing_seeds, result.missing_seeds
+    assert not result.missing_contexts, (
+        "سياقُ جلسةٍ مُعلَنٌ لم يُعثر عليه في الشيفرة: "
+        f"{result.missing_contexts}")
+    assert "athera_api.db:tenant_session_maker" in result.maker_factories, (
+        sorted(result.maker_factories))
+    # **والمصانعُ تُكتشف لا تُعدّ**: ثلاثةٌ أُخرى في الموجّهات لم تُكتب هنا
+    # بأسمائها، ويجدها المسحُ بشكلها.
+    assert len(result.maker_factories) >= 4, sorted(result.maker_factories)
+    assert result.session_contexts >= {"tenant_session", "project_session"}, (
+        sorted(result.session_contexts))

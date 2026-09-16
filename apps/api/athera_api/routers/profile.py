@@ -138,9 +138,17 @@ async def import_document(
     """
     session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)
 
-    # ── الطورُ (١): الملفُّ والمِلف الشخصيّ، في معاملةٍ قصيرة ──
+    # ── الطورُ (١): **قراءاتٌ فقط** — ولا كتابةَ تسبق الانتظار ──
+    #
+    # **ولا يُنشأ المِلفُّ الشخصيُّ هنا.** كان `_get_or_create_profile` في
+    # هذا الطور، وهو **كتابة**: فتُودَع قبل قراءة التخزين، فإن أخفق
+    # الاستيراد بقي مِلفٌّ شخصيٌّ جديدٌ أثرًا لطلبٍ فاشل. وقبل RC-T1-H3-B
+    # كان الإنشاءُ والاستخراجُ في معاملةِ الطلب نفسِها، فيرجعان معًا —
+    # **وتقصيرُ المعاملات لا يجوز أن يُضعف تلك الذرّيّة.**
+    #
+    # فصار الإنشاءُ في معاملة الإنهاء مع الاستخراج: إمّا يقعان معًا أو
+    # لا يقع أيٌّ منهما.
     async with session_maker() as session:
-        await _get_or_create_profile(session, principal.tenant_id, principal.user_id)
         record = (await session.execute(
             select(File).where(File.id == payload.file_id,
                                File.tenant_id == principal.tenant_id)
@@ -181,14 +189,22 @@ async def import_document(
                           detail=str(exc)) from exc
     proposal = await extractor.propose(chunks)
 
-    # ── الطورُ (٤): التخزين والإيداع، في معاملةٍ قصيرة ──
+    # ── الطورُ (٤): الإنشاءُ والتخزينُ والإيداع — **في معاملةٍ واحدة** ──
+    #
+    # والترتيبُ داخلها لا يُغيّر الحصيلة: `ingest_file` تُعيد التحقّق من
+    # الملفّ وحاله، فإن رفعت (٤٠٤ أو ٤٠٩) رجعت المعاملةُ كلُّها ومعها
+    # المِلفُّ الشخصيّ. **فإخفاقُ الاستيراد لا يُخلّف مِلفًّا جديدًا.**
+    #
+    # ومِلفٌّ كان موجودًا قبل الطلب لا يُمَسّ: `_get_or_create_profile`
+    # تقرؤه ولا تُنشئ بديلًا، ولا تحذف شيئًا عند الإخفاق.
     async with session_maker() as session:
+        await _get_or_create_profile(session, principal.tenant_id, principal.user_id)
         run, candidates = await ingestion.ingest_file(
             session,
             tenant_id=principal.tenant_id,
             file_id=payload.file_id,
             actor_user_id=principal.user_id,
-            extractor=extractor,
+            extractor_name=extractor.name,
             raw_bytes=data,
             proposal=proposal,
         )

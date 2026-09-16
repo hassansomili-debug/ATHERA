@@ -120,6 +120,9 @@ class _Audit:
         self.edges: dict[str, set[str]] = collections.defaultdict(set)
         self.attr_class: dict[tuple[str, str, str], str] = {}
         self.factory: dict[tuple[str, str, str], set[str]] = {}
+        self.session_contexts: set[str] = set()
+        self.maker_factories: set[str] = set()
+        self.missing_contexts: list[str] = []
         self.egress: dict[str, str] = {}
         self.reach: dict[str, str] = {}
         self.chain: dict[str, list[str]] = {}
@@ -140,6 +143,7 @@ class _Audit:
         self._read_imports()
         self._read_attributes()
         self._read_definitions()
+        self._read_session_scopes()
         self._read_egress()
         self._close_transitively()
 
@@ -372,6 +376,82 @@ class _Audit:
                 return {cand}
         return set()
 
+
+    def _read_session_scopes(self) -> None:
+        """يكتشف **من الشيفرة** ما يفتح معاملةً: السياقاتُ ومصانعُها.
+
+        ولمَ لا تُخمَّن الأسماء: الماسحُ كان يطابق أسماءَ سياقٍ حرفيّةً، فلم
+        يرَ النمطَ الذي أدخله RC-T1-H3-B نفسُه:
+
+            session_maker = tenant_session_maker(...)
+            async with session_maker() as session:
+                await external_call()        # ← مخالفةٌ لم تُكشف
+
+        **فمصنعُ الجلسات يُعرَّف بشكله لا باسمه**: دالّةٌ تُعيد دالّةً
+        داخليّةً، وتلك الداخليّةُ تُعيد نداءَ سياقِ جلسة. وهذا يصف
+        `tenant_session_maker` اليوم، ويصف كلَّ مصنعٍ يُكتب غدًا على منوالها
+        بأيّ اسم.
+        """
+        # (١) السياقاتُ المُعلَنة — ويُشترط وجودُها، فاختفاءُ واحدٍ يُقال.
+        declared = {q.split(":")[1] for q in self.defs}
+        for name in SESSION_CONTEXTS:
+            if name in declared:
+                self.session_contexts.add(name)
+            else:
+                self.missing_contexts.append(name)
+
+        # (٢) المصانع: دالّةٌ تُعيد دالّةً تُعيد سياقًا.
+        for qualified, fn in self.defs.items():
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            inner_defs = {n.name: n for n in ast.walk(fn)
+                          if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                          and n is not fn}
+            if not inner_defs:
+                continue
+            returned = {r.value.id for r in ast.walk(fn)
+                        if isinstance(r, ast.Return) and isinstance(r.value, ast.Name)}
+            for name in returned & set(inner_defs):
+                for ret in ast.walk(inner_defs[name]):
+                    if isinstance(ret, ast.Return) and isinstance(ret.value, ast.Call) \
+                            and isinstance(ret.value.func, ast.Name) \
+                            and ret.value.func.id in self.session_contexts:
+                        self.maker_factories.add(qualified)
+                        break
+
+    def _maker_variables(self, module: str, fn) -> set[str]:
+        """أسماءُ المتغيّرات المُسنَدة من مصنعِ جلسات في هذا المعالج."""
+        names: set[str] = set()
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+                continue
+            target = self._resolve(module, node.value.func)
+            if not target:
+                continue
+            if any(cand in self.maker_factories for cand in self._candidates(target)):
+                names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        return names
+
+    def _opens_transaction(self, module: str, item, makers: set[str]) -> bool:
+        """هل يفتح هذا البندُ معاملةً؟ — ثلاثةُ أشكالٍ لا شكلٌ واحد."""
+        expr = item.context_expr
+        if not isinstance(expr, ast.Call):
+            return False
+        func = expr.func
+        # (أ) سياقٌ مباشر: `async with tenant_session(...)`
+        if isinstance(func, ast.Name) and func.id in self.session_contexts:
+            return True
+        # (ب) متغيّرُ مصنعٍ: `async with session_maker()` بأيّ اسم
+        if isinstance(func, ast.Name) and func.id in makers:
+            return True
+        # (ج) مصنعٌ يُنادى مباشرةً: `async with tenant_session_maker(...)()`
+        if isinstance(func, ast.Call):
+            target = self._resolve(module, func.func)
+            if target and any(cand in self.maker_factories
+                              for cand in self._candidates(target)):
+                return True
+        return False
+
     # ───────────────────────── جذورُ الخروج ─────────────────────────
 
     def _read_egress(self) -> None:
@@ -443,12 +523,15 @@ class _Audit:
                            and d.func.id == "Depends" and d.args
                            and isinstance(d.args[0], ast.Name)
                            and d.args[0].id in SESSION_DEPENDENCIES]
+                # **ومدى المعاملة لا عمرُ المتغيّر.** المصنعُ يعيش من سطر
+                # إسنادِه إلى آخر المعالج، أمّا المعاملةُ فداخل `async with`
+                # وحدَه. فالنمطُ المنفصل (تحضيرٌ ثمّ خارجٌ ثمّ إنهاء) لا
+                # يُتَّهم، والنداءُ الخارجيُّ **داخل** الكتلة يُتَّهم.
+                makers = self._maker_variables(module, fn)
                 owned: list[tuple[int, int]] = []
                 for node in ast.walk(fn):
                     if isinstance(node, ast.AsyncWith) and any(
-                            isinstance(i.context_expr, ast.Call)
-                            and isinstance(i.context_expr.func, ast.Name)
-                            and i.context_expr.func.id in SESSION_CONTEXTS
+                            self._opens_transaction(module, i, makers)
                             for i in node.items):
                         owned.append((node.lineno,
                                       max(getattr(x, "lineno", node.lineno)
