@@ -89,6 +89,23 @@ engine = create_async_engine(
 SessionFactory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
+def tenant_session_maker(tenant_id: UUID, actor_id: UUID | None = None):
+    """دالّةٌ تُنشئ جلسةً **جديدة** عند كلّ نداء — لا جلسةٌ تُمرَّر (RC-T1-H3).
+
+    وهذا هو الفرقُ كلُّه: الجلسةُ الممرَّرة تحمل معاملةً حيّة، فتبقى مفتوحةً
+    ما دام المستدعي يعمل — وإن كان يعمل انتظارًا لنموذجٍ أو لفهرسٍ خارجيّ
+    بقيت المعاملةُ مفتوحةً طوالَ ذلك، والاتصالُ `idle in transaction`.
+
+    والدالّةُ تفتح معاملةً قصيرةً وتغلقها، ثمّ تفتح أخرى بعد الانتظار.
+    وسياقُ RLS يُضبط بـ`SET LOCAL` فيموت مع كلّ معاملة ويُعاد ضبطُه مع
+    التالية — **فلا يُحمَل كائنُ ORM عبر الحدّ**، بل قيمٌ عاديّة.
+    """
+    def _make():
+        return tenant_session(tenant_id, actor_id)
+
+    return _make
+
+
 @asynccontextmanager
 async def _scope(session: AsyncSession, *, owns_commit: bool) -> AsyncIterator[None]:
     """حدُّ المعاملة — **وملكيّةُ الإيداع تُقال صريحًا لا تُفترض** (RC-T1-H1).
