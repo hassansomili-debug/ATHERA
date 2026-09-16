@@ -26,7 +26,7 @@ async with AsyncExitStack() as request_stack:      # التبعيّةُ ذاتُ
 
     TransactionalRoute.get_route_handler()
         response = await original(request)     # المعالجُ بنى الجواب
-        await commit_request_sessions(request) # ← الإيداعُ هنا
+        await commit_request_session(request) # ← الإيداعُ هنا
         return response                        # ← ثمّ يُرسَل الجواب
 
 وإن أخفق الإيداعُ رُفع `AtheraError` من المعالج نفسِه، فيمرّ بمعالجات
@@ -41,6 +41,20 @@ async with AsyncExitStack() as request_stack:      # التبعيّةُ ذاتُ
 
 وصنفُ المسار يُثبَّت مرّةً على كلِّ موجّه، ويحرسه فحصٌ معماريّ: موجّهٌ جديد
 بلا `route_class` يُسقط الحزمة. **فالإنفاذُ بنيويّ لا قائمةُ مراجعةٍ بشرية.**
+
+## المعاملةُ الواحدة — **طلبٌ واحد، معاملةٌ واحدةٌ على الأكثر**
+
+وحالةُ الطلب **خانةٌ واحدة** لا قائمة، وذاك مقصود: قائمةٌ تُودَع بالتسلسل
+**ليست ذرّيّة**. فلو أُودعت الأولى ثمّ أخفقت الثانية لَصار الجوابُ إخفاقًا
+**والأولى مُودَعةٌ لا سبيل إلى إرجاعها** — نصفُ كتابةٍ تحت جوابِ إخفاق،
+وهو أسوأُ من رفضٍ صريح.
+
+فتُرفض المعاملةُ الثانية مغلقًا (`MultipleRequestTransactions`)، والرفعُ
+يقع في التبعيّة **قبل `yield`** — أي قبل أن يكتب المعالجُ شيئًا.
+
+**ولا مسارَ في التطبيق اليوم يحتاج اثنتين**: مقيسٌ على شجرة التبعيّات
+المُركَّبة لمئتين وتسعةٍ وستّين مسارًا — الأقصى **واحدة**، ولا
+`use_cache=False` على تبعيّةِ جلسةٍ في الشجرة كلِّها. ويحرسه فحص.
 
 ## وما لا يُمَسّ
 
@@ -70,36 +84,73 @@ if TYPE_CHECKING:  # pragma: no cover - للأنواع وحدها
 
 logger = logging.getLogger("athera.transaction")
 
-#: موضعُ جلسات الطلب على حالته — قائمةٌ لأنّ طلبًا قد يفتح أكثر من جلسة.
-_STATE_KEY = "athera_request_sessions"
+#: **خانةٌ واحدةٌ لا قائمة** — والوحدانيّةُ بنيةٌ لا عُرف. انظر §المعاملةُ الواحدة.
+_STATE_KEY = "athera_request_session"
 
 #: رمزُ الإخفاق — نصُّه في `i18n/catalog.py` بالعربية والإنجليزية.
 COMMIT_FAILED = "db.commit_failed"
 
+#: خطأُ بنيةٍ لا خطأُ عميل: طلبٌ حاول أن يملك معاملتين.
+MULTIPLE_TRANSACTIONS = "db.multiple_request_transactions"
+
+
+class MultipleRequestTransactions(AtheraError):
+    """طلبٌ حاول تسجيلَ معاملةٍ ثانية — **وهذا خطأُ برمجةٍ يُوقف الطلب**.
+
+    ولمَ يُرفع ولا يُجمَع: إيداعُ معاملتين بالتسلسل **ليس ذرّيًّا**. فلو
+    نجحت الأولى وأخفقت الثانية لَصار الجوابُ إخفاقًا **والأولى مُودَعة
+    لا سبيل إلى إرجاعها**. فالجمعُ يُنتج نصفَ كتابةٍ تحت جوابِ إخفاق —
+    وهو أسوأُ من الرفض الصريح.
+
+    ولا مسارَ في التطبيق اليوم يحتاج معاملتين (مقيسٌ على الشجرة
+    المُركَّبة: الأقصى واحدة). فإن احتاج مسارٌ ذلك غدًا فهو **قرارُ تصميمٍ
+    يُتّخذ صريحًا**، لا سلوكٌ يُسمح به صامتًا.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(MULTIPLE_TRANSACTIONS, status_code=500)
+
 
 def register_request_session(request: Request, session: AsyncSession) -> None:
-    """تُسجّل جلسةً يملك الطلبُ إيداعَها — تناديها تبعيّاتُ الجلسة وحدها."""
-    sessions: list[AsyncSession] | None = getattr(request.state, _STATE_KEY, None)
-    if sessions is None:
-        sessions = []
-        setattr(request.state, _STATE_KEY, sessions)
-    sessions.append(session)
+    """تُسجّل معاملةَ الطلب — **وواحدةً فقط**، وإلّا رُفض الطلب مغلقًا.
+
+    والرفعُ يقع في التبعيّة **قبل `yield`**، أي قبل أن يعمل المعالجُ
+    ويكتب شيئًا: فلا طفرةَ تقع ثمّ تُرفض.
+
+    وتسجيلُ **الكائن نفسِه** مرّةً ثانيةً لا يضرّ (تخزينُ FastAPI المؤقّت
+    يمنعه أصلًا، والسماحُ به يجعل الدالّةَ صالحةً لإعادة النداء).
+    """
+    existing: AsyncSession | None = getattr(request.state, _STATE_KEY, None)
+    if existing is None:
+        setattr(request.state, _STATE_KEY, session)
+        return
+    if existing is session:
+        return
+    logger.error(
+        "a request attempted to own a second database transaction",
+        extra={
+            "request_id": request.headers.get("x-request-id"),
+            "route": request.scope.get("route_path") or request.url.path,
+            "method": request.method,
+            "transaction_outcome": "refused_second_transaction",
+        },
+    )
+    raise MultipleRequestTransactions
 
 
-def request_sessions(request: Request) -> list[AsyncSession]:
-    """جلساتُ هذا الطلب — تُقرأ في الفحوص وفي الغلاف."""
-    return list(getattr(request.state, _STATE_KEY, ()) or ())
+def request_session(request: Request) -> AsyncSession | None:
+    """معاملةُ هذا الطلب — أو `None` إن كان المسارُ يملك معاملتَه في متنه."""
+    return getattr(request.state, _STATE_KEY, None)
 
 
-async def commit_request_sessions(request: Request) -> None:
-    """يُودِع معاملاتِ الطلب — **وإخفاقُها خطأٌ يُرفع لا سطرٌ في سجلّ**.
+async def commit_request_session(request: Request) -> None:
+    """يُودِع معاملةَ الطلب — **وإخفاقُها خطأٌ يُرفع لا سطرٌ في سجلّ**.
 
-    ويُودَع ما بقيت معاملتُه حيّةً وحدَه: فمسارٌ أودع بنفسه قبل جدولةِ
+    ولا يُودَع إلّا ما بقيت معاملتُه حيّةً: فمسارٌ أودع بنفسه قبل جدولةِ
     عملٍ في الخلفية لا يُودَع مرّتين.
     """
-    for session in request_sessions(request):
-        if not session.in_transaction():
-            continue
+    session = request_session(request)
+    if session is not None and session.in_transaction():
         try:
             await session.commit()
         except Exception as failure:
@@ -139,7 +190,7 @@ class TransactionalRoute(APIRoute):
             response = await original(request)
             # **هنا بعينه**: المعالجُ انتهى وبنى جوابَه، والجوابُ لم يُرسَل
             # بعد — فإخفاقُ الإيداع ما زال قابلًا لأن يُقال للعميل.
-            await commit_request_sessions(request)
+            await commit_request_session(request)
             return response
 
         return transactional

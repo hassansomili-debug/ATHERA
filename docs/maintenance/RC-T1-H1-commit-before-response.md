@@ -96,7 +96,7 @@ uvicorn حقيقيٍّ باتصالٍ مُعاد الاستعمال (صفرٌ م
 ```python
 class TransactionalRoute(APIRoute):     # athera_api/transaction.py
     ...  response = await original(request)
-         await commit_request_sessions(request)   # ← قبل إرسال الجواب
+         await commit_request_session(request)   # ← قبل إرسال الجواب
          return response
 ```
 
@@ -112,6 +112,18 @@ class TransactionalRoute(APIRoute):     # athera_api/transaction.py
 أثرٍ خارجيٍّ مع الإيداع — تخزينٌ أو شبكةٌ أو رسالة. وتصنيفُ تلك المواضع
 وحدُّها في `docs/architecture/transactions.md` §٦، وصندوقُ الصادر عملٌ
 لاحقٌ مُعلَن.
+
+**والدَّينان المُعلَنان بالاسم:**
+
+| الدَّين | الدعوى المفتوحة | الملفّ |
+|---|---|---|
+| `RC-T1-H2` | أُودع — **والعميلُ لم يعلم**: إعادةُ الطلب قد تُكرّر الطفرة | `RC-T1-H2-mutation-idempotency.md` |
+| `RC-T1-H3` | `ai.ask` و`brain.ask` تُمسكان معاملةً عبر نداءِ نموذج — خطرُ إتاحة | `RC-T1-H3-ai-long-transactions.md` |
+
+و`RC-T1-H3` **أوّلُ ما يُعالَج بعد دمج هذا الطور**.
+
+**ولا يُدَّعى «مرّةً واحدةً بالضبط» (exactly-once).** ما أُغلق هو النجاحُ
+الكاذب وحدَه.
 
 ## وما كانت التقاريرُ تقوله
 
