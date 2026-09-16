@@ -1173,3 +1173,57 @@ async def test_25_rls_refuses_select_update_and_delete_across_actors(
         blind = (await s.execute(text(
             "SELECT count(*) FROM idempotency_records"))).scalar_one()
     assert blind == 0, "جلسةٌ بلا فاعلٍ رأت صفوفًا — `app_current_actor()` لم تفشل مغلقةً"
+
+
+async def test_26_the_conflict_audit_survives_on_a_route_that_owns_its_commit(
+    two_tenants,
+):
+    """**والدعوى تُعاد على المسار المختلفِ بنيةً** — لا على أسهلها.
+
+    فـ`workspace` تُودِعه `TransactionalRoute` بعد أن يبني جوابَه، أمّا
+    `analysis.create_run` **فيملك معاملتَه في متنه**: جلسةُ `_scope_pair`
+    تُودِع عند خروج السياق. وجوابُ ٤٠٩ يُعاد من **داخل** ذلك السياق، فلو
+    كان خروجًا بالاستثناء لَرجعت المعاملةُ ولَذهبت الحادثةُ معها.
+
+    وهذا هو الفرقُ الذي يجعل برهانَ `test_24` وحدَه غيرَ كافٍ.
+    """
+    from tests.test_at_rc_t1a_project_access import _owned_project
+
+    slot = two_tenants["a"]
+    project_id = await _owned_project(slot, title="بحثُ تعارضِ التشغيلة")
+    body = await _runnable(slot, slot, project_id)
+    key = _key()
+
+    before = await _scalar(
+        "SELECT count(*) FROM audit_events"
+        " WHERE tenant_id = :t AND action = 'idempotency.conflict'",
+        {"t": str(slot["tenant_id"])})
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/analysis/runs", json=body,
+                                headers={"Idempotency-Key": key})
+        # المفتاحُ نفسُه، وجسمٌ يختلف في بذرةٍ واحدة — فبصمةٌ أخرى.
+        clash = await http.post("/api/v1/analysis/runs",
+                                json={**body, "random_seed": 99},
+                                headers={"Idempotency-Key": key})
+
+    assert first.status_code == 201, first.text
+    assert clash.status_code == 409, clash.text
+    assert clash.json()["error"]["code"] == "idempotency.key_reused", clash.text
+
+    after = await _scalar(
+        "SELECT count(*) FROM audit_events"
+        " WHERE tenant_id = :t AND action = 'idempotency.conflict'",
+        {"t": str(slot["tenant_id"])})
+    assert after == before + 1, (
+        f"حوادثُ التعارض {before} ← {after} — ضاعت الحادثةُ مع خروج النطاق")
+
+    # **ولا تشغيلةَ ثانية**: الرفضُ رفضٌ، والحادثةُ وحدَها ما بقي.
+    assert await _runs_for(body["plan_id"]) == 1, "نُفِّذ الطلبُ المتعارض"
+
+    row = await _scalar(
+        "SELECT to_jsonb(e) FROM audit_events e"
+        " WHERE e.tenant_id = :t AND e.action = 'idempotency.conflict'"
+        " ORDER BY e.chain_seq DESC LIMIT 1", {"t": str(slot["tenant_id"])})
+    assert row["state_after"]["operation"] == "POST /api/v1/analysis/runs", row
+    assert key not in json.dumps(row, ensure_ascii=False, default=str)
