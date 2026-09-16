@@ -65,14 +65,24 @@ REPLAYED_HEADER = "Idempotency-Replayed"
 #: بمفاتيحَ عبثيّة، ويُرفض قبل أن يلمس الطلبُ القاعدة.
 _KEY = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
-#: أربعٌ وعشرون ساعة. والمفتاحُ يجب أن يعيش أطولَ من كلّ إعادةٍ واقعيّة
-#: لنيّةٍ واحدة — شبكةٌ متقطّعة، ومستخدمٌ يُعيد بعد انقطاع، وسلسلةُ تراجعٍ
-#: في العميل — ولا يعيش أطولَ من ذلك بكثيرٍ فيصير الجدولُ مخزنَ بيانات.
+#: أربعٌ وعشرون ساعة — **انتهاءُ صلاحيةٍ منطقيّ لا حذفٌ ماديّ**. فبعدها
+#: لا يُعيد المفتاحُ جوابًا ولا يمنع طفرة، ويُستردّ عند أوّل استعمال.
+#: **ولا يُدَّعى أنّ الصفَّ يُمحى عندها**: الحذفُ كسولٌ ومحدود، وصفوفُ
+#: فاعلٍ توقّف عن الاستعمال تبقى حتى صيانةٍ لاحقة (الطور C).
+#: والمدّةُ تكفي كلَّ إعادةٍ واقعيّةٍ لنيّةٍ واحدة — شبكةٌ متقطّعة، ومستخدمٌ
+#: يُعيد بعد انقطاع، وسلسلةُ تراجعٍ في العميل.
 TTL = dt.timedelta(hours=24)
 
 #: أقصى ما يُحذف في تنظيفةٍ واحدة. والتنظيفُ **ليس شرطًا للصحّة**:
 #: مفتاحٌ منتهٍ يُعالَج صحيحًا ولو لم يُنظَّف شيءٌ قطّ.
 CLEANUP_LIMIT = 100
+
+#: حدثُ التدقيق لتعارض المفاتيح — **إشارةُ سلامةٍ تبقى بعد ٤٠٩**.
+CONFLICT_ACTION = "idempotency.conflict"
+
+#: نوعُ الموضوع في سجلّ التدقيق. **ولا معرّفَ صفٍّ يُكتب**: الصفُّ المتعارَض
+#: صفُّ غيرِ هذا الطلب، ومعرّفُه لا يضيف تحقيقًا ويوسّع ما يُخزَّن.
+CONFLICT_OBJECT_TYPE = "idempotency_key"
 
 
 class KeyInvalid(AtheraError):
@@ -87,10 +97,19 @@ class KeyReused(AtheraError):
 
     وإعادةُ جوابِ الطلب الأوّل هنا كذبٌ: العميلُ طلب شيئًا آخر. وتنفيذُ
     الثاني تحت المفتاح نفسِه يجعل المفتاحَ بلا معنى. فالرفضُ صريح.
+
+    **والسببُ سمةٌ لا سياق**: `AtheraError.context` يُنسخ إلى جسم الجواب،
+    فما يُكتب في سجلّ التدقيق لا يُعرض على العميل. والسببُ للتحقيق لا له.
     """
 
-    def __init__(self) -> None:
+    #: تعارضُ بصمةٍ حقيقيّ — المفتاحُ نفسُه بجسمٍ آخر.
+    FINGERPRINT = "fingerprint_mismatch"
+    #: سباقٌ نادر: حُذف الصفُّ بين الإدراج والقراءة، وخسِر الطلبُ الحجزَ مرّتين.
+    LOST_RACE = "lost_claim_race"
+
+    def __init__(self, cause: str = FINGERPRINT) -> None:
         super().__init__("idempotency.key_reused", status_code=409)
+        self.cause = cause
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +242,7 @@ async def acquire_or_replay(
                                    moment=moment)
         if claimed is not None:
             return Claim(record_id=claimed, replay=None)
-        raise KeyReused
+        raise KeyReused(KeyReused.LOST_RACE)
 
     if existing.expires_at <= moment:
         # **مفتاحٌ منتهٍ يُستعاد حتميًّا.** والفهرسُ ما زال يحمله حتى يُحذف،
@@ -246,7 +265,7 @@ async def acquire_or_replay(
         )).scalar_one()
 
     if existing.request_fingerprint != fingerprint:
-        raise KeyReused
+        raise KeyReused(KeyReused.FINGERPRINT)
 
     if existing.state == COMPLETED and existing.response_status is not None:
         return Claim(record_id=existing.id,
@@ -345,34 +364,87 @@ async def bounded_cleanup(
 # التفويضُ الذي يمرّ به الطلبُ الأوّل.
 
 
+async def record_conflict(
+    session: AsyncSession, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
+    operation: str, cause: str, request_id: str | None,
+) -> None:
+    """يُدوّن التعارضَ في السجلّ المُلحَق — **وهو يبقى بعد الـ٤٠٩**.
+
+    ## ولمَ يُكتب في معاملة الطلب نفسِها
+
+    الطريقُ البديهيُّ أن يُرفع ٤٠٩ فورًا، لكنّ رفعَه يُرجِع المعاملة —
+    **فيُمحى الحدثُ مع الرفض**، ويضيع أوّلُ ما يُنظر إليه عند التحقيق.
+    وإشارةُ السلامة التي لا تبقى ليست إشارة.
+
+    والبديلُ الثاني — معاملةٌ ثانيةٌ قصيرة تُودَع على حدة — **يُفتح بابَ
+    تجمُّدٍ حقيقيّ**: `audit.record` تأخذ `pg_advisory_xact_lock` لكلّ
+    مستأجرٍ لتسلسلِ سلسلة التجزئة، فمعاملةٌ ثانيةٌ تطلب القفلَ نفسَه بينما
+    الأولى ما زالت مفتوحةً تنتظر إلى الأبد. ولا تُبنى صحّةٌ على أنّ الأولى
+    «لم تأخذ القفلَ بعد» — ذاك شرطٌ يكسره أوّلُ تعديل.
+
+    **فالمخرجُ ألّا يُرفع أصلًا**: يُكتب الحدثُ في المعاملة القائمة، ويُعاد
+    جوابُ ٤٠٩ **قيمةً لا استثناءً**. فتُودِع البنيةُ المعاملةَ قبل إرسال
+    الجواب كأيّ طفرةٍ ناجحة — وهذا **يُعمِل** RC-T1-H1 ولا يلتفّ عليه.
+    وليست هذه كتابةً نصفيّة: المعاملةُ لا تحمل إلّا الحدث، ولا صفَّ مجالٍ
+    فيها — الإدراجُ المتعارَض لم يُدرج شيئًا، وما قبل الحارس قراءاتٌ.
+
+    ## وما يُكتب — وما لا يُكتب أبدًا
+
+    **لا يُكتب**: المفتاحُ الخام، ولا جسمُ الطلب، ولا بصمتُه، ولا محتوى
+    بحثٍ، ولا الجوابُ المخزون. والبصمةُ مستبعَدةٌ عمدًا: هي دالّةُ الجسم،
+    وتخزينُها يسمح بتأكيد جسمٍ مُخمَّن.
+
+    ويُكتب: المستأجرُ، والفاعلُ، والعمليّةُ (فعلٌ وقالبُ مسار)، والسببُ،
+    ومعرّفُ الطلب إن وُجد.
+    """
+    from . import audit  # noqa: PLC0415 — يُؤجَّل ليبقى ترتيبُ الاستيراد حرًّا
+
+    await audit.record(
+        session, tenant_id=tenant_id, action=CONFLICT_ACTION,
+        object_type=CONFLICT_OBJECT_TYPE, object_id=None,
+        actor_user_id=actor_user_id,
+        state_after={"operation": operation, "cause": cause},
+        reason="an idempotency key was presented with a different request",
+        request_id=request_id,
+    )
+
+
+def _replay_response(replay: Replay):
+    """الجوابُ الأصليُّ كما كان — بحالته وجسمه ومعرّفه وأزمنته.
+
+    و`JSONResponse` تُعيد الجسمَ المخزون حرفيًّا بلا إعادةِ تحقّقٍ من نموذج
+    الجواب: المطلوبُ هو **ما رآه العميلُ أوّلَ مرّة**، لا ما يُنتجه المسارُ
+    الآن.
+
+    **ولا تُعاد ترويسةُ نقلٍ ولا أمن**: لا `Set-Cookie` ولا `Authorization`
+    ولا معرّفُ طلبٍ — الجسمُ والحالةُ وحدهما، ومعهما علامةٌ تقول إنّ هذا
+    إعادة.
+    """
+    from fastapi.responses import JSONResponse  # noqa: PLC0415
+
+    return JSONResponse(status_code=replay.status, content=replay.body,
+                        headers={REPLAYED_HEADER: "true"})
+
+
 @dataclass(slots=True)
 class Guard:
     """حارسُ مسارٍ واحد — و`None` يعني «بلا مفتاح، فالسلوكُ كما كان»."""
 
     claim: Claim | None
     operation: str
+    #: جوابٌ جاهزٌ يُعاد بدل تنفيذ الطفرة: إعادةٌ مخزونة، أو رفضُ تعارضٍ
+    #: دُوِّن بالفعل. و`None` تعني «امضِ في الطفرة».
+    answer: Any = None
 
     @property
     def replay(self) -> Replay | None:
         return self.claim.replay if self.claim is not None else None
 
     def replay_response(self):
-        """الجوابُ الأصليُّ كما كان — بحالته وجسمه ومعرّفه وأزمنته.
-
-        و`JSONResponse` تُعيد الجسمَ المخزون حرفيًّا بلا إعادةِ تحقّقٍ من
-        نموذج الجواب: المطلوبُ هو **ما رآه العميلُ أوّلَ مرّة**، لا ما
-        يُنتجه المسارُ الآن.
-
-        **ولا تُعاد ترويسةُ نقلٍ ولا أمن**: لا `Set-Cookie` ولا
-        `Authorization` ولا معرّفُ طلبٍ — الجسمُ والحالةُ وحدهما، ومعهما
-        علامةٌ تقول إنّ هذا إعادة.
-        """
-        from fastapi.responses import JSONResponse  # noqa: PLC0415
-
+        """الجوابُ المخزون — و`answer` تحمله جاهزًا، وهذه تبقى للنداء المباشر."""
         replay = self.replay
-        assert replay is not None
-        return JSONResponse(status_code=replay.status, content=replay.body,
-                            headers={REPLAYED_HEADER: "true"})
+        assert replay is not None  # noqa: S101 — يُضيّق النوعَ لا أكثر
+        return _replay_response(replay)
 
     async def finish(self, session: AsyncSession, *, status: int, body: Any) -> None:
         """يُثبّت الجوابَ — في معاملة الطفرة نفسِها، فيُودَعان معًا."""
@@ -400,10 +472,25 @@ async def begin(
     fingerprint = canonical_fingerprint(
         method=request.method, operation=operation, body=body,
         query=dict(request.query_params))
-    claim = await acquire_or_replay(
-        session, tenant_id=tenant_id, actor_user_id=actor_user_id,
-        operation=operation, key=key, fingerprint=fingerprint)
+    try:
+        claim = await acquire_or_replay(
+            session, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            operation=operation, key=key, fingerprint=fingerprint)
+    except KeyReused as conflict:
+        # **ويُدوَّن قبل أن يُردّ، وفي المعاملة القائمة** — انظر
+        # `record_conflict`: الرفعُ هنا كان يمحو الحدثَ مع الرجوع.
+        await record_conflict(
+            session, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            operation=operation, cause=conflict.cause,
+            request_id=request.headers.get("x-request-id"))
+        from ..errors import athera_error_handler  # noqa: PLC0415
+
+        return Guard(claim=None, operation=operation,
+                     answer=await athera_error_handler(request, conflict))
+
     if claim.replay is None:
         # تنظيفٌ محدودٌ على ظهر مرورٍ قائم — ولا تتّكل الصحّةُ عليه.
         await bounded_cleanup(session, tenant_id=tenant_id)
-    return Guard(claim=claim, operation=operation)
+        return Guard(claim=claim, operation=operation)
+    return Guard(claim=claim, operation=operation,
+                 answer=_replay_response(claim.replay))

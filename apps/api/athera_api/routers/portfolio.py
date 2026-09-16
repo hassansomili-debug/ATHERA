@@ -94,8 +94,11 @@ async def create_project(
         request, session, tenant_id=principal.tenant_id,
         actor_user_id=principal.user_id,
         body=payload.model_dump(mode="json"))
-    if guard.replay is not None:
-        return guard.replay_response()
+    # **ومخرجٌ واحدٌ لا مخرجان**: `answer` إمّا جوابٌ مخزونٌ يُعاد،
+    # وإمّا رفضُ تعارضٍ **دُوِّن في هذه المعاملة بعينها** فيُودَع
+    # معها قبل إرسال الجواب. ولو كانا فحصَين لأمكن نسيانُ أحدهما.
+    if guard.answer is not None:
+        return guard.answer
 
     profile = (
         await session.execute(

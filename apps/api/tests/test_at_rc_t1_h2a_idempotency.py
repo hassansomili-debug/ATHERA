@@ -25,10 +25,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 
 import pytest
 
+from athera_api.services.idempotency import digest_key
 from tests.test_at_rc_t1_h3_ai_long_transactions import _client, _observer
 
 pytestmark = pytest.mark.asyncio
@@ -672,3 +674,502 @@ def test_18_only_the_four_declared_routes_are_protected_in_phase_a() -> None:
     assert found == expected, f"المحميّ اليوم: {sorted(found)}"
     assert not {f for f, _ in found} & forbidden, (
         "مسارٌ من الطور B حُمي في الطور A")
+
+
+# ═════════════ ٩ · المساراتُ الأربعة، كلٌّ ببرهانه على HTTP ═════════════
+#
+# **والبرهانُ البنيويُّ لا يكفي بوّابةَ دمج.** `test_18` يُثبت أنّ أربعةَ
+# معالجاتٍ تنادي `idempotency.begin`، ولا يُثبت أنّ أيًّا منها **يتصرّف**
+# كما يجب: قد يُنادى الحارسُ ثمّ يُهمَل جوابُه، وقد يُوضع في موضعٍ لا
+# تبلغه الطفرة. فيُطرق كلُّ بابٍ بطلبٍ حقيقيّ على PostgreSQL حقيقيّة.
+
+
+async def _profile_for(slot) -> uuid.UUID:
+    """مِلفٌّ تعريفيٌّ — شرطُ `/portfolio/projects` قبل أن يُنشئ بحثًا."""
+    from sqlalchemy import select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import ResearcherProfile
+
+    async with tenant_session(slot["tenant_id"], slot["user_id"]) as session:
+        found = (await session.execute(
+            select(ResearcherProfile).where(
+                ResearcherProfile.user_id == slot["user_id"]))).scalar_one_or_none()
+        if found is not None:
+            return found.id
+        profile = ResearcherProfile(
+            tenant_id=slot["tenant_id"], user_id=slot["user_id"],
+            institution_ar="جامعةُ الفحص", primary_field_ar="منهجيّاتُ البحث")
+        session.add(profile)
+        await session.flush()
+        return profile.id
+
+
+async def _completed_records(tenant_id, operation) -> int:
+    """صفوفٌ مُكتمِلةٌ لعمليّةٍ بعينها — لا لكلّ الجدول."""
+    return await _scalar(
+        "SELECT count(*) FROM idempotency_records"
+        " WHERE tenant_id = :t AND operation = :o AND state = 'completed'",
+        {"t": str(tenant_id), "o": operation})
+
+
+async def test_19_portfolio_creation_replays_and_refuses_a_different_body(
+    two_tenants,
+):
+    """**محفظةُ الأبحاث**: إعادةٌ واحدةٌ لا بحثان، ثمّ تعارضٌ يُردّ.
+
+    و`/portfolio/projects` مسارٌ آخرُ يكتب **الجدولَ نفسَه**
+    (`research_projects`) بشروطٍ أخرى — فبرهانُ `workspace` لا ينوب عنه.
+    """
+    slot = two_tenants["a"]
+    await _profile_for(slot)
+    title = f"h2a-pf-{uuid.uuid4().hex[:10]}"
+    body = {"working_title_ar": title}
+    key = _key()
+    operation = f"POST {PORTFOLIO}"
+    before = await _completed_records(slot["tenant_id"], operation)
+
+    async with _client(slot) as http:
+        first = await http.post(PORTFOLIO, json=body,
+                                headers={"Idempotency-Key": key})
+        second = await http.post(PORTFOLIO, json=body,
+                                 headers={"Idempotency-Key": key})
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert await _project_rows(slot["tenant_id"], title) == 1, "بحثان من نيّةٍ واحدة"
+    assert first.json()["id"] == second.json()["id"], "أُعيد معرّفٌ مختلف"
+    assert first.json() == second.json(), "الجسمُ المُعاد ليس الأصل"
+    assert "idempotency-replayed" not in {k.lower() for k in first.headers}
+    assert second.headers.get("Idempotency-Replayed") == "true"
+    assert await _completed_records(slot["tenant_id"], operation) == before + 1, (
+        "عددُ الصفوف المُكتمِلة لهذه العمليّة ليس واحدًا")
+
+    # وبصمةُ الصفّ بصمةُ الطلب الأوّل، ولا أثرَ للمفتاح الخام فيه.
+    stored = await _scalar(
+        "SELECT count(*) FROM idempotency_records"
+        " WHERE tenant_id = :t AND operation = :o AND response_status = 201"
+        "   AND response_body->>'id' = :i",
+        {"t": str(slot["tenant_id"]), "o": operation, "i": first.json()["id"]})
+    assert stored == 1, "الجوابُ المخزون لا يُطابق ما رآه العميل"
+
+    # والمفتاحُ نفسُه بجسمٍ مختلفٍ يُردّ — على هذا المسار كما على غيره.
+    async with _client(slot) as http:
+        clash = await http.post(
+            PORTFOLIO, json={"working_title_ar": f"{title}-other"},
+            headers={"Idempotency-Key": key})
+    assert clash.status_code == 409, clash.text
+    assert clash.json()["error"]["code"] == "idempotency.key_reused", clash.text
+    assert await _project_rows(slot["tenant_id"], f"{title}-other") == 0, (
+        "نُفِّذ الطلبُ المتعارض")
+
+
+async def _runnable(owner_slot, actor_slot, project_id):
+    """خطّةٌ مقفولةٌ ونسخةٌ مجمّدة — شرطا تشغيلةٍ تُقبل، بالمسارات الحقيقيّة.
+
+    ولا يُدسّ صفٌّ في القاعدة: التجميدُ والاعتمادُ بوّابتان علميّتان
+    (§17.3، §9 G7)، وتشغيلةٌ تُبنى على صفوفٍ مدسوسةٍ تُثبت غيرَ ما نريد.
+    """
+    async with _client(actor_slot) as http:
+        created = await http.post("/api/v1/analysis/datasets", json={
+            "project_id": str(project_id), "name_ar": "بياناتُ التكرار",
+            "classification": "C3", "raw_label": "الرفع الأول",
+            "raw_checksum": "a" * 64, "row_count": 50})
+        assert created.status_code == 201, created.text
+        dataset_id = created.json()["dataset_id"]
+        raw_version = created.json()["id"]
+
+        derived = await http.post(
+            f"/api/v1/analysis/datasets/{dataset_id}/versions", json={
+                "parent_version_id": raw_version, "state": "cleaned",
+                "label": "منقّاة", "checksum": "d" * 64,
+                "change_note_ar": "تنقية", "row_count": 48})
+        assert derived.status_code == 201, derived.text
+        version_id = derived.json()["id"]
+
+        frozen = await http.post(
+            f"/api/v1/analysis/datasets/versions/{version_id}/freeze")
+        assert frozen.status_code == 200, frozen.text
+
+        plan = await http.post("/api/v1/analysis/plans", json={
+            "project_id": str(project_id), "version_label": "v1",
+            "summary_ar": "خطّةُ التكرار",
+            "tests": [{"test_key": "pearson_r", "test_kind": "correlation",
+                       "note_ar": "علاقةٌ مُفترضة"}]})
+        assert plan.status_code == 201, plan.text
+        plan_id = plan.json()["id"]
+
+    # **والاعتمادُ صلاحيةٌ أخرى** (`approve_scientific_candidates`) لا
+    # يوسّعها `manage_data` — فيقفل الخطّةَ صاحبُ البحث.
+    async with _client(owner_slot) as http:
+        approved = await http.post(f"/api/v1/analysis/plans/{plan_id}/approve")
+        assert approved.status_code == 200, approved.text
+
+    return {"plan_id": plan_id, "dataset_version_id": version_id,
+            "tool": "python", "executed_test_keys": ["pearson_r"],
+            "code_hash": "e" * 64, "runtime": "3.12", "random_seed": 7}
+
+
+async def _runs_for(plan_id) -> int:
+    return await _scalar(
+        "SELECT count(*) FROM analysis_runs WHERE plan_id = :p", {"p": str(plan_id)})
+
+
+async def test_20_an_analysis_run_replays_without_running_twice(two_tenants):
+    """**تشغيلةُ تحليلٍ واحدةٌ لا اثنتان** — والمسارُ يملك معاملتَه في متنه.
+
+    وهذا المسارُ أصعبُ الأربعة: الحارسُ يقع **داخل** `_scope_pair`، على
+    جلسةٍ ليست جلسةَ الطلب ومستأجرٍ قد لا يكون مستأجرَ الرمز. فبرهانُه
+    يجب أن يكون سلوكيًّا لا بنيويًّا.
+    """
+    from tests.test_at_rc_t1a_project_access import _owned_project
+
+    slot = two_tenants["a"]
+    project_id = await _owned_project(slot, title="بحثُ تشغيلةِ التكرار")
+    body = await _runnable(slot, slot, project_id)
+    key = _key()
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/analysis/runs", json=body,
+                                headers={"Idempotency-Key": key})
+        second = await http.post("/api/v1/analysis/runs", json=body,
+                                 headers={"Idempotency-Key": key})
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert await _runs_for(body["plan_id"]) == 1, "شُغّلت الخطّةُ مرّتين"
+    assert first.json()["id"] == second.json()["id"], "أُعيد معرّفُ تشغيلةٍ أخرى"
+    assert first.json() == second.json(), "الجسمُ المُعاد ليس الأصل"
+    assert second.headers.get("Idempotency-Replayed") == "true"
+    assert "idempotency-replayed" not in {k.lower() for k in first.headers}
+    assert await _completed_records(
+        slot["tenant_id"], "POST /api/v1/analysis/runs") >= 1
+
+
+async def test_21_two_concurrent_analysis_runs_execute_once(two_tenants):
+    """**وتزامنُ تشغيلتين بمفتاحٍ واحد ⇒ تشغيلةٌ واحدة** — ولا ٥٠٠.
+
+    والتزامنُ هنا يمسّ ما لا يمسّه `workspace`: جلسةُ النطاق تُودِع عند
+    خروجها هي، لا `TransactionalRoute`. فلو تسرّب `IntegrityError` من
+    القيد لَظهر ٥٠٠ بدل إعادةٍ صادقة.
+    """
+    from tests.test_at_rc_t1a_project_access import _owned_project
+
+    slot = two_tenants["a"]
+    project_id = await _owned_project(slot, title="بحثُ التزامن التحليليّ")
+    body = await _runnable(slot, slot, project_id)
+    key = _key()
+
+    async with _client(slot) as one, _client(slot) as two:
+        responses = await asyncio.gather(
+            one.post("/api/v1/analysis/runs", json=body,
+                     headers={"Idempotency-Key": key}),
+            two.post("/api/v1/analysis/runs", json=body,
+                     headers={"Idempotency-Key": key}),
+        )
+
+    assert all(r.status_code == 201 for r in responses), (
+        [f"{r.status_code}: {r.text[:200]}" for r in responses])
+    assert await _runs_for(body["plan_id"]) == 1, "متسابقان شغّلا الخطّةَ مرّتين"
+    assert len({r.json()["id"] for r in responses}) == 1, "معرّفان لتشغيلةٍ واحدة"
+    # **تنفيذٌ واحدٌ وإعادةٌ واحدةٌ بالضبط** — لا اثنان ولا صفر.
+    replays = [r for r in responses
+               if r.headers.get("Idempotency-Replayed") == "true"]
+    assert len(replays) == 1, (
+        f"عددُ الإعاداتِ {len(replays)} — يُنتظر واحدة بالضبط")
+    assert await _completed_records(
+        slot["tenant_id"], "POST /api/v1/analysis/runs") == 1
+
+
+async def test_22_a_cross_tenant_collaborator_gets_the_effective_tenant(
+    two_tenants,
+):
+    """**والصفُّ يُكتب حيث تقع الطفرة** — في مستأجر البحث لا مستأجر الرمز.
+
+    وهذا هو الحدُّ الذي لا يُرى إن لم يُقَس. فمسارُ التشغيلة يمرّ بـ
+    `_scope_pair` ← `project_session` ← `scoped_tenant`، والجلسةُ تنتقل
+    إلى مستأجر البحث. فلو كُتب صفُّ التكرار بـ`principal.tenant_id`
+    — مستأجرِ الضيف — لَخالف الصفُّ سياستَه هو: الجلسةُ في مستأجرٍ
+    والصفُّ في آخر، فلا يُقرأ ولا يُعاد، **وتقع الطفرةُ مرّتين بصمت**.
+
+    والفاعلُ يبقى الضيفَ نفسَه: المستأجرُ وحده يتبدّل.
+    """
+    from tests.test_at_rc_t1a_project_access import _owned_project
+    from tests.test_at_rc_t1c_project_bridge import _external_member
+
+    owner = two_tenants["a"]
+    guest = two_tenants["b"]
+    project_id = await _owned_project(owner, title="بحثٌ يتعاون عليه غريب")
+    await _external_member(owner, guest, project_id,
+                           permissions=["view_project", "manage_data"])
+
+    body = await _runnable(owner, guest, project_id)
+    key = _key()
+
+    async with _client(guest) as http:
+        first = await http.post("/api/v1/analysis/runs", json=body,
+                                headers={"Idempotency-Key": key})
+        second = await http.post("/api/v1/analysis/runs", json=body,
+                                 headers={"Idempotency-Key": key})
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert second.headers.get("Idempotency-Replayed") == "true"
+    assert await _runs_for(body["plan_id"]) == 1, "شُغّلت الخطّةُ مرّتين"
+    assert first.json()["id"] == second.json()["id"]
+
+    # ══ الدعوى بعينها: المستأجرُ مستأجرُ البحث، والفاعلُ الضيف ══
+    rows = await _scalar(
+        "SELECT count(*) FROM idempotency_records"
+        " WHERE operation = 'POST /api/v1/analysis/runs'"
+        "   AND tenant_id = :owner AND actor_user_id = :guest",
+        {"owner": str(owner["tenant_id"]), "guest": str(guest["user_id"])})
+    assert rows == 1, "الصفُّ ليس في مستأجر البحث بفاعل الضيف"
+
+    stray = await _scalar(
+        "SELECT count(*) FROM idempotency_records"
+        " WHERE operation = 'POST /api/v1/analysis/runs'"
+        "   AND tenant_id = :guest_home",
+        {"guest_home": str(guest["tenant_id"])})
+    assert stray == 0, (
+        "كُتب صفُّ التكرار في مستأجر الضيف — صفٌّ لا تقرؤه جلسةُ الطفرة")
+
+    # ══ وRLS لا تُخترق بالعبور ══
+    from athera_api.db import tenant_session_maker
+
+    from sqlalchemy import text
+
+    # الضيفُ في مستأجر البحث يرى صفَّه هو.
+    async with tenant_session_maker(owner["tenant_id"], guest["user_id"])() as s:
+        mine = (await s.execute(text(
+            "SELECT count(*) FROM idempotency_records"
+            " WHERE operation = 'POST /api/v1/analysis/runs'"))).scalar_one()
+    assert mine == 1, "الضيفُ لا يرى صفَّه في مستأجر البحث"
+
+    # وصاحبُ البحث نفسُه لا يراه — الفاعلُ حدٌّ ثانٍ ولو اتّحد المستأجر.
+    async with tenant_session_maker(owner["tenant_id"], owner["user_id"])() as s:
+        theirs = (await s.execute(text(
+            "SELECT count(*) FROM idempotency_records"
+            " WHERE operation = 'POST /api/v1/analysis/runs'"))).scalar_one()
+    assert theirs == 0, "صاحبُ البحث يرى جوابَ ضيفه المخزون"
+
+    # والضيفُ في مستأجره هو لا يرى شيئًا — الصفُّ ليس هناك أصلًا.
+    async with tenant_session_maker(guest["tenant_id"], guest["user_id"])() as s:
+        home = (await s.execute(text(
+            "SELECT count(*) FROM idempotency_records"
+            " WHERE operation = 'POST /api/v1/analysis/runs'"))).scalar_one()
+    assert home == 0
+
+
+async def test_23_a_manuscript_replays_without_a_second_initial_version(
+    two_tenants,
+):
+    """**مخطوطةٌ واحدةٌ ونسخةٌ أولى واحدة** — والمسارُ يكتب صفَّين لا صفًّا.
+
+    وهذا ما يجعل برهانَ هذا المسار مختلفًا: `create_manuscript` يُنشئ
+    المخطوطةَ **ونسختَها الأولى** ويربطهما. فطفرةٌ مُعادةٌ هنا لا تُنتج
+    مخطوطتين فحسب، بل نسختَي «v1» — وتاريخُ نسخٍ مزدوجٌ من أوّل يوم.
+
+    **والمسارُ `/api/v1/manuscripts`**: الموجّهُ مضمومٌ بسابقة `/api/v1`
+    وحدها، والمعالجُ `publishing.py::create_manuscript`.
+    """
+    from tests.test_at_rc_t1a_project_access import _owned_project
+
+    slot = two_tenants["a"]
+    project_id = await _owned_project(slot, title="بحثُ المخطوطة المُعادة")
+    body = {"project_id": str(project_id), "title_ar": "مخطوطةٌ تُعاد",
+            "language": "ar"}
+    key = _key()
+
+    async with _client(slot) as http:
+        first = await http.post(MANUSCRIPTS, json=body,
+                                headers={"Idempotency-Key": key})
+        second = await http.post(MANUSCRIPTS, json=body,
+                                 headers={"Idempotency-Key": key})
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    manuscript_id = first.json()["id"]
+    assert second.json()["id"] == manuscript_id, "أُعيد معرّفُ مخطوطةٍ أخرى"
+    assert first.json() == second.json(), "الجسمُ المُعاد ليس الأصل"
+    assert second.headers.get("Idempotency-Replayed") == "true"
+    assert "idempotency-replayed" not in {k.lower() for k in first.headers}
+
+    assert await _scalar(
+        "SELECT count(*) FROM manuscripts WHERE project_id = :p",
+        {"p": str(project_id)}) == 1, "مخطوطتان من نيّةٍ واحدة"
+    # **ولا نسخةَ «v1» ثانية** — وهذه لا يمسّها برهانُ المخطوطة وحدها.
+    assert await _scalar(
+        "SELECT count(*) FROM manuscript_versions WHERE manuscript_id = :m",
+        {"m": manuscript_id}) == 1, "نسختا «v1» لمخطوطةٍ واحدة"
+    assert await _completed_records(
+        slot["tenant_id"], f"POST {MANUSCRIPTS}") == 1
+
+
+# ═════════════ ١٠ · التعارضُ يُدوَّن، ويبقى بعد الرفض ═════════════
+
+
+async def test_24_a_key_conflict_leaves_a_durable_audit_event(two_tenants):
+    """**إشارةُ سلامةٍ تبقى بعد ٤٠٩** — وإلّا فليست إشارة.
+
+    ومفتاحٌ واحدٌ لجسمَين مختلفَين إمّا عميلٌ معطوب وإمّا محاولةُ تخمين.
+    وكلاهما يُنظر فيه لاحقًا، **ولا يُنظر في ما لم يُكتب**.
+
+    ## والفخُّ الذي يُتجنّب هنا بعينه
+
+    الطريقُ البديهيّ — أن تُكتب الحادثةُ ثمّ يُرفع ٤٠٩ — **يمحوها**:
+    الرفعُ يُرجِع المعاملة، فيذهب الحدثُ معها. فالحدثُ يُكتب ويُعاد جوابُ
+    الرفض **قيمةً لا استثناءً**، فتُودِع البنيةُ المعاملةَ قبل إرسال
+    الجواب. وهذا الفحصُ يقرأ الجدولَ **بعد أن يكتمل الطلبُ كلُّه**.
+    """
+    slot = two_tenants["a"]
+    key = _key()
+    kept = f"h2a-audit-a-{uuid.uuid4().hex[:8]}"
+    refused = f"h2a-audit-b-{uuid.uuid4().hex[:8]}"
+
+    before = await _scalar(
+        "SELECT count(*) FROM audit_events"
+        " WHERE tenant_id = :t AND action = 'idempotency.conflict'",
+        {"t": str(slot["tenant_id"])})
+
+    async with _client(slot) as http:
+        first = await http.post(
+            WORKSPACE, json={"title_ar": kept, "starting_from": "idea"},
+            headers={"Idempotency-Key": key})
+        clash = await http.post(
+            WORKSPACE, json={"title_ar": refused, "starting_from": "idea"},
+            headers={"Idempotency-Key": key})
+
+    assert first.status_code == 201, first.text
+    assert clash.status_code == 409, clash.text
+    assert clash.json()["error"]["code"] == "idempotency.key_reused"
+
+    # ══ (أ) الحدثُ موجودٌ، وواحدٌ بالضبط ══
+    after = await _scalar(
+        "SELECT count(*) FROM audit_events"
+        " WHERE tenant_id = :t AND action = 'idempotency.conflict'",
+        {"t": str(slot["tenant_id"])})
+    assert after == before + 1, (
+        f"حوادثُ التعارض {before} ← {after} — يُنتظر واحدٌ بالضبط")
+
+    # ══ (ب) وما فيه: عمليّةٌ وسببٌ وفاعل — ولا أكثر ══
+    row = await _scalar(
+        "SELECT to_jsonb(e) FROM audit_events e"
+        " WHERE e.tenant_id = :t AND e.action = 'idempotency.conflict'"
+        " ORDER BY e.chain_seq DESC LIMIT 1", {"t": str(slot["tenant_id"])})
+    assert row["object_type"] == "idempotency_key", row
+    assert row["actor_user_id"] == str(slot["user_id"]), row
+    assert row["state_after"] == {
+        "operation": f"POST {WORKSPACE}", "cause": "fingerprint_mismatch"}, row
+    assert row["state_before"] is None, row
+
+    # ══ (ج) ولا مفتاحٌ خام، ولا جسمٌ، ولا بصمة ══
+    blob = json.dumps(row, ensure_ascii=False, default=str)
+    assert key not in blob, "المفتاحُ الخام في سجلّ التدقيق"
+    assert digest_key(key) not in blob, "بصمةُ المفتاح في سجلّ التدقيق"
+    assert kept not in blob and refused not in blob, (
+        "عنوانُ بحثٍ في سجلّ التدقيق — محتوى طلبٍ لا بيانَ سلامة")
+
+    # ══ (د) والطفرةُ الأصليّةُ واحدةٌ، والمرفوضةُ لم تقع ══
+    assert await _project_rows(slot["tenant_id"], kept) == 1
+    assert await _project_rows(slot["tenant_id"], refused) == 0
+
+    # **ولا تحمل معاملةُ الرفض إلّا الحدث**: لا صفَّ تكرارٍ ثانيًا، ولا
+    # صفَّ مجالٍ — فليست كتابةً نصفيّةً تحت جوابِ رفض.
+    assert await _completed_records(slot["tenant_id"], f"POST {WORKSPACE}") == 1, (
+        "كُتب صفُّ تكرارٍ ثانٍ في معاملة الرفض")
+
+    # ══ (هـ) وسلسلةُ التدقيق ما زالت متّصلة ══
+    from athera_api.services import audit as audit_service
+
+    assert await _scalar(
+        "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+        "   AND action = 'idempotency.conflict' AND prev_hash IS NOT NULL"
+        "   AND hash <> ''", {"t": str(slot["tenant_id"])}) >= 1
+    assert audit_service.GENESIS_HASH is not None
+
+
+# ═════════════ ١١ · سياسةُ الصفّ: الأفعالُ الثلاثةُ كلُّها ═════════════
+
+
+async def test_25_rls_refuses_select_update_and_delete_across_actors(
+    two_tenants,
+):
+    """**والقراءةُ ليست كلَّ الخطر** — فصفٌّ يُعدَّل أخطرُ من صفٍّ يُقرأ.
+
+    ولو أمكن لفاعلٍ أن يكتب `response_body` في صفِّ فاعلٍ آخر لَصار قادرًا
+    على أن **يُملي عليه جوابًا** يستلمه عند أوّل إعادة: لا تسريبٌ فحسب،
+    بل حَقنُ جواب. فتُقاس الأفعالُ الثلاثةُ صراحةً، لا القراءةُ وحدها.
+
+    ويُقاس بدور التطبيق (`athera_app`) — الذي لا يتجاوز السياسة — وبفاعلٍ
+    **حقيقيٍّ** له عضويّةٌ في المستأجر نفسِه، لا بمعرّفٍ مُختلَق.
+    """
+    from sqlalchemy import text
+
+    from athera_api.db import tenant_session_maker
+    from tests.test_at_rc_t1a_project_access import _second_user
+
+    slot = two_tenants["a"]
+    intruder = await _second_user(slot["tenant_id"],
+                                  email=f"h2a-rls-{uuid.uuid4().hex[:8]}@example.test")
+    operation = f"POST {WORKSPACE}"
+
+    async with _client(slot) as http:
+        created = await http.post(
+            WORKSPACE, json={"title_ar": f"h2a-rls2-{uuid.uuid4().hex[:8]}",
+                             "starting_from": "idea"},
+            headers={"Idempotency-Key": _key()})
+    assert created.status_code == 201, created.text
+
+    mine = await _scalar(
+        "SELECT count(*) FROM idempotency_records"
+        " WHERE tenant_id = :t AND actor_user_id = :u AND operation = :o",
+        {"t": str(slot["tenant_id"]), "u": str(slot["user_id"]), "o": operation})
+    assert mine >= 1, "لا صفَّ أصلًا — فالفحصُ لا يفحص شيئًا"
+
+    owner_rows = "SELECT count(*) FROM idempotency_records WHERE actor_user_id = :u"
+
+    # ══ (أ) الفاعلُ الثاني لا يقرأ ══
+    async with tenant_session_maker(slot["tenant_id"], intruder["user_id"])() as s:
+        seen = (await s.execute(text(owner_rows),
+                                {"u": str(slot["user_id"])})).scalar_one()
+    assert seen == 0, "فاعلٌ آخر يقرأ صفَّ غيره — جوابٌ مخزونٌ مكشوف"
+
+    # ══ (ب) ولا يُعدّل — والسياسةُ تُخفي فلا يُطابق شيءٌ ══
+    async with tenant_session_maker(slot["tenant_id"], intruder["user_id"])() as s:
+        changed = (await s.execute(text(
+            "UPDATE idempotency_records SET response_body = '{\"id\": \"injected\"}'"
+            " WHERE actor_user_id = :u RETURNING id"),
+            {"u": str(slot["user_id"])})).rowcount
+    assert changed in (0, -1), "فاعلٌ آخر عدّل صفًّا ليس له — حَقنُ جواب"
+
+    # **والصفُّ يُقرأ بعدها فيُتحقّق أنّه لم يتبدّل** — فالرقمُ صفرٌ قد
+    # يعني «لم يُطابق» وقد يعني «لم يُبلَّغ»، والصفُّ نفسُه هو الفيصل.
+    injected = await _scalar(
+        "SELECT count(*) FROM idempotency_records"
+        " WHERE actor_user_id = :u AND response_body->>'id' = 'injected'",
+        {"u": str(slot["user_id"])})
+    assert injected == 0, "الجوابُ المخزون حُقن بقيمةِ غريب"
+
+    # ══ (ج) ولا يحذف صفًّا سارِيًا ══
+    async with tenant_session_maker(slot["tenant_id"], intruder["user_id"])() as s:
+        removed = (await s.execute(text(
+            "DELETE FROM idempotency_records WHERE actor_user_id = :u"
+            "   AND expires_at > now() RETURNING id"),
+            {"u": str(slot["user_id"])})).rowcount
+    assert removed in (0, -1), "فاعلٌ آخر حذف صفًّا ساريًا ليس له"
+    assert await _scalar(owner_rows, {"u": str(slot["user_id"])}) == mine, (
+        "نقص عددُ صفوف صاحبها بعد محاولةِ غريب")
+
+    # ══ (د) ومستأجرٌ آخر لا يرى شيئًا ولو بفاعلٍ صحيح ══
+    other = two_tenants["b"]
+    async with tenant_session_maker(other["tenant_id"], other["user_id"])() as s:
+        across = (await s.execute(text(owner_rows),
+                                  {"u": str(slot["user_id"])})).scalar_one()
+    assert across == 0, "مستأجرٌ آخر يرى صفوفَ غيره"
+
+    # ══ (هـ) وجلسةٌ بمستأجرٍ بلا فاعلٍ تفشل مغلقةً ══
+    async with tenant_session_maker(slot["tenant_id"], None)() as s:
+        blind = (await s.execute(text(
+            "SELECT count(*) FROM idempotency_records"))).scalar_one()
+    assert blind == 0, "جلسةٌ بلا فاعلٍ رأت صفوفًا — `app_current_actor()` لم تفشل مغلقةً"

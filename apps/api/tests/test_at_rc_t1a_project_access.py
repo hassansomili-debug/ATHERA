@@ -310,7 +310,11 @@ TASKS = "/api/v1/project-management/projects/{pid}/tasks"
 THEMES = "/api/v1/synthesis/projects/{pid}/themes"
 LEDGER = "/api/v1/literature/projects/{pid}/evidence-ledger"
 DATASETS = "/api/v1/analysis/datasets"
-MANUSCRIPTS = "/api/v1/publishing/manuscripts"
+#: **والموجّهُ مضمومٌ بسابقة `/api/v1` وحدها** — لا `/publishing`.
+#: وكان هذا الثابتُ يحمل مسارًا غيرَ موجود، فكان الفحصُ يَخضرّ على
+#: ٤٠٤ الإطار (`{"detail":"Not Found"}`) لا على حارس البحث: بابٌ
+#: يُقال إنّه طُرق ولم يُطرق. (رُصد في RC-T1-H2-A.)
+MANUSCRIPTS = "/api/v1/manuscripts"
 ASK = "/api/v1/ai/ask"
 PORTFOLIO = "/api/v1/portfolio/projects"
 
