@@ -36,11 +36,12 @@ from ..services.document_intelligence import pipeline
 from ..services.document_intelligence.contracts import STATUS_EXTRACTED, ExtractionBatch
 from ..services.document_intelligence.states import Status
 from ..services.thesis import processing
+from ..transaction import TransactionalRoute
 from .files import upload_file
 
 logger = logging.getLogger("athera.document_intelligence")
 
-router = APIRouter(prefix="/api/v1/theses", tags=["thesis"])
+router = APIRouter(prefix="/api/v1/theses", tags=["thesis"], route_class=TransactionalRoute)
 
 # تعليمة الاستخراج — تُضاف إلى قيد الأجنت ولا تحلّ محله.
 EXTRACTION_INSTRUCTION = (

@@ -51,8 +51,9 @@ from ..schemas.publishing import (
 )
 from ..services import audit, collaboration
 from ..services.publishing import consistency, journals, manuscript, review, vocab
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1", tags=["publishing"])
+router = APIRouter(prefix="/api/v1", tags=["publishing"], route_class=TransactionalRoute)
 
 # §20.2 — سياسة الطبقات الافتراضية. أسماء الفهارس بيانات لا كود.
 DEFAULT_TIER_POLICY = journals.TierPolicy(

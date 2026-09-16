@@ -62,8 +62,9 @@ from ..schemas.team import (
     VocabularyResponse,
 )
 from ..services import audit, collaboration, team
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1", tags=["team"])
+router = APIRouter(prefix="/api/v1", tags=["team"], route_class=TransactionalRoute)
 
 
 def _pick(locale: str, arabic: str, english: str | None) -> str:

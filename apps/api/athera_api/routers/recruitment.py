@@ -50,8 +50,9 @@ from ..schemas.recruitment import (
     RecruitmentInvitationResponse,
 )
 from ..services import collaboration, recruitment
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/recruitment", tags=["recruitment"])
+router = APIRouter(prefix="/api/v1/recruitment", tags=["recruitment"], route_class=TransactionalRoute)
 
 
 def _tenant(session: AsyncSession, principal: Principal) -> uuid.UUID:

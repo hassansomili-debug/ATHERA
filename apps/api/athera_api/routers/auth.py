@@ -49,10 +49,11 @@ from ..security import (
 )
 from ..services import audit, password_reset, rbac
 from ..services import email as email_service
+from ..transaction import TransactionalRoute
 
 logger = logging.getLogger("athera.auth")
 
-router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+router = APIRouter(prefix="/api/v1/auth", tags=["auth"], route_class=TransactionalRoute)
 settings = get_settings()
 
 

@@ -34,13 +34,14 @@ from ..schemas.library import FileMoveRequest, FileTrashView, TrashRequest
 from ..models.thesis import Thesis
 from ..services import audit, library, rbac, storage, workspace
 from ..services.thesis import processing as thesis_processing
+from ..transaction import TransactionalRoute
 from .folders import router as folders_router
 from .library_bulk import router as bulk_router
 
 # مقطع الميجابايت: يوازن بين عدد الدورات وبصمة الذاكرة.
 CHUNK_BYTES = 1024 * 1024
 
-router = APIRouter(prefix="/api/v1/files", tags=["files"])
+router = APIRouter(prefix="/api/v1/files", tags=["files"], route_class=TransactionalRoute)
 
 # **الضمّ هنا قبل كل شيء، لا في آخر الملف.** FastAPI يوفّق المسارات
 # بترتيب تسجيلها، و`GET /{file_id}` يسبق ما يُسجَّل بعده — فلو ضُمّ موجّه

@@ -32,8 +32,9 @@ from ..schemas.brain import (
     TraceResponse,
     TraceSummary,
 )
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1", tags=["brain"])
+router = APIRouter(prefix="/api/v1", tags=["brain"], route_class=TransactionalRoute)
 
 
 def _pick(locale: str, arabic: str, english: str) -> str:

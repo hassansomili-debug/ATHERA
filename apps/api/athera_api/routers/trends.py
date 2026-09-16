@@ -55,8 +55,9 @@ from ..schemas.trends import (
 )
 from ..services import audit, collaboration
 from ..services.trends import brief, pipeline, scoring, signals, vocab
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1", tags=["trends"])
+router = APIRouter(prefix="/api/v1", tags=["trends"], route_class=TransactionalRoute)
 
 # §51.1 — العتبات الأربع كبيانات سياسة، قابلة للتعديل لكل مؤسسة.
 DEFAULT_VALIDATION_POLICY = signals.ValidationPolicy(

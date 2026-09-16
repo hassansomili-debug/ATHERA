@@ -32,8 +32,9 @@ from ..schemas.library import (
     FolderView,
 )
 from ..services import audit, library, rbac
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/folders", tags=["library-folders"])
+router = APIRouter(prefix="/folders", tags=["library-folders"], route_class=TransactionalRoute)
 
 # **سقفُ قائمة «نقل إلى…»** — قائمةُ اختيارٍ بلا حدّ ليست قائمة، وهي الدرس
 # نفسه الذي أخرج الترقيم المفتاحيّ من عطب «المكتبة ما تتحمل كتب».

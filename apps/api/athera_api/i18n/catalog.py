@@ -766,6 +766,17 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     "team.invitation_expired": {
         "ar": "انتهت مهلة الدعوة.", "en": "The invitation has expired.",
     },
+    # **ولا معاملتين في طلب**: إيداعُهما بالتسلسل ليس ذرّيًّا (RC-T1-H1).
+    "db.multiple_request_transactions": {
+        "ar": "تعذّر تنفيذ الطلب: خطأٌ داخليٌّ في حدّ المعاملة. لم يُحفظ شيء.",
+        "en": "The request could not be processed: an internal transaction-boundary "
+              "error. Nothing was saved.",
+    },
+    # **إخفاقُ إيداعٍ يُقال صريحًا** (RC-T1-H1): لا «تمّ» على طفرةٍ لم تُودَع.
+    "db.commit_failed": {
+        "ar": "تعذّر إيداعُ التغيير في القاعدة، ولم يُحفظ شيء. أعِد المحاولة.",
+        "en": "The change could not be committed and nothing was saved. Please retry.",
+    },
     "team.invitation_already_live": {
         "ar": "توجد دعوة قائمة لهذا البريد في هذا البحث.",
         "en": "A live invitation already exists for this email in this project.",

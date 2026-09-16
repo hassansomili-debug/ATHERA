@@ -59,8 +59,9 @@ from ..schemas.analysis import (
 )
 from ..services import audit, collaboration, data_scope
 from ..services.analysis import exports, interpretation, lineage, plan, reproducibility, vocab
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/analysis", tags=["analysis"])
+router = APIRouter(prefix="/api/v1/analysis", tags=["analysis"], route_class=TransactionalRoute)
 
 
 # ═════════════ حدُّ البحث على طبقة البيانات ═════════════

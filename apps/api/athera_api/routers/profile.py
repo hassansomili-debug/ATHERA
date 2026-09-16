@@ -24,8 +24,9 @@ from ..schemas.profile import (
 )
 from ..services import audit, ingestion, memory
 from ..services.extraction.rules import RuleBasedExtractor
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/profile", tags=["profile"])
+router = APIRouter(prefix="/api/v1/profile", tags=["profile"], route_class=TransactionalRoute)
 
 
 def _pick(locale: str, arabic: str | None, english: str | None) -> str | None:

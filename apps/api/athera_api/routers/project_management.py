@@ -110,8 +110,9 @@ from ..services.project_management.vocab import (
     stage_label,
     vocabulary,
 )
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/project-management", tags=["project-management"])
+router = APIRouter(prefix="/api/v1/project-management", tags=["project-management"], route_class=TransactionalRoute)
 
 # **الجملة التي تمنع أن تُقرأ المرحلة حكمًا من المنصّة.** تُرسل في كل
 # استجابةٍ تحمل مرحلة، فلا تعتمد الشاشة على أن أحدًا سيكتبها في مكانٍ ما.

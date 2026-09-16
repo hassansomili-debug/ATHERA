@@ -439,13 +439,36 @@ async def test_10b_the_coherence_predicate_is_what_refuses_the_mismatch(bridge):
 @requires_db
 @pytest.mark.asyncio
 async def test_11_the_project_tenant_is_never_an_input(bridge):
-    """**١١ · ولا مُعامِلَ يحمل مستأجرَ بحثٍ — فلا حقلَ يختاره.**"""
+    """**١١ · ولا مُعامِلَ يحمل مستأجرَ بحثٍ — فلا حقلَ يختاره.**
+
+    وكانت الدعوى تطابقًا تامًّا للأسماء الثلاثة. ثمّ أُضيف `owns_commit`
+    في تقوية RC-T1-H1 — وهو **رايةُ بنيةٍ لا هويّة**: تقول مَن يملك
+    الإيداع، ولا تختار مستأجرًا ولا فاعلًا.
+
+    **فتُشدَّد الدعوى لا تُوسَّع**: الهويّةُ تبقى محصورةً في الثلاثة،
+    وكلُّ زيادةٍ عليها يجب أن تكون **مُسمَّاةً وجوبًا** (`KEYWORD_ONLY`)
+    و**منطقيّةً** (`bool`) و**مذكورةً بالاسم** في القائمة المسموحة. فلو
+    أُضيف غدًا مُعامِلٌ يحمل مستأجرًا — أو أيُّ مُعامِلٍ غيرِ معلَن —
+    سقط هذا الفحص.
+    """
     import inspect
 
     from athera_api.db import project_session
 
-    names = set(inspect.signature(project_session.__wrapped__).parameters)
-    assert names == {"project_id", "tenant_id", "actor_id"}, names
+    signature = inspect.signature(project_session.__wrapped__)
+    names = set(signature.parameters)
+    identity = {"project_id", "tenant_id", "actor_id"}
+    assert identity <= names, names
+
+    #: رايةُ بنيةٍ واحدةٌ مسموحة — وتُذكر بالاسم فلا تتسلّل زيادةٌ صامتة.
+    allowed_structural = {"owns_commit"}
+    extra = names - identity
+    assert extra <= allowed_structural, f"مُعامِلٌ غيرُ معلَن: {extra}"
+    for name in extra:
+        parameter = signature.parameters[name]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, name
+        assert parameter.annotation in (bool, "bool"), (name, parameter.annotation)
+
     for forbidden in ("project_tenant_id", "project_tenant", "scope_tenant"):
         assert forbidden not in names
 
