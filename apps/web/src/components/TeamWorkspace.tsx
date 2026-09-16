@@ -16,6 +16,7 @@ import {
   accessChip,
   type Decision,
   type Invitation,
+  type InviteOutcome,
   type Member,
   type MemberEvent,
   type PendingAction,
@@ -132,7 +133,30 @@ export function TeamWorkspace({
   // وصل فريق البحث المختار؟ ودمجهما كان يُنتج أسوأ الحالين: باحثٌ لا بحث
   // له يقرأ «لا أعضاء» و«لا قرارات» — وهما دعويان عن بحثٍ غير موجود.
   const [projectsLoaded, setProjectsLoaded] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  /**
+   * **اللقطةُ موسومةٌ بالبحث الذي تخصّه** — لا رايةَ «وصل» مجرّدة.
+   *
+   * ## العطبُ الذي يعالجه هذا الحقل
+   *
+   * كان في الشاشة العامّة رايةٌ منطقيّة: `loaded`. فيُبدَّل البحثُ في
+   * المُنتقي، فيُطلب فريقُ «ب» — **وتبقى الرايةُ مرفوعةً من «أ»**. فتُرسم
+   * في نافذةِ الطلب أعضاءُ «أ» ودعواتُه وسجلُّه ووصلتُك به **تحت اسم
+   * «ب»**. وقارئُ الشاشة لا يملك ما يكشف الكذبة: المُنتقي يقول «ب»
+   * والصفوفُ صفوفُ «أ».
+   *
+   * **والمقارنةُ بالهويّة تُغلق البابَ بنيويًّا**: لا يُرسم شيءٌ مربوطٌ
+   * ببحثٍ إلّا إذا كانت اللقطةُ الحاضرةُ لقطةَ ذلك البحث بعينه. فأيًّا
+   * كان من غيّر `projectId` — مُنتقٍ أو مسارٌ يُكتب غدًا — ينكسر التطابقُ
+   * في اللحظة نفسِها، **قبل أن يُطلق طلبٌ أصلًا**.
+   *
+   * و`ok` تفرّق «أجاب فنجح» من «أجاب فأخفق»: الأوّلُ يُرسم، والثاني يُقال
+   * خطؤه ولا تُرسم تحته صفوفٌ من بحثٍ آخر.
+   *
+   * **ولا يُضعِف هذا حارسَ الأجيال في `useDeferredLoad`**: ذاك يمنع ردًّا
+   * متأخّرًا أن يكتب فوق جيلٍ أحدث، وهذا يمنع لقطةً **مكتوبةً بحقّ** أن
+   * تُقرأ تحت عنوانٍ غيرِ عنوانها. حدّان مختلفان، وكلاهما لازم.
+   */
+  const [snapshot, setSnapshot] = useState<{ projectId: string; ok: boolean } | null>(null);
 
   const say = useCallback(
     (err: unknown) =>
@@ -210,12 +234,16 @@ export function TeamWorkspace({
       } catch {
         commit(() => setEvents([]));
       }
+      // **وتُوسَم اللقطةُ ببحثها في آخر خطوةٍ**: قبلَ ذلك ما وصل بعضُها،
+      // ووسمُها مبكِّرًا يعني رسمَ دعواتٍ فارغةٍ لحظةً ثمّ امتلاءَها.
+      commit(() => setSnapshot({ projectId, ok: true }));
     } catch (err) {
       const message = err instanceof AtheraApiError
         ? err.localized(locale) : t("common.loadFailed");
+      // والإخفاقُ يُوسَم أيضًا — فيسكت الانتظارُ ويُقال الخطأ، **ولا يُرسم
+      // تحته صفٌّ من بحثٍ آخر** لأنّ `ok` كاذبة.
+      commit(() => setSnapshot({ projectId, ok: false }));
       commit(() => setError(message));
-    } finally {
-      commit(() => setLoaded(true));
     }
   }, [locale, projectId, t]);
 
@@ -253,10 +281,15 @@ export function TeamWorkspace({
     }
   }
 
-  /** يردّ رمزَ الدعوة عند النجاح — ويُعرض مرّةً واحدةً في نافذته. */
+  /**
+   * يردّ رمزَ الدعوة عند النجاح، **ورسالةَ الرفض عند الرفض** — ولا ينشرها.
+   *
+   * فالنافذةُ مفتوحةٌ وقتَ الفعل، ولافتةُ خطأٍ في حالِ الصفحة تُرسم خلفها.
+   * فتُردّ العلّةُ إلى صاحب الطلب ليعرضها في موضعه. انظر `InviteOutcome`.
+   */
   async function invite(
     input: { name: string; email: string; role: string },
-  ): Promise<string | null> {
+  ): Promise<InviteOutcome> {
     setBusy(true);
     setError(null);
     try {
@@ -271,10 +304,14 @@ export function TeamWorkspace({
         },
       );
       await refresh();
-      return created.token ?? null;
+      return { ok: true, token: created.token ?? null };
     } catch (err) {
-      say(err);
-      return null;
+      // **ودلالةُ الخادم كما هي**: النصُّ هو ترجمةُ الخادم لرمز علّته.
+      return {
+        ok: false,
+        error: err instanceof AtheraApiError
+          ? err.localized(locale) : t("common.loadFailed"),
+      };
     } finally {
       setBusy(false);
     }
@@ -376,8 +413,16 @@ export function TeamWorkspace({
     );
   }
 
-  const awaitingMe = inbox.some((item) => item.is_mine && item.kind === "author_consent");
-  const canManageTeam = access?.can_manage_team ?? false;
+  // **«أجاب» ليست «صحيح»**: الأولى تُسكِت الانتظار، والثانية تُذِن بالرسم.
+  const answered = snapshot !== null && snapshot.projectId === projectId;
+  const fresh = answered && snapshot.ok;
+  const loading = !projectsLoaded || (projectId !== "" && !answered);
+
+  const awaitingMe =
+    fresh && inbox.some((item) => item.is_mine && item.kind === "author_consent");
+  // **ولا صلاحيةَ تُقرأ من لقطةِ بحثٍ آخر.** فزرُّ الدعوة وأزرارُ الإدارة
+  // تختفي في نافذة التبديل، فلا يُفعل فعلٌ على صفوفٍ لا تخصّ المعروض.
+  const canManageTeam = fresh && (access?.can_manage_team ?? false);
   const eventLabel = (kind: string) => {
     const label = t(`team.events.${kind}`);
     return label === `team.events.${kind}` ? kind : label;
@@ -387,8 +432,10 @@ export function TeamWorkspace({
   const myRole = access?.role
     ? roleVocab.find((item) => item.key === access.role)?.label ?? access.role
     : null;
-  const openMember = members.find((row) => row.id === openMemberId) ?? null;
-  const loading = !projectsLoaded || (projectId ? !loaded : false);
+  // ولوحُ عضوٍ من بحثٍ سابقٍ لا يُفتح على بحثٍ حاضر.
+  const openMember = fresh
+    ? members.find((row) => row.id === openMemberId) ?? null
+    : null;
   const tabs: Tab[] = canManageTeam
     ? ["members", "invitations", "history"]
     : ["members", "history"];
@@ -408,8 +455,14 @@ export function TeamWorkspace({
             value={projectId}
             data-testid="team-project-picker"
             onChange={(event) => {
+              // **ولا شيءَ مفتوحٌ على بحثٍ تُرك.** والتطابقُ في `fresh` هو
+              // الحدُّ، وهذا تنظيفٌ يمنع بقاءَ لوحٍ أو نافذةٍ معلَّقة.
               setProjectId(event.target.value);
               setOpenMemberId(null);
+              setInviteOpen(false);
+              setAccessOpen(false);
+              setAttentionOpen(false);
+              setAdvancedOpen(false);
               setTab("members");
             }}
           >
@@ -444,16 +497,18 @@ export function TeamWorkspace({
           {fixedProject ? <h2 className="team-title">{t("team.heading")}</h2> : null}
           <p className="team-lead">{t("team.headingNote")}</p>
           {/* **ولا نسبةَ إنجازٍ مخترعة**: عدَدان يُعدّان من صفوفٍ حقيقيّة. */}
-          <p className="team-counts" data-testid="team-summary">
-            <span className="chip chip-muted">
-              {t("team.activeCount").replace("{n}", String(activeMembers))}
-            </span>
-            {canManageTeam ? (
+          {fresh ? (
+            <p className="team-counts" data-testid="team-summary">
               <span className="chip chip-muted">
-                {t("team.pendingInvitationCount").replace("{n}", String(openInvitations))}
+                {t("team.activeCount").replace("{n}", String(activeMembers))}
               </span>
-            ) : null}
-          </p>
+              {canManageTeam ? (
+                <span className="chip chip-muted">
+                  {t("team.pendingInvitationCount").replace("{n}", String(openInvitations))}
+                </span>
+              ) : null}
+            </p>
+          ) : null}
         </div>
         <div className="team-head-actions">
           {canManageTeam ? (
@@ -481,7 +536,7 @@ export function TeamWorkspace({
           وكانت تطبع صلاحيّاتك التسعَ في صدر الشاشة، وهي أوّلُ ما يقرؤه من
           فتحها — وأقلُّ ما يحتاجه. فتُقال الوصلةُ في سطر، والتفصيلُ خلف
           زرٍّ لمن سأل عنه. */}
-      {access ? (
+      {access && fresh ? (
         <section className="team-relationship" data-testid="team-my-access">
           <span className="chip chip-stage">
             {access.is_owner
@@ -531,7 +586,7 @@ export function TeamWorkspace({
           وكان قسمٌ بعنوانٍ وشرحٍ وجملةِ «لا شيء ينتظر» يشغل صدرَ الشاشة في
           الحال الغالبة: لا شيء. **والفراغُ لا يحتاج عنوانًا** — فإن لم يكن
           بندٌ فلا سطرَ ولا عنوان. */}
-      {inbox.length > 0 ? (
+      {fresh && inbox.length > 0 ? (
         <section className="team-attention" data-testid="team-attention">
           <button
             type="button"
@@ -610,7 +665,11 @@ export function TeamWorkspace({
         </ul>
       </nav>
 
-      {loading ? <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p> : null}
+      {loading ? (
+        <p style={{ color: "var(--muted)" }} data-testid="team-loading">
+          {t("app.loading")}
+        </p>
+      ) : null}
 
       {/* ══════════ ١ · الأعضاء — البابُ الأوّل، وبطاقةٌ تقول أربعةً ══════════ */}
       {tab === "members" ? (
@@ -620,11 +679,12 @@ export function TeamWorkspace({
           aria-labelledby="team-tab-members"
           data-testid="team-panel-members"
         >
-          {!loading && projectId && members.length === 0 && !error ? (
+          {fresh && members.length === 0 && !error ? (
             <p style={{ color: "var(--muted)" }}>{t("team.emptyMembers")}</p>
           ) : null}
+          {/* **ولا صفٌّ يُرسم إلّا من لقطةِ هذا البحث بعينه.** */}
           <ul className="team-member-list">
-            {members.map((member) => (
+            {(fresh ? members : []).map((member) => (
               <li key={member.id}>
                 <article
                   className="card team-member"
@@ -697,11 +757,11 @@ export function TeamWorkspace({
           data-testid="team-panel-invitations"
         >
           <p className="provenance-note">{t("team.invitationNote")}</p>
-          {!loading && projectId && invitations.length === 0 && !error ? (
+          {fresh && invitations.length === 0 && !error ? (
             <p style={{ color: "var(--muted)" }}>{t("team.emptyInvitations")}</p>
           ) : null}
           <ul className="team-member-list">
-            {invitations.map((invitation) => (
+            {(fresh ? invitations : []).map((invitation) => (
               <li key={invitation.id}>
                 <article className="card" data-testid={`team-invitation-${invitation.id}`}>
                   <div className="team-row">
@@ -855,11 +915,11 @@ export function TeamWorkspace({
               data-testid="team-activity"
             >
               <p className="provenance-note">{t("team.activityNote")}</p>
-              {!loading && projectId && events.length === 0 && !error ? (
+              {fresh && events.length === 0 && !error ? (
                 <p style={{ color: "var(--muted)" }}>{t("team.emptyActivity")}</p>
               ) : null}
               <ul className="team-member-list">
-                {events.map((event) => (
+                {(fresh ? events : []).map((event) => (
                   <li key={event.id}>
                     <article className="card">
                       <div className="team-row">
@@ -883,11 +943,11 @@ export function TeamWorkspace({
               data-testid="team-decisions"
             >
               <p className="provenance-note">{t("team.ledgerNote")}</p>
-              {!loading && projectId && decisions.length === 0 && !error ? (
+              {fresh && decisions.length === 0 && !error ? (
                 <p style={{ color: "var(--muted)" }}>{t("team.emptyDecisions")}</p>
               ) : null}
               <ul className="team-member-list">
-                {decisions.map((decision) => (
+                {(fresh ? decisions : []).map((decision) => (
                   <li key={decision.id}>
                     <article
                       className="card"

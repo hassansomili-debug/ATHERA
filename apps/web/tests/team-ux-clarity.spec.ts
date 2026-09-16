@@ -480,3 +480,240 @@ test("فريقُ البحث: يُفهم في شاشة، ويُدار في نقر
       await person.context.close();
     }
   });
+
+/* ════════════════════════════════════════════════════════════════════════
+   ثلاثُ دعاوى أُضيفت بعد مراجعةٍ مستقلّة سبقت مراجعةَ المالك اليدويّة
+   ════════════════════════════════════════════════════════════════════════ */
+
+/** صاحبُ بحثٍ ومعه أبحاثٌ فيها مساهمٌ مُميَّزٌ بالاسم — للتفريق بلا لبس. */
+async function ownerWithProjects(
+  browser: Browser, tag: string, titles: string[],
+): Promise<{
+  context: Awaited<ReturnType<Browser["newContext"]>>;
+  page: Page;
+  serverErrors: string[];
+  projects: { title: string; id: string; url: string; contributor: string }[];
+}> {
+  const person = await enrol(browser, `${tag}@example.com`, `Owner ${tag}`);
+  const projects: { title: string; id: string; url: string; contributor: string }[] = [];
+  for (const title of titles) {
+    await person.page.goto(`/${AR}/portfolio`);
+    await person.page.getByLabel("عنوان البحث").fill(title);
+    await person.page.getByRole("button", { name: /أنشئ البحث/ }).click();
+    await person.page.waitForURL(/\/portfolio\/[0-9a-f-]{36}/, { timeout: 60_000 });
+    const url = person.page.url().split("?")[0]!;
+    const id = url.split("/").pop()!;
+    const contributor = `مساهمُ ${title}`;
+
+    // مساهمٌ باسمٍ يخصّ هذا البحثَ وحده — فالتسرّبُ يُرى بالعين.
+    await person.page.goto(`${url}?section=team`);
+    await person.page.getByTestId("team-tab-invitations").click();
+    await person.page.getByTestId("team-advanced-toggle").click();
+    await person.page.locator("#team-contributor-name").fill(contributor);
+    await person.page.getByTestId("team-add-contributor").click();
+    await person.page.getByTestId("team-tab-members").click();
+    await expect(
+      person.page.locator('[data-testid^="team-member-"]').filter({ hasText: contributor }),
+    ).toBeVisible({ timeout: 30_000 });
+
+    projects.push({ title, id, url, contributor });
+  }
+  return { ...person, projects };
+}
+
+test("تبديلُ البحث لا يعرض صفوفَ بحثٍ تحت اسم بحثٍ آخر", async ({ browser }) => {
+  test.setTimeout(300_000);
+  const tag = `swap-${Date.now().toString(36)}`;
+  const owner = await ownerWithProjects(browser, tag, [`ألف ${tag}`, `باء ${tag}`]);
+  const [alpha, beta] = owner.projects;
+  const page = owner.page;
+
+  // ── «أ» معروضٌ ومستقرّ ──
+  await page.goto(`/${AR}/team`);
+  await expect(page.getByTestId("team-project-picker")).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId("team-project-picker").selectOption(alpha!.id);
+  await expect(
+    page.locator('[data-testid^="team-member-"]').filter({ hasText: alpha!.contributor }),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // ── يُحتجَز جوابُ أعضاء «ب» احتجازًا حتميًّا: لا مهلةَ ولا رجاء ──
+  let release: (() => void) | null = null;
+  let seen: (() => void) | null = null;
+  let held = false;
+  const requested = new Promise<void>((resolve) => { seen = resolve; });
+  await page.route(`**/api/v1/projects/${beta!.id}/members`, async (route) => {
+    // والتحقيقُ المسبق (OPTIONS) يمضي: المحتجَزُ هو القراءةُ نفسُها.
+    // **واحتجازٌ واحدٌ لا دائم**: قراءةٌ ثانيةٌ تمضي، فلا يُلغى المسارُ
+    // وهو يحتجز طلبًا — وذاك يُفقد الطلبَ ويُسقط الفحصَ بعلّةٍ من أدواته.
+    if (route.request().method() !== "GET" || held) {
+      await route.continue();
+      return;
+    }
+    held = true;
+    seen?.();
+    await new Promise<void>((resolve) => { release = resolve; });
+    await route.continue();
+  });
+
+  await page.getByTestId("team-project-picker").selectOption(beta!.id);
+  await requested;
+
+  // ══ في نافذةِ الاحتجاز: المُنتقي يقول «ب»، ولا شيءَ من «أ» معروض ══
+  await test.step("في نافذة الطلب: لا صفَّ من البحث السابق", async () => {
+    await expect(page.getByTestId("team-project-picker")).toHaveValue(beta!.id);
+
+    // **الدعوى الأولى أوّلًا**: لا صفَّ من «أ» يُقرأ تحت اسم «ب». وتُقدَّم
+    // على دعوى الانتظار عمدًا — فالضررُ هو الصفُّ الكاذب، لا غيابُ دوّارة.
+    await expect(
+      page.locator('[data-testid^="team-member-"]').filter({ hasText: alpha!.contributor }),
+      "أعضاءُ البحث السابق معروضون تحت اسم البحث الجديد",
+    ).toHaveCount(0);
+    await expect(page.locator('[data-testid^="team-member-"]')).toHaveCount(0);
+    await expect(page.getByTestId("team-my-access")).toHaveCount(0);
+    await expect(page.getByTestId("team-summary")).toHaveCount(0);
+    await expect(page.getByTestId("team-attention")).toHaveCount(0);
+
+    // ثمّ يُقال للباحث إنّ القراءةَ جارية — فلا شاشةٌ خاليةٌ بلا سبب.
+    await expect(page.getByTestId("team-loading")).toBeVisible();
+
+    // **ولا فعلٌ يُمكَّن على صفوفٍ لا تخصّ المعروض.**
+    await expect(page.locator('[data-testid^="team-manage-"]')).toHaveCount(0);
+    await expect(page.getByTestId("team-invite-open")).toHaveCount(0);
+
+    // وبابُ الدعوات غائبٌ أصلًا: صلاحيةُ «أ» لا تُقرأ إذنًا على «ب».
+    await expect(page.getByTestId("team-tab-invitations")).toHaveCount(0);
+    await expect(page.locator('[data-testid^="team-invitation-"]')).toHaveCount(0);
+
+    // **والسجلُّ يُفتح فيُرى خاليًا** — لا وقائعَ «أ» ولا قراراتُه. وهذا
+    // أقوى من غيابِ اللوحة: اللوحةُ معروضةٌ ولا صفَّ فيها من بحثٍ آخر.
+    await page.getByTestId("team-tab-history").click();
+    const activity = page.getByTestId("team-activity");
+    await expect(activity).toBeVisible();
+    await expect(activity.locator("article.card")).toHaveCount(0);
+    await page.getByTestId("team-history-tab-decisions").click();
+    const ledger = page.getByTestId("team-decisions");
+    await expect(ledger).toBeVisible();
+    await expect(ledger.locator("article.card")).toHaveCount(0);
+  });
+
+  // ══ ويُفرَج، فيظهر «ب» وحدَه ══
+  release!();
+  await page.getByTestId("team-tab-members").click();
+  await expect(
+    page.locator('[data-testid^="team-member-"]').filter({ hasText: beta!.contributor }),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(
+    page.locator('[data-testid^="team-member-"]').filter({ hasText: alpha!.contributor }),
+  ).toHaveCount(0);
+  await expect(page.getByTestId("team-my-access")).toBeVisible();
+
+  expect(owner.serverErrors, "a 5xx answered during the project switch").toEqual([]);
+  await owner.context.close();
+});
+
+test("دعوةٌ مردودةٌ تُقرأ داخل نافذتها، وحقولُها باقيةٌ لتُصحَّح",
+  async ({ browser }) => {
+    test.setTimeout(300_000);
+    const tag = `rej-${Date.now().toString(36)}`;
+    const owner = await ownerWithProjects(browser, tag, [`ردّ ${tag}`]);
+    const page = owner.page;
+    const project = owner.projects[0]!;
+    const invitee = `${tag}-mate@example.com`;
+
+    await page.goto(`${project.url}?section=team`);
+    await expect(page.getByTestId("team-panel-members")).toBeVisible({ timeout: 30_000 });
+
+    // ── دعوةٌ أولى تنجح، فتصير الثانيةُ إلى البريد نفسِه مردودةً بحقّ ──
+    await page.getByTestId("team-invite-open").click();
+    await page.locator("#team-invite-name").fill("زميلٌ أوّل");
+    await page.locator("#team-invite-email").fill(invitee);
+    await page.getByTestId("team-invite-submit").click();
+    await expect(page.getByTestId("team-token")).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("team-token-done").click();
+
+    // ── والردُّ ردُّ خادمٍ حقيقيّ: `team.invitation_already_live` (٤٠٩) ──
+    await page.getByTestId("team-invite-open").click();
+    const dialog = page.getByTestId("team-invite-dialog");
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await page.locator("#team-invite-name").fill("زميلٌ مكرَّر");
+    await page.locator("#team-invite-email").fill(invitee);
+    await page.locator("#team-invite-role").selectOption("statistician");
+    await page.getByTestId("team-invite-submit").click();
+
+    // **العلّةُ داخلَ النافذة** — لا في الصفحة خلفها.
+    const inside = dialog.getByTestId("team-invite-error");
+    await expect(
+      inside,
+      "رسالةُ الرفض ليست داخل النافذة — فهي مرسومةٌ خلف ما ينظر إليه المدير",
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(inside).toContainText("توجد دعوة قائمة لهذا البريد");
+    // ولها دلالةُ تنبيهٍ تُسمَع.
+    await expect(inside).toHaveAttribute("role", "alert");
+
+    // والنافذةُ باقية، ولا رمزَ يُعلَن، والحقولُ كما كُتبت.
+    await expect(dialog).toBeVisible();
+    await expect(page.getByTestId("team-token")).toHaveCount(0);
+    await expect(page.locator("#team-invite-name")).toHaveValue("زميلٌ مكرَّر");
+    await expect(page.locator("#team-invite-email")).toHaveValue(invitee);
+    await expect(page.locator("#team-invite-role")).toHaveValue("statistician");
+
+    // ── ويُصحَّح البريدُ فتنجح، فتُمحى العلّةُ ويُعلَن الرمز ──
+    await page.locator("#team-invite-email").fill(`${tag}-other@example.com`);
+    await page.getByTestId("team-invite-submit").click();
+    await expect(page.getByTestId("team-token")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("team-invite-error")).toHaveCount(0);
+    await expect(page.getByTestId("team-token").locator("code")).not.toBeEmpty();
+    await page.getByTestId("team-token-done").click();
+
+    expect(owner.serverErrors, "a 5xx answered during the rejection check").toEqual([]);
+    await owner.context.close();
+  });
+
+test("الأعلى يملك Escape: التأكيدُ يُغلق وحدَه، ثمّ اللوح", async ({ browser }) => {
+  test.setTimeout(300_000);
+  const tag = `esc-${Date.now().toString(36)}`;
+  const owner = await ownerWithProjects(browser, tag, [`طبقات ${tag}`]);
+  const page = owner.page;
+  const project = owner.projects[0]!;
+
+  await page.goto(`${project.url}?section=team`);
+  const id = await memberIdByName(page, project.contributor);
+  await manage(page, id);
+  const drawer = page.getByTestId(`team-member-detail-${id}`);
+  const confirm = page.getByTestId(`team-remove-confirm-${id}`);
+
+  await page.getByTestId(`team-remove-${id}`).click();
+  await expect(confirm).toBeVisible({ timeout: 30_000 });
+
+  // ══ و`Tab` محصورٌ في الأعلى وحده ══
+  //
+  // فلو بلغ المفتاحُ سطحَ اللوح لَطبّق فخَّه هو، فسحب التركيزَ إلى لوحٍ
+  // محجوبٍ بنافذةٍ فوقه — أي مستعملٌ يكتب في ما لا يرى.
+  for (let step = 0; step < 7; step += 1) await page.keyboard.press("Tab");
+  const trapped = await page.evaluate((selector) => {
+    const box = document.querySelector(selector);
+    return Boolean(box && document.activeElement && box.contains(document.activeElement));
+  }, `[data-testid="team-remove-confirm-${id}"]`);
+  expect(trapped, "التركيزُ خرج من نافذة التأكيد وهي مفتوحة").toBe(true);
+
+  // ══ ضغطةٌ أولى: التأكيدُ وحدَه يُغلق، واللوحُ باقٍ ══
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(
+    drawer,
+    "ضغطةُ Escape أغلقت اللوحَ مع نافذته — فالأسفلُ يسمع مفتاحَ الأعلى",
+  ).toBeVisible();
+  await expect(page.getByTestId(`team-remove-${id}`)).toBeFocused();
+
+  // ══ وضغطةٌ ثانية: اللوحُ يُغلق، والتركيزُ يعود إلى زرّ «إدارة» ══
+  await page.keyboard.press("Escape");
+  await expect(drawer).toHaveCount(0);
+  await expect(page.getByTestId(`team-manage-${id}`)).toBeFocused();
+
+  // **ولا عضوٌ أُزيل**: المفتاحُ يُغلق ولا يُنفّذ.
+  await expect(page.getByTestId(`team-member-${id}`))
+    .toHaveAttribute("data-member-access", "active");
+
+  expect(owner.serverErrors, "a 5xx answered during the overlay check").toEqual([]);
+  await owner.context.close();
+});

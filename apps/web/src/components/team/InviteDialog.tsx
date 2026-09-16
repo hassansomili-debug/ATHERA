@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { TeamOverlay } from "./TeamOverlay";
 import type { Vocabulary } from "./permissionGroups";
+import type { InviteOutcome } from "./types";
 
 /**
  * دعوةُ باحثٍ، ورمزُها الذي يُعرض مرّةً — **نافذةٌ واحدةٌ بخطوتين** (RC-T1C UX-1).
@@ -45,19 +46,27 @@ export function InviteDialog({
   roleVocab: Vocabulary[];
   defaultRole: string;
   onClose: () => void;
-  /** يردّ الرمزَ عند النجاح، و`null` إن رُدّت الدعوة. */
-  onInvite: (input: { name: string; email: string; role: string }) => Promise<string | null>;
+  /** يردّ الرمزَ عند النجاح، أو رسالةَ الرفض مترجمةً — تُعرض هنا. */
+  onInvite: (input: { name: string; email: string; role: string }) => Promise<InviteOutcome>;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState(defaultRole);
   const [token, setToken] = useState<string | null>(null);
+  // **والنجاحُ رايةٌ مستقلّةٌ عن الرمز.** فلو قُبلت الدعوةُ ولم يصل رمزُها
+  // لَبقيت النافذةُ على النموذج صامتةً — فعلٌ وقع ولا خبرَ عنه. فتُعلن
+  // النافذةُ ما وقع، وتعرض الرمزَ إن وُجد.
+  const [created, setCreated] = useState(false);
   const [copied, setCopied] = useState(false);
+  // **علّةُ الرفض تُعرض هنا لا في الصفحة خلف النافذة.**
+  const [error, setError] = useState<string | null>(null);
 
   function close() {
     // **ولا يبقى الرمزُ في الذاكرة بعد إغلاق النافذة.**
     setToken(null);
+    setCreated(false);
     setCopied(false);
+    setError(null);
     setName("");
     setEmail("");
     onClose();
@@ -89,7 +98,7 @@ export function InviteDialog({
   if (!open) return null;
 
   // ══════════ الخطوة ٢ · نجحت الدعوة، وهذا رمزُها ══════════
-  if (token) {
+  if (created) {
     return (
       <TeamOverlay
         open
@@ -104,6 +113,7 @@ export function InviteDialog({
             <button
               type="button"
               className="btn-primary"
+              disabled={!token}
               data-testid="team-token-copy"
               onClick={() => void copy()}
             >
@@ -124,7 +134,7 @@ export function InviteDialog({
         <p>{t("team.tokenOnceShort")}</p>
         <p className="provenance-note">{t("team.tokenChannel")}</p>
         {/* ورمزٌ طويلٌ لا يدفع النافذةَ أفقيًّا على ٣٧٥px. */}
-        <code className="team-token-value">{token}</code>
+        {token ? <code className="team-token-value">{token}</code> : null}
         {copied ? <p className="badge-ok" role="status">{t("team.tokenCopied")}</p> : null}
       </TeamOverlay>
     );
@@ -144,6 +154,12 @@ export function InviteDialog({
     >
       {/* **والدعوةُ تقترح دورًا ولا تمنح شيئًا**: لا عضويّةَ حتى يقبل بحسابه. */}
       <p className="provenance-note">{t("team.inviteNote")}</p>
+      {/* **والرفضُ يُقرأ داخل النافذة**، و`role="alert"` يُسمعه لقارئ الشاشة
+          عند ظهوره — فلا يُقال للمبصر وحده. والحقولُ باقيةٌ كما كُتبت
+          ليُصحَّح ما وجب ويُعاد الإرسال. */}
+      {error ? (
+        <p className="error" role="alert" data-testid="team-invite-error">{error}</p>
+      ) : null}
       <div className="form team-form">
         <label htmlFor="team-invite-name">
           {t("team.displayName")}
@@ -185,10 +201,19 @@ export function InviteDialog({
           data-testid="team-invite-submit"
           onClick={() => {
             void (async () => {
-              const issued = await onInvite({ name: name.trim(), email: email.trim(), role });
+              const outcome = await onInvite({
+                name: name.trim(), email: email.trim(), role,
+              });
               // **ولا تُعلن النافذةُ نجاحًا لم يقع.** فإن رُدّت الدعوة بقي
-              // النموذجُ بحقوله، والخطأُ يُقرأ في موضعه من الشاشة.
-              if (issued) setToken(issued);
+              // النموذجُ بحقوله وظهرت العلّةُ فوقه؛ وإن قُبلت مُحيت العلّةُ
+              // وانتقلت النافذةُ إلى إعلان الرمز.
+              if (outcome.ok) {
+                setError(null);
+                setCreated(true);
+                setToken(outcome.token);
+              } else {
+                setError(outcome.error);
+              }
             })();
           }}
         >

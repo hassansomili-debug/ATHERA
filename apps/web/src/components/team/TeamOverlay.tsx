@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 
 /**
  * طبقةٌ واحدةٌ لكلِّ ما يُفتح فوق الصفحة — لوحٌ جانبيّ أو نافذة (RC-T1C UX-1).
@@ -24,6 +30,28 @@ import { useCallback, useEffect, useRef, type ReactNode } from "react";
  *
  * **ولا تُقفل الصفحةُ خلفها بـ`inert`**: المتصفّحاتُ تختلف فيها، والالتفافُ
  * أعلاه يكفي لما تفعله هذه الشاشة.
+ *
+ * ## ولمَ المفتاحُ يُملَك عند السطح لا عند الوثيقة
+ *
+ * **العطبُ الذي أغلقه هذا الملفّ:** كانت كلُّ طبقةٍ مفتوحةٍ تُسجّل مستمعًا
+ * على `document` بطورِ الاقتناص. ولوحُ العضو يُسجّل قبل نافذةِ تأكيد
+ * الإزالة المرسومةِ داخله، **ومستمعانِ على الهدف نفسِه يعملان بترتيب
+ * التسجيل** — فيسبق اللوحُ النافذةَ، فيُغلق نفسَه ومعه النافذةُ بضغطةِ
+ * `Escape` واحدة. و`stopPropagation()` في معالج النافذة لا يُدرَك أصلًا:
+ * لم يأتِ دورُه.
+ *
+ * **و«الأعلى يملك المفتاح» خاصّيّةُ شجرةٍ لا ترتيبَ تسجيل.** فالمعالجُ
+ * يُربط بسطح الطبقة نفسِه: النافذةُ مرسومةٌ **داخل** اللوح في DOM، فالحدثُ
+ * الصادر من داخلها يمرّ بسطحها أوّلًا، فيوقفه هناك (`stopPropagation`) ولا
+ * يبلغ سطحَ اللوح. وطبقتان متجاورتان (لا متداخلتان) لا تتنازعان أصلًا:
+ * التركيزُ في واحدةٍ منهما، فمعالجُها وحده يُستدعى.
+ *
+ * ولا مُكدّسَ عامٌّ يُدار بيد، ولا ترتيبَ مهلٍ: الترتيبُ هو تداخلُ العناصر،
+ * وهو معلومٌ ثابتٌ لا يعتمد على مَن رُكّب أوّلًا.
+ *
+ * **والتركيزُ مضمونٌ داخل السطح**: يُنقل إليه عند الفتح، ويحفظه فخُّ `Tab`،
+ * و`tabIndex={-1}` على السطح يجعل النقرَ على نصٍّ غيرِ تفاعليٍّ داخله
+ * يُثبّت التركيزَ عليه — فلا تضيع ضغطةُ `Escape` لأنّ التركيزَ خارجها.
  *
  * والاتجاهُ منطقيّ لا يساريّ: اللوحُ يدخل من `inset-inline-end`، فيصير في
  * العربيّة يسارًا وفي الإنجليزيّة يمينًا بلا فرعٍ في الشيفرة.
@@ -60,14 +88,23 @@ export function TeamOverlay({
   // العنصرُ الذي فتح الطبقة — يُردّ إليه التركيزُ عند الإغلاق.
   const opener = useRef<HTMLElement | null>(null);
 
-  const keydown = useCallback(
-    (event: KeyboardEvent) => {
+  /**
+   * مفاتيحُ الطبقة — **وتُوقَف عند سطحها فلا تبلغ ما يحويها**.
+   *
+   * فالحدثُ يصعد من موضع التركيز إلى أقرب سطحٍ يحويه؛ وذاك هو الأعلى
+   * بحكم التداخل. ويُوقَف هنا `Escape` و`Tab` كلاهما: لو مضى `Tab`
+   * إلى السطح الخارجيّ لَطبّق فخَّه هو، فسحب التركيزَ إلى لوحٍ محجوبٍ
+   * بنافذةٍ فوقه.
+   */
+  const onKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (event.key === "Escape") {
         event.stopPropagation();
         onClose();
         return;
       }
       if (event.key !== "Tab" || !surface.current) return;
+      event.stopPropagation();
       const nodes = Array.from(
         surface.current.querySelectorAll<HTMLElement>(FOCUSABLE),
       ).filter((node) => node.offsetParent !== null);
@@ -93,12 +130,12 @@ export function TeamOverlay({
     // لوحًا يريد ما فيه، وردُّه إلى «أغلق» يجعل الطبقةَ تبدو خاطئة.
     const target = surface.current?.querySelector<HTMLElement>(FOCUSABLE);
     (target ?? surface.current)?.focus();
-    document.addEventListener("keydown", keydown, true);
+    // والتركيزُ يعود إلى فاتحها عند الإغلاق — ونافذةُ التأكيد تُردّ إلى
+    // زرِّ «أزِل»، واللوحُ إلى زرِّ «إدارة».
     return () => {
-      document.removeEventListener("keydown", keydown, true);
       opener.current?.focus?.();
     };
-  }, [open, keydown]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -117,6 +154,7 @@ export function TeamOverlay({
         aria-labelledby={titleId}
         tabIndex={-1}
         ref={surface}
+        onKeyDown={onKeyDown}
         data-testid={testId}
       >
         <header className="overlay-head">
