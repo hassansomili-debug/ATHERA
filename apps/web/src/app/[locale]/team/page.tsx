@@ -26,8 +26,9 @@ export default function TeamPage({ params }: { params: Promise<{ locale: string 
     <>
       <h1>{t("team.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("team.subtitle")}</p>
-      <p className="provenance-note">{t("team.creditNote")}</p>
-      <p className="provenance-note">{t("team.consentIsPersonal")}</p>
+      {/* **ولا جدارُ شرحٍ في صدر الصفحة.** كانت هنا ملاحظتا CRediT
+          والموافقةِ الشخصيّة، وهما صحيحتان — وموضعُهما حيث يُقرَآن: في
+          قسمَي «المساهمة العلمية» و«التأليف والموافقة» من لوح العضو. */}
       <TeamWorkspace locale={locale} />
     </>
   );

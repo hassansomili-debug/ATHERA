@@ -108,12 +108,16 @@ test("الإيقافُ والإعادةُ يُرسمان من جواب الكت�
 
     await owner.goto(`${projectUrl}?section=team`);
     await expect(owner.getByTestId("team-my-access")).toBeVisible({ timeout: 30_000 });
-    await owner.getByLabel("الاسم كما يُنشر").first().fill("زميلٌ يُوقَف");
-    await owner.getByLabel("البريد").first().fill(MATE);
-    await owner.getByRole("button", { name: "أرسل الدعوة" }).click();
+    // الدعوةُ تُتمّ في نافذةٍ مُركَّزة، ورمزُها في إعلان نجاحها (RC-T1C UX-1).
+    await owner.getByTestId("team-invite-open").click();
+    await expect(owner.getByTestId("team-invite-dialog")).toBeVisible({ timeout: 30_000 });
+    await owner.locator("#team-invite-name").fill("زميلٌ يُوقَف");
+    await owner.locator("#team-invite-email").fill(MATE);
+    await owner.getByTestId("team-invite-submit").click();
     const tokenBox = owner.getByTestId("team-token").locator("code");
     await expect(tokenBox).toBeVisible({ timeout: 30_000 });
     const token = (await tokenBox.innerText()).trim();
+    await owner.getByTestId("team-token-done").click();
 
     await mate.goto(`/${AR}/team`);
     await mate.getByTestId("invitation-token-input").fill(token);
@@ -128,6 +132,12 @@ test("الإيقافُ والإعادةُ يُرسمان من جواب الكت�
     await expect(card).toBeVisible({ timeout: 30_000 });
     const memberId = (await card.getAttribute("data-testid"))!
       .replace("team-member-", "");
+    // **وزرّا المدخل في لوح العضو** بعد إعادة تصميم الشاشة — واللوحُ يقرأ
+    // صفَّه من الحالة نفسِها، فالدعوى البنيويّة كما هي: لو بُنيت الأزرارُ
+    // من قراءةٍ تتبع الكتابة لَبقي «أوقِف» إلى الأبد.
+    await owner.getByTestId(`team-manage-${memberId}`).click();
+    await expect(owner.getByTestId(`team-member-detail-${memberId}`))
+      .toBeVisible({ timeout: 30_000 });
     await expect(owner.getByTestId(`team-suspend-${memberId}`)).toBeVisible();
 
     const token2 = await owner.evaluate(() =>

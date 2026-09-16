@@ -42,6 +42,10 @@ MIGRATION = (REPO / "infra" / "db" / "migrations" / "versions"
 # يختار البحثَ، وقسمُ البحث `?section=team` يُثبّته — والمحرّكُ واحد. فما
 # يُحاسَب هنا هو المحرّك، ويُثبَت أنّه معروضٌ في البابين لا شيفرةً ميتة.
 SCREEN = WEB / "src" / "components" / "TeamWorkspace.tsx"
+#: لوحُ تفصيل العضو — **جزءٌ من سطح الفريق لا شاشةٌ أخرى** (RC-T1C UX-1).
+#: فبعد أن صار التفصيلُ يُفتح عند الطلب، صارت الفروقُ الأربعة تُعرض هنا؛
+#: وحارسٌ يقرأ المحرّكَ وحده يقرأ نصفَ السطح.
+MEMBER_DETAIL = WEB / "src" / "components" / "team" / "MemberDetail.tsx"
 TEAM_PAGE = WEB / "src" / "app" / "[locale]" / "team" / "page.tsx"
 PROJECT_PAGE = (WEB / "src" / "app" / "[locale]" / "portfolio" / "[projectId]"
                 / "page.tsx")
@@ -1051,14 +1055,41 @@ async def test_suspending_a_member_stops_access_without_erasing_the_record(
 def test_the_team_screen_shows_each_distinction_the_backend_keeps_apart():
     """شاشةٌ تعرض «عضو» وحدها تجعل القارئ يفترض الأربعة.
 
-    فما يُطلب هنا أن يظهر لكل عضو: أهو مربوطٌ بحساب، ودورُه، وملخّصُ
-    صلاحياته، وإقراراتُ CRediT، وحالُ دعوته، وحالُ تأليفه وموافقته.
+    فما يُطلب أن يظهر لكلّ عضو: أهو مربوطٌ بحساب، ودورُه، وصلاحياتُه،
+    وإقراراتُ CRediT، وحالُ دعوته، وحالُ تأليفه وموافقته.
+
+    **وسطحُ الفريق صار ملفّين** (RC-T1C UX-1): بطاقةٌ تقول القدرَ المشترك،
+    ولوحٌ يُفتح فيحمل التفصيل. فيُقرأ الاثنان — ولا يُسقط حقلٌ بحجّة
+    أنّه انتقل.
     """
-    source = SCREEN.read_text(encoding="utf-8")
-    for field in ("is_account_linked", "permission_labels", "credit_labels",
+    surface = SCREEN.read_text(encoding="utf-8") + MEMBER_DETAIL.read_text(encoding="utf-8")
+    for field in ("is_account_linked", "permissions", "credit_labels",
                   "consent_label", "consent_method", "access_label",
                   "is_author", "consent_needs_recollection", "state_label"):
-        assert field in source, field
+        assert field in surface, field
+
+
+def test_the_scientific_distinctions_live_in_the_detail_not_on_the_card():
+    """**والموضعُ شرطٌ فوق الوجود** — وهو ما رُدَّت الشاشةُ لأجله.
+
+    ردَّ المالكُ التجربةَ لأنّ بطاقةَ كلِّ عضوٍ كانت تطبع الصلاحياتِ
+    التسعَ وأدوارَ CRediT وحالَ التأليف والموافقةِ معًا. فصارت البطاقةُ
+    تقول اسمًا ودورًا وحالَ مدخلٍ وعدَدًا، والحكمُ العلميُّ في لوحه.
+
+    **وهذا الشرطُ أضيق من سابقه لا أوسع**: كان يكفي أن يوجد الحقلُ في
+    الملفّ، وصار يُشترط ألّا يوجد في المحرّك وأن يوجد في اللوح.
+    """
+    engine = SCREEN.read_text(encoding="utf-8")
+    detail = MEMBER_DETAIL.read_text(encoding="utf-8")
+    for field in ("permission_labels", "credit_labels", "consent_label",
+                  "consent_method_label", "consent_needs_recollection",
+                  "author_position"):
+        assert field not in engine, f"{field} عاد إلى بطاقة العضو"
+        assert field in detail, f"{field} غائبٌ عن لوح التفصيل"
+
+    # **ولا «ليس مؤلفًا» على كلّ بطاقة**: الغيابُ لا يحتاج تحذيرًا.
+    assert "team.notAnAuthor" not in engine
+    assert "team.notAnAuthor" in detail
 
 
 def test_the_screen_can_only_ever_ask_to_consent_as_itself():
