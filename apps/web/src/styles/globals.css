@@ -903,9 +903,20 @@ h2.nav-label { line-height: 1.6; }
 }
 .overlay-surface:focus { outline: none; }
 
+/*
+ * **والهيئةُ تُقيَّد بسطحها المباشر (`>`) لا بكلّ سطحٍ تحتها.**
+ *
+ * نافذةُ تأكيد الإزالة مرسومةٌ **داخل** جسم لوح العضو في DOM، فمحدِّدٌ
+ * بالنسب (`.overlay-drawer .overlay-surface`) يطابق سطحَها هو أيضًا —
+ * فورّثها `block-size: 100%` و`border-radius: 0`، وعلى ٣٧٥px صفيحةً
+ * سفليّة. فصارت نافذةٌ قصيرةٌ تُرسم بطول الشاشة وبزواياَ قائمة.
+ *
+ * والسطحُ ابنٌ مباشرٌ لطبقته دائمًا، فالابنُ المباشر محدِّدٌ قاطعٌ لا
+ * يسيل — ولا يحتاج طبقةً أن تعرف أين رُسمت.
+ */
 /* اللوح: من الحدِّ الخلفيّ، بكامل الارتفاع */
 .overlay-drawer { justify-content: flex-end; }
-.overlay-drawer .overlay-surface {
+.overlay-drawer > .overlay-surface {
   inline-size: min(440px, 100%);
   block-size: 100%;
   border-radius: 0;
@@ -915,7 +926,7 @@ h2.nav-label { line-height: 1.6; }
 
 /* النافذة: في الوسط، وبعرضٍ يكفي فعلًا قصيرًا */
 .overlay-modal { align-items: center; justify-content: center; padding: 18px; }
-.overlay-modal .overlay-surface {
+.overlay-modal > .overlay-surface {
   inline-size: min(520px, 100%);
   border-radius: var(--radius-lg);
 }
@@ -1134,7 +1145,7 @@ h2.nav-label { line-height: 1.6; }
 /* ══ ٣٧٥px: اللوحُ يصير صفيحةً بكامل العرض، والأزرارُ تمتدّ ══ */
 @media (max-width: 560px) {
   .overlay-drawer { align-items: flex-end; }
-  .overlay-drawer .overlay-surface {
+  .overlay-drawer > .overlay-surface {
     inline-size: 100%;
     block-size: min(92%, 100%);
     border-start-start-radius: var(--radius-lg);
