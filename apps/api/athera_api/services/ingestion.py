@@ -20,7 +20,14 @@ from .extraction.rules import RuleBasedExtractor
 from .parsing import UnsupportedDocument, parse
 
 
-async def _load_bytes(record: File) -> bytes:
+async def load_object_bytes(storage_key: str) -> bytes:
+    """يقرأ كائنًا من التخزين **بمفتاحه وحده** — لا بصفِّ ORM (RC-T1-H3).
+
+    ولمَ المفتاحُ لا الصفّ: هذه قراءةٌ خارجيّةٌ غيرُ محدودةِ الزمن، فيلزم
+    أن تقع **بلا معاملةٍ مفتوحة**. وصفُّ ORM يموت بموت معاملته، وتمريرُه
+    إلى ما بعد الحدّ يدعو إلى تحميلٍ متأخّرٍ بلا سياق — فتردّ RLS صفرَ
+    صفوفٍ صامتة. فما يعبُر الحدَّ نصٌّ.
+    """
     import boto3  # noqa: PLC0415
 
     from ..config import get_settings
@@ -33,8 +40,13 @@ async def _load_bytes(record: File) -> bytes:
         aws_access_key_id=settings.s3_access_key_id,
         aws_secret_access_key=settings.s3_secret_access_key,
     )
-    response = client.get_object(Bucket=settings.s3_bucket, Key=record.storage_key)
+    response = client.get_object(Bucket=settings.s3_bucket, Key=storage_key)
     return response["Body"].read()
+
+
+async def _load_bytes(record: File) -> bytes:
+    """غلافٌ للتوافق — والمناداةُ الصحيحة `load_object_bytes(key)`."""
+    return await load_object_bytes(record.storage_key)
 
 
 async def ingest_file(
@@ -45,7 +57,17 @@ async def ingest_file(
     actor_user_id: uuid.UUID,
     extractor: Extractor | None = None,
     raw_bytes: bytes | None = None,
+    proposal: ExtractionResult | None = None,
 ) -> tuple[ExtractionRun, list[FactCandidate]]:
+    """يُخزّن الاستخراج — **ولا انتظارَ خارجيٌّ داخله إن أُعطي ما يلزم**.
+
+    و`raw_bytes` و`proposal` بذرتان لحدِّ المعاملة (RC-T1-H3): من ناداها
+    من مسارٍ يملك معاملةً قصيرةً يقرأ البايتات ويستدعي النموذج **خارجها**،
+    ثمّ يُمرّرهما هنا — فلا تبقى معاملةٌ مفتوحةً عبر التخزين ولا عبر
+    النموذج. ومن ناداها بلا ذلك (نصٌّ، أو مهمّةُ خلفيّةٍ تملك معاملتها)
+    يعمل كما كان.
+    """
+
     record = (await session.execute(
         select(File).where(File.id == file_id, File.tenant_id == tenant_id)
     )).scalar_one_or_none()
@@ -96,7 +118,10 @@ async def ingest_file(
         stored[parsed.seq] = chunk
     await session.flush()
 
-    result: ExtractionResult = await extractor.propose(chunks)
+    # **والاقتراحُ يُقبَل مُعطًى**: إن حُسب خارج المعاملة فلا يُعاد حسابه
+    # هنا — وإلّا لوقع نداءُ النموذج داخلها، وهو العطبُ بعينه.
+    result: ExtractionResult = (
+        proposal if proposal is not None else await extractor.propose(chunks))
 
     candidates: list[FactCandidate] = []
     for candidate in result.candidates:

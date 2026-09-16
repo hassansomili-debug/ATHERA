@@ -817,14 +817,16 @@ KNOWN_EXTERNAL_CALLS = {
 #: انظر `docs/maintenance/RC-T1-H3-ai-long-transactions.md`.
 #:
 #: وزيادةُ هذه القائمة تُسقط الحزمة: **الدَّينُ لا يكبر صامتًا**.
-KNOWN_REMAINING = {
-    ("literature.py", "search_sources"),        # source_registry.search  — شبكة
-    ("literature.py", "discover_references"),   # discover               — شبكة
-    ("literature.py", "import_source"),         # verification.resolve_doi — شبكة
-    ("literature.py", "revalidate_source"),     # verification.revalidate — شبكة
-    ("profile.py", "import_document"),          # ingestion.ingest_file  — تخزين
-    ("thesis.py", "parse_thesis"),              # _load_bytes            — تخزين
-}
+KNOWN_REMAINING: set[tuple[str, str]] = set()
+#
+# **وكانت ستّةً، فخلت** (RC-T1-H3-B): كلُّها عُولجت بالنمط نفسِه — تحضيرٌ
+# قصير، ثمّ الخارجُ بلا معاملة، ثمّ إنهاءٌ قصير. ولم يُحذف الحارس: بقاؤه
+# فارغًا دعوى تُفحص، لا سطرٌ ميّت.
+#
+# **والدعوى الأصلبُ في موضعٍ آخر**: `test_19` في
+# `test_at_rc_t1_h3b_remaining_external_waits.py` يمسح التطبيقَ بحلِّ
+# الاستيراد — بلا مطابقةِ أسماءٍ مجرّدةٍ وبلا قائمةِ استثناءات — ويشترط
+# صفرًا. وهذا الحارسُ يبقى رخيصًا وسريعًا بجانبه.
 
 SESSION_DEPENDENCIES = {"get_session", "get_project_session"}
 

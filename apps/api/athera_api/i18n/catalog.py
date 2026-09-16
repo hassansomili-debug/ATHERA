@@ -424,6 +424,14 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "لا يُبنى دليل على مصدر غير متحقق (§14.5).",
         "en": "Evidence cannot be built on an unverified source (§14.5).",
     },
+    # **وفحصُ ورقةٍ لا يُكتب على ورقةٍ أخرى** (RC-T1-H3-B): حلُّ المعرّف
+    # يقع بلا معاملة، فبين قراءةِ المصدر وكتابةِ نتيجته فجوةٌ زمنيّة. فإن
+    # تغيّر معرّفُ المصدر فيها فالسجلُّ المجلوب يصف عملًا آخر — فيُرفض.
+    "evidence.source_changed_during_verification": {
+        "ar": "تغيّر هذا المصدر أثناء التحقّق، فلم تُكتب النتيجة. أعِد المحاولة.",
+        "en": "This source changed while it was being verified, so the result was "
+              "not written. Please try again.",
+    },
     "evidence.source_has_no_doi": {
         "ar": "المصدر بلا معرّف DOI فلا يمكن إعادة التحقق منه آليًا.",
         "en": "The source has no DOI, so it cannot be revalidated automatically.",

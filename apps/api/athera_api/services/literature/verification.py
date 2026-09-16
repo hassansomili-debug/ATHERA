@@ -111,26 +111,60 @@ async def import_source(
     return source
 
 
-async def revalidate(
+async def revalidation_doi(
+    session: AsyncSession, *, source_id: uuid.UUID,
+) -> str:
+    """طورُ التحضير: يتحقّق من المصدر ويُخرج **معرّفَه نصًّا** (RC-T1-H3).
+
+    ولا يُعيد صفَّ ORM: الصفُّ يموت بموت معاملته، والنداءُ الخارجيُّ يقع
+    بعدها. فيُحمَل DOI وحدَه، ويُعاد تحميلُ الصفِّ في معاملة الإنهاء.
+
+    ورموزُ الإخفاق هي نفسُها ومواضعُها نفسُها: مصدرٌ غائب ٤٠٤، ومصدرٌ بلا
+    DOI خطأُ تحقّقٍ — **قبل** أيّ نداءٍ خارجيّ.
+    """
+    source = (await session.execute(
+        select(Source).where(Source.id == source_id))).scalar_one_or_none()
+    if source is None:
+        raise NotFound("evidence.source_not_found")
+    if not source.doi:
+        raise SourceVerificationError("evidence.source_has_no_doi",
+                                      source_id=str(source_id))
+    return source.doi
+
+
+async def apply_revalidation(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     source_id: uuid.UUID,
-    registries: list[SourceRegistry],
+    record: RegistryRecord,
+    registry_name: str,
+    resolved_doi: str,
 ) -> tuple[Source, bool]:
-    """يعيد فحص المصدر ويكتب لقطة جديدة. يعيد (المصدر، هل تغيّرت حالة السحب؟).
+    """طورُ الإنهاء: يُثبِّت نتيجةَ فحصٍ **جُلبت خارج المعاملة**.
 
-    تغيّر حالة السحب حدث علمي لا تحديث بيانات: يُفتح له تنبيه نزاهة لأنه قد
-    يبطل استشهادًا قائمًا في مخطوطة (§14.5).
+    ## و«تغيّر» تُحسب على الحالِ الراهنة لا البائتة
+
+    الفارقُ يُقاس بين ما في القاعدة **الآن** وما قاله الفهرس — لا بين ما
+    كان وقت التحضير. فلو كتب كاتبٌ آخر حالةً أثناء الانتظار، فالانتقالُ
+    المُعلَن هو الانتقالُ الواقع، ولا يُفتح تنبيهُ نزاهةٍ على فرقٍ وهميّ.
+
+    ## ولا يُكتب فحصُ ورقةٍ على ورقةٍ أخرى
+
+    وإن تغيّر DOI المصدر بين التحضير والإنهاء فالسجلُّ الذي جُلب يصف **عملًا
+    آخر**. فيُرفض التثبيتُ صريحًا (٤٠٩) ولا يُكتب فوق حالٍ أحدث — وهذا حدٌّ
+    ضيّقٌ لموضعه، لا قُفلٌ تشاؤميٌّ عامّ.
     """
-    source = (await session.execute(select(Source).where(Source.id == source_id))).scalar_one_or_none()
+    source = (await session.execute(
+        select(Source).where(Source.id == source_id))).scalar_one_or_none()
     if source is None:
+        # حُذف أثناء الانتظار — والرمزُ هو رمزُ الغياب نفسُه.
         raise NotFound("evidence.source_not_found")
-    if not source.doi:
-        raise SourceVerificationError("evidence.source_has_no_doi", source_id=str(source_id))
+    if source.doi != resolved_doi:
+        raise AtheraError("evidence.source_changed_during_verification",
+                          status_code=409, source_id=str(source_id))
 
-    record, registry_name = await resolve_doi(registries, source.doi)
     previous = source.retraction_status
     changed = previous != record.retraction_status
     now = dt.datetime.now(dt.UTC)
@@ -164,3 +198,25 @@ async def revalidate(
         state_after={"retraction_status": record.retraction_status, "changed": changed},
     )
     return source, changed
+
+
+async def revalidate(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    source_id: uuid.UUID,
+    registries: list[SourceRegistry],
+) -> tuple[Source, bool]:
+    """الطورانِ مجتمعانِ في معاملة المستدعي — **لمن يملكها** لا لمسارِ طلب.
+
+    ومسارُ الطلب يستدعي الطورَين مفصولَين، وإلّا امتدّت معاملتُه عبر
+    الشبكة (RC-T1-H3). وهذه تبقى لنصٍّ أو مهمّةٍ تملك معاملتَها وتقبل
+    طولَها.
+    """
+    doi = await revalidation_doi(session, source_id=source_id)
+    record, registry_name = await resolve_doi(registries, doi)
+    return await apply_revalidation(
+        session, tenant_id=tenant_id, actor_user_id=actor_user_id,
+        source_id=source_id, record=record, registry_name=registry_name,
+        resolved_doi=doi)

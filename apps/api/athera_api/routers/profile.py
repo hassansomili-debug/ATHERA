@@ -11,7 +11,10 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..db import tenant_session_maker
 from ..deps import Principal, get_principal, get_session
+from ..errors import AtheraError, NotFound
+from ..models.files import File
 from ..models.research import FactCandidate, ResearcherMemory, ResearcherProfile
 from ..schemas.profile import (
     DecisionRequest,
@@ -23,7 +26,9 @@ from ..schemas.profile import (
     ProfileResponse,
 )
 from ..services import audit, ingestion, memory
+from ..services.extraction.base import Extractor
 from ..services.extraction.rules import RuleBasedExtractor
+from ..services.parsing import UnsupportedDocument, parse
 from ..transaction import TransactionalRoute
 
 router = APIRouter(prefix="/api/v1/profile", tags=["profile"], route_class=TransactionalRoute)
@@ -110,33 +115,90 @@ async def patch_profile(
 async def import_document(
     payload: ImportRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> ImportResponse:
-    """§35.1 — ملف مرفوع → مقاطع بموضع → مرشّحات غير متحققة."""
-    extractor = RuleBasedExtractor()
+    """§35.1 — ملف مرفوع → مقاطع بموضع → مرشّحات غير متحققة.
+
+    **ولا معاملةَ قاعدةٍ عبر التخزين ولا عبر النموذج** (RC-T1-H3):
+
+        (١) معاملةٌ قصيرة : الملفُّ موجودٌ وجاهز ⇒ يُحمَل **مفتاحُه** ونوعُه
+        (٢) بلا معاملة    : تُقرأ البايتات من التخزين
+        (٣) بلا معاملة    : يُفكَّك النصّ (حسابٌ محلّيّ)، ثمّ يُستدعى النموذج
+                            إن كان المُستخرِجُ نموذجيًّا — ويُسجّل نداءَه
+                            في معاملةٍ قصيرةٍ خاصّةٍ به
+        (٤) معاملةٌ قصيرة : يُخزَّن الاستخراجُ كلُّه ويُودَع
+
+    **والمُستخرِجُ النموذجيُّ كان عطبًا ثانيًا في هذا المسار**: كان يُبنى
+    بجلسة الطلب فيُمرّرها إلى بوابة النموذج — أي نداءُ نموذجٍ داخل معاملةٍ
+    حيّة. ولم يره الماسحُ الساكن لأنّ `Extractor` واجهةٌ تُمرَّر مُعامِلًا.
+    فصار يُبنى بدالّةِ جلسةٍ لا بجلسة.
+
+    **ورموزُ الإخفاق ومواضعُها كما كانت**: ملفٌّ غائب ٤٠٤، وملفٌّ غيرُ جاهز
+    ٤٠٩ — ويُفحص ذلك في الطور (١) **قبل** أيّ قراءةٍ من التخزين، كما كان
+    يقع قبل `_load_bytes`.
+    """
+    session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+
+    # ── الطورُ (١): الملفُّ والمِلف الشخصيّ، في معاملةٍ قصيرة ──
+    async with session_maker() as session:
+        await _get_or_create_profile(session, principal.tenant_id, principal.user_id)
+        record = (await session.execute(
+            select(File).where(File.id == payload.file_id,
+                               File.tenant_id == principal.tenant_id)
+        )).scalar_one_or_none()
+        if record is None:
+            raise NotFound("file.not_found")
+        if record.status != "stored":
+            raise AtheraError("ingestion.file_not_ready", status_code=409,
+                              status=record.status)
+        # **قيمٌ لا صفّ**: المفتاحُ والنوعُ والاسم، ولا كائنَ ORM يعبُر.
+        storage_key = record.storage_key
+        content_type = record.content_type
+        filename = record.original_filename
+
+    # ── الطورُ (٢): التخزين، بلا معاملة ──
+    data = await ingestion.load_object_bytes(storage_key)
+
+    # ── الطورُ (٣): التفكيكُ ثمّ الاقتراح، بلا معاملةٍ مفتوحة ──
+    extractor: Extractor = RuleBasedExtractor()
     if payload.extractor == "model":
         from ..providers.gateway import ModelGateway  # noqa: PLC0415
         from ..services.extraction.model import ModelExtractor  # noqa: PLC0415
 
         extractor = ModelExtractor(
-            ModelGateway(), session, principal.tenant_id, classification="C2"
+            ModelGateway(), session_maker, principal.tenant_id, classification="C2"
         )
+    try:
+        chunks = parse(data, content_type, filename)
+    except UnsupportedDocument as exc:
+        # الرمزُ والموضعُ كما كانا في `ingest_file`، ويُسجَّل الإخفاق.
+        async with session_maker() as session:
+            await audit.record(
+                session, tenant_id=principal.tenant_id, action="ingestion.failed",
+                object_type="file", object_id=payload.file_id,
+                actor_user_id=principal.user_id, reason=str(exc),
+            )
+        raise AtheraError("ingestion.unsupported_document", status_code=422,
+                          detail=str(exc)) from exc
+    proposal = await extractor.propose(chunks)
 
-    await _get_or_create_profile(session, principal.tenant_id, principal.user_id)
-    run, candidates = await ingestion.ingest_file(
-        session,
-        tenant_id=principal.tenant_id,
-        file_id=payload.file_id,
-        actor_user_id=principal.user_id,
-        extractor=extractor,
-    )
-    return ImportResponse(
-        extraction_run_id=run.id,
-        chunks_parsed=run.chunks_parsed,
-        candidates_proposed=run.candidates_proposed,
-        candidates_rejected_unquoted=run.candidates_rejected_unquoted,
-        extractor=run.extractor,
-    )
+    # ── الطورُ (٤): التخزين والإيداع، في معاملةٍ قصيرة ──
+    async with session_maker() as session:
+        run, candidates = await ingestion.ingest_file(
+            session,
+            tenant_id=principal.tenant_id,
+            file_id=payload.file_id,
+            actor_user_id=principal.user_id,
+            extractor=extractor,
+            raw_bytes=data,
+            proposal=proposal,
+        )
+        return ImportResponse(
+            extraction_run_id=run.id,
+            chunks_parsed=run.chunks_parsed,
+            candidates_proposed=run.candidates_proposed,
+            candidates_rejected_unquoted=run.candidates_rejected_unquoted,
+            extractor=run.extractor,
+        )
 
 
 @router.get("/facts", response_model=list[FactCandidateResponse])
