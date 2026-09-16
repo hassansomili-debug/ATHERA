@@ -12,8 +12,9 @@ from ..deps import Principal, get_principal, get_session
 from ..models.research import MEMORY_CATEGORIES
 from ..schemas.profile import MemoryResponse
 from ..services import memory as memory_service
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
+router = APIRouter(prefix="/api/v1/memory", tags=["memory"], route_class=TransactionalRoute)
 
 
 @router.get("", response_model=list[MemoryResponse])

@@ -12,8 +12,9 @@ from ..deps import Principal, get_principal, get_session, require_roles
 from ..errors import NotFound
 from ..models.identity import Membership, Role, Tenant, User
 from ..services import audit
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/tenants", tags=["tenants"])
+router = APIRouter(prefix="/api/v1/tenants", tags=["tenants"], route_class=TransactionalRoute)
 
 
 class TenantResponse(BaseModel):

@@ -48,10 +48,11 @@ from ..services.planning import context as ctx
 from ..services.planning import generate, outline, thread
 from ..services.planning.contracts import OpportunityBatch
 from ..services.thesis import selection
+from ..transaction import TransactionalRoute
 
 logger = logging.getLogger("athera.planning")
 
-router = APIRouter(prefix="/api/v1/projects", tags=["planning"])
+router = APIRouter(prefix="/api/v1/projects", tags=["planning"], route_class=TransactionalRoute)
 
 PROPOSAL_NOTICE_AR = (
     "هذه مقترحات بُنيت من معرفتك الموثقة — وليست حقائق معتمدة ولا ادعاء جدة."

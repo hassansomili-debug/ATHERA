@@ -67,8 +67,9 @@ from ..services import research_assessment
 from ..services.golden_thread import graph as thread_graph
 from ..services.golden_thread import methodology, project_title, score, weave
 from ..services.research_assessment import suggestions
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1", tags=["golden-thread"])
+router = APIRouter(prefix="/api/v1", tags=["golden-thread"], route_class=TransactionalRoute)
 
 
 def _pick(locale: str, ar: str, en: str | None) -> str:

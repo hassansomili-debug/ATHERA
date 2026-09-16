@@ -23,8 +23,9 @@ from ..i18n.catalog import SUPPORTED_LOCALES
 from ..models.identity import Tenant
 from ..providers import gateway
 from ..services import storage
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
+router = APIRouter(prefix="/api/v1/settings", tags=["settings"], route_class=TransactionalRoute)
 
 
 class PostureItem(BaseModel):

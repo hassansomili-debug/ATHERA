@@ -17,6 +17,7 @@ from .db import scoped_tenant, tenant_session
 from .errors import Forbidden, Unauthorized
 from .i18n.catalog import negotiate_locale
 from .services import rbac
+from .transaction import register_request_session
 
 
 @dataclass(slots=True)
@@ -62,18 +63,29 @@ async def get_principal(
     )
 
 
-async def get_session(principal: Principal = Depends(get_principal)) -> AsyncIterator[AsyncSession]:
+async def get_session(
+    request: Request, principal: Principal = Depends(get_principal),
+) -> AsyncIterator[AsyncSession]:
     """الجلسة تُفتح دائمًا بسياق المستأجر المستخرج من الرمز — لا من جسم الطلب.
 
     هذا ما يُبطل هجوم تزوير tenant_id في AT-S0-01: القيمة تأتي من رمز موقّع،
     وحتى لو تسللت قيمة أخرى فإن RLS لا تعرف إلا ما ضُبط هنا.
+
+    **والإيداعُ ليس لهذه التبعيّة** (RC-T1-H1): لو بقي لها لوقع في فكِّ
+    حزمةِ الطلب — أي بعد أن يأخذ العميلُ «تمّ». فتُسجَّل الجلسةُ على
+    الطلب، ويُودِعها `TransactionalRoute` قبل إرسال الجواب. والرجوعُ
+    والإغلاقُ يبقيان هنا.
     """
-    async with tenant_session(principal.tenant_id, principal.user_id) as session:
+    async with tenant_session(
+        principal.tenant_id, principal.user_id, owns_commit=False,
+    ) as session:
+        register_request_session(request, session)
         yield session
 
 
 async def get_project_session(
-    project_id: uuid.UUID, principal: Principal = Depends(get_principal),
+    project_id: uuid.UUID, request: Request,
+    principal: Principal = Depends(get_principal),
 ) -> AsyncIterator[AsyncSession]:
     """جلسةُ بحثٍ — **تعبُر إلى مستأجره إن كان للفاعل فيه مدخلٌ مُثبت**.
 
@@ -87,8 +99,10 @@ async def get_project_session(
     """
     from .db import project_session
 
+    # **والإيداعُ للطلب لا للتبعيّة** — انظر `get_session` وRC-T1-H1.
     async with project_session(project_id, principal.tenant_id,
-                               principal.user_id) as session:
+                               principal.user_id, owns_commit=False) as session:
+        register_request_session(request, session)
         yield session
 
 

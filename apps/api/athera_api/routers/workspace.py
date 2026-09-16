@@ -86,8 +86,9 @@ from ..services import (
 )
 from ..research_brain import stages as stage_model
 from ..services.research_assessment import orchestrator
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
+router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"], route_class=TransactionalRoute)
 
 
 EDIT = "edit_research_content"

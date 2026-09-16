@@ -56,8 +56,9 @@ from ..schemas.literature import (
 )
 from ..services import audit, collaboration, reference_discovery
 from ..services.literature import ledger, registry, verification
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1", tags=["literature"])
+router = APIRouter(prefix="/api/v1", tags=["literature"], route_class=TransactionalRoute)
 settings = get_settings()
 
 

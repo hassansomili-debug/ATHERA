@@ -57,11 +57,12 @@ from ..services import (
     consent,
     reference_discovery,
 )
+from ..transaction import TransactionalRoute
 
 # الأجنت الذي ينفّذ نيّة S5B النصّية. الاسم داخلي ولا يظهر للباحث.
 S5B_AGENT = "research_manager"
 
-router = APIRouter(prefix="/api/v1/ai", tags=["athera-ai"])
+router = APIRouter(prefix="/api/v1/ai", tags=["athera-ai"], route_class=TransactionalRoute)
 
 
 def _t(locale: str, ar: str, en: str) -> str:

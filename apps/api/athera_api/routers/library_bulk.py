@@ -36,8 +36,9 @@ from ..schemas.library import (
     BulkTrashRequest,
 )
 from ..services import audit, collaboration, library
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/bulk", tags=["library-bulk"])
+router = APIRouter(prefix="/bulk", tags=["library-bulk"], route_class=TransactionalRoute)
 
 # سقفُ الدفعة الواحدة — والشاشة تعرض خمسةً وعشرين في الصفحة، وسقفُ القراءة
 # مئة. فمئةٌ هنا تغطّي «اختر كل المعروض» ولا تزيد عليه.

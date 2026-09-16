@@ -8,8 +8,9 @@ from ..errors import AtheraError
 from ..providers.gateway import provider_readiness
 from ..schemas.common import Health
 from ..services import db_posture
+from ..transaction import TransactionalRoute
 
-router = APIRouter(tags=["health"])
+router = APIRouter(tags=["health"], route_class=TransactionalRoute)
 
 logger = logging.getLogger("athera.health")
 

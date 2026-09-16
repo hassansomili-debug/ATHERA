@@ -27,8 +27,9 @@ from ..schemas.inbox import (
     NotificationResponse,
 )
 from ..services import audit, inbox
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1", tags=["inbox"])
+router = APIRouter(prefix="/api/v1", tags=["inbox"], route_class=TransactionalRoute)
 
 
 def _pick(locale: str, arabic: str | None, english: str | None) -> str | None:

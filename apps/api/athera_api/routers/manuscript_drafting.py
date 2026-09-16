@@ -56,11 +56,12 @@ from ..services.publishing.drafting import context as draft_context
 from ..services.publishing.drafting import generate
 from ..services.publishing.drafting import policy
 from ..services.publishing.drafting.contracts import SectionDraft
+from ..transaction import TransactionalRoute
 from .publishing import EDIT, manuscript_for_tenant
 
 logger = logging.getLogger("athera.drafting")
 
-router = APIRouter(prefix="/api/v1/manuscripts", tags=["manuscript-drafting"])
+router = APIRouter(prefix="/api/v1/manuscripts", tags=["manuscript-drafting"], route_class=TransactionalRoute)
 
 # **الأقسام المفعَّلة تُقرأ من السجلّ** (`drafting/policy.py`) لا تُكتب هنا.
 # فقسمٌ يُفعَّل بتعديل سياسته وحدها، ولا يُنسى مدقّقه ولا أدواره.

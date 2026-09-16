@@ -90,14 +90,44 @@ SessionFactory = async_sessionmaker(engine, expire_on_commit=False, class_=Async
 
 
 @asynccontextmanager
-async def tenant_session(tenant_id: UUID | None, actor_id: UUID | None = None) -> AsyncIterator[AsyncSession]:
+async def _scope(session: AsyncSession, *, owns_commit: bool) -> AsyncIterator[None]:
+    """حدُّ المعاملة — **وملكيّةُ الإيداع تُقال صريحًا لا تُفترض** (RC-T1-H1).
+
+    `owns_commit=True` — السياقُ يُودِع عند خروجٍ سليم. وهو الصحيحُ لمن
+    ليس في طلبٍ: مهامُّ الخلفية، والمنسّق، والنصوص، والفحوص.
+
+    `owns_commit=False` — **الطلبُ يملك الإيداع**، ويقع في
+    `TransactionalRoute` قبل إرسال الجواب. فلو بقي الإيداعُ هنا لوقع في
+    فكِّ حزمةِ الطلب — أي بعد أن يأخذ العميلُ «تمّ»، وذاك RC-T1-H1 بعينه.
+
+    **والرجوعُ يبقى هنا في الحالين**: `finally` تُرجِع إن بقيت معاملةٌ
+    حيّة، فسقوطُ المعالج يُرجِع، وإخفاقُ الإيداع يُرجِع، وما أُودع لا
+    يُمَسّ (`in_transaction()` كاذبةٌ بعد الإيداع).
+    """
+    if owns_commit:
+        async with session.begin():
+            yield
+        return
+
+    await session.begin()
+    try:
+        yield
+    finally:
+        if session.in_transaction():
+            await session.rollback()
+
+
+@asynccontextmanager
+async def tenant_session(
+    tenant_id: UUID | None, actor_id: UUID | None = None, *, owns_commit: bool = True,
+) -> AsyncIterator[AsyncSession]:
     """جلسة مقيّدة بمستأجر | a session scoped to one tenant.
 
     `SET LOCAL` يعني أن القيمة تموت مع المعاملة ولا تتسرب إلى الطلب التالي
     عبر اتصال معاد استخدامه من الـpool.
     """
     async with SessionFactory() as session:
-        async with session.begin():
+        async with _scope(session, owns_commit=owns_commit):
             # **ضبطان في عبارةٍ واحدة — لأن العبارة ثمنُها ذهابٌ وإياب.**
             #
             # قِيس من داخل آلة الإنتاج: عبارةٌ واحدة على اتصالٍ قائم تكلّف
@@ -175,6 +205,7 @@ _PROJECT_SCOPE = text(
 @asynccontextmanager
 async def project_session(
     project_id: UUID, tenant_id: UUID | None, actor_id: UUID | None,
+    *, owns_commit: bool = True,
 ) -> AsyncIterator[AsyncSession]:
     """جلسةٌ تدخل مستأجرَ البحث **إن كان للفاعل فيه مدخلٌ مُثبت**.
 
@@ -210,7 +241,7 @@ async def project_session(
     بينهما رُدَّ — انظر `_PROJECT_SCOPE`.
     """
     async with SessionFactory() as session:
-        async with session.begin():
+        async with _scope(session, owns_commit=owns_commit):
             if tenant_id is not None and actor_id is not None:
                 await session.execute(
                     text("SELECT set_config('app.tenant_id', :tid, true),"

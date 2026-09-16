@@ -91,8 +91,9 @@ from ..services.synthesis.vocab import (
     STRENGTH_LABELS,
     STRENGTH_MEANING,
 )
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/synthesis", tags=["synthesis"])
+router = APIRouter(prefix="/api/v1/synthesis", tags=["synthesis"], route_class=TransactionalRoute)
 
 
 EDIT = "edit_research_content"

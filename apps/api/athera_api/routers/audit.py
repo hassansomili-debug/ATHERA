@@ -15,8 +15,9 @@ from ..deps import Principal, get_session, require_roles
 from ..models.audit import AuditEvent
 from ..schemas.audit import AuditEventResponse, ChainVerificationResponse
 from ..services import audit
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
+router = APIRouter(prefix="/api/v1/audit", tags=["audit"], route_class=TransactionalRoute)
 
 _admin = require_roles("research_admin", "college_admin", "institution_admin", "system_admin")
 

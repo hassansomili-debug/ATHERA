@@ -766,6 +766,11 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     "team.invitation_expired": {
         "ar": "انتهت مهلة الدعوة.", "en": "The invitation has expired.",
     },
+    # **إخفاقُ إيداعٍ يُقال صريحًا** (RC-T1-H1): لا «تمّ» على طفرةٍ لم تُودَع.
+    "db.commit_failed": {
+        "ar": "تعذّر إيداعُ التغيير في القاعدة، ولم يُحفظ شيء. أعِد المحاولة.",
+        "en": "The change could not be committed and nothing was saved. Please retry.",
+    },
     "team.invitation_already_live": {
         "ar": "توجد دعوة قائمة لهذا البريد في هذا البحث.",
         "en": "A live invitation already exists for this email in this project.",

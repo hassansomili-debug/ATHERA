@@ -10,8 +10,9 @@ from ..models.portfolio import ResearchProject
 from ..models.research import ResearcherProfile
 from ..schemas.portfolio import ProjectCreateRequest, ProjectResponse
 from ..services import audit, collaboration
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"])
+router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"], route_class=TransactionalRoute)
 
 # §12.3 — الخطة المرجعية **اقتراح لا قيد**: تُعرض كإرشاد ولا يفرضها أي تحقق.
 REFERENCE_PLAN = {

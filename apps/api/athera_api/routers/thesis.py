@@ -69,8 +69,9 @@ from ..services.thesis import (
     selection,
     vocab,
 )
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1", tags=["thesis"])
+router = APIRouter(prefix="/api/v1", tags=["thesis"], route_class=TransactionalRoute)
 
 # رسائل الحواجز بلغتين — المستخدم يستحق أن يعرف ما ينقصه بلغته.
 BLOCKER_LABELS = {
