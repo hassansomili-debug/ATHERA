@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..brain import agents as agent_registry
 from ..brain import tools as tool_registry
 from ..brain.orchestrator import Orchestrator, ToolCall
+from ..db import tenant_session_maker
 from ..deps import Principal, get_principal, get_session
 from ..errors import NotFound
 from ..models.brain import GuardrailCheck
@@ -110,11 +111,20 @@ async def list_scientific_rules(
 async def ask(
     payload: AskRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> AskResponse:
+    """سؤالُ أجنتٍ — **ولا معاملةَ قاعدةٍ تُمسَك أثناء نداء النموذج** (RC-T1-H3).
+
+    ولا `Depends(get_session)` هنا بعد اليوم: كانت معاملةُ الطلب تُمرَّر إلى
+    `run_agent` فتبقى حيّةً حتى يعود المزوّد — والاتصالُ `idle in transaction`
+    طوالَ ذلك. فصار المسارُ يملك معاملاتِه: بحثُ الذاكرة في معاملةٍ قصيرة،
+    ثمّ النداءُ بلا معاملة، ثمّ الأثرُ في معاملةٍ قصيرة.
+
+    **والعقدُ العامّ لم يتغيّر**: نفسُ الجسم، ونفسُ الحالات، ونفسُ الحواجز،
+    ونفسُ الأداة (`memory.search_verified`).
+    """
     orchestrator = Orchestrator()
-    result = await orchestrator.run_agent(
-        session,
+    result = await orchestrator.run_agent_detached(
+        tenant_session_maker(principal.tenant_id, principal.user_id),
         tenant_id=principal.tenant_id,
         actor_user_id=principal.user_id,
         agent_key=payload.agent_key,

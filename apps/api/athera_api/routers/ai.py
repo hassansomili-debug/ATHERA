@@ -26,9 +26,9 @@ import uuid
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..deps import Principal, get_principal, get_session
+from ..db import tenant_session_maker
+from ..deps import Principal, get_principal
 from ..discovery import throttle
 from ..errors import AtheraError, NotFound
 from ..models.files import File
@@ -171,8 +171,20 @@ async def capabilities(
 async def ask(
     payload: AiAskRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> AiAskResponse:
+    """أثيرا AI — **ولا معاملةَ قاعدةٍ تُمسَك عبر أيّ انتظارٍ خارجيّ** (RC-T1-H3).
+
+    وهذا المسارُ كان ينتظر **مرّتين** ومعاملةُ الطلب حيّة: الفهارسَ الخارجيّة
+    (Crossref/OpenAlex) ثمّ النموذج. فصار:
+
+        (١) معاملةٌ قصيرة : وصولُ البحث، والملفُّ المختار، وحالُ الإذن
+        (٢) بلا معاملة    : حدُّ المعدّل ثمّ نداءُ الفهارس
+        (٣) معاملةٌ قصيرة : تدقيقُ الإفصاح
+        (٤) بلا معاملة    : نداءُ النموذج (والمنسّقُ يملك معاملاتِ أثره)
+
+    **والعقدُ العامّ لم يتغيّر**: نفسُ الجسم، ونفسُ الحالات، ونفسُ الحدود،
+    ونفسُ سياسةِ التصنيف والإذن، ونفسُ التأصيل.
+    """
     locale = principal.locale
     ai_rate_limit.check(principal.tenant_id, principal.user_id)
 
@@ -206,115 +218,137 @@ async def ask(
     # ومشروعُ مستأجرٍ آخر ٤٠٤ لا «سياقٌ فارغ»: الرد الفارغ يقول للمهاجم إنّ
     # المعرّف صحيح ولا يملكه، و٤٠٤ لا تقول شيئًا.
     project_view: ProjectContextView | None = None
-    if payload.project_id is not None:
-        # والمستأجرُ وحده لم يكن كافيًا: كان سؤالٌ بريء الشكل يعيد عنوانَ
-        # بحثِ زميلك وحالَه وبوابتَه لمن يعرف المعرّف — والمحادثةُ أسهل
-        # بابٍ يُطرَق. فالبوابةُ المشتركة هنا كما في كلّ مسارٍ يقبل معرّفًا.
-        # والرمز المُعرَّف في الكتالوج، لا رمزٌ جديد يُترجَم إلى نفسه:
-        # مفتاحٌ غائب يصل الباحث حرفيًّا — `project.not_found` على الشاشة.
-        project = (await collaboration.ensure_project_access(
-            session, tenant_id=principal.tenant_id,
-            project_id=payload.project_id, user_id=principal.user_id)).project
-        project_view = ProjectContextView(
-            project_id=project.id,
-            working_title=(project.working_title_en or project.working_title_ar)
-            if locale == "en" else project.working_title_ar,
-            status=project.status,
-            current_gate=project.current_gate,
-        )
-
-    # ── الملف المختار: يُقرأ من **معرفته المعتمَدة** لا من محتواه الخام ──
-    #
-    # **ولا تصير المحادثة بابًا خلفيًّا.** إرسال مقاطع المستند إلى مزوّد
-    # خارجي محكومٌ بإذن C2 في مسار معالجة المستندات؛ فلو قرأت المحادثة
-    # المقاطع مباشرةً لالتفّت على ذلك الإذن بسؤالٍ بريء الشكل.
-    #
-    # فالمحادثة تقرأ ما **اعتمده الباحث بنفسه**: الذاكرة الموثقة المشتقّة من
-    # هذا الملف بعينه. وهي معرفته لا محتوى مستنده، وقد مرّت بمراجعته.
     document_context: list[dict] = []
     pending_fields: list[str] = []
     attachment: AttachmentState | None = None
-    if payload.selected_file is not None:
-        record = (
-            await session.execute(select(File).where(
-                File.id == payload.selected_file,
-                File.tenant_id == principal.tenant_id))
-        ).scalar_one_or_none()
-        if record is None:
-            raise NotFound("file.not_found")
+    grant = None
+    session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)
 
-        rows = (await session.execute(
-            select(FactCandidate, ResearcherMemory)
-            .outerjoin(ResearcherMemory,
-                       ResearcherMemory.id == FactCandidate.resulting_memory_id)
-            .where(FactCandidate.tenant_id == principal.tenant_id,
-                   FactCandidate.file_id == record.id)
-        )).all()
+    # ═════════ الطورُ (١): قراءاتُ التحضير في معاملةٍ قصيرة ═════════
+    #
+    # **ولا `Depends(get_session)` في هذا المسار** (RC-T1-H3): كانت معاملةُ
+    # الطلب تبقى حيّةً عبر نداء الفهارس **وعبر نداء النموذج** معًا، فيبقى
+    # الاتصالُ `idle in transaction` طوالَ الانتظارَين. فصار المسارُ يملك
+    # معاملاتِه: قراءاتُ التحضير هنا، ثمّ الشبكةُ بلا معاملة.
+    #
+    # وما يُحمَل عبر الحدّ قيمٌ عاديّةٌ لا كائناتُ ORM: `ProjectContextView`
+    # و`AttachmentState` نموذجانِ من Pydantic، و`document_context` قوائمُ
+    # قواميسَ، و`grant` بنيةٌ مجمَّدة. فلا تحميلَ متأخّرٌ بعد إغلاق المعاملة.
+    async with session_maker() as session:
+        if payload.project_id is not None:
+            # والمستأجرُ وحده لم يكن كافيًا: كان سؤالٌ بريء الشكل يعيد عنوانَ
+            # بحثِ زميلك وحالَه وبوابتَه لمن يعرف المعرّف — والمحادثةُ أسهل
+            # بابٍ يُطرَق. فالبوابةُ المشتركة هنا كما في كلّ مسارٍ يقبل معرّفًا.
+            # والرمز المُعرَّف في الكتالوج، لا رمزٌ جديد يُترجَم إلى نفسه:
+            # مفتاحٌ غائب يصل الباحث حرفيًّا — `project.not_found` على الشاشة.
+            project = (await collaboration.ensure_project_access(
+                session, tenant_id=principal.tenant_id,
+                project_id=payload.project_id, user_id=principal.user_id)).project
+            project_view = ProjectContextView(
+                project_id=project.id,
+                working_title=(project.working_title_en or project.working_title_ar)
+                if locale == "en" else project.working_title_ar,
+                status=project.status,
+                current_gate=project.current_gate,
+            )
 
-        run = (await session.execute(
-            select(ExtractionRun)
-            .where(ExtractionRun.tenant_id == principal.tenant_id,
-                   ExtractionRun.file_id == record.id)
-            .order_by(ExtractionRun.created_at.desc()).limit(1)
-        )).scalar_one_or_none()
+        # ── الملف المختار: يُقرأ من **معرفته المعتمَدة** لا من محتواه الخام ──
+        #
+        # **ولا تصير المحادثة بابًا خلفيًّا.** إرسال مقاطع المستند إلى مزوّد
+        # خارجي محكومٌ بإذن C2 في مسار معالجة المستندات؛ فلو قرأت المحادثة
+        # المقاطع مباشرةً لالتفّت على ذلك الإذن بسؤالٍ بريء الشكل.
+        #
+        # فالمحادثة تقرأ ما **اعتمده الباحث بنفسه**: الذاكرة الموثقة المشتقّة من
+        # هذا الملف بعينه. وهي معرفته لا محتوى مستنده، وقد مرّت بمراجعته.
+        if payload.selected_file is not None:
+            record = (
+                await session.execute(select(File).where(
+                    File.id == payload.selected_file,
+                    File.tenant_id == principal.tenant_id))
+            ).scalar_one_or_none()
+            if record is None:
+                raise NotFound("file.not_found")
 
-        for candidate, memory in rows:
-            if candidate.status == "approved" and memory is not None \
-                    and memory.verification_status == "verified":
-                document_context.append({
-                    "field": candidate.field_key,
-                    "value": memory.statement_ar,
-                    "locator": memory.source_locator,
-                })
-            elif candidate.status == "unverified":
-                pending_fields.append(candidate.field_key)
+            rows = (await session.execute(
+                select(FactCandidate, ResearcherMemory)
+                .outerjoin(ResearcherMemory,
+                           ResearcherMemory.id == FactCandidate.resulting_memory_id)
+                .where(FactCandidate.tenant_id == principal.tenant_id,
+                       FactCandidate.file_id == record.id)
+            )).all()
 
-        # **حالٌ تقرؤها الواجهة، لا نصٌّ تفسّره.** فتبني الزرّ الصحيح بدل
-        # أن تترك الباحث ينفّذ التعليمة بنفسه.
-        attachment = AttachmentState(
-            file_id=record.id, filename=record.original_filename,
-            processing_status=run.status if run is not None else "not_processed",
-            consent_state=await consent.chat_state(
-                session, tenant_id=principal.tenant_id, file_id=record.id),
-            approved_facts=len(document_context),
-            pending_review=len(set(pending_fields)),
-            needs="none",
-        )
+            run = (await session.execute(
+                select(ExtractionRun)
+                .where(ExtractionRun.tenant_id == principal.tenant_id,
+                       ExtractionRun.file_id == record.id)
+                .order_by(ExtractionRun.created_at.desc()).limit(1)
+            )).scalar_one_or_none()
 
-        if not rows:
-            # §10 — يُقال بصدق، ويُعطى الفعل التالي.
-            limitations.append(_t(
-                locale,
-                "هذا الملف لم تُقرأ محتوياته بعد.",
-                "This file has not been read yet.",
-            ))
-            # §10 — ويُعطى الفعل التالي، لا يُترك الباحث أمام «لا أستطيع».
-            actions.append(_t(
-                locale, "اطلب «معالجة المستند» من مكتبتك البحثية أولًا.",
-                "Ask for “Process document” in your research library first.",
-            ))
-            attachment = attachment.model_copy(update={"needs": "process"})
-        elif not document_context:
-            limitations.append(_t(
-                locale,
-                "قُرئ الملف ولم تعتمد بعد أيًّا من معلوماته، فلا أستطيع الإجابة منه.",
-                "The file was read but you have not approved any of its facts yet, "
-                "so I cannot answer from it.",
-            ))
-            attachment = attachment.model_copy(update={"needs": "review"})
-        else:
-            capabilities.append(_t(
-                locale,
-                f"أجيب من {len(document_context)} معلومة اعتمدتَها من هذا الملف.",
-                f"Answering from {len(document_context)} facts you approved from this file.",
-            ))
-        if pending_fields:
-            limitations.append(_t(
-                locale,
-                f"و{len(set(pending_fields))} حقلًا مستخرَجًا ما زال بانتظار مراجعتك.",
-                f"And {len(set(pending_fields))} extracted fields still await your review.",
-            ))
+            for candidate, memory in rows:
+                if candidate.status == "approved" and memory is not None \
+                        and memory.verification_status == "verified":
+                    document_context.append({
+                        "field": candidate.field_key,
+                        "value": memory.statement_ar,
+                        "locator": memory.source_locator,
+                    })
+                elif candidate.status == "unverified":
+                    pending_fields.append(candidate.field_key)
 
+            # **حالٌ تقرؤها الواجهة، لا نصٌّ تفسّره.** فتبني الزرّ الصحيح بدل
+            # أن تترك الباحث ينفّذ التعليمة بنفسه.
+            attachment = AttachmentState(
+                file_id=record.id, filename=record.original_filename,
+                processing_status=run.status if run is not None else "not_processed",
+                consent_state=await consent.chat_state(
+                    session, tenant_id=principal.tenant_id, file_id=record.id),
+                approved_facts=len(document_context),
+                pending_review=len(set(pending_fields)),
+                needs="none",
+            )
+
+            if not rows:
+                # §10 — يُقال بصدق، ويُعطى الفعل التالي.
+                limitations.append(_t(
+                    locale,
+                    "هذا الملف لم تُقرأ محتوياته بعد.",
+                    "This file has not been read yet.",
+                ))
+                # §10 — ويُعطى الفعل التالي، لا يُترك الباحث أمام «لا أستطيع».
+                actions.append(_t(
+                    locale, "اطلب «معالجة المستند» من مكتبتك البحثية أولًا.",
+                    "Ask for “Process document” in your research library first.",
+                ))
+                attachment = attachment.model_copy(update={"needs": "process"})
+            elif not document_context:
+                limitations.append(_t(
+                    locale,
+                    "قُرئ الملف ولم تعتمد بعد أيًّا من معلوماته، فلا أستطيع الإجابة منه.",
+                    "The file was read but you have not approved any of its facts yet, "
+                    "so I cannot answer from it.",
+                ))
+                attachment = attachment.model_copy(update={"needs": "review"})
+            else:
+                capabilities.append(_t(
+                    locale,
+                    f"أجيب من {len(document_context)} معلومة اعتمدتَها من هذا الملف.",
+                    f"Answering from {len(document_context)} facts you approved from this file.",
+                ))
+            if pending_fields:
+                limitations.append(_t(
+                    locale,
+                    f"و{len(set(pending_fields))} حقلًا مستخرَجًا ما زال بانتظار مراجعتك.",
+                    f"And {len(set(pending_fields))} extracted fields still await your review.",
+                ))
+
+
+        # **والإذنُ يُقرأ هنا** لأنّه قراءةٌ محضة، وموضعُه في المنطق لم يتغيّر:
+        # يُستعمل بعد بناء السياسة كما كان. والشرطُ `ready` يُبقي عددَ
+        # القراءات كما هو — فمزوّدٌ مُعطَّل كان يرجع قبل أن يقرأه.
+        if payload.selected_file is not None and ready and document_context:
+            grant = await consent.chat_authorization(
+                session, tenant_id=principal.tenant_id,
+                file_id=payload.selected_file)
     # ═════════ الأدبيات: طلبٌ صريح يُنفَّذ، لا إذنٌ يُستأذن عليه ثانيةً ═════════
     #
     # **الباحث الذي قال «ابحث لي في الأدبيات» طلب فعلًا.** فلا يُسأل مرّة
@@ -361,25 +395,33 @@ async def ask(
                     "holds was not shown — that is not evidence of absence.",
                 ))
 
-            await audit.record(
-                session,
-                tenant_id=principal.tenant_id,
-                action="ai.references_discovered",
-                object_type="reference_discovery",
-                actor_user_id=principal.user_id,
-                state_after={
-                    # نصّ الاستعلام يغادر المستأجر إلى طرفٍ ثالث، وقد يحمل
-                    # عنوان بحثٍ غير منشور — فيُسجَّل الإفصاح (§36.2).
-                    "sent": (result.query.sent[:200] if result.query
-                             else payload.question[:200]),
-                    "providers": [s.provider for s in result.provider_statuses],
-                    "failed_providers": failed,
-                    "results": len(references),
-                    "intent": intent.kind,
-                },
-                reason="query text disclosed to external scholarly indexes (§36.2)",
-                request_id=principal.request_id,
-            )
+            # **معاملةٌ قصيرةٌ بعد الشبكة، لا معاملةٌ حملتها عبرها** (RC-T1-H3).
+            #
+            # وموضعُها بعد النداء مقصود: الإفصاحُ **وقع** — نصُّ الاستعلام
+            # غادر المستأجرَ إلى طرفٍ ثالث. فيُسجَّل بمعاملةٍ تُودَع الآن،
+            # ولا يُعلَّق على نجاحِ نموذجٍ لاحق: إخفاقُ النموذج كان يُرجِع
+            # معاملةَ الطلب فيمحو سجلَّ إفصاحٍ حقيقيّ (§36.2).
+            async with session_maker() as session:
+                await audit.record(
+                    session,
+                    tenant_id=principal.tenant_id,
+                    action="ai.references_discovered",
+                    object_type="reference_discovery",
+                    actor_user_id=principal.user_id,
+                    state_after={
+                        # نصّ الاستعلام يغادر المستأجر إلى طرفٍ ثالث، وقد يحمل
+                        # عنوان بحثٍ غير منشور — فيُسجَّل الإفصاح (§36.2).
+                        "sent": (result.query.sent[:200] if result.query
+                                 else payload.question[:200]),
+                        "providers": [s.provider for s in result.provider_statuses],
+                        "failed_providers": failed,
+                        "results": len(references),
+                        "intent": intent.kind,
+                    },
+                    reason=("query text disclosed to external scholarly "
+                            "indexes (§36.2)"),
+                    request_id=principal.request_id,
+                )
             capabilities.append("reference_discovery")
 
     # ── ما يُقال عن البحث: **مرّة واحدة، وبما وقع فعلًا** (D5، D6) ──
@@ -482,13 +524,15 @@ async def ask(
     # يُرفع السقف العام بحال.
     question = payload.question
     classification = "C1"
-    grant = None
     if document_context:
         # §13 — **الإذن أولًا.** معرفةُ الباحث المعتمَدة تصنيفها C2، والسقف
         # العام C1. فلولا إذنٌ مسمّى لصارت المحادثة بابًا خلفيًّا: سؤالٌ
         # بريء الشكل يُخرج ما يمنع الإذنُ إخراجَه.
-        grant = await consent.chat_authorization(
-            session, tenant_id=principal.tenant_id, file_id=payload.selected_file)
+        #
+        # **والقراءةُ وقعت في الطور (١)**، ولا تُعاد هنا: إعادتُها على جلسةٍ
+        # أُغلقت معاملتُها تقرأ بلا سياق مستأجر — و`SET LOCAL` مات معها —
+        # فتردّ RLS صفرَ صفوفٍ فيُقرأ ذلك «لا إذن». والقرارُ هنا على القيمة
+        # التي قُرئت بسياقها، لا على قراءةٍ ثانيةٍ عمياء.
         if grant is None:
             document_context = []
             limitations.append(_t(
@@ -518,9 +562,13 @@ async def ask(
             "معرفتك. وميّز صراحةً بين ما ورد في المعلومات وبين أي اقتراح منك."
         )
 
+    # ═════════ الطورُ (٣): النموذجُ **بلا معاملةٍ مفتوحة** ═════════
+    #
+    # والمنسّقُ يملك معاملاتِه: تحضيرٌ قصير، ثمّ الشبكةُ بلا معاملة، ثمّ أثرٌ
+    # قصيرٌ بحالٍ نهائيّة. ولا صفَّ `running` يُترك معلَّقًا.
     try:
-        result = await Orchestrator().run_agent(
-            session,
+        result = await Orchestrator().run_agent_detached(
+            session_maker,
             tenant_id=principal.tenant_id,
             actor_user_id=principal.user_id,
             agent_key=S5B_AGENT,
@@ -533,15 +581,25 @@ async def ask(
             evidence_context=_evidence_rows(references),
         )
     except AtheraError:
+        # **وإخفاقُ إيداعٍ لا يُترجَم إلى «تعذّر المزوّد»** (RC-T1-H1).
+        #
+        # وهذا الفرعُ كان قائمًا لأخطاء المنصّة المُصنَّفة، وصار يحمل معنًى
+        # أثقل: `db.commit_failed` هو `AtheraError` أيضًا، فيمرّ من هنا خطأً
+        # مُصنَّفًا. ولو سقط في الفرع العامّ أدناه لصار جوابُ الإخفاق ٢٠٠
+        # «تعذّر الوصول إلى مزوّد النموذج» — أي **نجاحٌ كاذبٌ على كتابةٍ لم
+        # تُودَع**، وهو بعينه ما أغلقه RC-T1-H1.
         raise
     except Exception as exc:  # noqa: BLE001 — يُترجم لا يُسرَّب
-        await audit.record(
-            session, tenant_id=principal.tenant_id, action="ai.provider_failed",
-            object_type="ai_request", object_id=uuid.uuid4(),
-            actor_user_id=principal.user_id,
-            state_after={"provider": provider, "error_type": type(exc).__name__},
-            request_id=principal.request_id,
-        )
+        async with session_maker() as session:
+            await audit.record(
+                session, tenant_id=principal.tenant_id,
+                action="ai.provider_failed",
+                object_type="ai_request", object_id=uuid.uuid4(),
+                actor_user_id=principal.user_id,
+                state_after={"provider": provider,
+                             "error_type": type(exc).__name__},
+                request_id=principal.request_id,
+            )
         return AiAskResponse(
             answer=_t(
                 locale,

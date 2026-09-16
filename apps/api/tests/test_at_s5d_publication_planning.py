@@ -1501,7 +1501,10 @@ def test_every_agent_key_used_by_application_code_is_registered():
     from athera_api.brain.agents import AGENTS
 
     root = pathlib.Path(__file__).resolve().parents[1] / "athera_api"
-    calls = {"run_structured", "run_structured_detached", "run_agent"}
+    # **و`run_agent_detached` بينها** (RC-T1-H3): مسارٌ جديدٌ يناديه بمفتاحٍ
+    # غيرِ مسجَّلٍ كان يفوت هذا الحارسَ فيسقط الإنتاجُ بـ`UnknownAgent`.
+    calls = {"run_structured", "run_structured_detached", "run_agent",
+             "run_agent_detached"}
     offenders, found = [], []
 
     for path in root.rglob("*.py"):
