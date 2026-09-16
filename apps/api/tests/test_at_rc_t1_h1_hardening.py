@@ -27,6 +27,7 @@ import io
 import re
 import uuid
 
+import pytest
 from fastapi import APIRouter, Depends, FastAPI, Request
 
 PDF = b"%PDF-1.7\n% athera hardening\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
@@ -388,7 +389,27 @@ async def _remove_bomb_on(table: str, name: str) -> None:
         await engine.dispose()
 
 
-async def test_09_the_streaming_route_commits_before_the_body_starts(two_tenants):
+@pytest.fixture()
+def memory_store(monkeypatch):
+    """تخزينٌ في الذاكرة — **والدعوى هي حدُّ المعاملة لا مزوّدُ التخزين**.
+
+    والمزوّدُ الافتراضيّ `s3`، وCI لا يُعرّف `STORAGE_PROVIDER` ولا مفاتيح
+    — فرفعٌ يعتمد على الشبكة يُسقط الفحصَ لسببٍ لا يقيسه. وهذا هو النمطُ
+    القائم في `test_at_s5a_storage_upload.py`، لا اختراعٌ لهذا الملفّ.
+    """
+    from athera_api.config import get_settings
+    from athera_api.services import storage
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "storage_provider", "memory", raising=False)
+    storage.reset_store_cache()
+    yield storage.get_store()
+    storage.reset_store_cache()
+
+
+async def test_09_the_streaming_route_commits_before_the_body_starts(
+    two_tenants, memory_store,
+):
     """**`GET …/content` مسارٌ يكتب** — سجلُّ اطّلاعٍ وتدقيق، ثمّ يبثّ.
 
     والدعوى حادّة: يُزرع قيدٌ مؤجَّل على `file_access_logs`، فإن كان
