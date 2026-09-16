@@ -1,6 +1,8 @@
 """محفظة الأبحاث | Research portfolio API (§12)."""
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,7 +11,7 @@ from ..errors import NotFound
 from ..models.portfolio import ResearchProject
 from ..models.research import ResearcherProfile
 from ..schemas.portfolio import ProjectCreateRequest, ProjectResponse
-from ..services import audit, collaboration
+from ..services import audit, collaboration, idempotency
 from ..transaction import TransactionalRoute
 
 router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"], route_class=TransactionalRoute)
@@ -77,10 +79,24 @@ async def list_projects(
 
 @router.post("/projects", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(
+    request: Request,
     payload: ProjectCreateRequest,
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
-) -> ProjectResponse:
+) -> ProjectResponse | JSONResponse:
+    # ══ تحمُّلُ إعادةٍ آمنة (RC-T1-H2-A) ══
+    #
+    # **والعمليّةُ جزءٌ من نطاق الفرادة**، فالمفتاحُ نفسُه على
+    # `/workspace/projects` عمليّةٌ أخرى ولا يتداخل معه — وإن كان الجدولُ
+    # المكتوبُ واحدًا (`research_projects`). فمَن استعمل مفتاحًا على كلٍّ
+    # من المسارين عامدًا أخذ حمايتين مستقلّتين، لا تعارضًا.
+    guard = await idempotency.begin(
+        request, session, tenant_id=principal.tenant_id,
+        actor_user_id=principal.user_id,
+        body=payload.model_dump(mode="json"))
+    if guard.replay is not None:
+        return guard.replay_response()
+
     profile = (
         await session.execute(
             select(ResearcherProfile).where(ResearcherProfile.user_id == principal.user_id)
@@ -108,7 +124,10 @@ async def create_project(
         state_after={"title": payload.working_title_ar[:120], "gate": "G1"},
         reason="project starts at G1 and needs approval before it advances (§9)",
     )
-    return _to_response(project, principal.locale)
+    response = _to_response(project, principal.locale)
+    await guard.finish(session, status=status.HTTP_201_CREATED,
+                       body=jsonable_encoder(response))
+    return response
 
 
 @router.get("/reference-plan", response_model=dict)

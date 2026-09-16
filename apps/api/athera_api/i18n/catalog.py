@@ -774,6 +774,23 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     "team.invitation_expired": {
         "ar": "انتهت مهلة الدعوة.", "en": "The invitation has expired.",
     },
+    # ══ تحمُّلُ إعادةٍ آمنة (RC-T1-H2-A) ══
+    #
+    # **والرسالةُ تُقرأ، لا مفتاحٌ يُعرض.** ورمزُ ٤٠٩ في RC-T1-H3-B شُحن بلا
+    # مدخلٍ هنا، والفحصُ الذي يؤكّد الرمزَ وحدَه لم يكشفه — فكاد الباحثُ
+    # يرى `evidence.source_changed_during_verification` على الشاشة.
+    "idempotency.key_invalid": {
+        "ar": "مفتاحُ منعِ التكرار غيرُ صالح: يلزمه من ١٦ إلى ١٢٨ محرفًا من "
+              "الحروف والأرقام والشرطتين. لم يُنفَّذ شيء.",
+        "en": "The idempotency key is not valid: it must be 16–128 characters of "
+              "letters, digits, hyphen or underscore. Nothing was executed.",
+    },
+    "idempotency.key_reused": {
+        "ar": "استُعمل مفتاحُ منعِ التكرار نفسُه لطلبٍ مختلف، فلم يُنفَّذ شيء. "
+              "استعمل مفتاحًا جديدًا لطلبٍ جديد.",
+        "en": "This idempotency key was already used for a different request, so "
+              "nothing was executed. Use a new key for a new request.",
+    },
     # **ولا معاملتين في طلب**: إيداعُهما بالتسلسل ليس ذرّيًّا (RC-T1-H1).
     "db.multiple_request_transactions": {
         "ar": "تعذّر تنفيذ الطلب: خطأٌ داخليٌّ في حدّ المعاملة. لم يُحفظ شيء.",

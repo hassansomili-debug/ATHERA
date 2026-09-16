@@ -16,7 +16,9 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,7 +59,7 @@ from ..schemas.analysis import (
     ToolCapabilityResponse,
     VersionCreateRequest,
 )
-from ..services import audit, collaboration, data_scope
+from ..services import audit, collaboration, data_scope, idempotency
 from ..services.analysis import exports, interpretation, lineage, plan, reproducibility, vocab
 from ..transaction import TransactionalRoute
 
@@ -575,15 +577,35 @@ async def approve_plan(
 
 @router.post("/runs", response_model=RunResponse, status_code=status.HTTP_201_CREATED)
 async def create_run(
+    request: Request,
     payload: RunCreateRequest,
     principal: Principal = Depends(get_principal),
-) -> RunResponse:
+) -> RunResponse | JSONResponse:
     # **والخطّةُ والنسخةُ من بحثٍ واحد أو لا تشغيلة.** وكان كلٌّ
     # يُفوَّض على حدة، فمن يُدير بحثين يشغّل خطّةَ هذا على بياناتِ ذاك.
     async with _scope_pair(
             principal, permission=DATA, not_found="analysis.plan_not_found",
             first={"plan": payload.plan_id},
             second={"version": payload.dataset_version_id}) as scope:
+        # ══ تحمُّلُ إعادةٍ آمنة (RC-T1-H2-A) — **داخل النطاق المُفوَّض** ══
+        #
+        # و`_scope_pair` فوق قد حدّدت البحثَ وعبرت إلى مستأجره وفوّضت
+        # بصلاحية `manage_data`. فالحارسُ هنا يقع **بعد** ذلك كلِّه: مَن
+        # سُحبت صلاحيّتُه لا يبلغ هذا السطرَ أصلًا، فلا جوابَ مخزونٌ يُعاد له.
+        #
+        # **والمستأجرُ هو المستأجرُ النافذ** (`scope.tenant_id`) لا مستأجرُ
+        # الرمز: الجلسةُ في مستأجر البحث، وسياسةُ الصفّ تقارن بما ضُبط
+        # فيها. ومتعاونٌ من مؤسسةٍ أخرى يُكتب صفُّه حيث تقع طفرتُه.
+        #
+        # وهذا المسارُ يملك معاملتَه في متنه — جلسةُ النطاق لا جلسةُ
+        # البيت — فالصفُّ والتشغيلةُ يُودَعان معًا عند خروج النطاق.
+        guard = await idempotency.begin(
+            request, scope.session, tenant_id=scope.tenant_id,
+            actor_user_id=principal.user_id,
+            body=payload.model_dump(mode="json"))
+        if guard.replay is not None:
+            return guard.replay_response()
+
         plan_row = (
             await scope.session.execute(
                 select(AnalysisPlanRow).where(AnalysisPlanRow.id == payload.plan_id)
@@ -658,7 +680,7 @@ async def create_run(
             },
             reason="exploratory tests are disclosed, never silently dropped (§51.8)",
         )
-        return RunResponse(
+        response = RunResponse(
             id=row.id, tool=row.tool, status=row.status, is_reproducible=state.reproducible,
             missing_manifest_fields=state.missing, fingerprint=state.fingerprint,
             classifications=[
@@ -674,6 +696,9 @@ async def create_run(
             detail=_pick(principal.locale, state.detail_ar, state.detail_en),
             detail_ar=state.detail_ar, detail_en=state.detail_en,
         )
+        await guard.finish(scope.session, status=status.HTTP_201_CREATED,
+                           body=jsonable_encoder(response))
+        return response
 
 
 @router.post("/runs/{run_id}/outputs", status_code=status.HTTP_201_CREATED)

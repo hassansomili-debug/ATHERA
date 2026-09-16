@@ -12,7 +12,9 @@ import datetime as dt
 import uuid
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,6 +81,7 @@ from ..schemas.research_brain import (
 from ..services import (
     audit,
     collaboration,
+    idempotency,
     matrix_extraction,
     research_assessment,
     screening,
@@ -198,10 +201,11 @@ async def list_projects(
 @router.post("/projects", response_model=ProjectSummary,
              status_code=status.HTTP_201_CREATED)
 async def create_project(
+    request: Request,
     payload: ProjectCreateRequest,
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
-) -> ProjectSummary:
+) -> ProjectSummary | JSONResponse:
     """ابدأ بحثًا — **بعنوانٍ وحده**.
 
     والمسار القديم `/portfolio/projects` يشترط ملفًّا تعريفيًّا للباحث
@@ -210,6 +214,20 @@ async def create_project(
     توقف الباحث عند الباب**. فيُنشأ البحث بأقلّ ما يلزم، وتُملأ بقيّته حين
     تُعرف — والحقول نفسها والجدول نفسه، لا نظام مشاريع ثانٍ.
     """
+    # ══ تحمُّلُ إعادةٍ آمنة (RC-T1-H2-A) ══
+    #
+    # **والحارسُ بعد التفويض لا قبله**: `get_principal` حُلَّت، والمستأجرُ
+    # والفاعلُ معروفان، والمعاملةُ مفتوحة. فالبحثُ في الجدول يقع بصلاحيّات
+    # هذا الطلب لا بصلاحيّاتٍ أوسع، وسياسةُ الصفّ تشترط الفاعلَ نفسَه.
+    #
+    # وبلا ترويسةٍ يسلك المسارُ مسلكَه القديم حرفيًّا.
+    guard = await idempotency.begin(
+        request, session, tenant_id=principal.tenant_id,
+        actor_user_id=principal.user_id,
+        body=payload.model_dump(mode="json"))
+    if guard.replay is not None:
+        return guard.replay_response()
+
     project = ResearchProject(
         tenant_id=principal.tenant_id, working_title_ar=payload.title_ar,
         status="planned", current_gate="G1")
@@ -223,7 +241,12 @@ async def create_project(
         state_after={"title": payload.title_ar[:120],
                      "starting_from": payload.starting_from},
         reason="a project starts from an idea; the rest of the form is filled when known")
-    return await _summary(session, principal, project)
+    summary = await _summary(session, principal, project)
+    # **الجوابُ يُثبَّت في معاملة الطفرة نفسِها** — فيُودَعان معًا أو لا
+    # يُودَع أيٌّ منهما. ولا مفتاحٌ مُكتمِلٌ على طفرةٍ رجعت.
+    await guard.finish(session, status=status.HTTP_201_CREATED,
+                       body=jsonable_encoder(summary))
+    return summary
 
 
 @router.patch("/projects/{project_id}", response_model=ProjectSummary)
