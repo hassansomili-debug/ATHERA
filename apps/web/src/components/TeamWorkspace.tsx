@@ -9,120 +9,82 @@ import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 import { getMessages, translator, type Locale } from "@/lib/i18n";
 import { InvitationAcceptPanel } from "@/components/InvitationAcceptPanel";
 import { projectAccess, type ProjectAccess } from "@/lib/recruitment";
+import { InviteDialog } from "@/components/team/InviteDialog";
+import { MemberDetail } from "@/components/team/MemberDetail";
+import { type Vocabulary } from "@/components/team/permissionGroups";
+import {
+  accessChip,
+  type Decision,
+  type Invitation,
+  type InviteOutcome,
+  type Member,
+  type MemberEvent,
+  type PendingAction,
+  type TeamProject,
+} from "@/components/team/types";
 
 /**
- * فريقُ البحث وقراراته — **محرّكٌ واحدٌ لشاشتين** (§12، §24، RC-T1C).
+ * فريقُ البحث — **محرّكٌ واحدٌ، وهيئتان، وثلاثةُ أبوابٍ لا ثمانيةَ عشر**
+ * (§12، §24، RC-T1C، RC-T1C UX-1).
  *
- * الشاشةُ العامّة `/team` تختار البحثَ من قائمة، وقسمُ البحث
- * `?section=team` يعمل على بحثٍ مُثبَّت بلا مُنتقٍ ثانٍ. **والمنطقُ واحد**:
- * نسختان تفترقان بأوّل تعديل، فتصير إحداهما تعرض الموافقةَ عن غيرِ صاحبها
- * أو تبتلع دعوةً تقولها الأخرى.
+ * ## العطبُ الذي تعالجه هذه الدفعة
  *
- * **وأربعةُ تمييزاتٍ تُعرض منفصلةً لأنها منفصلةٌ في القاعدة:**
+ * كانت هذه الشاشةُ تعرض نموذجَ البيانات كلَّه في عمودٍ واحد: وصلتي، ثمّ
+ * صلاحيّاتي، ثمّ ما ينتظرني، ثمّ موافقتي، ثمّ الأعضاء — وفي بطاقة كلِّ
+ * عضوٍ تسعُ صلاحياتٍ وأدوارُ CRediT وحالُ التأليف والموافقةُ وطريقتُها
+ * ومَن سجّلها — ثمّ الدعوات، ثمّ رمزُها، ثمّ نموذجُ الدعوة، ثمّ قبولُ
+ * الدعوة، ثمّ مساهمٌ بلا حساب، ثمّ السجلّ، ثمّ القرارات.
  *
- *   الدورُ في الفريق  ليس صلاحية
- *   الصلاحيةُ         ليست مساهمةَ CRediT
- *   مساهمةُ CRediT    ليست تأليفًا
- *   العضويةُ          ليست موافقةً على التأليف
+ * **وكلُّ سطرٍ منها صادق.** وردَّها المالكُ بعد استعمالٍ يدويّ: «تغيّرت
+ * إدارةُ الفريق، لكنّ التجربةَ سيّئةٌ وغيرُ واضحة». وذاك حكمٌ على
+ * **معمارِ المعلومة** لا على الصلاحيّات ولا على RLS: من يريد أن يعرف «من
+ * في هذا البحث؟» لا يجوز أن يقرأ الجدولَ ليعرف.
  *
- * وشاشةٌ تعرض «عضو» وحدها تجعل القارئ يفترض الأربعة معًا، فيقرأ اسمًا في
- * قائمة الفريق على أنه مؤلفٌ وافق — وهو ما لا تقوله البيانات.
+ * ## والأسئلةُ الخمسةُ التي تُجاب في خمس ثوانٍ
  *
- * وأدوار CRediT تُختار يدويًّا ولا تُقترح: اقتراحها من نشاط أحد في المنصة
- * يحوّل «من فعل ماذا» من إقرار إلى استنتاج، وهو ما يصنع نزاعات التأليف.
+ *     من في هذا البحث؟          ← الأعضاء، وهو البابُ الافتراضيّ
+ *     ما دورُ كلٍّ منهم؟         ← سطرٌ في بطاقته
+ *     من نشِطٌ ومن موقوف؟        ← شريحةُ حالٍ بنصٍّ لا بلونٍ وحده
+ *     ما الذي ينتظر انتباهي؟     ← شريطٌ يظهر **إن وُجد**، ويغيب إن لم يوجد
+ *     كيف أدعو باحثًا؟           ← زرٌّ أوّلٌ في الرأس
  *
- * **ولا زرَّ «وافق الجميع» هنا، ولا زرَّ «سجّل موافقته».** الموافقةُ فعلُ
- * صاحبها: من يفتح الشاشة يرى زرَّ موافقةٍ **لنفسه وحده**، ويرى عن غيره
- * حالًا يقرؤها ولا يكتبها.
+ * وما عدا ذلك تفصيلٌ يُفتح عند الطلب: `MemberDetail` للعضو، و`InviteDialog`
+ * للدعوة ورمزِها.
  *
- * ## والصلاحياتُ تُحرَّر صريحةً
+ * ## ولا حقلَ حُذف
  *
- * فكانت تُعرض ولا تُعدَّل، والخادمُ يقبل تعديلَها منذ RC-T1A. فمديرُ
- * الفريق يمنح `manage_sources` **بلا أن يمسّ الدور** — وذاك هو الفرقُ
- * الذي تقوم عليه هذه الطبقة، ولا يُرى إلّا في شاشةٍ تفصلهما.
+ * فالتبسيطُ هنا **نقلُ التعقيد إلى موضع سؤاله**، لا إنقاصُ ما تقوله
+ * المنصّة: الصلاحياتُ التسع كاملةٌ في لوح العضو، وCRediT في قسمها،
+ * والتأليفُ والموافقةُ في قسمهما، والسجلُّ والقراراتُ في بابهما.
  *
- * ## وما يُعرض مرهونٌ بما يملكه الطالب
+ * ## وهيئتان بمحرّكٍ واحد
  *
- * ويُقرأ من `/projects/{id}/access` — إجابةُ خادم لا حالُ شاشة. وإخفاءُ
- * زرٍّ **تحسينُ عرضٍ لا حدُّ أمان**: كلُّ مسارٍ خلفه يسأل عن صلاحيّته
- * بنفسه. لكنّ زرًّا يُعرض ثمّ يُردّ يُعلّم الباحثَ أنّ المنصّةَ تُخطئ.
+ * `/team` العامّة تنتقي البحثَ وتعرض قبولَ الدعوة، وقسمُ البحث
+ * `?section=team` يعمل على بحثٍ مُثبَّتٍ بلا مُنتقٍ ولا صندوقِ رمز.
+ * **والمنطقُ واحد**: نسختان تفترقان بأوّل تعديل، فتصير إحداهما تعرض
+ * الموافقةَ عن غير صاحبها. فالاختلافُ في التركيب وحده (`data-team-mode`)،
+ * ولا سطرَ جلبٍ ولا فعلَ مكرَّر.
+ *
+ * ## وأربعةُ تمييزاتٍ تبقى منفصلةً لأنّها منفصلةٌ في القاعدة
+ *
+ *     الدورُ في الفريق  ليس صلاحية
+ *     الصلاحيةُ         ليست مساهمةَ CRediT
+ *     مساهمةُ CRediT    ليست تأليفًا
+ *     العضويةُ          ليست موافقةً على التأليف
+ *
+ * وهي الآن في ثلاثة أقسامٍ داخل لوح العضو — لا في سطورٍ متلاصقةٍ يقرؤها
+ * القارئُ فيفترض الأربعةَ معًا.
+ *
+ * **ولا زرَّ «وافق الجميع»، ولا «سجّل موافقته».** الموافقةُ فعلُ صاحبها:
+ * من يفتح الشاشةَ يرى زرَّ موافقةٍ **لنفسه وحده**.
+ *
+ * ## وإخفاءُ زرٍّ تحسينُ عرضٍ لا حدُّ أمان
+ *
+ * وما يُعرض مرهونٌ بـ`/projects/{id}/access` — إجابةُ خادمٍ لا حالُ شاشة.
+ * وكلُّ مسارٍ خلفه يسأل عن صلاحيّته بنفسه.
  */
-interface Project {
-  id: string;
-  working_title: string;
-}
-
-interface Vocabulary {
-  key: string;
-  label: string;
-}
-
-interface Member {
-  id: string;
-  display_name: string;
-  user_id: string | null;
-  is_account_linked: boolean;
-  invited_email: string | null;
-  role: string;
-  role_label: string;
-  access_state: string;
-  access_label: string;
-  permissions: string[];
-  permission_labels: string[];
-  credit_roles: string[];
-  credit_labels: string[];
-  is_author: boolean;
-  author_position: number | null;
-  consent_state: string;
-  consent_label: string;
-  consent_method: string | null;
-  consent_method_label: string | null;
-  consent_recorded_at: string | null;
-  consent_recorded_by: string | null;
-  consent_needs_recollection: boolean;
-}
-
-interface Invitation {
-  id: string;
-  invited_email: string;
-  invited_display_name: string;
-  proposed_role_label: string;
-  proposed_permissions: string[];
-  state: string;
-  state_label: string;
-  expires_at: string;
-  token?: string;
-}
-
-interface PendingAction {
-  kind: string;
-  kind_label: string;
-  subject_id: string;
-  statement: string;
-  is_mine: boolean;
-}
-
-interface Decision {
-  id: string;
-  decision_kind: string;
-  kind_label: string;
-  statement: string;
-  gate: string | null;
-  decided_at: string | null;
-  supersedes_id: string | null;
-  is_superseded: boolean;
-  is_current: boolean;
-  superseded_by_id: string | null;
-}
-
-interface MemberEvent {
-  id: string;
-  member_id: string | null;
-  invitation_id: string | null;
-  event_kind: string;
-  occurred_at: string;
-  note_ar: string | null;
-}
+type Tab = "members" | "invitations" | "history";
+type HistoryTab = "activity" | "decisions";
 
 export function TeamWorkspace({
   locale,
@@ -134,8 +96,9 @@ export function TeamWorkspace({
 }) {
   const t = translator(getMessages(locale));
   const fixedProject = Boolean(fixedProjectId);
+  const mode = fixedProject ? "project" : "global";
 
-  const [projects, setProjects] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<TeamProject[]>([]);
   const [projectId, setProjectId] = useState<string>(fixedProjectId ?? "");
   const [members, setMembers] = useState<Member[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -146,23 +109,54 @@ export function TeamWorkspace({
   const [creditVocab, setCreditVocab] = useState<Vocabulary[]>([]);
   const [roleVocab, setRoleVocab] = useState<Vocabulary[]>([]);
   const [permissionVocab, setPermissionVocab] = useState<Vocabulary[]>([]);
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [role, setRole] = useState("co_author");
-  const [credit, setCredit] = useState<string[]>([]);
-  // يُعرض مرّةً واحدة بعد الدعوة — والخادم لا يعيده في أيّ قراءةٍ بعدها.
-  const [issuedToken, setIssuedToken] = useState<string | null>(null);
-  // تحريرُ صلاحيات عضوٍ واحد — **مسوّدةٌ محلّية حتى تُحفظ**.
-  const [editing, setEditing] = useState<string | null>(null);
-  const [draftPermissions, setDraftPermissions] = useState<string[]>([]);
+
+  // ── حالُ العرض: أيُّ بابٍ مفتوح، وأيُّ تفصيلٍ طُلب ──
+  const [tab, setTab] = useState<Tab>("members");
+  const [historyTab, setHistoryTab] = useState<HistoryTab>("activity");
+  const [openMemberId, setOpenMemberId] = useState<string | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [accessOpen, setAccessOpen] = useState(false);
+  const [attentionOpen, setAttentionOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  // ── مساهمٌ بلا حساب: حقولُه حقولُه وحده ──
+  //
+  // وكانت تتقاسم الحالةَ مع نموذج الدعوة، فاسمٌ يُكتب لدعوةٍ يظهر في
+  // «أضف مساهمًا» — وهما فعلان مختلفان لا يشتركان في مسوّدة.
+  const [contribName, setContribName] = useState("");
+  const [contribRole, setContribRole] = useState("co_author");
+  const [contribCredit, setContribCredit] = useState<string[]>([]);
+
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // **رايتان لا واحدة، لأنهما سؤالان مختلفان**: هل وصلت قائمة أبحاثه؟ وهل
   // وصل فريق البحث المختار؟ ودمجهما كان يُنتج أسوأ الحالين: باحثٌ لا بحث
-  // له يقرأ «لا مؤلفين مسجّلين» و«لا قرارات» — وهما دعويان عن بحثٍ غير
-  // موجود أصلًا، والصواب أن يُقال له: ابدأ ببحث.
+  // له يقرأ «لا أعضاء» و«لا قرارات» — وهما دعويان عن بحثٍ غير موجود.
   const [projectsLoaded, setProjectsLoaded] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  /**
+   * **اللقطةُ موسومةٌ بالبحث الذي تخصّه** — لا رايةَ «وصل» مجرّدة.
+   *
+   * ## العطبُ الذي يعالجه هذا الحقل
+   *
+   * كان في الشاشة العامّة رايةٌ منطقيّة: `loaded`. فيُبدَّل البحثُ في
+   * المُنتقي، فيُطلب فريقُ «ب» — **وتبقى الرايةُ مرفوعةً من «أ»**. فتُرسم
+   * في نافذةِ الطلب أعضاءُ «أ» ودعواتُه وسجلُّه ووصلتُك به **تحت اسم
+   * «ب»**. وقارئُ الشاشة لا يملك ما يكشف الكذبة: المُنتقي يقول «ب»
+   * والصفوفُ صفوفُ «أ».
+   *
+   * **والمقارنةُ بالهويّة تُغلق البابَ بنيويًّا**: لا يُرسم شيءٌ مربوطٌ
+   * ببحثٍ إلّا إذا كانت اللقطةُ الحاضرةُ لقطةَ ذلك البحث بعينه. فأيًّا
+   * كان من غيّر `projectId` — مُنتقٍ أو مسارٌ يُكتب غدًا — ينكسر التطابقُ
+   * في اللحظة نفسِها، **قبل أن يُطلق طلبٌ أصلًا**.
+   *
+   * و`ok` تفرّق «أجاب فنجح» من «أجاب فأخفق»: الأوّلُ يُرسم، والثاني يُقال
+   * خطؤه ولا تُرسم تحته صفوفٌ من بحثٍ آخر.
+   *
+   * **ولا يُضعِف هذا حارسَ الأجيال في `useDeferredLoad`**: ذاك يمنع ردًّا
+   * متأخّرًا أن يكتب فوق جيلٍ أحدث، وهذا يمنع لقطةً **مكتوبةً بحقّ** أن
+   * تُقرأ تحت عنوانٍ غيرِ عنوانها. حدّان مختلفان، وكلاهما لازم.
+   */
+  const [snapshot, setSnapshot] = useState<{ projectId: string; ok: boolean } | null>(null);
 
   const say = useCallback(
     (err: unknown) =>
@@ -190,7 +184,7 @@ export function TeamWorkspace({
         .finally(() => setProjectsLoaded(true));
       return;
     }
-    Promise.all([apiFetch<Project[]>("/api/v1/portfolio/projects", { locale }), catalogs])
+    Promise.all([apiFetch<TeamProject[]>("/api/v1/portfolio/projects", { locale }), catalogs])
       .then(([list, [creditRoles, memberRoles, permissions]]) => {
         setProjects(list);
         setCreditVocab(creditRoles);
@@ -240,61 +234,84 @@ export function TeamWorkspace({
       } catch {
         commit(() => setEvents([]));
       }
+      // **وتُوسَم اللقطةُ ببحثها في آخر خطوةٍ**: قبلَ ذلك ما وصل بعضُها،
+      // ووسمُها مبكِّرًا يعني رسمَ دعواتٍ فارغةٍ لحظةً ثمّ امتلاءَها.
+      commit(() => setSnapshot({ projectId, ok: true }));
     } catch (err) {
       const message = err instanceof AtheraApiError
         ? err.localized(locale) : t("common.loadFailed");
+      // والإخفاقُ يُوسَم أيضًا — فيسكت الانتظارُ ويُقال الخطأ، **ولا يُرسم
+      // تحته صفٌّ من بحثٍ آخر** لأنّ `ok` كاذبة.
+      commit(() => setSnapshot({ projectId, ok: false }));
       commit(() => setError(message));
-    } finally {
-      commit(() => setLoaded(true));
     }
   }, [locale, projectId, t]);
 
   const refresh = useDeferredLoad(load);
 
-  async function act(run: () => Promise<unknown>) {
+  /** يجري الفعلَ ثمّ يُصالح الشاشة — ويردّ `false` إن رُدّ الفعل. */
+  async function act(run: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
     setError(null);
     try {
       await run();
       await refresh();
+      return true;
     } catch (err) {
       say(err);
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
-  async function addMember() {
-    await act(async () => {
-      await apiFetch(`/api/v1/projects/${projectId}/members`, {
+  async function addContributor() {
+    const ok = await act(() =>
+      apiFetch(`/api/v1/projects/${projectId}/members`, {
         method: "POST",
         locale,
-        body: JSON.stringify({ display_name: name, role, credit_roles: credit }),
-      });
-      setName("");
-      setCredit([]);
-    });
+        body: JSON.stringify({
+          display_name: contribName, role: contribRole, credit_roles: contribCredit,
+        }),
+      }),
+    );
+    if (ok) {
+      setContribName("");
+      setContribCredit([]);
+    }
   }
 
-  async function invite() {
+  /**
+   * يردّ رمزَ الدعوة عند النجاح، **ورسالةَ الرفض عند الرفض** — ولا ينشرها.
+   *
+   * فالنافذةُ مفتوحةٌ وقتَ الفعل، ولافتةُ خطأٍ في حالِ الصفحة تُرسم خلفها.
+   * فتُردّ العلّةُ إلى صاحب الطلب ليعرضها في موضعه. انظر `InviteOutcome`.
+   */
+  async function invite(
+    input: { name: string; email: string; role: string },
+  ): Promise<InviteOutcome> {
     setBusy(true);
     setError(null);
-    setIssuedToken(null);
     try {
       const created = await apiFetch<Invitation>(
         `/api/v1/projects/${projectId}/invitations`,
         {
           method: "POST",
           locale,
-          body: JSON.stringify({ email, display_name: name, role }),
+          body: JSON.stringify({
+            email: input.email, display_name: input.name, role: input.role,
+          }),
         },
       );
-      setIssuedToken(created.token ?? null);
-      setEmail("");
-      setName("");
       await refresh();
+      return { ok: true, token: created.token ?? null };
     } catch (err) {
-      say(err);
+      // **ودلالةُ الخادم كما هي**: النصُّ هو ترجمةُ الخادم لرمز علّته.
+      return {
+        ok: false,
+        error: err instanceof AtheraApiError
+          ? err.localized(locale) : t("common.loadFailed"),
+      };
     } finally {
       setBusy(false);
     }
@@ -310,20 +327,18 @@ export function TeamWorkspace({
   }
 
   /** **الصلاحيةُ صفٌّ يُكتب — والدورُ لا يُمسّ معها.** */
-  async function savePermissions(memberId: string) {
-    await act(async () => {
-      await apiFetch(`/api/v1/projects/${projectId}/members/${memberId}/permissions`, {
+  function savePermissions(memberId: string, permissions: string[]): Promise<boolean> {
+    return act(() =>
+      apiFetch(`/api/v1/projects/${projectId}/members/${memberId}/permissions`, {
         method: "PUT",
         locale,
-        body: JSON.stringify({ permissions: draftPermissions }),
-      });
-      setEditing(null);
-      setDraftPermissions([]);
-    });
+        body: JSON.stringify({ permissions }),
+      }),
+    );
   }
 
-  async function changeRole(memberId: string, next: string) {
-    await act(() =>
+  function changeRole(memberId: string, next: string) {
+    void act(() =>
       apiFetch(`/api/v1/projects/${projectId}/members/${memberId}/role`, {
         method: "PATCH",
         locale,
@@ -346,7 +361,7 @@ export function TeamWorkspace({
   /**
    * إيقافُ مدخلِ عضوٍ أو إعادتُه — **والجوابُ هو الحقيقةُ المعروضة**.
    *
-   * ## العطبُ الذي أغلقه هذا
+   * ## العطبُ الذي أغلقه هذا، وهو باقٍ مُغلقًا في هذه الدفعة
    *
    * كان الزرّان يُرسمان من قائمةٍ تُعاد قراءتُها بعد التعديل مباشرة:
    * `PATCH` ثمّ `refresh()` ثمّ `GET /members`. وسقطت بوّابةُ الدمج على
@@ -359,6 +374,11 @@ export function TeamWorkspace({
    * فنقطةُ التعديل تردّ صفَّ العضو كاملًا بحاله الجديدة، ويُدمج في
    * موضعه. **ولا تُعاد قراءةُ القائمة لاكتشاف ما ردّه الخادمُ توًّا** —
    * وهي كذلك رحلةٌ أقلّ إلى قاعدةٍ في إقليمٍ آخر.
+   *
+   * وانتقالُ الزرّين إلى لوح العضو **لا يغيّر هذا**: اللوحُ يقرأ صفَّه من
+   * `members`، فما يُدمج هنا هو ما يراه هناك. ويحرسه
+   * `tests/team-access-state-commit-race.spec.ts` بقارئٍ مُثبَّتٍ على
+   * حالٍ قديمة — وقد أُعيد توجيهُه إلى اللوح ولم تُضعَف دعواه.
    */
   async function changeAccess(memberId: string, next: string) {
     setBusy(true);
@@ -373,6 +393,8 @@ export function TeamWorkspace({
         },
       );
       mergeMember(updated);
+      // وعضوٌ أُزيل لا لوحَ له: الإزالةُ تُغلق التفصيلَ وتُبقي الصفَّ.
+      if (next === "removed") setOpenMemberId(null);
     } catch (err) {
       say(err);
     } finally {
@@ -391,28 +413,58 @@ export function TeamWorkspace({
     );
   }
 
-  const awaitingMe = inbox.some((item) => item.is_mine && item.kind === "author_consent");
-  const canManageTeam = access?.can_manage_team ?? false;
+  // **«أجاب» ليست «صحيح»**: الأولى تُسكِت الانتظار، والثانية تُذِن بالرسم.
+  const answered = snapshot !== null && snapshot.projectId === projectId;
+  const fresh = answered && snapshot.ok;
+  const loading = !projectsLoaded || (projectId !== "" && !answered);
+
+  const awaitingMe =
+    fresh && inbox.some((item) => item.is_mine && item.kind === "author_consent");
+  // **ولا صلاحيةَ تُقرأ من لقطةِ بحثٍ آخر.** فزرُّ الدعوة وأزرارُ الإدارة
+  // تختفي في نافذة التبديل، فلا يُفعل فعلٌ على صفوفٍ لا تخصّ المعروض.
+  const canManageTeam = fresh && (access?.can_manage_team ?? false);
   const eventLabel = (kind: string) => {
     const label = t(`team.events.${kind}`);
     return label === `team.events.${kind}` ? kind : label;
   };
+  const activeMembers = members.filter((row) => row.access_state === "active").length;
+  const openInvitations = invitations.filter((row) => row.state === "invited").length;
+  const myRole = access?.role
+    ? roleVocab.find((item) => item.key === access.role)?.label ?? access.role
+    : null;
+  // ولوحُ عضوٍ من بحثٍ سابقٍ لا يُفتح على بحثٍ حاضر.
+  const openMember = fresh
+    ? members.find((row) => row.id === openMemberId) ?? null
+    : null;
+  const tabs: Tab[] = canManageTeam
+    ? ["members", "invitations", "history"]
+    : ["members", "history"];
 
   return (
-    <>
+    <div data-team-mode={mode} data-testid="team-workspace">
       {error ? <p className="error">{error}</p> : null}
 
-      {/* **مُنتقي البحث للشاشة العامّة وحدها.** وداخل صفحة البحث يكون
-          البحثُ معلومًا من مساره، ومُنتقٍ ثانٍ فيها يسمح بتغييرٍ صامتٍ
-          للسياق تحت عنوانٍ يقول بحثًا آخر. */}
+      {/* ══════════ الهيئةُ العامّة وحدها: أيُّ بحثٍ، وهل تنتظرني دعوة ══════════
+
+          وداخل صفحة البحث يكون البحثُ معلومًا من مساره، ومُنتقٍ ثانٍ فيها
+          يسمح بتغييرٍ صامتٍ للسياق تحت عنوانٍ يقول بحثًا آخر. */}
       {!fixedProject ? (
-        <label style={{ display: "block", marginBlockEnd: 12 }}>
+        <label className="team-picker">
           {t("team.project")}
           <select
-            style={{ marginInlineStart: 8 }}
             value={projectId}
             data-testid="team-project-picker"
-            onChange={(event) => setProjectId(event.target.value)}
+            onChange={(event) => {
+              // **ولا شيءَ مفتوحٌ على بحثٍ تُرك.** والتطابقُ في `fresh` هو
+              // الحدُّ، وهذا تنظيفٌ يمنع بقاءَ لوحٍ أو نافذةٍ معلَّقة.
+              setProjectId(event.target.value);
+              setOpenMemberId(null);
+              setInviteOpen(false);
+              setAccessOpen(false);
+              setAttentionOpen(false);
+              setAdvancedOpen(false);
+              setTab("members");
+            }}
           >
             {projects.map((project) => (
               <option key={project.id} value={project.id}>
@@ -423,468 +475,541 @@ export function TeamWorkspace({
         </label>
       ) : null}
 
-      {/* لا بحث ⇒ لا فريق ولا قرارات: تُقال العلّة مرّة، ولا تُقال مرّتين
-          بصيغةٍ توهم أن البحث قائمٌ وفريقه خالٍ. */}
+      {/* **والقبولُ بالرمز في الهيئة العامّة وحدها** — وهو عملٌ شخصيّ لا
+          إدارةُ فريق. ومَن يقبل ليس عضوًا بعد، فلا يقدر أصلًا على فتح
+          قسمِ فريقِ بحثٍ ليجده هناك؛ ووجودُه في قسم البحث كان صندوقًا
+          يلصق فيه **الأعضاءُ** رموزًا لا تخصّ هذا البحث. */}
+      {!fixedProject ? (
+        <InvitationAcceptPanel
+          locale={locale}
+          title={t("team.joinTeamAction")}
+          onAccepted={() => refresh()}
+        />
+      ) : null}
+
       {!fixedProject && projectsLoaded && projects.length === 0 ? (
         <p style={{ color: "var(--muted)" }}>{t("team.noProject")}</p>
       ) : null}
 
-      {/* ══ وصلتُك بهذا البحث وما تملكه فيه — **من الخادم** ══ */}
-      {access ? (
-        <article className="card" data-testid="team-my-access">
-          <div className="metric-label">{t("team.myRelationship")}</div>
-          <p style={{ marginBlock: 4 }}>
-            <span className="chip chip-stage">
-              {access.is_owner ? t("team.relationshipOwner") : t("team.relationshipCollaborator")}
-            </span>
-          </p>
-          <p className="metric-label">
-            {t("team.myPermissions")}:{" "}
-            {access.permissions
-              .map((key) => permissionVocab.find((item) => item.key === key)?.label ?? key)
-              .join("، ") || t("team.noPermissions")}
-          </p>
-          {!canManageTeam ? (
-            <p className="provenance-note">{t("team.needsManageTeam")}</p>
+      {/* ══════════ رأسُ الفريق — اسمٌ، وعدَدان حقيقيّان، وفعلٌ أوّل ══════════ */}
+      <header className="team-head">
+        <div className="team-head-copy">
+          {fixedProject ? <h2 className="team-title">{t("team.heading")}</h2> : null}
+          <p className="team-lead">{t("team.headingNote")}</p>
+          {/* **ولا نسبةَ إنجازٍ مخترعة**: عدَدان يُعدّان من صفوفٍ حقيقيّة. */}
+          {fresh ? (
+            <p className="team-counts" data-testid="team-summary">
+              <span className="chip chip-muted">
+                {t("team.activeCount").replace("{n}", String(activeMembers))}
+              </span>
+              {canManageTeam ? (
+                <span className="chip chip-muted">
+                  {t("team.pendingInvitationCount").replace("{n}", String(openInvitations))}
+                </span>
+              ) : null}
+            </p>
           ) : null}
+        </div>
+        <div className="team-head-actions">
+          {canManageTeam ? (
+            <button
+              type="button"
+              className="btn-primary"
+              data-testid="team-invite-open"
+              disabled={!projectId}
+              onClick={() => setInviteOpen(true)}
+            >
+              {t("team.inviteMember")}
+            </button>
+          ) : null}
+          {/* **ولا محرّكَ مهامٍّ ثانٍ هنا**: رابطٌ واحدٌ إلى الأصل. */}
+          {projectId ? (
+            <Link className="btn-quiet" href={`/${locale}/portfolio/${projectId}/tasks`}>
+              {t("team.openTasks")}
+            </Link>
+          ) : null}
+        </div>
+      </header>
+
+      {/* ══════════ وصلتُك بهذا البحث — **مؤشِّرٌ مُوجَز لا بطاقةٌ كبيرة** ══════════
+
+          وكانت تطبع صلاحيّاتك التسعَ في صدر الشاشة، وهي أوّلُ ما يقرؤه من
+          فتحها — وأقلُّ ما يحتاجه. فتُقال الوصلةُ في سطر، والتفصيلُ خلف
+          زرٍّ لمن سأل عنه. */}
+      {access && fresh ? (
+        <section className="team-relationship" data-testid="team-my-access">
+          <span className="chip chip-stage">
+            {access.is_owner
+              ? t("team.youAreOwner")
+              : myRole
+                ? `${t("team.youAreCollaborator")} — ${myRole}`
+                : t("team.youAreCollaborator")}
+          </span>
+          <button
+            type="button"
+            className="btn-quiet team-inline-btn"
+            aria-expanded={accessOpen}
+            aria-controls="team-my-access-detail"
+            data-testid="team-my-access-toggle"
+            onClick={() => setAccessOpen((prev) => !prev)}
+          >
+            {t("team.viewMyAccess")}
+          </button>
+          {accessOpen ? (
+            <div
+              id="team-my-access-detail"
+              className="team-access-detail"
+              data-testid="team-my-access-detail"
+            >
+              <p className="metric-label">{t("team.myPermissions")}</p>
+              <ul className="team-permission-list">
+                {access.permissions.length === 0 ? (
+                  <li className="metric-label">{t("team.noPermissions")}</li>
+                ) : (
+                  access.permissions.map((key) => (
+                    <li key={key}>
+                      {permissionVocab.find((item) => item.key === key)?.label ?? key}
+                    </li>
+                  ))
+                )}
+              </ul>
+              {!canManageTeam ? (
+                <p className="provenance-note">{t("team.needsManageTeam")}</p>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ══════════ ما يحتاج انتباهي — **ولا يُعرض فارغًا أبدًا** ══════════
+
+          وكان قسمٌ بعنوانٍ وشرحٍ وجملةِ «لا شيء ينتظر» يشغل صدرَ الشاشة في
+          الحال الغالبة: لا شيء. **والفراغُ لا يحتاج عنوانًا** — فإن لم يكن
+          بندٌ فلا سطرَ ولا عنوان. */}
+      {fresh && inbox.length > 0 ? (
+        <section className="team-attention" data-testid="team-attention">
+          <button
+            type="button"
+            className="team-attention-btn"
+            aria-expanded={attentionOpen}
+            aria-controls="team-attention-items"
+            data-testid="team-attention-toggle"
+            onClick={() => setAttentionOpen((prev) => !prev)}
+          >
+            {t("team.attention").replace("{n}", String(inbox.length))}
+          </button>
+          {attentionOpen ? (
+            <div id="team-attention-items" className="team-attention-items">
+              <p className="provenance-note">{t("team.inboxNote")}</p>
+              {inbox.map((item) => (
+                <article className="card" key={`${item.kind}-${item.subject_id}`}>
+                  <div className="team-row">
+                    <strong>{item.kind_label}</strong>
+                    <span className="metric-label">
+                      {item.is_mine ? t("team.waitsOnYou") : t("team.waitsOnSomeoneElse")}
+                    </span>
+                  </div>
+                  <p style={{ marginBlock: 4 }}>{item.statement}</p>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* **وزرُّ الموافقة لصاحبها وحده.** ولا يظهر عن أحدٍ آخر أبدًا. */}
+      {awaitingMe ? (
+        <article className="card team-consent-call" data-testid="team-my-consent">
+          <strong>{t("team.yourConsent")}</strong>
+          <p className="provenance-note">{t("team.yourConsentNote")}</p>
+          <div className="team-actions">
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={busy}
+              onClick={() => void consentAsMyself(true)}
+            >
+              {t("team.consentGrant")}
+            </button>
+            <button
+              type="button"
+              className="btn-quiet"
+              disabled={busy}
+              onClick={() => void consentAsMyself(false)}
+            >
+              {t("team.consentDecline")}
+            </button>
+          </div>
         </article>
       ) : null}
 
-      {/* ══ ما يحتاج فعلًا الآن — **قائمةٌ غيرُ السجلّ التاريخي** ══
-          وخلطُهما يجعل الفريق يقرأ سطرًا لا يعرف أينتظره أم انتهى. */}
-      <h2>{t("team.whatAwaitsMe")}</h2>
-      <p className="provenance-note">{t("team.inboxNote")}</p>
-      {!projectsLoaded || (projectId && !loaded) ? (
-        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
-      ) : projectId && inbox.length === 0 && !error ? (
-        <p style={{ color: "var(--muted)" }}>{t("team.emptyInbox")}</p>
-      ) : null}
-      <div style={{ display: "grid", gap: 8 }}>
-        {inbox.map((item) => (
-          <article className="card" key={`${item.kind}-${item.subject_id}`}>
-            <div
-              style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
-            >
-              <strong>{item.kind_label}</strong>
-              <span className="metric-label">
-                {item.is_mine ? t("team.waitsOnYou") : t("team.waitsOnSomeoneElse")}
-              </span>
-            </div>
-            <p style={{ marginBlock: 4 }}>{item.statement}</p>
-          </article>
-        ))}
-      </div>
-      {/* **ولا محرّكَ مهامٍّ ثانٍ هنا.** المهامُّ الحقيقيةُ في صفحتها،
-          فيُفتح الأصلُ ولا تُقلَّد شاشةٌ بنِسَبِ إنجازٍ مخترعة. */}
-      {projectId ? (
-        <p style={{ marginBlockStart: 8 }}>
-          <Link className="chip chip-muted" href={`/${locale}/portfolio/${projectId}/tasks`}>
-            {t("team.openTasks")}
-          </Link>
+      {/* ══════════ ثلاثةُ أبوابٍ — والافتراضُ «الأعضاء» ══════════ */}
+      <nav aria-label={t("team.heading")}>
+        <ul className="team-tabs" role="tablist">
+          {tabs.map((key) => (
+            <li key={key} role="none">
+              <button
+                type="button"
+                role="tab"
+                id={`team-tab-${key}`}
+                aria-selected={tab === key}
+                aria-controls={`team-panel-${key}`}
+                className={tab === key ? "chip chip-stage" : "chip chip-muted"}
+                data-testid={`team-tab-${key}`}
+                onClick={() => setTab(key)}
+              >
+                {t(`team.tab.${key}`)}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      {loading ? (
+        <p style={{ color: "var(--muted)" }} data-testid="team-loading">
+          {t("app.loading")}
         </p>
       ) : null}
 
-      {/* **زرُّ الموافقة لصاحبها وحده.** ولا يظهر عن أحدٍ آخر أبدًا. */}
-      {awaitingMe ? (
-        <article className="card" style={{ marginBlockStart: 12 }}>
-          <strong>{t("team.yourConsent")}</strong>
-          <p className="provenance-note">{t("team.yourConsentNote")}</p>
-          <button type="button" disabled={busy} onClick={() => void consentAsMyself(true)}>
-            {t("team.consentGrant")}
-          </button>
-          <button
-            type="button"
-            style={{ marginInlineStart: 8 }}
-            disabled={busy}
-            onClick={() => void consentAsMyself(false)}
-          >
-            {t("team.consentDecline")}
-          </button>
-        </article>
-      ) : null}
-
-      <h2>{t("team.members")}</h2>
-      <p className="provenance-note">{t("team.roleIsNotPermission")}</p>
-      {!projectsLoaded || (projectId && !loaded) ? (
-        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
-      ) : projectId && members.length === 0 && !error ? (
-        <p style={{ color: "var(--muted)" }}>{t("team.emptyMembers")}</p>
-      ) : null}
-      <div style={{ display: "grid", gap: 8 }}>
-        {members.map((member) => (
-          <article
-            className="card"
-            key={member.id}
-            data-testid={`team-member-${member.id}`}
-            style={member.access_state === "active" ? undefined : { opacity: 0.6 }}
-          >
-            <div
-              style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
-            >
-              <strong>{member.display_name}</strong>
-              <span className="metric-label">
-                {member.role_label} · {member.access_label}
-              </span>
-            </div>
-
-            {/* **مربوطٌ بحساب أو لا** — والفرق ليس تفصيلًا: صفٌّ بلا حساب
-                لا يدخل، ولا يوافق، ولا يُنسب إليه فعل في المنصّة. */}
-            <p className="metric-label">
-              {member.is_account_linked ? t("team.accountLinked") : t("team.nameOnly")}
-              {member.invited_email ? ` · ${member.invited_email}` : ""}
-            </p>
-
-            <p className="metric-label" data-testid={`team-member-permissions-${member.id}`}>
-              {t("team.permissions")}:{" "}
-              {member.permission_labels.join("، ") || t("team.noPermissions")}
-            </p>
-            <p className="metric-label">
-              {t("team.creditRoles")}: {member.credit_labels.join("، ") || t("common.none")}
-            </p>
-
-            {/* ── التأليفُ والموافقة: سطرٌ مستقلٌّ عن العضوية ── */}
-            <p className="metric-label">
-              {member.is_author
-                ? `${t("team.declaredAuthor")}${
-                    member.author_position ? ` · ${member.author_position}` : ""
-                  }`
-                : t("team.notAnAuthor")}
-            </p>
-            {member.consent_needs_recollection ? (
-              <p className="error">{t("team.consentUnverified")}</p>
-            ) : (
-              <p className={member.consent_state === "granted" ? "badge-ok" : "metric-label"}>
-                {t("team.consent")}: {member.consent_label}
-                {member.consent_method_label ? ` · ${member.consent_method_label}` : ""}
-              </p>
-            )}
-
-            {/* ══ إدارةُ العضو — **لمن يحمل `manage_team` وحده** ══ */}
-            {canManageTeam ? (
-              <div style={{ marginBlockStart: 10, display: "grid", gap: 8 }}>
-                <label className="metric-label">
-                  {t("team.changeRole")}
-                  <select
-                    style={{ marginInlineStart: 8 }}
-                    value={member.role}
-                    disabled={busy}
-                    data-testid={`team-role-${member.id}`}
-                    onChange={(event) => void changeRole(member.id, event.target.value)}
-                  >
-                    {roleVocab.map((item) => (
-                      <option key={item.key} value={item.key}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                {editing === member.id ? (
-                  <fieldset data-testid={`team-permission-editor-${member.id}`}>
-                    <legend className="metric-label">{t("team.permissions")}</legend>
-                    {permissionVocab.map((item) => (
-                      <label
-                        key={item.key}
-                        style={{ display: "block", marginBlockStart: 4 }}
-                      >
-                        <input
-                          type="checkbox"
-                          data-testid={`team-permission-${member.id}-${item.key}`}
-                          checked={draftPermissions.includes(item.key)}
-                          onChange={(event) =>
-                            setDraftPermissions((prev) =>
-                              event.target.checked
-                                ? [...prev, item.key]
-                                : prev.filter((key) => key !== item.key),
-                            )
-                          }
-                        />{" "}
-                        {item.label}
-                      </label>
-                    ))}
-                    <button
-                      type="button"
-                      style={{ marginBlockStart: 8 }}
-                      disabled={busy || draftPermissions.length === 0}
-                      data-testid={`team-permission-save-${member.id}`}
-                      onClick={() => void savePermissions(member.id)}
-                    >
-                      {t("team.savePermissions")}
-                    </button>
-                    <button
-                      type="button"
-                      className="chip chip-muted"
-                      style={{ marginInlineStart: 8 }}
-                      onClick={() => {
-                        setEditing(null);
-                        setDraftPermissions([]);
-                      }}
-                    >
-                      {t("projectRecruitment.cancel")}
-                    </button>
-                  </fieldset>
-                ) : (
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      className="chip chip-muted"
-                      data-testid={`team-edit-permissions-${member.id}`}
-                      onClick={() => {
-                        setEditing(member.id);
-                        setDraftPermissions(member.permissions);
-                      }}
-                    >
-                      {t("team.managePermissions")}
-                    </button>
-                    {member.access_state === "active" ? (
-                      <button
-                        type="button"
-                        className="chip chip-muted"
-                        disabled={busy}
-                        data-testid={`team-suspend-${member.id}`}
-                        onClick={() => void changeAccess(member.id, "suspended")}
-                      >
-                        {t("team.suspend")}
-                      </button>
-                    ) : null}
-                    {member.access_state === "suspended" ? (
-                      <button
-                        type="button"
-                        className="chip chip-stage"
-                        disabled={busy}
-                        data-testid={`team-restore-${member.id}`}
-                        onClick={() => void changeAccess(member.id, "active")}
-                      >
-                        {t("team.restore")}
-                      </button>
-                    ) : null}
-                    {member.access_state !== "removed" ? (
-                      <button
-                        type="button"
-                        className="chip chip-muted"
-                        disabled={busy}
-                        data-testid={`team-remove-${member.id}`}
-                        onClick={() => void changeAccess(member.id, "removed")}
-                      >
-                        {t("team.remove")}
-                      </button>
-                    ) : null}
+      {/* ══════════ ١ · الأعضاء — البابُ الأوّل، وبطاقةٌ تقول أربعةً ══════════ */}
+      {tab === "members" ? (
+        <section
+          role="tabpanel"
+          id="team-panel-members"
+          aria-labelledby="team-tab-members"
+          data-testid="team-panel-members"
+        >
+          {fresh && members.length === 0 && !error ? (
+            <p style={{ color: "var(--muted)" }}>{t("team.emptyMembers")}</p>
+          ) : null}
+          {/* **ولا صفٌّ يُرسم إلّا من لقطةِ هذا البحث بعينه.** */}
+          <ul className="team-member-list">
+            {(fresh ? members : []).map((member) => (
+              <li key={member.id}>
+                <article
+                  className="card team-member"
+                  data-testid={`team-member-${member.id}`}
+                  /* دورُ العضو سمةٌ تُقرأ — فالفحصُ يرشّح به بلا لبسٍ مع نصّ. */
+                  data-member-role={member.role}
+                  data-member-access={member.access_state}
+                >
+                  <span className="team-avatar" aria-hidden="true">
+                    {member.display_name.trim().slice(0, 1)}
+                  </span>
+                  <div className="team-member-copy">
+                    <strong className="team-member-name">{member.display_name}</strong>
+                    <span className="team-member-role">{member.role_label}</span>
+                    {/* **مؤشِّراتٌ موجزةٌ تُعَدّ ولا تُسرَد.** «٥ صلاحيات» تقول
+                        قدرًا، وسردُ الخمسةِ يقول جدولًا. والتفصيلُ في اللوح
+                        لمن سأل عنه. */}
+                    <span className="team-member-meta">
+                      <span className={accessChip(member.access_state)}>
+                        {member.access_label}
+                      </span>
+                      {member.permissions.length > 0 ? (
+                        <span className="metric-label">
+                          {t("team.permissionCount")
+                            .replace("{n}", String(member.permissions.length))}
+                        </span>
+                      ) : null}
+                      {member.credit_roles.length > 0 ? (
+                        <span className="metric-label">
+                          {t("team.creditCount")
+                            .replace("{n}", String(member.credit_roles.length))}
+                        </span>
+                      ) : null}
+                      {/* **والغيابُ لا يحتاج تحذيرًا**: «مؤلف» تُعرض إن كان،
+                          ولا تُطبع «ليس مؤلفًا» على كلِّ بطاقةٍ سواه. */}
+                      {member.is_author ? (
+                        <span className="chip chip-muted">{t("team.author")}</span>
+                      ) : null}
+                      {!member.is_account_linked ? (
+                        <span className="chip chip-muted">{t("team.noAccountShort")}</span>
+                      ) : null}
+                    </span>
                   </div>
-                )}
-              </div>
-            ) : null}
-          </article>
-        ))}
-      </div>
+                  {canManageTeam ? (
+                    <button
+                      type="button"
+                      className="btn-quiet team-manage-btn"
+                      data-testid={`team-manage-${member.id}`}
+                      aria-label={`${t("team.manage")} — ${member.display_name}`}
+                      onClick={() => setOpenMemberId(member.id)}
+                    >
+                      {t("team.manage")}
+                    </button>
+                  ) : null}
+                </article>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
-      {/* ══ الدعوات ══ */}
-      {canManageTeam ? (
-        <>
-          <h2>{t("team.invitations")}</h2>
+      {/* ══════════ ٢ · الدعوات — ولا تُخلط بالأعضاء ══════════
+
+          فالمدعوُّ ليس عضوًا: لا يصير أحدٌ عضوًا حتى يقبل بحسابه هو. */}
+      {tab === "invitations" && canManageTeam ? (
+        <section
+          role="tabpanel"
+          id="team-panel-invitations"
+          aria-labelledby="team-tab-invitations"
+          data-testid="team-panel-invitations"
+        >
           <p className="provenance-note">{t("team.invitationNote")}</p>
-          {projectId && loaded && invitations.length === 0 && !error ? (
+          {fresh && invitations.length === 0 && !error ? (
             <p style={{ color: "var(--muted)" }}>{t("team.emptyInvitations")}</p>
           ) : null}
-          <div style={{ display: "grid", gap: 8 }}>
-            {invitations.map((invitation) => (
-              <article className="card" key={invitation.id}>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <strong>{invitation.invited_display_name}</strong>
-                  <span className="metric-label">{invitation.state_label}</span>
-                </div>
-                <p className="metric-label">
-                  {invitation.invited_email} · {invitation.proposed_role_label}
-                </p>
-                {invitation.state === "invited" ? (
-                  <button type="button" disabled={busy} onClick={() => void revoke(invitation.id)}>
-                    {t("team.revokeInvitation")}
-                  </button>
-                ) : null}
-              </article>
+          <ul className="team-member-list">
+            {(fresh ? invitations : []).map((invitation) => (
+              <li key={invitation.id}>
+                <article className="card" data-testid={`team-invitation-${invitation.id}`}>
+                  <div className="team-row">
+                    <strong>{invitation.invited_display_name}</strong>
+                    <span className="chip chip-muted">{invitation.state_label}</span>
+                  </div>
+                  <p className="metric-label">
+                    {invitation.invited_email} · {invitation.proposed_role_label}
+                  </p>
+                  {invitation.expires_at ? (
+                    <p className="metric-label">
+                      {t("team.expires")}:{" "}
+                      {new Date(invitation.expires_at).toLocaleString(locale)}
+                    </p>
+                  ) : null}
+                  {invitation.state === "invited" ? (
+                    <button
+                      type="button"
+                      className="btn-quiet"
+                      disabled={busy}
+                      data-testid={`team-revoke-${invitation.id}`}
+                      onClick={() => void revoke(invitation.id)}
+                    >
+                      {t("team.revokeInvitation")}
+                    </button>
+                  ) : null}
+                </article>
+              </li>
             ))}
-          </div>
+          </ul>
 
-          {issuedToken ? (
-            <article className="card" style={{ marginBlockStart: 12 }} data-testid="team-token">
-              <strong>{t("team.tokenIssued")}</strong>
-              {/* **يُعرض مرّةً واحدة.** والخادم يحفظ تجزئته لا نصّه، فلا سبيل
-                  إلى إظهاره ثانيةً — ولا سبيل إلى انتحاله لمن قرأ القاعدة. */}
-              <p className="provenance-note">{t("team.tokenOnce")}</p>
-              {/* ورمزٌ طويلٌ لا يدفع الصفحةَ أفقيًّا على ٣٧٥px. */}
-              <code style={{ overflowWrap: "anywhere", display: "block" }}>{issuedToken}</code>
-            </article>
-          ) : null}
+          {/* ══ إجراءاتٌ إضافية — **ومساهمٌ بلا حساب ليس دعوةَ باحث** ══
 
-          <article className="card" style={{ marginBlockStart: 12 }}>
-            <strong>{t("team.inviteMember")}</strong>
-            <p className="provenance-note">{t("team.inviteNote")}</p>
-            <label style={{ display: "block", marginBlockStart: 8 }}>
-              {t("team.displayName")}
-              <input
-                type="text"
-                style={{ display: "block", inlineSize: "100%", marginBlockStart: 4 }}
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </label>
-            <label style={{ display: "block", marginBlockStart: 8 }}>
-              {t("team.email")}
-              <input
-                type="email"
-                style={{ display: "block", inlineSize: "100%", marginBlockStart: 4 }}
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-              />
-            </label>
-            <label style={{ display: "block", marginBlockStart: 8 }}>
-              {t("team.role")}
-              <select
-                style={{ display: "block", marginBlockStart: 4 }}
-                value={role}
-                onChange={(event) => setRole(event.target.value)}
-              >
-                {roleVocab.map((item) => (
-                  <option key={item.key} value={item.key}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+              فالأوّلُ يسجّل اسمًا يُنشر، والثاني يفتح بابَ منصّة. وعرضُهما
+              متجاورَين متساويَين كان يجعل المديرَ يضيف اسمًا وهو يظنّ أنّه
+              دعا شريكًا — فينتظر قبولًا لا يأتي. */}
+          <section className="team-advanced">
             <button
               type="button"
-              style={{ marginBlockStart: 8 }}
-              disabled={busy || name.trim().length < 2 || !email.includes("@") || !projectId}
-              onClick={() => void invite()}
+              className="btn-quiet"
+              aria-expanded={advancedOpen}
+              aria-controls="team-advanced-panel"
+              data-testid="team-advanced-toggle"
+              onClick={() => setAdvancedOpen((prev) => !prev)}
             >
-              {t("team.sendInvitation")}
+              {t("team.moreActions")}
             </button>
-          </article>
-        </>
+            {advancedOpen ? (
+              <div
+                id="team-advanced-panel"
+                className="card"
+                data-testid="team-advanced-panel"
+              >
+                <strong>{t("team.addContributorNoAccount")}</strong>
+                <p className="provenance-note">{t("team.addMemberNote")}</p>
+                <div className="form team-form">
+                  <label htmlFor="team-contributor-name">
+                    {t("team.contributorName")}
+                    <input
+                      id="team-contributor-name"
+                      type="text"
+                      value={contribName}
+                      onChange={(event) => setContribName(event.target.value)}
+                    />
+                  </label>
+                  <label htmlFor="team-contributor-role">
+                    {t("team.role")}
+                    <select
+                      id="team-contributor-role"
+                      value={contribRole}
+                      onChange={(event) => setContribRole(event.target.value)}
+                    >
+                      {roleVocab.map((item) => (
+                        <option key={item.key} value={item.key}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <fieldset className="team-permission-group">
+                  <legend className="metric-label">{t("team.creditRoles")}</legend>
+                  {/* **ولا اقتراحَ لأدوار CRediT من نشاطٍ في المنصّة.** */}
+                  {creditVocab.map((item) => (
+                    <label key={item.key} className="team-check">
+                      <input
+                        type="checkbox"
+                        checked={contribCredit.includes(item.key)}
+                        onChange={(event) =>
+                          setContribCredit((prev) =>
+                            event.target.checked
+                              ? [...prev, item.key]
+                              : prev.filter((key) => key !== item.key),
+                          )
+                        }
+                      />{" "}
+                      <span>{item.label}</span>
+                    </label>
+                  ))}
+                </fieldset>
+                <button
+                  type="button"
+                  className="btn-quiet"
+                  style={{ marginBlockStart: 10 }}
+                  disabled={busy || contribName.trim().length < 2 || !projectId}
+                  data-testid="team-add-contributor"
+                  onClick={() => void addContributor()}
+                >
+                  {t("team.add")}
+                </button>
+              </div>
+            ) : null}
+          </section>
+        </section>
       ) : null}
 
-      {/* **والقبولُ بالرمز متاحٌ لكلّ أحد** — ومَن يقبل ليس عضوًا بعد،
-          فلا يُشترط له `manage_team` ولا عضويّةٌ قائمة. */}
-      <InvitationAcceptPanel locale={locale} onAccepted={() => refresh()} />
+      {/* ══════════ ٣ · السجل — تاريخٌ يُقرأ، لا صدرُ شاشة ══════════
+
+          ومصدران لا يُدمجان في البيانات: وقائعُ الفريق (`ProjectMemberEvent`)
+          وقراراتُه (`Decision`). ويُعرضان في بابٍ واحدٍ بفرعين — فالقارئُ
+          يسأل «ما جرى؟» سؤالًا واحدًا، ويبقى المصدران متمايزين. */}
+      {tab === "history" ? (
+        <section
+          role="tabpanel"
+          id="team-panel-history"
+          aria-labelledby="team-tab-history"
+          data-testid="team-panel-history"
+        >
+          <ul className="team-subtabs" role="tablist">
+            {(["activity", "decisions"] as const).map((key) => (
+              <li key={key} role="none">
+                <button
+                  type="button"
+                  role="tab"
+                  id={`team-history-tab-${key}`}
+                  aria-selected={historyTab === key}
+                  aria-controls={`team-history-panel-${key}`}
+                  className={historyTab === key ? "chip chip-stage" : "chip chip-muted"}
+                  data-testid={`team-history-tab-${key}`}
+                  onClick={() => setHistoryTab(key)}
+                >
+                  {t(`team.history.${key}`)}
+                </button>
+              </li>
+            ))}
+          </ul>
+
+          {historyTab === "activity" ? (
+            <div
+              role="tabpanel"
+              id="team-history-panel-activity"
+              aria-labelledby="team-history-tab-activity"
+              data-testid="team-activity"
+            >
+              <p className="provenance-note">{t("team.activityNote")}</p>
+              {fresh && events.length === 0 && !error ? (
+                <p style={{ color: "var(--muted)" }}>{t("team.emptyActivity")}</p>
+              ) : null}
+              <ul className="team-member-list">
+                {(fresh ? events : []).map((event) => (
+                  <li key={event.id}>
+                    <article className="card">
+                      <div className="team-row">
+                        {/* ولا مفاتيحُ أحداثٍ داخليّة حين توجد ترجمة. */}
+                        <strong>{eventLabel(event.event_kind)}</strong>
+                        <span className="metric-label">
+                          {new Date(event.occurred_at).toLocaleString(locale)}
+                        </span>
+                      </div>
+                      {event.note_ar ? <p style={{ marginBlock: 4 }}>{event.note_ar}</p> : null}
+                    </article>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <div
+              role="tabpanel"
+              id="team-history-panel-decisions"
+              aria-labelledby="team-history-tab-decisions"
+              data-testid="team-decisions"
+            >
+              <p className="provenance-note">{t("team.ledgerNote")}</p>
+              {fresh && decisions.length === 0 && !error ? (
+                <p style={{ color: "var(--muted)" }}>{t("team.emptyDecisions")}</p>
+              ) : null}
+              <ul className="team-member-list">
+                {(fresh ? decisions : []).map((decision) => (
+                  <li key={decision.id}>
+                    <article
+                      className="card"
+                      style={decision.is_superseded ? { opacity: 0.6 } : undefined}
+                    >
+                      <div className="team-row">
+                        <strong>{decision.kind_label}</strong>
+                        <span
+                          className={decision.is_superseded ? "chip chip-muted" : "chip chip-ok"}
+                        >
+                          {decision.is_superseded ? t("team.superseded") : t("team.current")}
+                          {decision.gate ? ` · ${decision.gate}` : ""}
+                        </span>
+                      </div>
+                      <p style={{ marginBlock: 4 }}>{decision.statement}</p>
+                      {decision.supersedes_id ? (
+                        <p className="provenance-note">{t("team.supersedesEarlier")}</p>
+                      ) : null}
+                    </article>
+                  </li>
+                ))}
+              </ul>
+              {/* **والمنسوخُ يبقى معروضًا**: إخفاؤه يجعل السجلَّ يبدو كأنّ
+                  الرأيَ الحاليّ هو الوحيد الذي كان. */}
+              <p className="provenance-note">{t("team.decisionHistoryNote")}</p>
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {/* ══════════ ما يُفتح فوق الصفحة ══════════
+
+          و`key` على معرّف العضو: عضوٌ آخر مُركّبٌ آخر، فحالاتُ اللوح
+          ابتدائيّةٌ بحكم React لا بـ`setState` في تأثير. */}
+      {openMember ? (
+        <MemberDetail
+          key={openMember.id}
+          member={openMember}
+          t={t}
+          locale={locale}
+          canManageTeam={canManageTeam}
+          busy={busy}
+          roleVocab={roleVocab}
+          permissionVocab={permissionVocab}
+          onClose={() => setOpenMemberId(null)}
+          onChangeRole={changeRole}
+          onSavePermissions={savePermissions}
+          onChangeAccess={(memberId, next) => void changeAccess(memberId, next)}
+        />
+      ) : null}
 
       {canManageTeam ? (
-        <article className="card" style={{ marginBlockStart: 12 }}>
-          <strong>{t("team.addMember")}</strong>
-          {/* **مساهمٌ بلا حساب.** ويُقال ذلك صراحةً حتى لا يُظنّ شريكًا يدخل. */}
-          <p className="provenance-note">{t("team.addMemberNote")}</p>
-          <label style={{ display: "block", marginBlockStart: 8 }}>
-            {t("team.displayName")}
-            <input
-              type="text"
-              style={{ display: "block", inlineSize: "100%", marginBlockStart: 4 }}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </label>
-          <label style={{ display: "block", marginBlockStart: 8 }}>
-            {t("team.role")}
-            <select
-              style={{ display: "block", marginBlockStart: 4 }}
-              value={role}
-              onChange={(event) => setRole(event.target.value)}
-            >
-              {roleVocab.map((item) => (
-                <option key={item.key} value={item.key}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <fieldset style={{ marginBlockStart: 8 }}>
-            <legend className="metric-label">{t("team.creditRoles")}</legend>
-            {creditVocab.map((item) => (
-              <label key={item.key} style={{ display: "inline-block", marginInlineEnd: 12 }}>
-                <input
-                  type="checkbox"
-                  checked={credit.includes(item.key)}
-                  onChange={(event) =>
-                    setCredit((prev) =>
-                      event.target.checked
-                        ? [...prev, item.key]
-                        : prev.filter((key) => key !== item.key),
-                    )
-                  }
-                />{" "}
-                {item.label}
-              </label>
-            ))}
-          </fieldset>
-          <button
-            type="button"
-            style={{ marginBlockStart: 8 }}
-            disabled={busy || name.trim().length < 2 || !projectId}
-            onClick={() => void addMember()}
-          >
-            {t("team.add")}
-          </button>
-        </article>
+        <InviteDialog
+          open={inviteOpen}
+          t={t}
+          busy={busy}
+          roleVocab={roleVocab}
+          defaultRole="co_author"
+          onClose={() => setInviteOpen(false)}
+          onInvite={invite}
+        />
       ) : null}
-
-      {/* ══ سجلُّ الفريق — **وقائعُ محفوظةٌ لا حالٌ تُستنتج** ══
-          ولا بِنيةَ تدقيقٍ ثانية: `ProjectMemberEvent` هو المصدر. */}
-      <h2>{t("team.activity")}</h2>
-      <p className="provenance-note">{t("team.activityNote")}</p>
-      {projectId && loaded && events.length === 0 && !error ? (
-        <p style={{ color: "var(--muted)" }}>{t("team.emptyActivity")}</p>
-      ) : null}
-      <div style={{ display: "grid", gap: 8 }} data-testid="team-activity">
-        {events.map((event) => (
-          <article className="card" key={event.id}>
-            <div
-              style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
-            >
-              <strong>{eventLabel(event.event_kind)}</strong>
-              <span className="metric-label">
-                {new Date(event.occurred_at).toLocaleString(locale)}
-              </span>
-            </div>
-            {event.note_ar ? <p style={{ marginBlock: 4 }}>{event.note_ar}</p> : null}
-          </article>
-        ))}
-      </div>
-
-      <h2>{t("team.decisions")}</h2>
-      <p className="provenance-note">{t("team.ledgerNote")}</p>
-      {!projectsLoaded || (projectId && !loaded) ? (
-        <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>
-      ) : projectId && decisions.length === 0 && !error ? (
-        <p style={{ color: "var(--muted)" }}>{t("team.emptyDecisions")}</p>
-      ) : null}
-      <div style={{ display: "grid", gap: 8 }}>
-        {decisions.map((decision) => (
-          <article
-            className="card"
-            key={decision.id}
-            style={decision.is_superseded ? { opacity: 0.6 } : undefined}
-          >
-            <div
-              style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
-            >
-              <strong>{decision.kind_label}</strong>
-              <span className="metric-label">
-                {decision.is_superseded ? t("team.superseded") : t("team.current")}
-                {decision.gate ? ` · ${decision.gate}` : ""}
-              </span>
-            </div>
-            <p style={{ marginBlock: 4 }}>{decision.statement}</p>
-            {decision.supersedes_id ? (
-              <p className="provenance-note">{t("team.supersedesEarlier")}</p>
-            ) : null}
-          </article>
-        ))}
-      </div>
-      <p className="provenance-note">{t("team.decisionHistoryNote")}</p>
-    </>
+    </div>
   );
 }

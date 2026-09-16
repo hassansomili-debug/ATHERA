@@ -870,6 +870,303 @@ h2.nav-label { line-height: 1.6; }
   .auth-main { justify-self: center; }
 }
 
+
+/*
+ * ══════════ فريقُ البحث — طبقاتٌ وأبوابٌ وبطاقاتُ أعضاء (RC-T1C UX-1) ══════════
+ *
+ * **والاتجاهُ منطقيٌّ لا يساريّ.** اللوحُ الجانبيّ يدخل من
+ * `inset-inline-end`، والفواصلُ `margin-inline`/`padding-inline` — فالعربيّةُ
+ * والإنجليزيّةُ تُخدمان بقاعدةٍ واحدة، ولا `[dir="rtl"]` يُصحّح ما كُتب
+ * يساريًّا أوّلًا ثمّ نُدم عليه.
+ *
+ * ولا لونَ وحده يقول حالًا: شرائحُ المدخل تحمل نصَّها من الخادم
+ * (`access_label`)، واللونُ زيادةٌ عليه.
+ */
+
+/* ── الطبقة: خلفيّةٌ واحدة، وسطحان (لوحٌ ونافذة) ── */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  background: color-mix(in srgb, var(--brand-ink) 34%, transparent);
+  padding: 0;
+}
+.overlay-surface {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lift);
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  max-block-size: 100%;
+}
+.overlay-surface:focus { outline: none; }
+
+/*
+ * **والهيئةُ تُقيَّد بسطحها المباشر (`>`) لا بكلّ سطحٍ تحتها.**
+ *
+ * نافذةُ تأكيد الإزالة مرسومةٌ **داخل** جسم لوح العضو في DOM، فمحدِّدٌ
+ * بالنسب (`.overlay-drawer .overlay-surface`) يطابق سطحَها هو أيضًا —
+ * فورّثها `block-size: 100%` و`border-radius: 0`، وعلى ٣٧٥px صفيحةً
+ * سفليّة. فصارت نافذةٌ قصيرةٌ تُرسم بطول الشاشة وبزواياَ قائمة.
+ *
+ * والسطحُ ابنٌ مباشرٌ لطبقته دائمًا، فالابنُ المباشر محدِّدٌ قاطعٌ لا
+ * يسيل — ولا يحتاج طبقةً أن تعرف أين رُسمت.
+ */
+/* اللوح: من الحدِّ الخلفيّ، بكامل الارتفاع */
+.overlay-drawer { justify-content: flex-end; }
+.overlay-drawer > .overlay-surface {
+  inline-size: min(440px, 100%);
+  block-size: 100%;
+  border-radius: 0;
+  border-block: none;
+  border-inline-end: none;
+}
+
+/* النافذة: في الوسط، وبعرضٍ يكفي فعلًا قصيرًا */
+.overlay-modal { align-items: center; justify-content: center; padding: 18px; }
+.overlay-modal > .overlay-surface {
+  inline-size: min(520px, 100%);
+  border-radius: var(--radius-lg);
+}
+
+.overlay-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-block-end: 1px solid var(--border);
+}
+.overlay-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 640;
+  letter-spacing: -.02em;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+.overlay-close {
+  margin-inline-start: auto;
+  flex: 0 0 auto;
+  inline-size: 32px;
+  block-size: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.overlay-close:hover { border-color: var(--border-strong); color: var(--fg); }
+.overlay-body { padding: 14px 18px 18px; overflow-y: auto; min-block-size: 0; }
+.overlay-foot {
+  padding: 12px 18px;
+  border-block-start: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+/* ── رأسُ الفريق ── */
+.team-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-block: var(--space) 12px;
+}
+.team-head-copy { min-inline-size: 0; flex: 1 1 260px; }
+.team-title { margin-block: 0 4px; font-size: 19px; font-weight: 640; letter-spacing: -.02em; }
+.team-lead { margin-block: 0 8px; color: var(--muted); font-size: 13.5px; }
+.team-counts { display: flex; gap: 6px; flex-wrap: wrap; margin: 0; }
+.team-head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.team-head-actions .btn-primary,
+.team-head-actions .btn-quiet { text-decoration: none; }
+
+/* ── وصلتُك بالبحث: سطرٌ وزرُّ تفصيل ── */
+.team-relationship {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-block-end: 12px;
+}
+.team-inline-btn { padding: 5px 11px; font-size: 12.5px; }
+.team-access-detail {
+  flex: 1 1 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 12px 14px;
+}
+.team-access-detail > .metric-label { margin-block: 0 6px; }
+
+/* ── شريطُ الانتباه — ولا يُرسم فارغًا أبدًا ── */
+.team-attention { margin-block-end: 12px; }
+.team-attention-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning) 42%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  color: var(--state-review-ink);
+  font: inherit;
+  font-weight: 560;
+  cursor: pointer;
+}
+.team-attention-items { display: grid; gap: 8px; margin-block-start: 8px; }
+.team-consent-call { margin-block-end: 12px; }
+
+/* ── الأبواب ── */
+.team-tabs, .team-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin-block: 0 var(--space);
+  padding: 0;
+}
+.team-subtabs { margin-block: 12px; }
+.team-tabs button, .team-subtabs button { cursor: pointer; font: inherit; }
+
+/* ── بطاقةُ العضو: اسمٌ، دورٌ، حالٌ، وزرٌّ واحد ── */
+.team-member-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.team-member { display: flex; align-items: center; gap: 12px; }
+.team-avatar {
+  flex: 0 0 auto;
+  inline-size: 38px;
+  block-size: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--brand-indigo) 12%, transparent);
+  color: var(--brand-indigo);
+  font-weight: 620;
+  font-size: 15px;
+}
+.team-member-copy { min-inline-size: 0; flex: 1 1 auto; display: grid; gap: 3px; }
+.team-member-name { font-size: 14.5px; font-weight: 600; overflow-wrap: anywhere; }
+.team-member-role { color: var(--fg-soft); font-size: 13px; }
+.team-member-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.team-manage-btn { flex: 0 0 auto; padding: 7px 14px; font-size: 13px; }
+
+.team-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+/* ── داخلَ لوح العضو ── */
+.team-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-block: 8px;
+  border-block-end: 1px solid var(--border);
+}
+.team-field > .metric-label { flex: 0 0 auto; min-inline-size: 90px; }
+.team-subhead { font-size: 14px; font-weight: 620; margin-block: 16px 6px; }
+.team-permission-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-block-end: 8px;
+  min-inline-size: 0;
+}
+.team-permission-group legend { padding-inline: 6px; }
+.team-check { display: flex; align-items: flex-start; gap: 6px; margin-block-start: 5px; }
+.team-check span { min-inline-size: 0; overflow-wrap: anywhere; }
+.team-permission-list {
+  margin-block: 0 8px;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 2px;
+  font-size: 13.5px;
+}
+.team-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-block-start: 10px; }
+.team-actions .btn-primary, .team-actions .btn-quiet, .team-actions .btn-danger {
+  padding: 8px 16px;
+  font-size: 13.5px;
+}
+
+/*
+ * **وإدارةُ الوصول مفصولةٌ بصريًّا عمدًا.** فإيقافُ عضوٍ وإزالتُه ليسا
+ * تحريرَ حقل، وزرٌّ بينهما يُضغط سهوًا.
+ */
+.team-danger {
+  margin-block-start: 18px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--error) 28%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--error) 5%, var(--surface));
+}
+.team-danger .team-subhead { margin-block-start: 0; }
+.btn-danger {
+  border: 1px solid color-mix(in srgb, var(--error) 46%, transparent);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--danger);
+  font: inherit;
+  font-weight: 560;
+  padding: 9px 18px;
+  cursor: pointer;
+}
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 10%, var(--surface)); }
+.btn-danger:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── نماذجُ الفريق، والمُنتقي، والإجراءاتُ الإضافية ── */
+.team-picker { display: block; margin-block-end: 12px; }
+.team-picker select { margin-inline-start: 8px; }
+.team-form { max-inline-size: none; margin-block-start: 10px; }
+.team-advanced { margin-block-start: var(--space); display: grid; gap: 10px; justify-items: start; }
+.team-advanced > .card { inline-size: 100%; }
+
+/* ورمزٌ طويلٌ يلتفّ ولا يدفع النافذةَ أفقيًّا على ٣٧٥px. */
+.team-token-value {
+  display: block;
+  margin-block: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* ══ ٣٧٥px: اللوحُ يصير صفيحةً بكامل العرض، والأزرارُ تمتدّ ══ */
+@media (max-width: 560px) {
+  .overlay-drawer { align-items: flex-end; }
+  .overlay-drawer > .overlay-surface {
+    inline-size: 100%;
+    block-size: min(92%, 100%);
+    border-start-start-radius: var(--radius-lg);
+    border-start-end-radius: var(--radius-lg);
+    border-inline: none;
+  }
+  .overlay-modal { padding: 12px; }
+  .overlay-head { padding: 14px 14px 10px; }
+  .overlay-body { padding: 12px 14px 16px; }
+  .overlay-foot { padding: 10px 14px; }
+  .team-head-actions { inline-size: 100%; }
+  .team-head-actions .btn-primary,
+  .team-head-actions .btn-quiet { flex: 1 1 auto; text-align: center; }
+  .team-member { align-items: flex-start; flex-wrap: wrap; }
+  .team-manage-btn { inline-size: 100%; margin-block-start: 4px; }
+  .team-field > .metric-label { min-inline-size: 0; }
+  .team-actions .btn-primary,
+  .team-actions .btn-quiet,
+  .team-actions .btn-danger { flex: 1 1 auto; text-align: center; }
+}
+
 /*
  * ══════════ حاجزُ العرض الأخير ══════════
  *

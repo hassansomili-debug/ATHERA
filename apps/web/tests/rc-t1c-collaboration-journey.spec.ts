@@ -83,16 +83,22 @@ async function enrol(
  * فعلًا في أوّل تشغيلةٍ لهذه الرحلة: أُخذ صاحبُ البحث على أنه المحلّل.
  */
 async function memberWithRole(page: Page, role: string): Promise<string> {
-  const selects = page.locator('[data-testid^="team-role-"]');
-  await expect(selects.first()).toBeVisible({ timeout: 30_000 });
-  const count = await selects.count();
-  for (let index = 0; index < count; index += 1) {
-    const select = selects.nth(index);
-    if ((await select.inputValue()) === role) {
-      return (await select.getAttribute("data-testid"))!.replace("team-role-", "");
-    }
-  }
-  throw new Error(`no team member currently holds the role ${role}`);
+  const card = page.locator(`[data-member-role="${role}"]`).first();
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  return (await card.getAttribute("data-testid"))!.replace("team-member-", "");
+}
+
+/**
+ * يفتح لوحَ العضو — **وأدواتُ الإدارة كلُّها فيه** بعد RC-T1C UX-1.
+ *
+ * فبطاقةُ العضو تقول اسمًا ودورًا وحالًا وحدها، والدورُ والصلاحياتُ
+ * وأزرارُ المدخل تُفتح عند الطلب. وما تغيّر طريقُ الوصول لا الدعوى:
+ * الصلاحيةُ تُمنح بلا أن يُمسّ الدور، والإيقافُ يبيت في الطلب التالي.
+ */
+async function manage(page: Page, memberId: string) {
+  await page.getByTestId(`team-manage-${memberId}`).click();
+  await expect(page.getByTestId(`team-member-detail-${memberId}`))
+    .toBeVisible({ timeout: 30_000 });
 }
 
 /**
@@ -150,13 +156,17 @@ test("الرحلةُ الذهبية للتعاون البحثيّ عبر ثلا�
     await test.step("A invites C from Tenant C into the project team", async () => {
       await owner.page.goto(`${projectUrl}?section=team`);
       await expect(owner.page.getByTestId("team-my-access")).toBeVisible({ timeout: 30_000 });
-      await owner.page.getByLabel("الاسم كما يُنشر").first().fill("مديرٌ خارجيّ");
-      await owner.page.getByLabel("البريد").first().fill(MANAGER);
-      await owner.page.getByRole("button", { name: "أرسل الدعوة" }).click();
+      await owner.page.getByTestId("team-invite-open").click();
+      await expect(owner.page.getByTestId("team-invite-dialog"))
+        .toBeVisible({ timeout: 30_000 });
+      await owner.page.locator("#team-invite-name").fill("مديرٌ خارجيّ");
+      await owner.page.locator("#team-invite-email").fill(MANAGER);
+      await owner.page.getByTestId("team-invite-submit").click();
       const token = owner.page.getByTestId("team-token").locator("code");
       await expect(token).toBeVisible({ timeout: 30_000 });
       const managerToken = (await token.innerText()).trim();
       expect(managerToken.length).toBeGreaterThan(16);
+      await owner.page.getByTestId("team-token-done").click();
 
       // ويقبل «ج» بحسابه — **والقبولُ شخصيّ**.
       await manager.page.goto(`/${AR}/team`);
@@ -173,6 +183,7 @@ test("الرحلةُ الذهبية للتعاون البحثيّ عبر ثلا�
           .filter({ hasText: "مديرٌ خارجيّ" }).first();
         await expect(card).toBeVisible({ timeout: 30_000 });
         const memberId = (await card.getAttribute("data-testid"))!.replace("team-member-", "");
+        await manage(owner.page, memberId);
         const roleBefore = await owner.page.getByTestId(`team-role-${memberId}`).inputValue();
         expect(roleBefore).toBe("co_author");
 
@@ -331,13 +342,14 @@ test("الرحلةُ الذهبية للتعاون البحثيّ عبر ثلا�
       await expect(mine).toBeVisible({ timeout: 30_000 });
       await expect(mine).toContainText("متعاون");
       // ودورُه في الفريق `statistician` — ولا تأليفَ ولا CRediT.
-      // **ولا مُنتقي أدوارٍ في صفحةِ «ب» أصلًا** (لا `manage_team` له)، فاسمُ
-      // الدور في بطاقته نصٌّ لا خيارٌ في قائمة — والترشيحُ به قاطع.
+      // **ولا مُنتقي أدوارٍ في صفحةِ «ب» أصلًا** (لا `manage_team` له).
       await expect(researcher.page.locator('[data-testid^="team-role-"]')).toHaveCount(0);
-      const myCard = researcher.page.locator('[data-testid^="team-member-"]')
-        .filter({ hasText: "محلل إحصائي" }).first();
+      const myCard = researcher.page.locator('[data-member-role="statistician"]').first();
       await expect(myCard).toBeVisible({ timeout: 30_000 });
-      await expect(myCard).toContainText("عضو فريق، وليس مؤلفًا");
+      await expect(myCard).toContainText("محلل إحصائي");
+      // **والتأليفُ ليس على البطاقة** (RC-T1C UX-1): غيابُ التأليف لا يحتاج
+      // تحذيرًا على كلّ بطاقة، ومحلُّه قسمُ «التأليف والموافقة» في اللوح.
+      await expect(myCard).not.toContainText("عضو فريق، وليس مؤلفًا");
     });
 
     // ═════════ الخطوة و · الدورُ ليس صلاحية ═════════
@@ -370,6 +382,7 @@ test("الرحلةُ الذهبية للتعاون البحثيّ عبر ثلا�
         // ── ومنحٌ واحدٌ صريح من المديرِ الخارجيّ، بلا تغييرِ دور ──
         await manager.page.goto(`${projectUrl}?section=team`);
         const bId = await memberWithRole(manager.page, "statistician");
+        await manage(manager.page, bId);
 
         await manager.page.getByTestId(`team-edit-permissions-${bId}`).click();
         await manager.page.getByTestId(`team-permission-${bId}-manage_sources`).check();
@@ -381,7 +394,12 @@ test("الرحلةُ الذهبية للتعاون البحثيّ عبر ثلا�
         // **وبابُ المصادر يُفتح فورًا** — بلا خروجٍ ولا تجديدِ رمزٍ ولا
         // مهلةِ ذاكرة. والدورُ لم يُمسّ، والصلاحيةُ وحدها تغيّرت.
         await researcher.page.goto(`${projectUrl}?section=team`);
-        await expect(researcher.page.getByTestId("team-my-access"))
+        // **وصلاحيّاتي خلف «عرض صلاحياتي»** لا مطبوعةً في صدر الشاشة
+        // (RC-T1C UX-1) — والدعوى كما هي: المنحُ يُرى بلا خروجٍ ولا مهلة.
+        await expect(researcher.page.getByTestId("team-my-access-toggle"))
+          .toBeVisible({ timeout: 30_000 });
+        await researcher.page.getByTestId("team-my-access-toggle").click();
+        await expect(researcher.page.getByTestId("team-my-access-detail"))
           .toContainText("إدارة المصادر", { timeout: 30_000 });
         await researcher.page.goto(`${projectUrl}?section=literature`);
         await expect(researcher.page.getByTestId("sources-read-only"))
@@ -393,6 +411,7 @@ test("الرحلةُ الذهبية للتعاون البحثيّ عبر ثلا�
       async () => {
         await manager.page.goto(`${projectUrl}?section=team`);
         const bId = await memberWithRole(manager.page, "statistician");
+        await manage(manager.page, bId);
         await manager.page.getByTestId(`team-suspend-${bId}`).click();
         await expect(manager.page.getByTestId(`team-restore-${bId}`))
           .toBeVisible({ timeout: 30_000 });
@@ -483,6 +502,7 @@ test("الرحلةُ الذهبية للتعاون البحثيّ عبر ثلا�
         // والنزعُ من شاشة الفريق — **بالمتصفّح**، وبلا تغييرِ دور.
         await manager.page.goto(`${projectUrl}?section=team`);
         const bId = await memberWithRole(manager.page, "statistician");
+        await manage(manager.page, bId);
         await manager.page.getByTestId(`team-edit-permissions-${bId}`).click();
         await manager.page.getByTestId(`team-permission-${bId}-manage_data`).uncheck();
         await manager.page.getByTestId(`team-permission-save-${bId}`).click();
@@ -508,6 +528,7 @@ test("الرحلةُ الذهبية للتعاون البحثيّ عبر ثلا�
         // ── وتُعاد الصلاحيةُ، فيعود البابُ — والدورُ كما كان ──
         await manager.page.goto(`${projectUrl}?section=team`);
         const again = await memberWithRole(manager.page, "statistician");
+        await manage(manager.page, again);
         await manager.page.getByTestId(`team-edit-permissions-${again}`).click();
         await manager.page.getByTestId(`team-permission-${again}-manage_data`).check();
         await manager.page.getByTestId(`team-permission-save-${again}`).click();
