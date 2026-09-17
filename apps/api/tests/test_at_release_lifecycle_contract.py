@@ -651,23 +651,43 @@ def test_secret_scanner_exceptions_are_pinned_fingerprints_not_allowlists():
     آخرَ في الملفّ نفسِه، ولا الالتزامَ التالي. أمّا قائمةُ سماحٍ بنمطٍ أو
     بمسارٍ فتجعل بلاغًا صادقًا غدًا يمرّ صامتًا — وفحصٌ أحمرُ أفضلُ من فحصٍ
     أخضرَ لا يفحص.
+
+    ## ولا خروجَ مبكّرًا في هذا الفحص
+
+    **وأوّلُ صياغةٍ كانت تخرج مبكّرًا إن غاب `.gitleaksignore`** — وغيابُه
+    هو حالُ المستودع الطبيعيّة. فصار حارسُ `.gitleaks.toml` شيفرةً ميّتة:
+    إعدادٌ بـ`regexes = [".*"]` — سماحٌ يُسكِت كلَّ قاعدةٍ في المستودع —
+    كان يمرّ والفحوصُ كلُّها خضراء.
+
+    فالحارسانِ شرطُهما مختلف، ولا يُعلَّق أحدُهما على وجود الآخر:
+
+      • **إعدادُ gitleaks يُفحَص دائمًا** — وجودُه هو الخطر، لا غيابُه.
+      • **وملفُّ التجاهُل يُفحَص إن وُجد** — وغيابُه هو الحالُ المُفضَّلة.
+
+    ولا `return` في هذا الفحص بعد اليوم، فلا يعود الفخُّ نفسُه.
     """
-    if not GITLEAKS_IGNORE.exists():
-        return  # لا استثناءَ أصلًا، ولا شيءَ يُحرَس
-
-    lines = [
-        line.strip() for line in GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
-    assert lines, "ملفُّ التجاهُل بلا بصمةٍ واحدة — يُحذف بدل أن يبقى فارغًا"
-    for line in lines:
-        assert _FINGERPRINT.match(line), (
-            f"سطرٌ ليس بصمةً مُثبَّتة: {line!r} — "
-            "لا أنماطَ ولا مساراتٍ في تجاهُل الأسرار")
-
-    # **ولا قائمةَ سماحٍ بنمطٍ في الإعداد.** وغيابُ الملفّ هو الحالُ المُفضَّل.
+    # ══ ١ · الإعداد: يُفحَص بلا شرط ══
+    #
+    # وغيابُ `.gitleaks.toml` هو المُفضَّل (والماسحُ يقول
+    # «no gitleaks config found … using default»). فإن وُجد فُحص، ولا
+    # يُقبل فيه سماحٌ بنمطٍ ولا بمسار.
     if GITLEAKS_CONFIG.exists():
         config = GITLEAKS_CONFIG.read_text(encoding="utf-8")
-        for loose in ("[[allowlist", "[allowlist", "regexes", "paths"):
+        for loose in ("[[allowlist", "[allowlist", "allowlists",
+                      "regexes", "paths", "stopwords"):
             assert loose not in config, (
-                f"إعدادُ gitleaks يحمل سماحًا واسعًا: {loose!r}")
+                f"إعدادُ gitleaks يحمل سماحًا واسعًا: {loose!r} — "
+                "والاستثناءُ يُثبَّت ببصمةٍ في `.gitleaksignore`، لا بنمطٍ هنا")
+
+    # ══ ٢ · ملفُّ التجاهُل: يُفحَص إن وُجد وحدَه ══
+    if GITLEAKS_IGNORE.exists():
+        lines = [
+            line.strip()
+            for line in GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        assert lines, "ملفُّ التجاهُل بلا بصمةٍ واحدة — يُحذف بدل أن يبقى فارغًا"
+        for line in lines:
+            assert _FINGERPRINT.match(line), (
+                f"سطرٌ ليس بصمةً مُثبَّتة: {line!r} — "
+                "لا أنماطَ ولا مساراتٍ في تجاهُل الأسرار")
