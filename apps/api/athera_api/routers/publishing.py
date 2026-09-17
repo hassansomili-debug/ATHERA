@@ -11,7 +11,9 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,7 +51,7 @@ from ..schemas.publishing import (
     SectionUpsertRequest,
     SubmissionPackageResponse,
 )
-from ..services import audit, collaboration
+from ..services import audit, collaboration, idempotency
 from ..services.publishing import consistency, journals, manuscript, review, vocab
 from ..transaction import TransactionalRoute
 
@@ -122,10 +124,11 @@ async def _current_version(session: AsyncSession, principal: Principal,
 @router.post("/manuscripts", response_model=ManuscriptResponse,
              status_code=status.HTTP_201_CREATED)
 async def create_manuscript(
+    request: Request,
     payload: ManuscriptCreateRequest,
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
-) -> ManuscriptResponse:
+) -> ManuscriptResponse | JSONResponse:
     # **ملكية المشروع تُفحص صراحةً.** فحصُ المفتاح الأجنبي يجري بصلاحيات
     # النظام ولا يمرّ بـRLS، فمشروع مستأجرٍ آخر كان يُقبل مرجعًا لمخطوطة.
     # ثم تبيّن أنّ المستأجر ليس الحدَّ المقصود: كتابةُ مخطوطةٍ في بحثِ زميلك
@@ -134,6 +137,22 @@ async def create_manuscript(
         session, tenant_id=principal.tenant_id, project_id=payload.project_id,
         user_id=principal.user_id, permission=EDIT,
         not_found_code="publishing.project_not_found")
+
+    # ══ تحمُّلُ إعادةٍ آمنة (RC-T1-H2-A) — **بعد التفويض** ══
+    #
+    # وترتيبُ السطرين هو الدعوى الأمنيّة كلُّها: `ensure_project_access`
+    # فوق، والحارسُ تحت. فباحثٌ سُحبت صلاحيّتُه على البحث ثمّ أعاد طلبًا
+    # قديمًا بمفتاحه **يُردّ بجواب التفويض الحاليّ**، ولا يُعاد له جسمٌ
+    # مخزونٌ من زمنٍ كان يملك فيه الحقّ.
+    guard = await idempotency.begin(
+        request, session, tenant_id=principal.tenant_id,
+        actor_user_id=principal.user_id,
+        body=payload.model_dump(mode="json"))
+    # **ومخرجٌ واحدٌ لا مخرجان**: `answer` إمّا جوابٌ مخزونٌ يُعاد،
+    # وإمّا رفضُ تعارضٍ **دُوِّن في هذه المعاملة بعينها** فيُودَع
+    # معها قبل إرسال الجواب. ولو كانا فحصَين لأمكن نسيانُ أحدهما.
+    if guard.answer is not None:
+        return guard.answer
 
     record = Manuscript(
         tenant_id=principal.tenant_id, project_id=payload.project_id,
@@ -156,12 +175,15 @@ async def create_manuscript(
         object_type="manuscript", object_id=record.id, actor_user_id=principal.user_id,
         state_after={"language": payload.language, "version": "v1"},
     )
-    return ManuscriptResponse(
+    response = ManuscriptResponse(
         id=record.id, project_id=record.project_id,
         title=_pick(principal.locale, record.title_ar, record.title_en),
         title_ar=record.title_ar, language=record.language, status=record.status,
         current_version_label=version.version_label, g9_approved_at=None,
     )
+    await guard.finish(session, status=status.HTTP_201_CREATED,
+                       body=jsonable_encoder(response))
+    return response
 
 
 @router.post("/manuscripts/{manuscript_id}/sections", status_code=status.HTTP_201_CREATED)
