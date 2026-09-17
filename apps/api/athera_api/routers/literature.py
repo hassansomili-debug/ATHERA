@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,7 +57,7 @@ from ..schemas.literature import (
     SourceResponse,
     SourceSearchRequest,
 )
-from ..services import audit, collaboration, reference_discovery
+from ..services import audit, idempotency, collaboration, reference_discovery
 from ..services.literature import ledger, registry, verification
 from ..transaction import TransactionalRoute
 
@@ -168,9 +170,10 @@ async def list_sources(
 
 @router.post("/sources/search", response_model=list[SourceCandidate])
 async def search_sources(
+    request: Request,
     payload: SourceSearchRequest,
     principal: Principal = Depends(get_principal),
-) -> list[SourceCandidate]:
+) -> list[SourceCandidate] | JSONResponse:
     """البحث يُسجَّل لأنه إفصاح خارجي.
 
     نص الاستعلام يغادر المستأجر إلى خدمة طرف ثالث — وقد يحمل عنوان بحث غير
@@ -182,6 +185,19 @@ async def search_sources(
     هذا المسار قبل النداء أصلًا: الصلاحيةُ من الرمز، ولا نطاقَ بحثٍ ولا
     مشروع. فالشبكةُ أوّلًا بلا معاملة، ثمّ معاملةٌ قصيرةٌ للتدقيق.
     """
+    # ══ تحضيرٌ يُودَع قبل الشبكة (RC-T1-H2-B2) ══
+    #
+    # وبلا ترويسةٍ يسلك المسارُ مسلكَه القديم حرفيًّا: لا حجزَ ولا إعادة.
+    # والأثرُ الخارجيُّ هنا **قراءةٌ**، فإعادتُه عند انتهاء إجارةٍ آمنة —
+    # ولا يُقاس على ذلك كتابةُ تخزينٍ ولا نداءُ نموذج.
+    maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+    guard = await idempotency.begin_leased(
+        request, maker, tenant_id=principal.tenant_id,
+        actor_user_id=principal.user_id, body=payload.model_dump(mode="json"),
+        ttl=idempotency.LEASE_NETWORK)
+    if guard.answer is not None:
+        return guard.answer
+
     results: list[SourceCandidate] = []
     used_registry: str | None = None
     failed: list[str] = []
@@ -206,7 +222,12 @@ async def search_sources(
             break
 
     # ── معاملةٌ قصيرةٌ **بعد** الشبكة: الإفصاحُ وقع فيُسجَّل ──
-    async with tenant_session_maker(principal.tenant_id, principal.user_id)() as session:
+    #
+    # **والإنهاءُ والتدقيقُ في معاملةٍ واحدة**: عاملٌ بائتٌ يرفع
+    # `LeaseSuperseded` فتُرجَع المعاملةُ ولا يُودَع حدثُ إفصاحٍ لمن فقد
+    # إجارتَه.
+    answer = results[: payload.limit]
+    async with maker() as session:
         await audit.record(
             session,
             tenant_id=principal.tenant_id,
@@ -222,14 +243,17 @@ async def search_sources(
             reason="query text disclosed to an external scholarly registry (§36.2)",
             request_id=principal.request_id,
         )
-    return results[: payload.limit]
+        await idempotency.settle_leased(
+            session, guard, status=200, body=jsonable_encoder(answer))
+    return answer
 
 
 @router.post("/references/search", response_model=ReferenceSearchResponse)
 async def discover_references(
+    request: Request,
     payload: ReferenceSearchRequest,
     principal: Principal = Depends(get_principal),
-) -> ReferenceSearchResponse:
+) -> ReferenceSearchResponse | JSONResponse:
     """اكتشاف المراجع: عنوانٌ أو كلماتٌ مفتاحية أو DOI.
 
     يفترق عن `/sources/search` في ثلاثة، وكلّها مقصودة:
@@ -256,11 +280,45 @@ async def discover_references(
     ويبقى تسجيل الإفصاح كما هو في المسار القديم: نصّ الاستعلام يغادر
     المستأجر إلى طرفٍ ثالث، وقد يحمل عنوان بحثٍ غير منشور (§36.2).
     """
+    # ══ الترتيب: مَن يُحكَم أوّلًا، الحدُّ أم المفتاح؟ (RC-T1-H2-B2) ══
+    #
+    # **الحدُّ يحمي الفهرسَين، فلا يُطبَّق على طلبٍ لا يبلغهما.**
+    #
+    # وكان الحدُّ أوّلًا لكلّ الطلبات، وهو عطبٌ في العقد: طلبٌ مُمفتَحٌ
+    # **تَمَّ** كان يُردّ ٤٢٩ بدل أن يُعيد جوابَه المخزَّن — فيُعاقَب عميلٌ
+    # يُعيد الطلبَ كما أُمر، على عملٍ لا يُنادي مزوّدًا أصلًا. وكان
+    # التوأمُ المردودُ (`in_progress`) والتعارضُ يستهلكان حصّةَ بحثٍ
+    # خارجيٍّ لم يقع.
+    #
+    # فالمفتاحُ — إن وُجد — يُحكَم أوّلًا: إعادةٌ أو رفضٌ أو تعارضٌ تُجاب
+    # بلا حدٍّ وبلا مزوّد. ولا يبلغ الحدَّ إلا **إجارةٌ جديدة**، أي عملٌ
+    # سيُنادي الفهرسَين حقًّا.
+    #
+    # **وبلا مفتاحٍ لا يُغيَّر شيء**: الحدُّ كما كان، ولا رحلةَ تحضيرٍ
+    # زائدةً إلى قاعدةٍ في مدينةٍ أخرى.
+    maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+    guard = idempotency.LeaseGuard()
+    if idempotency.is_keyed(request):
+        guard = await idempotency.begin_leased(
+            request, maker, tenant_id=principal.tenant_id,
+            actor_user_id=principal.user_id, body=payload.model_dump(mode="json"),
+            ttl=idempotency.LEASE_NETWORK)
+        if guard.answer is not None:
+            return guard.answer
+
     # **الحدّ قبل النداء الخارجي لا بعده.** كل بحثٍ هنا نداءان إلى فهرسين
     # يمنحاننا الاستعمال بأدبٍ لا بعقد؛ وحلقةُ عميلٍ مندفعة تحرق ائتماننا
     # عندهما فيُحجب مرورنا عن كل المستأجرين لا عن صاحب الحلقة وحده.
     wait = throttle.check((principal.tenant_id, principal.user_id))
     if wait:
+        # **إخفاقٌ معلومٌ قبل الخارج**: لم يُنادَ مزوّدٌ، ولا أثرَ غامضًا.
+        # فتُسجَّل الإجارةُ `failed` (ودلالتُها القائمةُ تُفرغ السياج)،
+        # فيبقى المفتاحُ قابلًا لمحاولةٍ صادقةٍ بعد انقضاء الحدّ — ولا
+        # يُترك حجزٌ حيٌّ لعملٍ لن يقع.
+        if guard.lease is not None:
+            async with maker() as session:
+                await idempotency.fail_leased(session, guard.lease,
+                                              reason="rate_limited")
         raise AtheraError(
             "evidence.reference_search_rate_limited", status_code=429,
             retry_after_seconds=wait,
@@ -275,33 +333,9 @@ async def discover_references(
     )
 
     # ── معاملةٌ قصيرةٌ **بعد** نداء الفهرسَين (RC-T1-H3) ──
-    async with tenant_session_maker(principal.tenant_id, principal.user_id)() as session:
-        await audit.record(
-            session,
-            tenant_id=principal.tenant_id,
-            action="evidence.references_discovered",
-            object_type="reference_discovery",
-            actor_user_id=principal.user_id,
-            state_after={
-                "query": payload.query[:200],
-                # **ما غادر المستأجر هو `sent` لا `query`.** لو سُجّل نصّ الباحث
-                # وحده لبقي المصطلح الذي قبِله خارج السجلّ، والإفصاح يُسجَّل بما
-                # أُفصح به فعلًا لا بما قصده صاحبه (§36.2).
-                "sent": (result.query.sent[:200] if result.query else payload.query[:200]),
-                "accepted_terms": list(payload.accepted_terms),
-                "providers": [status_.provider for status_ in result.provider_statuses],
-                "failed_providers": [
-                    status_.provider for status_ in result.provider_statuses if not status_.ok
-                ],
-                "results": len(result.candidates),
-                # الرابط الممنوع جمعه يُسجَّل أنه لم يُطلب — لا أنه طُلب فمُنع.
-                "external_link_host": result.external_link.host if result.external_link else None,
-            },
-            reason="query text disclosed to external scholarly indexes (§36.2)",
-            request_id=principal.request_id,
-        )
-
-    return ReferenceSearchResponse(
+    # **ويُبنى الجوابُ قبل معاملة الإنهاء**: هو ما يُخزَّن ويُعاد
+    # حرفيًّا عند الإعادة، فيجب أن يكون تامًّا قبل أن يُثبَّت.
+    answer = ReferenceSearchResponse(
         candidates=[
             ReferenceCandidateView(
                 doi=ranked.candidate.doi, title=ranked.candidate.title,
@@ -337,13 +371,42 @@ async def discover_references(
         ),
         query_understanding=_understanding(result.query),
     )
+    async with maker() as session:
+        await audit.record(
+            session,
+            tenant_id=principal.tenant_id,
+            action="evidence.references_discovered",
+            object_type="reference_discovery",
+            actor_user_id=principal.user_id,
+            state_after={
+                "query": payload.query[:200],
+                # **ما غادر المستأجر هو `sent` لا `query`.** لو سُجّل نصّ الباحث
+                # وحده لبقي المصطلح الذي قبِله خارج السجلّ، والإفصاح يُسجَّل بما
+                # أُفصح به فعلًا لا بما قصده صاحبه (§36.2).
+                "sent": (result.query.sent[:200] if result.query else payload.query[:200]),
+                "accepted_terms": list(payload.accepted_terms),
+                "providers": [status_.provider for status_ in result.provider_statuses],
+                "failed_providers": [
+                    status_.provider for status_ in result.provider_statuses if not status_.ok
+                ],
+                "results": len(result.candidates),
+                # الرابط الممنوع جمعه يُسجَّل أنه لم يُطلب — لا أنه طُلب فمُنع.
+                "external_link_host": result.external_link.host if result.external_link else None,
+            },
+            reason="query text disclosed to external scholarly indexes (§36.2)",
+            request_id=principal.request_id,
+        )
+        await idempotency.settle_leased(
+            session, guard, status=200, body=jsonable_encoder(answer))
+    return answer
 
 
 @router.post("/sources/import", response_model=SourceResponse, status_code=status.HTTP_201_CREATED)
 async def import_source(
+    request: Request,
     payload: SourceImportRequest,
     principal: Principal = Depends(get_principal),
-) -> SourceResponse:
+) -> SourceResponse | JSONResponse:
     """TC-02 — DOI لا يُحلّ يعيد خطأً واضحًا، ولا يُخزَّن مصدر مختلق.
 
     **وحلُّ المعرّف يقع بلا معاملة** (RC-T1-H3). وكان ترتيبُ المتن صحيحًا
@@ -355,24 +418,48 @@ async def import_source(
     من المعالج نفسِه. ونداءُ الفهرس لا يُرجَع — وذاك اتّساقُ الأثر
     الخارجيّ، مفتوحٌ مُعلَن (RC-T1-H2).
     """
+    # ══ تحضيرٌ يُودَع قبل حلِّ المعرّف (RC-T1-H2-B2) ══
+    maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+    guard = await idempotency.begin_leased(
+        request, maker, tenant_id=principal.tenant_id,
+        actor_user_id=principal.user_id, body=payload.model_dump(mode="json"),
+        ttl=idempotency.LEASE_NETWORK)
+    if guard.answer is not None:
+        return guard.answer
+
     try:
         record, registry_name = await verification.resolve_doi(_registries(), payload.doi)
     except registry.SourceNotFound as exc:
+        # إخفاقٌ **معلوم**: المعرّفُ لا يُحَلّ. فيُسجَّل `failed` ويبقى
+        # المفتاحُ قابلًا لإعادةِ محاولةٍ صادقة — ولا يُختلق معنًى لغموض.
+        if guard.lease is not None:
+            async with maker() as session:
+                await idempotency.fail_leased(session, guard.lease,
+                                              reason="doi_not_resolved")
         raise AtheraError("evidence.doi_not_resolved", status_code=404, doi=payload.doi) from exc
 
-    async with tenant_session_maker(principal.tenant_id, principal.user_id)() as session:
+    # ══ إنهاءٌ ذرّيّ: الطفرةُ والإتمامُ معًا أو لا شيء ══
+    #
+    # ولو فُقدت الإجارةُ رُفع `LeaseSuperseded` **داخل** الجلسة، فتُرجَع
+    # المعاملةُ كلُّها: صفرُ مصادرَ، وصفرُ تدقيقٍ، وصفرُ إتمام.
+    async with maker() as session:
         source = await verification.import_source(
             session, tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
             record=record, registry_name=registry_name,
         )
-        return await _source_response(session, source)
+        answer = await _source_response(session, source)
+        await idempotency.settle_leased(
+            session, guard, status=status.HTTP_201_CREATED,
+            body=jsonable_encoder(answer))
+        return answer
 
 
 @router.post("/sources/{source_id}/verify", response_model=SourceResponse)
 async def revalidate_source(
+    request: Request,
     source_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-) -> SourceResponse:
+) -> SourceResponse | JSONResponse:
     """إعادةُ فحصِ مصدر — **بثلاثة أطوار، والشبكةُ بلا معاملة** (RC-T1-H3).
 
         (١) معاملةٌ قصيرة : المصدرُ يوجد وله DOI ⇒ يُحمَل DOI **نصًّا**
@@ -387,18 +474,37 @@ async def revalidate_source(
     """
     session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)
 
+    # ── (١) معاملةٌ قصيرة: التفويضُ والقراءةُ ثمّ الحجز ──
+    #
+    # **والمعرّفُ جزءٌ من معنى الطلب**: الجسمُ فارغٌ هنا، فلولا `source_id`
+    # في البصمة لَصار مفتاحٌ واحدٌ يُعيد جوابَ مصدرٍ على مصدرٍ آخر.
     async with session_maker() as session:
         doi = await verification.revalidation_doi(session, source_id=source_id)
+        guard = await idempotency.begin_leased_in(
+            session, request, tenant_id=principal.tenant_id,
+            actor_user_id=principal.user_id,
+            body={"source_id": str(source_id)},
+            ttl=idempotency.LEASE_NETWORK)
+    if guard.answer is not None:
+        return guard.answer
 
+    # ── (٢) بلا معاملة: يُسأل الفهرس ──
     record, registry_name = await verification.resolve_doi(_registries(), doi)
 
+    # ── (٣) معاملةٌ قصيرة: يُعاد التحميلُ ثمّ يُثبَّت الفحصُ والإتمام ──
+    #
+    # وحرّاسُ الفجوة تبقى كما هي: مصدرٌ حُذف ⇒ ٤٠٤، ومعرّفٌ تغيّر ⇒ ٤٠٩.
+    # ولا يُطبَّق فحصُ معرّفٍ على حالِ مصدرٍ آخر.
     async with session_maker() as session:
         source, _changed = await verification.apply_revalidation(
             session, tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
             source_id=source_id, record=record, registry_name=registry_name,
             resolved_doi=doi,
         )
-        return await _source_response(session, source)
+        answer = await _source_response(session, source)
+        await idempotency.settle_leased(
+            session, guard, status=200, body=jsonable_encoder(answer))
+        return answer
 
 
 @router.post("/evidence/excerpts", response_model=ExcerptResponse,
