@@ -785,6 +785,19 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "en": "The idempotency key is not valid: it must be 16–128 characters of "
               "letters, digits, hyphen or underscore. Nothing was executed.",
     },
+    # ══ الطور B: الإجارةُ والسياج ══
+    "idempotency.in_progress": {
+        "ar": "طلبٌ بالمفتاح نفسِه ما زال قيد التنفيذ. أعِد المحاولةَ بعد "
+              "قليلٍ بالمفتاح نفسِه — ولم يُنفَّذ شيءٌ مرّتين.",
+        "en": "A request with this idempotency key is still running. Retry "
+              "shortly with the same key — nothing was executed twice.",
+    },
+    "idempotency.lease_superseded": {
+        "ar": "انتهت مهلةُ هذا الطلب وتولّاه طلبٌ آخر، فلم يُحفَظ شيءٌ منه. "
+              "أعِد المحاولةَ بالمفتاح نفسِه.",
+        "en": "This attempt timed out and another took it over, so nothing "
+              "from it was saved. Retry with the same key.",
+    },
     "idempotency.key_reused": {
         "ar": "استُعمل مفتاحُ منعِ التكرار نفسُه لطلبٍ مختلف، فلم يُنفَّذ شيء. "
               "استعمل مفتاحًا جديدًا لطلبٍ جديد.",

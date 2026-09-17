@@ -459,12 +459,10 @@ async def begin(
 ) -> Guard:
     """يقرأ الترويسةَ ويكتسب الملكيّة — أو يمضي بلا حماية.
 
-    والعمليّةُ **قالبُ المسار** لا عنوانًا يحمل معرّفات: `route_path` من
-    نطاق الطلب، فـ`/projects/{project_id}/x` عمليّةٌ واحدة مهما تغيّر
-    المعرّف. وبلا قالبٍ يسقط إلى المسار الحرفيّ.
+    والعمليّةُ **قالبُ المسار** لا عنوانًا يحمل معرّفات: انظر
+    `_operation_of` — كان يُقرأ من مفتاحٍ لا يضعه أحد.
     """
-    operation = (f"{request.method.upper()} "
-                 f"{request.scope.get('route_path') or request.url.path}")
+    operation = _operation_of(request)
     key = validate_key(request.headers.get(HEADER))
     if key is None:
         return Guard(claim=None, operation=operation)
@@ -725,3 +723,152 @@ async def fail_leased(
     if (getattr(settled, "rowcount", 0) or 0) == 1:
         return None
     return Stale()
+
+
+# ═══════════ وصلةُ الطور B بالمسار — تحضيرٌ يملك معاملتَه ═══════════
+#
+# **ولمَ مُعاملٌ للجلسة لا جلسةٌ جاهزة.**
+#
+# مساراتُ الطور B لا تملك جلسةَ طلبٍ أصلًا (`Depends(get_session)` غائبةٌ
+# عنها عمدًا: RC-T1-H3). فالتحضيرُ يفتح معاملتَه القصيرة **ويُودعها** ثمّ
+# يُعيد التحكّم، فلا يبقى شيءٌ مفتوحًا حين يبدأ الانتظارُ الخارجيّ. ولو
+# أُعطيت هذه الدالّةُ جلسةً جاهزةً لَورّطت المُنادي في إبقائها.
+
+
+#: رفضٌ صريحٌ حين تكون الإجارةُ حيّةً لغيرك — **ولا يُنتظر عليها**.
+IN_PROGRESS_CODE = "idempotency.in_progress"
+#: الإجارةُ لم تعد لك — استُولي عليها بعد انتهائها.
+SUPERSEDED_CODE = "idempotency.lease_superseded"
+
+
+class InProgressRefused(AtheraError):
+    """طلبٌ بمفتاحٍ إجارتُه حيّةٌ لعاملٍ آخر — يُردّ ولا يُكرَّر النداء."""
+
+    def __init__(self) -> None:
+        super().__init__(IN_PROGRESS_CODE, status_code=409)
+
+
+class LeaseSuperseded(AtheraError):
+    """رُفع بعد أن فُقدت الإجارة — **ويُرجِع معاملةَ الإنهاء كلَّها**.
+
+    ورفعُه داخل `async with` الجلسة يُرجِع المعاملة، فلا تُودَع طفرةُ
+    مجالٍ ولا حدثُ تدقيقٍ لعاملٍ بائت. وهذا هو المقصود: الرجوعُ لا التبليغ.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(SUPERSEDED_CODE, status_code=409)
+
+
+@dataclass(slots=True)
+class LeaseGuard:
+    """نتيجةُ التحضير: إمّا جوابٌ يُعاد الآن، وإمّا إجارةٌ يُعمل تحتها.
+
+    و`answer` و`lease` لا يجتمعان. وكلاهما `None` يعني **بلا مفتاح**:
+    فالمسارُ يسلك مسلكَه القديم حرفيًّا، ولا حجزَ ولا إعادة.
+    """
+
+    lease: Lease | None = None
+    answer: Any = None
+    operation: str = ""
+
+
+async def begin_leased(
+    request, maker, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
+    body: Any, ttl: dt.timedelta,
+) -> LeaseGuard:
+    """التحضير في معاملةٍ **خاصّةٍ به** ثمّ يُعيد التحكّم بلا معاملةٍ مفتوحة.
+
+    ويُنادى **بعد** المصادقة والتفويض: الحجزُ ليس بوّابةَ وصول، ومن لا
+    يملك الحقَّ لا يبلغ هذا السطر.
+
+    و`maker` دالّةٌ تفتح جلسةً تملك إيداعَها (`db.tenant_session_maker`).
+    """
+    if validate_key(request.headers.get(HEADER)) is None:
+        # بلا مفتاحٍ لا جلسةَ تُفتح: المسلكُ القديم حرفيًّا، ولا رحلةَ
+        # ذهابٍ إلى قاعدةٍ في مدينةٍ أخرى بلا داعٍ.
+        return LeaseGuard(operation=_operation_of(request))
+    async with maker() as session:
+        return await begin_leased_in(
+            session, request, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            body=body, ttl=ttl)
+
+
+async def begin_leased_in(
+    session: AsyncSession, request, *, tenant_id: uuid.UUID,
+    actor_user_id: uuid.UUID, body: Any, ttl: dt.timedelta,
+) -> LeaseGuard:
+    """التحضيرُ نفسُه **في معاملةٍ يملكها المُنادي**.
+
+    ولهذا موضعٌ واحد: مسارٌ يحتاج أن يقرأ من القاعدة ما يبني به معنى
+    الطلب (`verify` يقرأ المعرّف)، فتُوفَّر رحلةٌ ويُقرأ ويُحجز في معاملةٍ
+    واحدة. وعلى المُنادي أن يُودِعها — والخروجُ من `async with` يفعل.
+    """
+    operation = _operation_of(request)
+    key = validate_key(request.headers.get(HEADER))
+    if key is None:
+        return LeaseGuard(operation=operation)
+
+    fingerprint = canonical_fingerprint(
+        method=request.method, operation=operation, body=body,
+        query=dict(request.query_params))
+
+    try:
+        outcome = await acquire_lease(
+            session, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            operation=operation, key=key, fingerprint=fingerprint, ttl=ttl)
+    except KeyReused as conflict:
+        # **تُدوَّن في هذه المعاملة بعينها فتُودَع معها** — كما في الطور A:
+        # الرفعُ كان يمحو الحدثَ مع الرجوع. فيُعاد الجوابُ **قيمةً**.
+        await record_conflict(
+            session, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            operation=operation, cause=conflict.cause,
+            request_id=request.headers.get("x-request-id"))
+        from ..errors import athera_error_handler  # noqa: PLC0415
+
+        return LeaseGuard(operation=operation,
+                          answer=await athera_error_handler(request, conflict))
+
+    if isinstance(outcome, Replay):
+        return LeaseGuard(operation=operation, answer=_replay_response(outcome))
+    if isinstance(outcome, InProgress):
+        from ..errors import athera_error_handler  # noqa: PLC0415
+
+        return LeaseGuard(operation=operation,
+                          answer=await athera_error_handler(request, InProgressRefused()))
+    return LeaseGuard(lease=outcome, operation=operation)
+
+
+def _operation_of(request) -> str:
+    """اسمُ العمليّة: المسارُ **المُقولَب** لا المُستبدَل.
+
+    فـ`/sources/{source_id}/verify` عمليّةٌ واحدةٌ لكلّ المصادر، ومعرّفُ
+    المصدر يدخل في **البصمة** لا في الاسم. ولو دخل الاسمَ لَصار لكلّ مصدرٍ
+    فضاءُ مفاتيحَ خاصٌّ به، فمفتاحٌ أُعيد على مصدرٍ آخر لا يُكشَف تعارضُه.
+
+    **وكان هذا مكسورًا:** `scope["route_path"]` مفتاحٌ **لا يضعه أحد** — لا
+    هذا المستودع ولا Starlette (وفيها `get_route_path` دالّةٌ تحسبه ولا
+    تُودعه النطاق). فكان التعبيرُ يسقط دائمًا إلى `request.url.path`
+    المُستبدَل. والذي يضعه FastAPI هو `scope["route"]`، و`.path` منه قالبٌ
+    تامٌّ يحمل بادئةَ الموجِّه. وقد قِيس الأمران: الأوّلُ غائبٌ والثاني
+    `/api/v1/sources/{source_id}/verify`.
+
+    ومساراتُ الطور A الأربعةُ بلا معاملٍ في المسار (`/runs` و`/manuscripts`
+    و`/projects` مرّتين)، فالتصحيحُ **لا يُغيّر اسمَ عمليّةٍ لمفتاحٍ قائم**:
+    المُستبدَلُ والقالبُ فيها نصٌّ واحد. وقد قِيس ذلك أيضًا.
+    """
+    route_path = getattr(request.scope.get("route"), "path", None)
+    return f"{request.method.upper()} {route_path or request.url.path}"
+
+
+async def settle_leased(
+    session: AsyncSession, guard: LeaseGuard, *, status: int, body: Any,
+) -> None:
+    """يُنهي تحت السياج — **ويرفع إن فُقدت الإجارة**.
+
+    ويُنادى داخل معاملةِ الإنهاء نفسِها، فرفعُه يُرجِعها: صفرُ طفراتٍ
+    لعاملٍ بائت. وبلا مفتاحٍ لا يفعل شيئًا.
+    """
+    if guard.lease is None:
+        return
+    if await finalize_leased(session, guard.lease, status=status, body=body) is not None:
+        raise LeaseSuperseded
