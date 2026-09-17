@@ -48,12 +48,12 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import Table, delete, select
+from sqlalchemy import Table, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AtheraError
-from ..models.idempotency import COMPLETED, IN_PROGRESS, IdempotencyRecord
+from ..models.idempotency import COMPLETED, FAILED, IN_PROGRESS, IdempotencyRecord
 
 #: الترويسةُ التي يحملها العميل — **اختياريّةٌ في الطور A**.
 HEADER = "Idempotency-Key"
@@ -494,3 +494,234 @@ async def begin(
         return Guard(claim=claim, operation=operation)
     return Guard(claim=claim, operation=operation,
                  answer=_replay_response(claim.replay))
+
+
+# ═══════════════ الطور B — الحجزُ والإجارةُ والسياج ═══════════════
+#
+# **وهذه أساساتٌ لا توصيل.** لا مسارَ في التطبيق ينادي شيئًا منها في هذا
+# الطور؛ تُبنى وتُبرهَن ثمّ تُوصَل في طورٍ لاحق.
+#
+# ## ولمَ إجارةٌ أصلًا
+#
+# الطور A يكفيه أن يكون الحجزُ والطفرةُ والجوابُ في معاملةٍ واحدة. وما
+# فيه فجوةٌ خارجيّة لا يكفيه ذلك: المعاملةُ يجب أن تُودَع **قبل** النداء
+# الخارجيّ (RC-T1-H3)، فيبقى صفٌّ مُودَعٌ بحالِ `in_progress` لا يملكه
+# أحدٌ إن مات العامل. فالإجارةُ مهلةٌ على الملكيّة، والسياجُ يمنع عاملًا
+# بائتًا أن يكتب فوق من خلفه.
+#
+# ## والسياجُ هو `lease_expires_at` — وهذه حجّتُه
+#
+# ولا عمودَ مالكٍ ولا رمزَ حراسةٍ جديد. والدعوى أنّ الآجالَ **تتزايد
+# تزايدًا صارمًا** بين المالكين المتعاقبين:
+#
+#   • الاستيلاءُ لا يقع إلّا إن كان `lease_expires_at <= now()`.
+#   • فإن استولى مالكٌ ثانٍ في اللحظة `t₂` فقد كان `t₁ + L <= t₂`.
+#   • وأجلُه الجديد `t₂ + L > t₁ + L` — أي أكبرُ من أجل الأوّل قطعًا.
+#
+# فسياجُ العامل البائت لا يساوي السياجَ القائم أبدًا، وشرطُ الإنهاء
+# `lease_expires_at = :fence` يردّه بصفر صفوف. **ولا يُصدَّق هذا لأنّه
+# مكتوب**: يُقاس على PostgreSQL حقيقيّة في
+# `tests/test_at_rc_t1_h2b1_lease.py`.
+#
+# **والساعةُ ساعةُ القاعدة** (`now()`)، لا ساعةُ العمليّة: عاملان على
+# آلتين بساعتين مختلفتين يجب أن يتّفقا على متى انتهت الإجارة.
+
+
+@dataclass(frozen=True, slots=True)
+class Lease:
+    """ملكيّةُ تنفيذٍ **مُودَعة** — والسياجُ قيمتُها."""
+
+    record_id: uuid.UUID
+    operation: str
+    #: الأجلُ الذي كتبه الفائزُ بنفسه — وهو السياج.
+    fence: dt.datetime
+
+
+@dataclass(frozen=True, slots=True)
+class InProgress:
+    """حَجزٌ لغيرك وإجارتُه حيّة — فلا تُنفّذ ولا تُعِد جوابًا."""
+
+    lease_expires_at: dt.datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Stale:
+    """إنهاءٌ رُدّ: الإجارةُ لم تعد لك. **ولا طفرةَ تُودَع.**"""
+
+    reason: str = "lease superseded"
+
+
+#: مهلةُ الإجارة — تُقرَّر لكلّ صنفِ عملٍ، ولا مهلةَ واحدةٌ للكلّ.
+#: والمهلةُ يجب أن تفوق مهلةَ المزوّد نفسِه، وإلّا زاحم الاستيلاءُ نداءً
+#: ما زال يعمل.
+LEASE_NETWORK = dt.timedelta(seconds=30)
+LEASE_STORAGE = dt.timedelta(seconds=120)
+LEASE_MODEL = dt.timedelta(seconds=300)
+
+
+async def _claim_with_lease(
+    session: AsyncSession, *, scope: dict, fingerprint: str, ttl: dt.timedelta,
+) -> dt.datetime | None:
+    """يحجز صفًّا جديدًا بإجارة — ويعيد السياج، أو `None` إن سبقه غيرُه."""
+    table = IdempotencyRecord.__table__
+    assert isinstance(table, Table)  # noqa: S101 — يُضيّق النوعَ لا أكثر
+    seconds = ttl.total_seconds()
+    statement = (
+        pg_insert(table)
+        .values(id=uuid.uuid4(), **scope, request_fingerprint=fingerprint,
+                state=IN_PROGRESS,
+                created_at=func.now(),
+                expires_at=func.now() + TTL,
+                lease_expires_at=func.now() + dt.timedelta(seconds=seconds))
+        .on_conflict_do_nothing(index_elements=[
+            "tenant_id", "actor_user_id", "operation", "key_digest"])
+        .returning(table.c.id, table.c.lease_expires_at)
+    )
+    row = (await session.execute(statement)).first()
+    return None if row is None else row[1]
+
+
+async def acquire_lease(
+    session: AsyncSession, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
+    operation: str, key: str, fingerprint: str,
+    ttl: dt.timedelta = LEASE_MODEL,
+) -> Lease | Replay | InProgress:
+    """يكتسب إجارةً، أو يعيد جوابًا مخزونًا، أو يقول «قائمٌ لغيرك».
+
+    **وتُنادى داخل معاملةٍ يُودِعها المُنادي قبل أيّ عملٍ خارجيّ.** ولا
+    تُمسَك هذه المعاملةُ عبر النداء الخارجيّ — وذاك شرطُ RC-T1-H3، وهو
+    مسؤوليّةُ المُنادي لا هذه الدالّة.
+
+    والقرارُ عند وجود صفٍّ سابق:
+
+      • `completed` وبصمةٌ مطابقة  ⇒ `Replay`
+      • بصمةٌ مختلفة             ⇒ `KeyReused` (كما في الطور A)
+      • `in_progress` وإجارةٌ حيّة ⇒ `InProgress`
+      • إجارةٌ منتهية أو `failed`  ⇒ استيلاءٌ مُحكَمٌ بالقاعدة
+    """
+    digest = digest_key(key)
+    scope = {
+        "tenant_id": tenant_id, "actor_user_id": actor_user_id,
+        "operation": operation, "key_digest": digest,
+    }
+
+    fence = await _claim_with_lease(session, scope=scope, fingerprint=fingerprint,
+                                   ttl=ttl)
+    if fence is not None:
+        return Lease(record_id=await _record_id(session, scope), operation=operation,
+                     fence=fence)
+
+    existing = (await session.execute(
+        select(IdempotencyRecord).where(
+            IdempotencyRecord.tenant_id == tenant_id,
+            IdempotencyRecord.actor_user_id == actor_user_id,
+            IdempotencyRecord.operation == operation,
+            IdempotencyRecord.key_digest == digest,
+        )
+    )).scalar_one_or_none()
+    if existing is None:
+        # نافذةٌ ضيّقة: حُذف الصفُّ بين الإدراج والقراءة. تُعاد المحاولةُ مرّة.
+        fence = await _claim_with_lease(session, scope=scope,
+                                        fingerprint=fingerprint, ttl=ttl)
+        if fence is not None:
+            return Lease(record_id=await _record_id(session, scope),
+                         operation=operation, fence=fence)
+        raise KeyReused(KeyReused.LOST_RACE)
+
+    if existing.request_fingerprint != fingerprint:
+        raise KeyReused(KeyReused.FINGERPRINT)
+
+    if existing.state == COMPLETED and existing.response_status is not None:
+        return Replay(status=existing.response_status, body=existing.response_body)
+
+    # ══ استيلاءٌ: القاعدةُ هي الحَكَم، ولا قفلَ في العمليّة ══
+    #
+    # والشرطُ في عبارة الكتابة نفسِها: `lease_expires_at <= now()`. فمتسابقان
+    # على إجارةٍ منتهية يصيب أحدُهما صفًّا والآخرُ صفرًا — بلا قفلٍ ولا
+    # Redis ولا تحكيمٍ في الذاكرة.
+    seconds = ttl.total_seconds()
+    taken = (await session.execute(
+        update(IdempotencyRecord)
+        .where(IdempotencyRecord.id == existing.id,
+               IdempotencyRecord.state.in_((IN_PROGRESS, FAILED)),
+               or_(IdempotencyRecord.lease_expires_at.is_(None),
+                   IdempotencyRecord.lease_expires_at <= func.now()))
+        .values(state=IN_PROGRESS,
+                lease_expires_at=func.now() + dt.timedelta(seconds=seconds),
+                completed_at=None, response_status=None, response_body=None)
+        .returning(IdempotencyRecord.lease_expires_at)
+    )).first()
+    if taken is not None:
+        return Lease(record_id=existing.id, operation=operation, fence=taken[0])
+
+    # لم يُستولَ: إمّا الإجارةُ حيّةٌ لغيرنا، وإمّا سبقنا مستولٍ آخر.
+    live = (await session.execute(
+        select(IdempotencyRecord.lease_expires_at, IdempotencyRecord.state)
+        .where(IdempotencyRecord.id == existing.id)
+    )).one()
+    if live[1] == COMPLETED:
+        fresh = (await session.execute(
+            select(IdempotencyRecord).where(IdempotencyRecord.id == existing.id)
+        )).scalar_one()
+        return Replay(status=fresh.response_status or 0, body=fresh.response_body)
+    return InProgress(lease_expires_at=live[0])
+
+
+async def _record_id(session: AsyncSession, scope: dict) -> uuid.UUID:
+    """معرّفُ الصفّ في نطاقه — يُقرأ بعد حجزٍ فائز."""
+    return (await session.execute(
+        select(IdempotencyRecord.id).where(
+            IdempotencyRecord.tenant_id == scope["tenant_id"],
+            IdempotencyRecord.actor_user_id == scope["actor_user_id"],
+            IdempotencyRecord.operation == scope["operation"],
+            IdempotencyRecord.key_digest == scope["key_digest"],
+        )
+    )).scalar_one()
+
+
+async def finalize_leased(
+    session: AsyncSession, lease: Lease, *, status: int, body: Any,
+) -> Stale | None:
+    """يُنهي عملًا مُستأجَرًا — **إن كانت الإجارةُ ما زالت لك**.
+
+    ويُنادى في معاملةِ الطفرة نفسِها: فإن رُدَّ (`Stale`) وجب على المُنادي
+    أن يُرجِع المعاملةَ، فلا تُودَع طفرةٌ لعاملٍ فقد إجارتَه.
+
+    والشرطُ سياجٌ: `lease_expires_at = :fence`. وآجالُ المالكين تتزايد
+    تزايدًا صارمًا (انظر رأس هذا القسم)، فسياجُ البائت لا يطابق القائم.
+    """
+    settled = await session.execute(
+        update(IdempotencyRecord)
+        .where(IdempotencyRecord.id == lease.record_id,
+               IdempotencyRecord.state == IN_PROGRESS,
+               IdempotencyRecord.lease_expires_at == lease.fence)
+        .values(state=COMPLETED, response_status=status, response_body=body,
+                completed_at=func.now(), lease_expires_at=None)
+    )
+    if (getattr(settled, "rowcount", 0) or 0) == 1:
+        return None
+    return Stale()
+
+
+async def fail_leased(
+    session: AsyncSession, lease: Lease, *, reason: str,
+) -> Stale | None:
+    """يُسجّل إخفاقًا **معلومًا** — والمفتاحُ يبقى قابلًا لإعادةِ محاولةٍ صادقة.
+
+    **ولا يُستعمل لنتيجةٍ غامضة.** فإخفاقٌ حتميٌّ معروف (رفضٌ من المزوّد،
+    مدخلٌ غيرُ صالح) يُسجَّل `failed` فيُعاد المحاولةُ بأمان. أمّا نداءٌ
+    انقطع ولا يُعرف أوقع أثرُه أم لا فذاك بابٌ آخر، ولا تُختلق له دلالةٌ
+    في هذا الطور.
+    """
+    settled = await session.execute(
+        update(IdempotencyRecord)
+        .where(IdempotencyRecord.id == lease.record_id,
+               IdempotencyRecord.state == IN_PROGRESS,
+               IdempotencyRecord.lease_expires_at == lease.fence)
+        .values(state=FAILED, completed_at=func.now(), lease_expires_at=None,
+                response_status=None,
+                response_body={"failure": reason[:200]})
+    )
+    if (getattr(settled, "rowcount", 0) or 0) == 1:
+        return None
+    return Stale()
