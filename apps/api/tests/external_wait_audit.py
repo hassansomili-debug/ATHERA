@@ -64,6 +64,33 @@ INTERFACE_SEEDS = {
     "athera_api.services.extraction.base:Extractor.propose": "MODEL",
 }
 
+#: **مخزنُ الكائنات يُعرَف بواجهته، لا بسلسلةِ نصٍّ في متنه** (H2-B1).
+#:
+#: وكان الكشفُ يبحث عن `boto3` أو `_s3` في متن الدالّة، وهي لا تظهر إلّا في
+#: `S3ObjectStore.__init__`: العملياتُ نفسُها تنادي `self._client.<op>`،
+#: فبقيت **كلُّ قراءةٍ وكتابةٍ للتخزين خارجَ مجموعة المنافذ**. ومسارُ رفعٍ
+#: يمسك معاملةً أثناء الكتابة كان يمرّ بلا بلاغ.
+#:
+#: فتُعلَن الواجهةُ: صنفٌ يرث `ObjectStore` (أو الصنفُ المجرَّد نفسُه)،
+#: وطريقةٌ من عملياته المُعلَنة ⇒ منفذُ تخزين. والحدُّ اسمٌ واحدٌ مُعلَن،
+#: لا تخمينٌ على أسماءٍ عامّة.
+#: **تسليمٌ إلى مُنفِّذ: الطريقةُ تُمرَّر ولا تُنادى** (H2-B1).
+#:
+#: و`run_in_threadpool(store.put_stream, …)` نداءٌ خارجيٌّ في الأثر، لكنّه
+#: ليس `ast.Call` على `put_stream` — الطريقةُ **وسيطٌ**. وجمعُ الحافات
+#: يقرأ `func` النداءات وحدَها، فكلُّ كتابةِ تخزينٍ في `files.py` كانت
+#: غيرَ مرئيّة. فيُقرأ وسيطُ المُنفِّذ حافةً، **ولا يُقرأ وسيطُ أيّ نداءٍ
+#: آخر**: الحدُّ أسماءُ مُنفِّذين مُعلَنة، لا كلُّ سمةٍ تُمرَّر.
+EXECUTOR_HANDOFFS = frozenset({
+    "run_in_threadpool", "to_thread", "run_in_executor", "run_sync",
+})
+
+OBJECT_STORE_BASE = "ObjectStore"
+OBJECT_STORE_OPS = frozenset({
+    "put", "put_stream", "get", "get_stream", "delete",
+    "presign_get", "presign_put",
+})
+
 
 class Offender:
     """مسارٌ ينتظر خارجَ العمليّة ومعاملةٌ حيّة — ومعه سلسلةُ النداء."""
@@ -232,6 +259,18 @@ class _Audit:
                 for sub in ast.walk(node):
                     if not isinstance(sub, ast.Call):
                         continue
+                    # **وسيطُ المُنفِّذ حافةٌ** — انظر `EXECUTOR_HANDOFFS`.
+                    callee_name = (sub.func.attr if isinstance(sub.func, ast.Attribute)
+                                   else sub.func.id if isinstance(sub.func, ast.Name)
+                                   else None)
+                    if callee_name in EXECUTOR_HANDOFFS:
+                        for handed in sub.args:
+                            if not isinstance(handed, ast.Attribute):
+                                continue
+                            passed = audit._resolve(module, handed, cls_name, locals_)
+                            # ولا حافةَ إلّا إن حلَّت إلى تعريفٍ معروف.
+                            if passed and audit._candidates(passed):
+                                audit.edges[qualified].add(passed)
                     target = audit._resolve(module, sub.func, cls_name, locals_)
                     if target:
                         audit.edges[qualified].add(target)
@@ -269,6 +308,24 @@ class _Audit:
                 root = _annotation_root(node.annotation)
                 if root:
                     types[node.target.id] = root
+            # **إسنادٌ محلّيٌّ من بانٍ معروف** — `x = Orchestrator()` (H2-B1).
+            #
+            # وكان هذا الحدُّ مفقودًا، والنمطُ قائمٌ في `brain.py::ask`:
+            # يُبنى المنسّقُ في متغيّرٍ ثمّ يُنادى عليه، فتُفقد الحافةُ
+            # ويصير المسارُ غيرَ مرئيٍّ للوصوليّة كلِّها.
+            #
+            # **ولا يُسجَّل اسمٌ إلّا إن كان صنفًا له طرائقُ معروفة**: يُشترط
+            # وجودُ `<cand>.` في التعريفات، وهو الشرطُ نفسُه الذي يستعمله
+            # `_factory_classes`. فلا يُعلَّق على كلِّ نداءٍ باسمٍ كبير.
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
+                    and isinstance(node.value.func, ast.Name):
+                built = node.value.func.id
+                hit = self.imports[module].get(built)
+                cand = hit if (hit and ":" in hit) else f"{module}:{built}"
+                if any(q.startswith(cand + ".") for q in self.defs):
+                    for target_ in node.targets:
+                        if isinstance(target_, ast.Name):
+                            types.setdefault(target_.id, built)
             target = getattr(node, "target", None)
             iterable = getattr(node, "iter", None)
             if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) \
@@ -351,6 +408,26 @@ class _Audit:
         if isinstance(base, ast.Call):
             inner = self._resolve(module, base.func, cls_name, local_types)
             if inner:
+                # **ونوعُ العودة المُعلَن يُقرأ قبل الافتراض** (H2-B1).
+                #
+                # فـ`storage.get_store().put_stream` ليس `get_store.put_stream`:
+                # `get_store` دالّةٌ مُعلَنةُ العودة (`-> ObjectStore`)، والطريقةُ
+                # طريقةُ الواجهةِ المُعادة. وبلا هذا الحدّ كان مسارُ الرفع
+                # يحلّ إلى اسمٍ لا وجودَ له فتُفقد الحافةُ صامتةً.
+                #
+                # والمصدرُ **إعلانٌ مكتوب**، لا تخمينٌ على شكل الاسم.
+                declared = self.defs.get(inner)
+                returns = getattr(declared, "returns", None) if declared else None
+                root = _annotation_root(returns) if returns is not None else None
+                if root:
+                    owner = self.imports[self.owner[inner]].get(root)
+                    if owner and ":" in owner:
+                        omod, oname = owner.split(":", 1)
+                        cand = f"{omod}:{oname}.{node.attr}"
+                    else:
+                        cand = f"{self.owner[inner]}:{root}.{node.attr}"
+                    if cand in self.defs:
+                        return cand
                 imod, iname = inner.split(":", 1)
                 return f"{imod}:{iname}.{node.attr}"
         return None
@@ -466,6 +543,26 @@ class _Audit:
                     "await self._client" in segment or "messages.create" in segment
                     or "responses.create" in segment or "chat.completions" in segment):
                 self.egress[qualified] = "MODEL"
+        # **مخزنُ الكائنات: تُعلَن عملياتُه منافذَ تخزين** (H2-B1).
+        stores = {OBJECT_STORE_BASE}
+        for module_, tree in self.trees.items():
+            for cls in ast.walk(tree):
+                if not isinstance(cls, ast.ClassDef):
+                    continue
+                names = {b.id for b in cls.bases if isinstance(b, ast.Name)} | {
+                    b.attr for b in cls.bases if isinstance(b, ast.Attribute)}
+                if names & stores:
+                    stores.add(cls.name)
+            del module_
+        for qualified in self.defs:
+            head, _, member = qualified.partition(":")
+            if "." not in member:
+                continue
+            cls_name, method = member.rsplit(".", 1)
+            if cls_name in stores and method in OBJECT_STORE_OPS:
+                self.egress.setdefault(qualified, "STORAGE")
+            del head
+
         for seed, kind in INTERFACE_SEEDS.items():
             if seed in self.defs:
                 self.egress.setdefault(seed, kind)
