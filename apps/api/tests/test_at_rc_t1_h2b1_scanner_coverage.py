@@ -105,3 +105,81 @@ def test_04_the_expanded_scanner_does_not_flag_everything(scan):
             f"مسارٌ ذرّيٌّ وُسم خارجيًّا — بلاغٌ كاذب: {clean}")
     # ولا بذرةَ واجهةٍ فُقدت بالتوسيع.
     assert scan.missing_seeds == [], f"بذورٌ مفقودة: {scan.missing_seeds}"
+
+
+# ════════ المخالفةُ التي كشفها التوسيع — وقد أُصلحت ════════
+#
+# `POST /api/v1/theses/upload` كان يُعلن `Depends(get_session)`، والتبعيّةُ
+# تفتح معاملةَ الطلب **قبل** أن يعمل المتن. فكانت معاملةُ قاعدةٍ تُمسَك
+# عبر بثِّ الملفّ إلى التخزين مقطعًا مقطعًا — إلى مئات الميغابايت.
+#
+# وقد وقع العطبُ نفسُه من قبل في `files.upload_file` وعُولج هناك، فبقي
+# المتّصلُ به يفتح المعاملةَ من فوقه. فالعلاجُ يكتمل عند المُنادي.
+
+
+def test_05_the_thesis_upload_holds_no_transaction_across_the_storage_write(scan):
+    """**ولا معاملةَ حتى يعود التخزين** — ويُقاس بالبنية لا بالنيّة."""
+    import ast
+    import inspect
+    import textwrap
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = textwrap.dedent(inspect.getsource(router_module.upload_thesis))
+    tree = ast.parse(source)
+    fn = tree.body[0]
+
+    # (أ) لا تبعيّةَ جلسةٍ على المعالج — وهي التي كانت تفتح المعاملة.
+    defaults = [d for d in [*fn.args.defaults,
+                            *[k for k in fn.args.kw_defaults if k is not None]]]
+    depends = {
+        arg.id
+        for d in defaults if isinstance(d, ast.Call)
+        and getattr(d.func, "id", "") == "Depends"
+        for arg in d.args if isinstance(arg, ast.Name)
+    }
+    assert "get_session" not in depends, (
+        "عاد `Depends(get_session)` إلى معالج الرفع — فمعاملةُ الطلب "
+        "تُمسَك عبر بثِّ الملفّ إلى التخزين")
+
+    # (ب) نداءُ التخزين خارج كلِّ معاملةٍ يملكها المتن.
+    owned = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.AsyncWith)
+        and any(getattr(c.func, "id", getattr(c.func, "attr", "")) == "tenant_session"
+                for item in n.items for c in ast.walk(item.context_expr)
+                if isinstance(c, ast.Call))
+    ]
+    uploads = [n.lineno for n in ast.walk(fn)
+               if isinstance(n, ast.Call)
+               and getattr(n.func, "id", "") == "upload_file"]
+    assert uploads, "لم يُعد المعالجُ ينادي `upload_file`"
+    for at in uploads:
+        assert not any(b.lineno <= at <= (b.end_lineno or b.lineno) for b in owned), (
+            "نداءُ التخزين داخل معاملةٍ مفتوحة — وهو عطبُ RC-T1-H3 بعينه")
+
+    # (ج) والرفعُ يسبق عملَ القاعدة، فلا يُنشأ سجلٌّ لملفٍّ لم يُحفظ.
+    assert owned, "لا معاملةً قصيرةً بعد الرفع — من يكتب سجلَّ الرسالة؟"
+    assert min(uploads) < min(b.lineno for b in owned), (
+        "عملُ القاعدة يسبق الرفع — فقد يُكتب سجلٌّ لملفٍّ لم يُحفظ")
+
+
+def test_06_the_thesis_upload_is_visible_but_not_an_offender(scan):
+    """**والإصلاحُ أزال المخالفةَ لا الرؤية.**
+
+    فحارسٌ يُسكَت بإخفاء المسار عنه لا يحرس شيئًا. فالمسارُ يبقى موسومًا
+    `STORAGE` — أي إنّ الماسحَ يراه ويقيسه — ولا يُبلَّغ عنه لأنّ المعاملةَ
+    لم تعد مفتوحةً أثناء الانتظار.
+    """
+    route = "athera_api.routers.document_intelligence:upload_thesis"
+    assert scan.reach.get(route) == "STORAGE", (
+        "فُقدت رؤيةُ مسار الرفع — أُصلحت المخالفةُ بإخفائها لا بإزالتها")
+    assert [o for o in scan.offenders() if o.handler == "upload_thesis"] == [], (
+        "ما زال مسارُ رفع الرسالة مخالفًا")
+
+
+def test_07_the_application_has_zero_external_wait_offenders(scan):
+    """**والدعوى المُطلَقة تُعاد بعد التوسيع** — وهي الآن تشمل التخزين."""
+    offenders = scan.offenders()
+    assert offenders == [], (
+        "مخالفاتٌ حقيقيّةٌ في التطبيق:\n" + "\n".join(o.describe() for o in offenders))

@@ -2406,18 +2406,56 @@ def test_work_is_committed_before_it_is_scheduled():
     وليس عيب عزل ولا صلاحيات: الصفّ لم يكن قد وُجد بعد. فكل مسار يجدول عملًا
     يودِع أولًا.
     """
+    import ast
     import inspect
+    import textwrap
 
     from athera_api.routers import document_intelligence as router_module
 
+    # **والخاصّيّةُ تُفحص، لا آلةٌ بعينها.**
+    #
+    # وكان الفحصُ يبحث عن نصِّ `await session.commit()` حرفيًّا. وذاك
+    # يشترط آلةً واحدة: معاملةً يملكها الطلبُ ويُودعها المعالجُ بيده. ولمّا
+    # خرج `upload_thesis` من معاملة الطلب (RC-T1-H3: لا معاملةَ عبر رفعٍ
+    # إلى التخزين) صار يُودِع بخروج `async with tenant_session(...)` —
+    # فاختفى النصُّ والخاصّيّةُ قائمة.
+    #
+    # فيُقرأ الأمرُ بنيويًّا، ويصير الفحصُ **أقوى** لا أضعف: يمنع أيضًا أن
+    # تُجدوَل المهمّةُ **داخل** المعاملة، وذاك ما كان النصُّ يمرّ عليه.
     for fn in (router_module.upload_thesis, router_module.reprocess,
                router_module.decide_consent):
-        source = inspect.getsource(fn)
+        source = textwrap.dedent(inspect.getsource(fn))
         if "background.add_task" not in source:
             continue
-        commit = source.index("await session.commit()")
-        schedule = source.index("background.add_task")
-        assert commit < schedule, f"{fn.__name__}: جُدولت المهمة قبل الإيداع"
+        tree = ast.parse(source)
+
+        def _owns_session(node) -> bool:
+            return any(
+                isinstance(call, ast.Call)
+                and getattr(call.func, "id", getattr(call.func, "attr", "")) in
+                ("tenant_session", "project_session", "system_session")
+                for item in node.items for call in ast.walk(item.context_expr))
+
+        blocks = [n for n in ast.walk(tree)
+                  if isinstance(n, ast.AsyncWith) and _owns_session(n)]
+        commits = [n.lineno for n in ast.walk(tree)
+                   if isinstance(n, ast.Call)
+                   and getattr(n.func, "attr", "") == "commit"]
+        schedules = [n.lineno for n in ast.walk(tree)
+                     if isinstance(n, ast.Call)
+                     and getattr(n.func, "attr", "") == "add_task"]
+        assert schedules, f"{fn.__name__}: لا جدولةَ يُفحص ترتيبُها"
+        for at in schedules:
+            # ولا تُجدوَل المهمّةُ داخل معاملةٍ لم تُودَع بعد.
+            inside = [b for b in blocks if b.lineno <= at <= (b.end_lineno or b.lineno)]
+            assert not inside, (
+                f"{fn.__name__}: جُدولت المهمّة داخل معاملةٍ مفتوحة — "
+                "فترى المهمّةُ قاعدةً بلا صفوفها")
+            # وقد أُودع شيءٌ قبلها: إيداعٌ صريح، أو خروجُ معاملةٍ تملك نفسَها.
+            settled = [c for c in commits if c < at] + [
+                b.end_lineno for b in blocks if (b.end_lineno or 0) < at]
+            assert settled, (
+                f"{fn.__name__}: جُدولت المهمة قبل الإيداع")
 
 
 def test_every_database_write_in_the_background_task_sits_inside_a_transaction():

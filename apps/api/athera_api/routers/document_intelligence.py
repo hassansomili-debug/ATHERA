@@ -277,7 +277,6 @@ async def upload_thesis(
     background: BackgroundTasks,
     upload: UploadFile = FormFile(...),
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> ExtractionStateResponse:
     """ارفع الرسالة — ولا تملأ نموذجًا يدويًا (§4).
 
@@ -303,42 +302,59 @@ async def upload_thesis(
     #
     # وهو عطبٌ ثانٍ كان مختبئًا خلف الأوّل: `session=` كانت تُسقط النداء
     # قبل أن يبلغ هذا الموضع.
+    # ══ الرفعُ أوّلًا، وبلا معاملةٍ مفتوحةٍ البتّة (RC-T1-H3) ══
+    #
+    # **ولا `Depends(get_session)` على هذا المعالج.** التبعيّةُ تفتح معاملةَ
+    # الطلب **قبل** أن يعمل المتن، ويملكها `TransactionalRoute` إلى ما بعده.
+    # فكانت معاملةُ قاعدةٍ تُمسَك عبر بثِّ الملفّ إلى التخزين مقطعًا مقطعًا
+    # — إلى مئات الميغابايت — وهو بعينه ما يمنعه RC-T1-H3.
+    #
+    # وقد وقع هذا العطبُ مرّةً من قبل وعُولج في `files.upload_file` نفسِه
+    # (`0cdb23a`: «رفعُ كتابٍ واحد كان يُجمّد المنتج»)، فخرج الرفعُ من
+    # معاملة الطلب هناك — **وبقي المتّصلُ به يفتحها من فوقه**. فالعلاجُ
+    # يكتمل عند المُنادي: لا معاملةَ حتى يعود التخزين.
+    #
+    # ولم يُكشف الأمرُ حتى وُسّعت تغطيةُ الماسح في H2-B1: عملياتُ مخزن
+    # الكائنات لم تكن منافذَ مُعلَنة، وتسليمُ الطريقة إلى `run_in_threadpool`
+    # لم يكن حافةً — فكان المسارُ غيرَ مرئيٍّ للحارس.
     stored = await upload_file(upload=upload, classification="C2",
                                folder_id=None, principal=principal)
 
-    thesis, created = await pipeline.ensure_thesis_for_file(
-        session, tenant_id=principal.tenant_id, file_id=stored.id,
-    )
-    # حالُ الرسالة تُحجز للمعالجة قبل الجدولة (ترحيل 0027) — فلا تبقى
-    # `uploaded` بينما مهمّةٌ تعمل عليها، ولا تُجدوَل تشغيلتان معًا.
-    await _claim(session, principal, thesis.id)
-    await audit.record(
-        session, tenant_id=principal.tenant_id,
-        action="thesis.auto_registered" if created else "thesis.upload_reused",
-        object_type="thesis", object_id=thesis.id, actor_user_id=principal.user_id,
-        state_after={"file_id": str(stored.id), "created": created},
-        reason="processing record created by upload; title and degree stay NULL until extracted",
-        request_id=principal.request_id,
-    )
-
-    # **الحفظ قبل الجدولة — لا بعدها.**
+    # ══ ثمّ معاملةٌ قصيرةٌ تملك نفسَها ══
     #
-    # مهام `BackgroundTasks` تعمل بعد إرسال الاستجابة و**قبل** إغلاق تبعيات
-    # الطلب، فمعاملة هذا الطلب لم تُودَع بعد حين تبدأ المهمة. والمهمة تفتح
-    # جلستها الخاصة، فترى القاعدة كما كانت: بلا ملف وبلا سجل رسالة — وتنسحب
-    # صامتة. وهذا ما وقع في الإنتاج حرفيًّا:
+    # و`tenant_session` تُودِع عند خروجٍ سليم (`owns_commit=True`)، فيبقى
+    # الترتيبُ الذي كان: **الحفظُ قبل الجدولة**. ومهامُّ `BackgroundTasks`
+    # تعمل بعد إرسال الجواب وقبل فكِّ التبعيّات، فلو بقي الإيداعُ للطلب
+    # لَرأت المهمّةُ قاعدةً بلا ملفٍّ ولا سجلّ رسالة وانسحبت صامتةً — وهو
+    # ما وقع في الإنتاج حرفيًّا: `file … not visible to tenant …`. وليس
+    # عيبَ عزلٍ ولا صلاحيّة: الصفُّ لم يكن قد وُجد بعد.
     #
-    #     document_intelligence: file … not visible to tenant …
-    #
-    # وليس عيب RLS ولا عيب صلاحيات: العزل صحيح، والصفّ لم يكن قد وُجد بعد.
-    await session.commit()
+    # وسياقُ المستأجر والفاعل هو هو: `tenant_session` تضبط `app.tenant_id`
+    # و`app.actor_id` محلّيًّا بالمعاملة كما تفعل التبعيّة.
+    async with tenant_session(principal.tenant_id, principal.user_id) as session:
+        thesis, created = await pipeline.ensure_thesis_for_file(
+            session, tenant_id=principal.tenant_id, file_id=stored.id,
+        )
+        # حالُ الرسالة تُحجز للمعالجة قبل الجدولة (ترحيل 0027) — فلا تبقى
+        # `uploaded` بينما مهمّةٌ تعمل عليها، ولا تُجدوَل تشغيلتان معًا.
+        await _claim(session, principal, thesis.id)
+        await audit.record(
+            session, tenant_id=principal.tenant_id,
+            action="thesis.auto_registered" if created else "thesis.upload_reused",
+            object_type="thesis", object_id=thesis.id, actor_user_id=principal.user_id,
+            state_after={"file_id": str(stored.id), "created": created},
+            reason="processing record created by upload; title and degree stay NULL until extracted",
+            request_id=principal.request_id,
+        )
+        thesis_id = thesis.id
+    # ← أُودعت المعاملةُ هنا، فترى المهمّةُ الملفَّ والسجلَّ معًا.
 
     background.add_task(_process, principal.tenant_id, principal.user_id,
                         stored.id, principal.locale)
     # **و«جارٍ قراءة الملف» لم تكن قد وقعت بعد.** المهمّة لم تبدأ حين تُرسَل
     # هذه الاستجابة؛ والحال الصادقة `queued`، وتصير `parsing` حين تصير.
     return ExtractionStateResponse(
-        thesis_id=thesis.id, file_id=stored.id, status=processing.QUEUED,
+        thesis_id=thesis_id, file_id=stored.id, status=processing.QUEUED,
         chunks=0, candidates=0,
         message=_t(principal.locale, "تم رفع الرسالة · في انتظار الدور",
                    "Thesis uploaded · queued for reading"),
