@@ -20,6 +20,8 @@ import os
 import sys
 
 TABLE = "idempotency_records"
+#: الدورُ الذي يخدم الطلبات — **ويُشترط، فالدعوى تقوم عليه**.
+RUNTIME_ROLE = "athera_app"
 
 
 async def main() -> int:
@@ -50,13 +52,58 @@ async def main() -> int:
                 await conn.rollback()
                 return 1
 
+            # ══ الدورُ يُشترط، لا يُطبع ══
+            #
+            # **والطبعُ ملاحظةٌ لا إنفاذ.** دعوى هذا البرهان أنّ الصفَّ
+            # يُقرأ «بسياسة الصفّ نافذة»، وهي لا تصحّ إلّا إن كان الاتصالُ
+            # نفسُه خاضعًا لها. فرابطٌ يُضبط يومًا بدورٍ فائقٍ أو بـBYPASSRLS
+            # أو باعتماد الترحيل يجعل الدعوى كذبًا **والبرهانَ أخضرَ** — فلا
+            # يُكتفى بأن يُسجَّل الدورُ، بل يُشترط.
+            posture = (await conn.execute(text(
+                "SELECT r.rolname, r.rolsuper, r.rolbypassrls"
+                "  FROM pg_roles r WHERE r.rolname = current_user"))).first()
+            if posture is None:
+                print("FAILURE=db_read_only_verification_failed")
+                print("detail=the connected role is not readable from pg_roles")
+                await conn.rollback()
+                return 1
+            who, is_super, bypasses = posture
+            print(f"CONNECTED_AS={who}")
+            print(f"ROLE_ROLSUPER={is_super}")
+            print(f"ROLE_ROLBYPASSRLS={bypasses}")
+            if who != RUNTIME_ROLE:
+                print("FAILURE=db_read_only_verification_failed")
+                print("detail=unexpected runtime database role")
+                await conn.rollback()
+                return 1
+            if is_super:
+                print("FAILURE=db_read_only_verification_failed")
+                print("detail=the runtime role is a superuser")
+                await conn.rollback()
+                return 1
+            if bypasses:
+                print("FAILURE=db_read_only_verification_failed")
+                print("detail=runtime role bypasses RLS")
+                await conn.rollback()
+                return 1
+
             # سياقُ الفاعل، محلّيًّا بالمعاملة — لا تغييرَ دورٍ ولا تعطيلَ سياسة.
             await conn.execute(
                 text("SELECT set_config('app.tenant_id', :t, true),"
                      "       set_config('app.actor_id', :a, true)"),
                 {"t": tenant, "a": actor})
-            who = (await conn.execute(text("SELECT current_user"))).scalar()
-            print(f"CONNECTED_AS={who}")
+
+            # **ويُقرأ السياقُ بعد ضبطه** — فالضبطُ الصامتُ الفاشل يجعل
+            # الاستعلامَ يرى صفرَ صفوفٍ فيُقرأ ذلك «لا صفَّ» لا «لا سياق».
+            settings = (await conn.execute(text(
+                "SELECT current_setting('app.tenant_id', true),"
+                "       current_setting('app.actor_id', true)"))).one()
+            if str(settings[0]) != tenant or str(settings[1]) != actor:
+                print("FAILURE=db_read_only_verification_failed")
+                print("detail=the transaction-local RLS identity was not applied")
+                await conn.rollback()
+                return 1
+            print("RLS_CONTEXT_APPLIED=yes")
 
             rows = (await conn.execute(
                 text(f"SELECT state, response_status, completed_at IS NOT NULL,"

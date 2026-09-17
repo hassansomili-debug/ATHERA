@@ -76,6 +76,63 @@ jobs:
           fi
           echo "release commit verified on main: $SHA"
 
+      # ــ ٢ · مصدرانِ لا مصدر: المنتجُ المنشور، وأداةُ الفحص ــ
+      #
+      # **والخلطُ بينهما كان عطبًا قاتلًا.** شجرةُ العمل هي `expected_release_sha`
+      # — المنتجُ المنشورُ الذي يُقبَل — و**ملفّا برهان H2-A ليسا فيه**: هما
+      # أحدثُ منه، أُضيفا في دفعةِ الحارس نفسِها. فمحاولةُ تشغيلهما من
+      # جذر الشجرة تسقط بـ`No such file or directory` قبل أن يُلمس الإنتاج.
+      #
+      # ولا يُحَلّ بتبديل الجذر إلى `main`: لو فُعل لَفحصت رحلةُ المتصفّح
+      # شيفرةً **غيرَ المنشورة**، وذاك يُبطل معنى القبول من أصله.
+      #
+      # فالمنتجُ يبقى في الجذر، **وأداةُ الفحص تُستخرَج من `GITHUB_SHA`**
+      # — التزامُ المشغّل بعينه، لا فرعًا متحرّكًا — إلى مجلّدٍ منفصل.
+      # ويُتحقّق أنّه التزامٌ حقيقيٌّ ومن `main` المُراجَعة.
+      - name: Stage the H2-A harness from the workflow commit
+        id: harness
+        env:
+          PRODUCT_SHA: ${{ inputs.expected_release_sha }}
+        run: |
+          set -euo pipefail
+          # والالتزامُ قد لا يكون في المستودع المحلّيّ بعد، فيُجلب ثمّ يُتحقّق.
+          git fetch --no-tags origin "${GITHUB_SHA}" 2>/dev/null || true
+          if ! git cat-file -e "${GITHUB_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::the workflow commit ${GITHUB_SHA} is not a reachable commit"
+            exit 1
+          fi
+          # **ولا أداةَ فحصٍ من التزامٍ غيرِ مُراجَع.**
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::the workflow commit ${GITHUB_SHA} is not an ancestor of origin/main"
+            exit 1
+          fi
+
+          harness="${RUNNER_TEMP}/h2a-harness"
+          rm -rf "$harness"
+          mkdir -p "$harness"
+          chmod 700 "$harness"
+          for name in h2a_keyed_replay.py h2a_record_proof.py h2a_cleanup.py; do
+            git show "${GITHUB_SHA}:.github/acceptance/${name}" > "${harness}/${name}"
+            chmod 600 "${harness}/${name}"
+            test -s "${harness}/${name}" \
+              || { echo "::error::staged harness ${name} is empty"; exit 1; }
+            python3 -m py_compile "${harness}/${name}" \
+              || { echo "::error::staged harness ${name} does not compile"; exit 1; }
+          done
+          echo "harness_dir=${harness}" >> "$GITHUB_OUTPUT"
+
+          # **ويُقال الفرقُ صريحًا في السجلّ** — فلا يُقرأ أحدُهما مكانَ الآخر.
+          # وهما غيرُ سرّيَّين، واختلافُهما مقصودٌ في بوّابةٍ أداتُها أحدثُ
+          # من المنتج الذي تفحصه.
+          echo "PRODUCT_SHA=${PRODUCT_SHA}"
+          echo "HARNESS_SHA=${GITHUB_SHA}"
+          {
+            echo "| revision | commit |"
+            echo "|---|---|"
+            echo "| product under test (deployed) | \`${PRODUCT_SHA}\` |"
+            echo "| acceptance harness (this workflow) | \`${GITHUB_SHA}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # ــ ٢ · البوّابة: لا تشغيلَ باعتمادٍ حتى يأذن المالك ــ
       #
       # **والتخطّي لا يُعدّ نجاحًا.** مشغّلٌ يصمت حين لا يجد اعتمادًا يُقرأ
@@ -122,7 +179,7 @@ jobs:
       - name: Install Playwright Chromium
         run: cd apps/web && npx playwright install --with-deps chromium
 
-      # ══════════ ٣ · برهانُ الإعادة بمفتاح — قبل المتصفّح ══════════
+      # ══════════ ٤ · برهانُ الإعادة بمفتاح — قبل المتصفّح ══════════
       #
       # **ولمَ هنا، ولمَ أوّلًا.**
       #
@@ -144,7 +201,7 @@ jobs:
         env:
           PUBRIVA_API_URL: https://athera-api.fly.dev
           SMOKE_MARKER: ${{ github.run_id }}-${{ github.run_attempt }}
-        run: python3 .github/acceptance/h2a_keyed_replay.py
+        run: python3 "${{ steps.harness.outputs.harness_dir }}/h2a_keyed_replay.py"
 
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
 
@@ -164,9 +221,10 @@ jobs:
           SMOKE_KEY_DIGEST: ${{ steps.keyed.outputs.key_digest }}
           SMOKE_OPERATION: ${{ steps.keyed.outputs.operation }}
           SMOKE_PROJECT_ID: ${{ steps.keyed.outputs.project_id }}
+          HARNESS_DIR: ${{ steps.harness.outputs.harness_dir }}
         run: |
           set -euo pipefail
-          payload="$(base64 -w0 .github/acceptance/h2a_record_proof.py)"
+          payload="$(base64 -w0 "${HARNESS_DIR}/h2a_record_proof.py")"
           # والبيئةُ تُمرَّر بالأسماء، فلا يظهر سرٌّ في سطر الأوامر.
           flyctl ssh console --app athera-api -C "env \
             SMOKE_TENANT_ID=${SMOKE_TENANT_ID} \
@@ -178,30 +236,24 @@ jobs:
             | tee /tmp/h2a_record_proof.log
           grep -q "H2A_RECORD_PROOF=pass" /tmp/h2a_record_proof.log
 
-      # **والسلّةُ طريقُ المنتج، لا SQL.** الحذفُ هنا تأجيلٌ لا إتلاف
-      # (`workspace.trash_project`)، والصفُّ يبقى قابلًا للاستعادة. ويُشغَّل
-      # حتى لو سقط برهانٌ بعد الإنشاء — فلا يُترك أثرٌ لأنّ الفحصَ سقط.
+      # **والسلّةُ طريقُ المنتج، لا SQL.** الحذفُ هنا نقلٌ إلى السلّة لا
+      # إتلاف (`workspace.trash_project`)، والصفُّ يبقى قابلًا للاستعادة.
+      #
+      # **ويسقط عند الإخفاق، ولا يُحذّر فقط.** كان تحذيرًا والملخّصُ يقول
+      # «نُقل إلى السلّة» على أيّ حال — تقريرٌ كاذب. فبرهانٌ على الإنتاج لا
+      # يستطيع إزالةَ أثرِه المعلوم ليس قبولًا كاملَ الخضرة.
+      #
+      # ويعمل بـ`always()` فيُنظّف أثرَ برهانٍ سقط بعد الإنشاء — **ولا
+      # يمحو صنفَ السقوط الأوّل**: ذاك باقٍ في خطوته هو.
       - name: Trash the disposable smoke project (product route)
-        if: ${{ always() && steps.keyed.outputs.project_id != '' }}
+        id: cleanup
+        if: always()
         env:
           PUBRIVA_API_URL: https://athera-api.fly.dev
-          PROJECT_ID: ${{ steps.keyed.outputs.project_id }}
-        run: |
-          set -euo pipefail
-          token_file="${RUNNER_TEMP}/h2a_smoke_token"
-          if [ ! -s "$token_file" ]; then
-            echo "::warning::no acceptance token was stored; nothing to clean up"
-            exit 0
-          fi
-          code="$(curl -s -o /tmp/h2a_trash.json -w '%{http_code}' --max-time 60 \
-            -X DELETE "${PUBRIVA_API_URL}/api/v1/workspace/projects/${PROJECT_ID}" \
-            -H "Authorization: Bearer $(cat "$token_file")")"
-          echo "trash: HTTP ${code}"
-          rm -f /tmp/h2a_trash.json
-          if [ "$code" != "200" ]; then
-            echo "::warning::FAILURE=cleanup_failed — the smoke project remains in production"
-            echo "::warning::it is named with this run id and is restorable/trashable by hand"
-          fi
+          SMOKE_PROJECT_ID: ${{ steps.keyed.outputs.project_id }}
+          SMOKE_TITLE: ${{ steps.keyed.outputs.smoke_title }}
+          HARNESS_DIR: ${{ steps.harness.outputs.harness_dir }}
+        run: python3 "${HARNESS_DIR}/h2a_cleanup.py"
 
       # **ويُمحى الرمزُ قبل أن يعمل المتصفّح.** لا أثرَ يُرفع، ولا ملفَّ
       # اعتمادٍ يعيش إلى الخطوة التالية.
@@ -210,9 +262,12 @@ jobs:
         run: |
           rm -f "${RUNNER_TEMP}/h2a_smoke_token" /tmp/h2a_record_proof.log \
                 /tmp/h2a_trash.json || true
-          echo "keyed-smoke temporary state destroyed"
+          # **وأداةُ الفحص تُمحى قبل رحلةِ المتصفّح**، فتبقى الشجرةُ التي
+          # يفحصها المتصفّحُ هي المنتجَ المنشورَ وحدَه.
+          rm -rf "${RUNNER_TEMP}/h2a-harness" || true
+          echo "keyed-smoke temporary state and staged harness destroyed"
 
-      # ــ ٤ · الرحلة، على الإنتاج المنشور ــ
+      # ــ ٥ · الرحلة، على الإنتاج المنشور ــ
       - name: Authenticated golden journey
         run: cd apps/web && npm run test:acceptance
         env:
@@ -232,11 +287,15 @@ jobs:
         env:
           PROJECT_ID: ${{ steps.keyed.outputs.project_id }}
           KEY_DIGEST: ${{ steps.keyed.outputs.key_digest }}
+          CLEANUP_STATUS: ${{ steps.cleanup.outputs.cleanup_status }}
+          PRODUCT_SHA: ${{ inputs.expected_release_sha }}
         run: |
           {
             echo "### AUTOMATED PRODUCT ACCEPTANCE GREEN"
             echo ""
-            echo "release commit under test: \`${{ inputs.expected_release_sha }}\`"
+            echo "product under test (deployed): \`${PRODUCT_SHA}\`"
+            echo ""
+            echo "acceptance harness: \`${GITHUB_SHA}\`"
             echo ""
             echo "#### H2-A KEYED REPLAY SMOKE GREEN"
             echo ""
@@ -249,7 +308,7 @@ jobs:
             echo "| completed idempotency records | 1 |"
             echo "| record read under actor+tenant RLS | PASS |"
             echo "| read-only inspection transaction | PASS |"
-            echo "| disposable project | trashed through the product route |"
+            echo "| disposable project | ${CLEANUP_STATUS} (product trash route) |"
             echo ""
             echo "smoke project: \`${PROJECT_ID}\` · key digest: \`${KEY_DIGEST}\`"
             echo ""
