@@ -318,3 +318,129 @@ def test_the_test_runner_is_not_added_to_the_web_manifest():
         found = [n for n in manifest.get(section, {}) if "playwright" in n.lower()]
         assert found == [], (
             f"`{section}` صارت تحمل {found} — والاتّفاق تثبيتٌ عابر في المشغّل")
+
+
+# ════════════ برهانُ الإعادة بمفتاح على الإنتاج (RC-T1-H2-A) ════════════
+#
+# **ولمَ حارسٌ ساكن لهذه الخطوة بعينها.**
+#
+# رحلةُ المتصفّح لا تُرسل `Idempotency-Key` — والوِبُّ لا يُرسله بعد. فلو
+# حُذفت خطوةُ البرهان يومًا لبقي القبولُ أخضرَ وهو لا يمسّ H2-A بحرف،
+# **ولا حارسَ مخطَّطٍ يكشف ذلك**: `verify_release_schema.py` لا يفحص جدولَ
+# التكرار أصلًا. فالحذفُ يمرّ صامتًا، وذاك أسوأُ من سقوطٍ صريح.
+
+#: ملفّا البرهان — ويُقرآن نصًّا لا يُستوردان: هما يعملان في المشغّل.
+KEYED_SMOKE = REPO / ".github" / "acceptance" / "h2a_keyed_replay.py"
+RECORD_PROOF = REPO / ".github" / "acceptance" / "h2a_record_proof.py"
+
+
+def test_the_acceptance_workflow_carries_the_keyed_replay_smoke():
+    """**والدعوى تُطرق بطلبٍ حقيقيّ، لا تُفترض من خضرةِ المتصفّح.**"""
+    text = ACCEPTANCE.read_text(encoding="utf-8")
+    for needle in ("Idempotency-Key", "Idempotency-Replayed",
+                   "/api/v1/workspace/projects", "expected_release_sha",
+                   "PUBRIVA_ACCEPT_EMAIL", "PUBRIVA_ACCEPT_PASSWORD"):
+        assert needle in text, f"مشغّلُ القبول لا يذكر {needle!r}"
+
+    assert KEYED_SMOKE.exists(), "سكربتُ برهان الإعادة مفقود"
+    assert RECORD_PROOF.exists(), "سكربتُ برهان الصفّ مفقود"
+
+    smoke = KEYED_SMOKE.read_text(encoding="utf-8")
+    assert "Idempotency-Key" in smoke, "البرهانُ لا يُرسل الترويسة"
+
+    # **ووجودُ الاسم ليس دعوى.** أوّلُ صياغةٍ لهذا الحارس اكتفت بأن يَرِد
+    # `idempotency-replayed` في الملفّ — ومرّت عليها إزالةُ الدعوى نفسِها،
+    # لأنّ فحصَ الطلب الأوّل (ألّا يُعلن نفسَه إعادةً) يذكر الاسمَ أيضًا.
+    # فيُشترط **الشرطُ بعينه** على جواب الإعادة، لا ذكرُ الترويسة.
+    assert 'headers2.get("idempotency-replayed") != "true"' in smoke, (
+        "البرهانُ لا يشترط `Idempotency-Replayed: true` على جواب الإعادة")
+    assert 'raise Failure("replay_header_missing"' in smoke, (
+        "لا صنفَ سقوطٍ لغياب ترويسة الإعادة")
+    # والطلبُ الأوّل لا يُعلن نفسَه إعادةً — وهذه دعوى ثانية مستقلّة.
+    assert 'headers1.get("idempotency-replayed") == "true"' in smoke, (
+        "البرهانُ لا يرفض أن يُعلن التنفيذُ الأوّل نفسَه إعادةً")
+    # وهويّةُ المورد وجسمُ الجواب يُطابَقان، لا الحالُ وحدها.
+    assert 'raise Failure("resource_id_mismatch"' in smoke, "لا مطابقةَ لمعرّف المورد"
+    assert 'raise Failure("stored_response_mismatch"' in smoke, "لا مطابقةَ لجسم الجواب"
+
+
+def test_the_record_proof_reads_production_in_a_read_only_transaction():
+    """**ولا يُقرأ الإنتاجُ بمعاملةٍ قابلةٍ للكتابة.**
+
+    والعلامةُ صريحةٌ ويُتحقّق منها في التشغيل أيضًا (`SHOW`)، فلا يكفي
+    أن تُكتب العبارةُ ثمّ يُفترض أنّها نفذت.
+    """
+    proof = RECORD_PROOF.read_text(encoding="utf-8")
+    assert "SET TRANSACTION READ ONLY" in proof, "لا علامةَ قراءةٍ فقط في البرهان"
+    assert "transaction_read_only" in proof, "لا تحقّقَ من وضع المعاملة"
+    assert "ROLLBACK" in proof or "rollback()" in proof, "المعاملةُ لا تُرجَع"
+
+    # ولا تُعطَّل سياسةُ الصفّ لتُقرأ، ولا يُستعمل اعتمادُ ترحيل.
+    for forbidden in ("BYPASSRLS", "SECURITY DEFINER", "DISABLE ROW LEVEL SECURITY",
+                      "DATABASE_MIGRATION_URL", "SET ROLE"):
+        assert forbidden not in proof, f"البرهانُ يعتمد {forbidden!r}"
+
+    for write in ("INSERT INTO", "UPDATE ", "DELETE FROM", "TRUNCATE",
+                  "CREATE TABLE", "ALTER TABLE", "DROP TABLE", "GRANT ", "REVOKE "):
+        assert write not in proof.upper().replace("SET TRANSACTION READ ONLY", ""), (
+            f"البرهانُ يحمل عبارةَ كتابة: {write!r}")
+
+
+def test_the_keyed_smoke_runs_before_the_browser_journey():
+    """**وهو شرطٌ لا خطوةٌ موازية.**
+
+    فلو سقط البرهانُ بعد رحلةِ المتصفّح لَقيل «القبولُ أخضر» ثمّ نُقض —
+    والترتيبُ هو ما يجعله بوّابة.
+    """
+    steps = _acceptance_steps()
+    smoke = _index_of(steps, "h2a_keyed_replay.py")
+    record = _index_of(steps, "h2a_record_proof.py")
+    journey = _index_of(steps, "npm run test:acceptance")
+
+    assert smoke != -1, "خطوةُ برهان الإعادة مفقودة من مشغّل القبول"
+    assert record != -1, "خطوةُ برهان الصفّ مفقودة من مشغّل القبول"
+    assert journey != -1, "رحلةُ المتصفّح مفقودة"
+    assert smoke < record < journey, (
+        "ترتيبُ البوّابة لا يعمل: "
+        f"keyed={smoke} · record={record} · journey={journey}")
+
+
+def test_the_keyed_smoke_cleans_up_and_destroys_its_credential_state():
+    """**ولا يُترك أثرٌ ولا رمزٌ يعيش إلى رحلةِ المتصفّح.**"""
+    steps = _acceptance_steps()
+    trash = _index_of(steps, "/api/v1/workspace/projects/")
+    destroy = _index_of(steps, "h2a_smoke_token")
+    journey = _index_of(steps, "npm run test:acceptance")
+
+    assert trash != -1, "لا تنظيفَ للبحث المُستهلَك عبر مسار المنتج"
+    assert destroy != -1, "لا إتلافَ لحالة الاعتماد المؤقّتة"
+    assert destroy < journey, "الرمزُ يعيش إلى رحلةِ المتصفّح"
+
+    # **والتنظيفُ بمسار المنتج لا بـSQL** — والحذفُ هناك تأجيلٌ لا إتلاف.
+    text = ACCEPTANCE.read_text(encoding="utf-8")
+    assert "DELETE FROM" not in text.upper(), "تنظيفٌ بـSQL في مشغّل القبول"
+    for step in (steps[trash], steps[destroy]):
+        assert "always()" in str(step.get("if", "")), (
+            "خطوةُ التنظيف/الإتلاف لا تعمل عند السقوط")
+
+
+def test_the_keyed_smoke_never_prints_a_secret():
+    """**ولا سرٌّ يُطبع ولا يُرفع** — ولا `set -x` ولا `curl -v` في مسارٍ باعتماد."""
+    text = ACCEPTANCE.read_text(encoding="utf-8")
+    smoke = KEYED_SMOKE.read_text(encoding="utf-8")
+    proof = RECORD_PROOF.read_text(encoding="utf-8")
+
+    for blob, label in ((text, "workflow"), (smoke, "keyed smoke"), (proof, "record proof")):
+        assert "set -x" not in blob, f"{label}: `set -x` يُفرِغ الأسرار"
+        assert "curl -v" not in blob, f"{label}: `curl -v` يُفرِغ الترويسات"
+        for leak in ('echo "${PUBRIVA_ACCEPT_PASSWORD}"',
+                     'echo "${PUBRIVA_ACCEPT_EMAIL}"',
+                     'echo "${access_token}"',
+                     "echo $PUBRIVA_ACCEPT_PASSWORD",
+                     "echo $FLY_API_TOKEN"):
+            assert leak not in blob, f"{label}: يطبع سرًّا — {leak!r}"
+
+    # والمُخرَجاتُ غيرُ السرّيّة وحدها تعبُر إلى الخطوات التالية.
+    assert "GITHUB_OUTPUT" in smoke, "البرهانُ لا يُصدّر شيئًا"
+    for secret in ("access_token", "refresh_token", "raw_key", "password"):
+        assert f'_emit("{secret}"' not in smoke, f"سرٌّ يُصدَّر كمُخرَج: {secret}"
