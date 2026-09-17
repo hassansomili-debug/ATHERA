@@ -750,45 +750,163 @@ async def test_14_an_unresolvable_doi_fails_the_key_and_stays_retryable(
     assert await _sources(slot["tenant_id"], doi) == 1
 
 
-async def test_15_a_rate_limited_request_never_burns_its_key(
-    two_tenants, monkeypatch,
-):
-    """٤٢٩ **قبل** الحجز: من رُدّ بالحدِّ لا يُحجَز مفتاحُه.
+def _throttle_slots(slot) -> int:
+    """كم حصّةَ بحثٍ خارجيٍّ استُهلكت لهذا الفاعل — **بقولِ الحادِّ نفسِه**.
 
-    فلو حُجز لَصار العميلُ المؤدَّبُ — يُعيد بالمفتاح نفسِه كما أُمر —
-    يُردّ ٤٠٩ إلى الأبد على طلبٍ لم يُنفَّذ أصلًا.
+    و`throttle.check` تُلحِق عند السماح، فاستهلاكُ حصّةٍ أثرٌ مرئيّ. وهذا
+    ما يجعل «لم يستهلك حصّة» دعوًى مقيسةً لا مُطمئنة: الإعادةُ لو نادت
+    الحادَّ لَزادت النافذةَ أو رُدّت ٤٢٩ — وكلاهما يُكشَف.
     """
     from athera_api.discovery import throttle
+
+    return len(throttle._windows[(slot["tenant_id"], slot["user_id"])])
+
+
+async def _saturate(http, slot) -> None:
+    """يُشبع الحادَّ بطلباتٍ **بلا مفتاح** حتى يُردّ ٤٢٩."""
+    from athera_api.discovery import throttle
+
+    for _ in range(throttle.MAX_SEARCHES_PER_WINDOW + 5):
+        answered = await http.post(REFERENCES_SEARCH,
+                                   json={"query": "إشباعٌ", "limit": 5})
+        if answered.status_code == 429:
+            return
+    raise AssertionError("لم يُبلَغ حدُّ المعدّل — فالفحصُ لا يقيس شيئًا")
+
+
+async def test_15a_a_completed_replay_passes_through_a_saturated_throttle(
+    two_tenants, monkeypatch,
+):
+    """طلبٌ **تَمَّ** يُعاد جوابُه ولو كان الحادُّ مُشبَعًا.
+
+    **وهذا عطبٌ في العقد كان حيًّا:** الحادُّ كان يُنادى قبل تحكيمِ
+    المفتاح، فيُردّ ٤٢٩ لعميلٍ يُعيد طلبَه كما أُمر — على عملٍ **لا
+    يُنادي مزوّدًا أصلًا**. فالحادُّ يحمي الفهرسَين، ولا معنى لتطبيقه على
+    طلبٍ لا يبلغهما.
+    """
     from athera_api.routers import literature
 
     slot = two_tenants["a"]
-    monkeypatch.setattr(literature, "discover", _instant(_empty_discovery()))
+    external = _instant(_empty_discovery())
+    monkeypatch.setattr(literature, "discover", external)
 
     key = _key()
+    body = {"query": "إعادةٌ تحت الإشباع", "limit": 5}
     async with _client(slot) as http:
-        # يُستنفَد الحدُّ بطلباتٍ **بلا مفتاح** حتى يُردّ ٤٢٩.
-        limited = None
-        for _ in range(40):
-            answered = await http.post(REFERENCES_SEARCH,
-                                       json={"query": "حدٌّ", "limit": 5})
-            if answered.status_code == 429:
-                limited = answered
-                break
-        assert limited is not None, "لم يُبلَغ حدُّ المعدّل — فالفحصُ لا يقيس شيئًا"
+        first = await http.post(REFERENCES_SEARCH, json=body, headers={HEADER: key})
+        assert first.status_code == 200, first.text
 
-        keyed = await http.post(REFERENCES_SEARCH, json={"query": "حدٌّ", "limit": 5},
-                                headers={HEADER: key})
-    assert keyed.status_code == 429, \
-        f"الحدُّ لم يُطبَّق على الطلبِ المُمفتَح: {keyed.status_code}"
+        await _saturate(http, slot)
+        calls_before = external.calls
+        slots_before = _throttle_slots(slot)
+
+        replayed = await http.post(REFERENCES_SEARCH, json=body,
+                                   headers={HEADER: key})
+
+    assert replayed.status_code == 200, \
+        f"الإعادةُ رُدّت بالحدِّ بدل جوابها المخزَّن: {replayed.status_code}"
+    assert replayed.headers.get("Idempotency-Replayed") == "true", \
+        "الإعادةُ لم تُعلَن بالترويسة"
+    assert replayed.json() == first.json(), "الإعادةُ ليست جوابَ الأصل"
+    assert external.calls == calls_before, \
+        "الإعادةُ نادت المزوّدَ — والإعادةُ صفرُ نداءٍ خارجيّ"
+    assert _throttle_slots(slot) == slots_before, \
+        "الإعادةُ استهلكت حصّةَ بحثٍ خارجيٍّ لم يقع"
+
+
+async def test_15b_a_live_lease_twin_consumes_no_provider_throttle_slot(
+    two_tenants, monkeypatch,
+):
+    """التوأمُ المردودُ `in_progress`: صفرُ مزوّدٍ **وصفرُ حصّة**.
+
+    فالرفضُ ليس بحثًا. ولو عُدَّ حصّةً لَأكل عميلٌ يُعيد طلبَه حدَّ نفسِه
+    على عملٍ واحدٍ لم يتكرّر.
+    """
+    from athera_api.routers import literature
+
+    slot = two_tenants["a"]
+    held = Barrier(result=_empty_discovery)
+    monkeypatch.setattr(literature, "discover", held)
+
+    key = _key()
+    body = {"query": "توأمٌ وحصّة", "limit": 5}
+    http, first = await _hold(slot, REFERENCES_SEARCH, body, held, key=key)
+    try:
+        slots_before = _throttle_slots(slot)
+        calls_before = held.calls
+        async with _client(slot) as other:
+            try:
+                twin = await asyncio.wait_for(
+                    other.post(REFERENCES_SEARCH, json=body, headers={HEADER: key}),
+                    timeout=10)
+            except TimeoutError:
+                raise AssertionError(
+                    "التوأمُ مضى إلى المزوّدِ المحبوس — فالإجارةُ الحيّةُ "
+                    "لا تمنع نداءً مزدوجًا") from None
+        assert twin.status_code == 409, f"{twin.status_code}: {twin.text[:300]}"
+        assert twin.json()["error"]["code"] == "idempotency.in_progress", twin.text
+        assert held.calls == calls_before, "التوأمُ نادى المزوّد"
+        assert _throttle_slots(slot) == slots_before, \
+            "التوأمُ المردودُ استهلك حصّةَ بحثٍ خارجيّ"
+    finally:
+        held.release.set()
+        answered = await first
+        await http.__aexit__(None, None, None)
+    assert answered.status_code == 200, answered.text
+
+
+async def test_15c_a_fresh_keyed_request_refused_by_the_throttle_stays_retryable(
+    two_tenants, monkeypatch,
+):
+    """٤٢٩ لطلبٍ جديدٍ مُمفتَح: **إخفاقٌ معلومٌ قبل الخارج**.
+
+    فلا مزوّدَ نُودي، ولا أثرَ غامضًا وقع. فتُسجَّل الإجارةُ `failed`
+    ويُفرَغ سياجُها، فلا يبقى حجزٌ حيٌّ لعملٍ لن يقع — والمفتاحُ نفسُه
+    يُنفَّذ بعد انقضاء الحدّ.
+
+    **ولا يُترك `in_progress` حيًّا**: ذاك يُردّ العميلَ ٤٠٩ إلى أن تنتهي
+    الإجارةُ على طلبٍ لم يُنفَّذ قطّ.
+    """
+    from athera_api.discovery import throttle
+    from athera_api.routers import literature
+    from athera_api.services.idempotency import digest_key
+
+    slot = two_tenants["a"]
+    external = _instant(_empty_discovery())
+    monkeypatch.setattr(literature, "discover", external)
+
+    key = _key()
+    body = {"query": "جديدٌ تحت الحدّ", "limit": 5}
+    async with _client(slot) as http:
+        await _saturate(http, slot)
+        calls_before = external.calls
+        refused = await http.post(REFERENCES_SEARCH, json=body, headers={HEADER: key})
+
+    assert refused.status_code == 429, \
+        f"الحدُّ لم يُطبَّق على طلبٍ جديدٍ مُمفتَح: {refused.status_code}"
+    assert refused.json()["error"]["code"] == "evidence.reference_search_rate_limited", \
+        refused.text
+    assert external.calls == calls_before, "٤٢٩ نادى المزوّد"
 
     rows = await _rows(
-        "SELECT state FROM idempotency_records "
-        "WHERE tenant_id = :t AND key_digest = :d",
-        {"t": str(slot["tenant_id"]),
-         "d": __import__("athera_api.services.idempotency",
-                         fromlist=["digest_key"]).digest_key(key)})
-    assert rows == [], f"٤٢٩ حجز مفتاحًا: {rows}"
+        "SELECT state, lease_expires_at IS NULL AS no_fence, response_status"
+        "  FROM idempotency_records WHERE tenant_id = :t AND key_digest = :d",
+        {"t": str(slot["tenant_id"]), "d": digest_key(key)})
+    assert len(rows) == 1, f"صفوفُ المفتاح: {rows}"
+    state, no_fence, stored_status = rows[0]
+    assert state == "failed", f"حالُ المفتاح بعد ٤٢٩: {state}"
+    assert no_fence, "بقي سياجٌ حيٌّ لطلبٍ لم يُنفَّذ — أي حجزٌ يردّ ٤٠٩ بلا سبب"
+    assert stored_status is None, "٤٢٩ خُزِّن جوابًا يُعاد"
+
+    # وبعد انقضاء الحدِّ **يُنفَّذ المفتاحُ نفسُه** — فلم يُحرَق.
     throttle.reset()
+    async with _client(slot) as http:
+        retried = await http.post(REFERENCES_SEARCH, json=body, headers={HEADER: key})
+    assert retried.status_code == 200, \
+        f"المفتاحُ سُمِّم بحدٍّ عارض: {retried.status_code} {retried.text[:300]}"
+    assert retried.headers.get("Idempotency-Replayed") is None, \
+        "المحاولةُ الثانيةُ أُعيدت بدل أن تُنفَّذ"
+    assert external.calls == calls_before + 1, "المحاولةُ الثانيةُ لم تُنادِ المزوّد"
 
 
 async def test_16_a_malformed_key_is_refused_before_any_work(
@@ -896,6 +1014,125 @@ async def test_18_a_doi_changed_during_the_wait_still_conflicts(
         f"معرّفٌ تغيّر أثناء الانتظارِ أُجيب نجاحًا: {answered.status_code}"
     state, _code, _body, _expires, _op = await _record(slot["tenant_id"], key)
     assert state != "completed", "تعارضُ الفجوةِ خُزِّن إتمامًا يُعاد"
+
+
+# ═════════ ٩ · الفحصُ المُعاد: مسارُ `verify` صريحًا ═════════
+
+
+async def test_21_a_replayed_verify_resolves_the_doi_once_and_keeps_identity(
+    two_tenants, monkeypatch,
+):
+    """`/sources/{source_id}/verify` بمفتاحٍ واحدٍ مرّتين: **حلٌّ واحد**.
+
+    ولا يُكتفى بالفحصِ البنيويّ القائل «المسارُ يُنادي الإجارة»: نداءٌ
+    موجودٌ قد يكون مُعطَّلًا. فيُقاس السلوكُ من الخارج — عدُّ نداءِ
+    الفهرس، وهُويّةُ المصدر، وترويسةُ الإعادة.
+    """
+    from athera_api.services.literature import verification
+
+    slot = two_tenants["a"]
+    doi = f"10.1234/h2b2-verify-replay-{uuid.uuid4().hex[:8]}"
+    source_id = await _make_source(slot, doi=doi)
+    resolver = _instant((_record_for(doi), "barrier"))
+    monkeypatch.setattr(verification, "resolve_doi", resolver)
+
+    key = _key()
+    url = f"/api/v1/sources/{source_id}/verify"
+    async with _client(slot) as http:
+        first = await http.post(url, headers={HEADER: key})
+        assert first.status_code == 200, first.text
+        assert resolver.calls == 1, \
+            f"الفهرسُ نُودي {resolver.calls} مرّةً في المحاولةِ الأولى"
+        assert first.headers.get("Idempotency-Replayed") is None, \
+            "المحاولةُ الأولى وُسمت إعادةً"
+
+        second = await http.post(url, headers={HEADER: key})
+
+    assert second.status_code == 200, second.text
+    assert second.headers.get("Idempotency-Replayed") == "true", \
+        "الإعادةُ لم تُعلَن بالترويسة"
+    assert second.json() == first.json(), "الإعادةُ ليست جوابَ الأصل"
+    assert second.json()["id"] == str(source_id), "هُويّةُ المصدرِ لم تُحفَظ"
+    assert resolver.calls == 1, \
+        f"الإعادةُ نادت الفهرسَ ثانيةً (الإجماليُّ {resolver.calls})"
+
+
+# ═════════ ١٠ · الفاعلُ حدٌّ ثانٍ ═════════
+
+
+async def test_22_the_same_key_does_not_cross_actors_in_one_tenant(
+    two_tenants, monkeypatch,
+):
+    """فاعلان في مستأجرٍ واحدٍ ومفتاحٌ واحد ⇒ عملان مستقلّان.
+
+    والصفُّ يحمل **جوابًا يُعاد**، فلو عبَر الفاعلَ لَرأى زميلٌ جوابَ
+    زميلِه. والقيدُ `uq_idempotency_scope` يحمل `actor_user_id`، وأربعةُ
+    مساراتِ هذه الدفعةِ تمرّره من `principal.user_id`.
+
+    ويُستعمل `_second_user` القائمُ — ولا تُبنى تجهيزةُ مصادقةٍ جديدة.
+    """
+    from tests.test_at_rc_t1a_project_access import _second_user
+
+    slot = two_tenants["a"]
+    colleague = await _second_user(
+        slot["tenant_id"], email=f"h2b2-{uuid.uuid4().hex[:10]}@example.com")
+
+    doi_one = f"10.1234/h2b2-actor1-{uuid.uuid4().hex[:8]}"
+    doi_two = f"10.1234/h2b2-actor2-{uuid.uuid4().hex[:8]}"
+    key = _key()
+
+    from athera_api.services.literature import verification
+
+    monkeypatch.setattr(verification, "resolve_doi",
+                        _instant((_record_for(doi_one), "barrier")))
+    async with _client(slot) as http:
+        mine = await http.post(SOURCES_IMPORT, json={"doi": doi_one},
+                               headers={HEADER: key})
+    monkeypatch.setattr(verification, "resolve_doi",
+                        _instant((_record_for(doi_two), "barrier")))
+    async with _client(colleague) as http:
+        theirs = await http.post(SOURCES_IMPORT, json={"doi": doi_two},
+                                 headers={HEADER: key})
+
+    assert mine.status_code == 201, mine.text
+    assert theirs.status_code == 201, \
+        f"مفتاحُ الزميلِ رُدّ بجوابِ زميله: {theirs.status_code} {theirs.text[:300]}"
+    assert "Idempotency-Replayed" not in theirs.headers, \
+        "مفتاحُ فاعلٍ أعاد جوابَ فاعلٍ آخر"
+    assert mine.json()["id"] != theirs.json()["id"], "عملان اندمجا في واحد"
+    assert await _sources(slot["tenant_id"], doi_two) == 1
+
+
+def test_23_every_h2b2_route_scopes_its_lease_to_the_acting_user() -> None:
+    """الأربعةُ تُمرّر `actor_user_id=principal.user_id` — **بنيويًّا**.
+
+    فالفاعلُ جزءٌ من نطاقِ الفرادة، ومسارٌ يُمرّر غيرَه (أو يُغفله) يجعل
+    مفتاحًا واحدًا يعبُر زملاءَ المستأجر.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path("athera_api/routers/literature.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    wanted = {"search_sources", "discover_references", "import_source",
+              "revalidate_source"}
+    checked: set[str] = set()
+    for fn in tree.body:
+        if not (isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and fn.name in wanted):
+            continue
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"begin_leased", "begin_leased_in"}):
+                continue
+            actor = [k.value for k in node.keywords if k.arg == "actor_user_id"]
+            assert actor, f"{fn.name}: التحضيرُ بلا `actor_user_id`"
+            passed = ast.unparse(actor[0])
+            assert passed == "principal.user_id", \
+                f"{fn.name}: الفاعلُ المُمرَّرُ {passed!r} لا `principal.user_id`"
+            checked.add(fn.name)
+    assert checked == wanted, f"مسارٌ بلا تحضيرٍ مفحوص: {wanted - checked}"
 
 
 # ═════════ ٩ · الشكل: التبنّي مقيسٌ لا مُدَّعى ═════════
