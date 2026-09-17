@@ -280,27 +280,49 @@ async def discover_references(
     ويبقى تسجيل الإفصاح كما هو في المسار القديم: نصّ الاستعلام يغادر
     المستأجر إلى طرفٍ ثالث، وقد يحمل عنوان بحثٍ غير منشور (§36.2).
     """
+    # ══ الترتيب: مَن يُحكَم أوّلًا، الحدُّ أم المفتاح؟ (RC-T1-H2-B2) ══
+    #
+    # **الحدُّ يحمي الفهرسَين، فلا يُطبَّق على طلبٍ لا يبلغهما.**
+    #
+    # وكان الحدُّ أوّلًا لكلّ الطلبات، وهو عطبٌ في العقد: طلبٌ مُمفتَحٌ
+    # **تَمَّ** كان يُردّ ٤٢٩ بدل أن يُعيد جوابَه المخزَّن — فيُعاقَب عميلٌ
+    # يُعيد الطلبَ كما أُمر، على عملٍ لا يُنادي مزوّدًا أصلًا. وكان
+    # التوأمُ المردودُ (`in_progress`) والتعارضُ يستهلكان حصّةَ بحثٍ
+    # خارجيٍّ لم يقع.
+    #
+    # فالمفتاحُ — إن وُجد — يُحكَم أوّلًا: إعادةٌ أو رفضٌ أو تعارضٌ تُجاب
+    # بلا حدٍّ وبلا مزوّد. ولا يبلغ الحدَّ إلا **إجارةٌ جديدة**، أي عملٌ
+    # سيُنادي الفهرسَين حقًّا.
+    #
+    # **وبلا مفتاحٍ لا يُغيَّر شيء**: الحدُّ كما كان، ولا رحلةَ تحضيرٍ
+    # زائدةً إلى قاعدةٍ في مدينةٍ أخرى.
+    maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+    guard = idempotency.LeaseGuard()
+    if idempotency.is_keyed(request):
+        guard = await idempotency.begin_leased(
+            request, maker, tenant_id=principal.tenant_id,
+            actor_user_id=principal.user_id, body=payload.model_dump(mode="json"),
+            ttl=idempotency.LEASE_NETWORK)
+        if guard.answer is not None:
+            return guard.answer
+
     # **الحدّ قبل النداء الخارجي لا بعده.** كل بحثٍ هنا نداءان إلى فهرسين
     # يمنحاننا الاستعمال بأدبٍ لا بعقد؛ وحلقةُ عميلٍ مندفعة تحرق ائتماننا
     # عندهما فيُحجب مرورنا عن كل المستأجرين لا عن صاحب الحلقة وحده.
     wait = throttle.check((principal.tenant_id, principal.user_id))
     if wait:
+        # **إخفاقٌ معلومٌ قبل الخارج**: لم يُنادَ مزوّدٌ، ولا أثرَ غامضًا.
+        # فتُسجَّل الإجارةُ `failed` (ودلالتُها القائمةُ تُفرغ السياج)،
+        # فيبقى المفتاحُ قابلًا لمحاولةٍ صادقةٍ بعد انقضاء الحدّ — ولا
+        # يُترك حجزٌ حيٌّ لعملٍ لن يقع.
+        if guard.lease is not None:
+            async with maker() as session:
+                await idempotency.fail_leased(session, guard.lease,
+                                              reason="rate_limited")
         raise AtheraError(
             "evidence.reference_search_rate_limited", status_code=429,
             retry_after_seconds=wait,
         )
-
-    # ══ تحضيرٌ يُودَع قبل نداء الفهرسَين (RC-T1-H2-B2) ══
-    #
-    # **وبعد حدِّ المعدّل لا قبله**: مَن رُدّ بـ٤٢٩ لا يحجز مفتاحًا، فلا
-    # يُحرَق مفتاحُه على طلبٍ لم يُنفَّذ.
-    maker = tenant_session_maker(principal.tenant_id, principal.user_id)
-    guard = await idempotency.begin_leased(
-        request, maker, tenant_id=principal.tenant_id,
-        actor_user_id=principal.user_id, body=payload.model_dump(mode="json"),
-        ttl=idempotency.LEASE_NETWORK)
-    if guard.answer is not None:
-        return guard.answer
 
     providers = _discovery_providers()
     result = await discover(

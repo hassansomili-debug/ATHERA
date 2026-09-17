@@ -772,6 +772,17 @@ class LeaseGuard:
     operation: str = ""
 
 
+def is_keyed(request) -> bool:
+    """أحمَل الطلبُ ترويسةَ مفتاحٍ — **بلا تدقيقِ شكلٍ ولا رفع**.
+
+    ولهذا موضعٌ واحد: مسارٌ ترتيبُ أطوارِه يفترق بين المُمفتَحِ وغيرِه
+    (`/references/search`: التحضيرُ قبل حدِّ المعدّل للمُمفتَح، والحدُّ
+    وحدَه لغيرِه). فيُسأل **الحضور** لا الصحّة؛ والصحّةُ يليها
+    `begin_leased` فيرفع ٤٠٠ للمشوَّه — قبل أن يُستهلَك حدُّ أحد.
+    """
+    return request.headers.get(HEADER) is not None
+
+
 async def begin_leased(
     request, maker, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
     body: Any, ttl: dt.timedelta,
