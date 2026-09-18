@@ -2513,7 +2513,6 @@ async def test_47_a_same_tenant_stranger_cannot_read_a_file_context(
     اعتمده صاحبُه منه — والمحادثةُ أسهلُ بابٍ يُطرَق.
     """
     from tests.test_at_rc_t1_h3_ai_long_transactions import _client
-    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
     from tests.test_at_rc_t1a_project_access import _second_user
 
     slot = two_tenants["a"]
@@ -2561,7 +2560,6 @@ async def test_48_approved_context_change_conflicts_instead_of_replaying(
 ):
     """تبدّل المعتمَدُ من المستند ⇒ **صِدامٌ لا إعادة**، وصفرُ نداءٍ ثانٍ."""
     from tests.test_at_rc_t1_h3_ai_long_transactions import _client
-    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
 
     slot = two_tenants["a"]
     file_id, _rows = await _ingest_and_approve(slot, monkeypatch)
@@ -2601,7 +2599,6 @@ async def test_49_revoked_chat_consent_conflicts_instead_of_replaying(
 ):
     """سُحب إذنُ المحادثة ⇒ لا يُعاد جوابٌ وُلّد تحته، وصفرُ نداءٍ ثانٍ."""
     from tests.test_at_rc_t1_h3_ai_long_transactions import _client
-    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
 
     slot = two_tenants["a"]
     file_id, _rows = await _ingest_and_approve(slot, monkeypatch)
