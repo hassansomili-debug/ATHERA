@@ -490,7 +490,7 @@ async def test_drafting_without_consent_makes_zero_provider_calls(two_tenants, m
                         lambda: calls.append(1) or (_ for _ in ()).throw(AssertionError))
 
     with pytest.raises(AtheraError) as err:
-        await drafting.draft_section(manuscript_id, "method",
+        await drafting.draft_section_body(manuscript_id, "method",
                                      principal=_principal(tenant))
     assert err.value.code == "drafting.consent_required"
     assert calls == [], "استُدعي المزوّد بلا إذن"
@@ -549,7 +549,7 @@ async def test_the_whole_methods_path_runs_through_the_real_orchestrator(
         async def tool_call(self, request): ...
 
     monkeypatch.setattr(gateway_module, "build_provider", lambda: _FakeProvider())
-    result = await drafting.draft_section(manuscript_id, "method", principal=principal)
+    result = await drafting.draft_section_body(manuscript_id, "method", principal=principal)
 
     assert seen.get("classification") == "C2", "لم يبلغ الطلب المزوّد"
     # §10 — أدلة النتائج لم تُرسل لصياغة المنهجية.
@@ -621,7 +621,7 @@ async def test_drafting_creates_no_verified_memory(two_tenants, monkeypatch):
         async def tool_call(self, request): ...
 
     monkeypatch.setattr(gateway_module, "build_provider", lambda: _FakeProvider())
-    await drafting.draft_section(manuscript_id, "method", principal=principal)
+    await drafting.draft_section_body(manuscript_id, "method", principal=principal)
     assert await _verified() == before, "ترقّت ذاكرة موثقة تلقائيًّا"
 
 
@@ -678,7 +678,7 @@ async def test_no_transaction_spans_the_provider_wait(two_tenants, monkeypatch):
         async def tool_call(self, request): ...
 
     monkeypatch.setattr(gateway_module, "build_provider", lambda: _SlowProvider())
-    await drafting.draft_section(manuscript_id, "method", principal=principal)
+    await drafting.draft_section_body(manuscript_id, "method", principal=principal)
     # المعاملة الوحيدة المفتوحة هي معاملة الفحص نفسها.
     assert observed and max(observed) <= 1, f"معاملة عالقة أثناء النداء: {observed}"
 
@@ -726,7 +726,7 @@ async def test_an_approved_section_is_not_silently_overwritten(two_tenants, monk
         async def tool_call(self, request): ...
 
     monkeypatch.setattr(gateway_module, "build_provider", lambda: _FakeProvider())
-    first = await drafting.draft_section(manuscript_id, "method", principal=principal)
+    first = await drafting.draft_section_body(manuscript_id, "method", principal=principal)
     assert first.review_status == "needs_review"
 
     async with tenant_session(tid, uid) as session:
@@ -737,7 +737,7 @@ async def test_an_approved_section_is_not_silently_overwritten(two_tenants, monk
     assert approved.reviewed_at is not None
 
     with pytest.raises(AtheraError) as err:
-        await drafting.draft_section(manuscript_id, "method", principal=principal)
+        await drafting.draft_section_body(manuscript_id, "method", principal=principal)
     assert err.value.code == "drafting.section_approved"
 
     # والنصّ المعتمد باقٍ كما هو.
@@ -794,8 +794,8 @@ async def test_regeneration_creates_a_new_version_and_keeps_history(
         async def tool_call(self, request): ...
 
     monkeypatch.setattr(gateway_module, "build_provider", lambda: _FakeProvider())
-    first = await drafting.draft_section(manuscript_id, "method", principal=principal)
-    second = await drafting.draft_section(manuscript_id, "method", principal=principal)
+    first = await drafting.draft_section_body(manuscript_id, "method", principal=principal)
+    second = await drafting.draft_section_body(manuscript_id, "method", principal=principal)
 
     assert first.version_label != second.version_label
     async with tenant_session(tid, uid) as session:
@@ -840,7 +840,7 @@ async def test_tenant_b_cannot_draft_or_read_tenant_a_methods(two_tenants):
                 await call
 
     with pytest.raises(NotFound):
-        await drafting.draft_section(manuscript_a, "method", principal=_principal(b))
+        await drafting.draft_section_body(manuscript_a, "method", principal=_principal(b))
 
 
 # ══════════ 9. سجلّ واحد للسقوف — لا نسختان تفترقان ══════════

@@ -225,7 +225,10 @@ def test_no_planning_route_reads_an_opportunity_outside_the_gate():
     for name in ("decide_opportunity", "read_outline", "list_opportunities",
                  "read_thread", "build_thread", "build_outline",
                  "publication_context", "planning_consent",
-                 "generate_opportunities"):
+                 # **والمتنُ لا المعالجَ المُزخرَف** (الطور B-4): خرج المتنُ
+                 # كي ينادَه مُنادٍ داخليٌّ بلا طلبٍ ولا مفتاح، والبوّابةُ
+                 # فيه. والدعوى هي هي.
+                 "generate_opportunities_body"):
         source = inspect.getsource(getattr(planning, name))
         assert "_project(session, principal" in source or "_project(opening" in source, name
 
@@ -478,7 +481,7 @@ async def test_tenant_b_cannot_generate_against_tenant_a_project(two_tenants):
     try:
         async with bypassing_rls():
             with pytest.raises(NotFound):
-                await planning.generate_opportunities(project_a, principal=_principal(b))
+                await planning.generate_opportunities_body(project_a, principal=_principal(b))
     finally:
         planning.Orchestrator.run_structured_detached = original
     assert calls == [], "استُدعي المزوّد على مشروع مستأجر آخر"
