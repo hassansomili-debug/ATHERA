@@ -24,7 +24,9 @@ from __future__ import annotations
 import json
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from ..db import tenant_session_maker
@@ -35,7 +37,10 @@ from ..models.files import File
 from ..models.research import ExtractionRun, FactCandidate, ResearcherMemory
 from ..brain.contracts import strip_markup
 from ..brain.orchestrator import Orchestrator
-from ..providers.gateway import provider_readiness
+from ..providers.gateway import (
+    provider_idempotency_capability,
+    provider_readiness,
+)
 from ..schemas.ai import (
     AiAskRequest,
     AiAskResponse,
@@ -55,6 +60,7 @@ from ..services import (
     audit,
     collaboration,
     consent,
+    idempotency,
     reference_discovery,
 )
 from ..transaction import TransactionalRoute
@@ -169,9 +175,10 @@ async def capabilities(
 
 @router.post("/ask", response_model=AiAskResponse)
 async def ask(
+    request: Request,
     payload: AiAskRequest,
     principal: Principal = Depends(get_principal),
-) -> AiAskResponse:
+) -> AiAskResponse | JSONResponse:
     """أثيرا AI — **ولا معاملةَ قاعدةٍ تُمسَك عبر أيّ انتظارٍ خارجيّ** (RC-T1-H3).
 
     وهذا المسارُ كان ينتظر **مرّتين** ومعاملةُ الطلب حيّة: الفهارسَ الخارجيّة
@@ -234,6 +241,7 @@ async def ask(
     # وما يُحمَل عبر الحدّ قيمٌ عاديّةٌ لا كائناتُ ORM: `ProjectContextView`
     # و`AttachmentState` نموذجانِ من Pydantic، و`document_context` قوائمُ
     # قواميسَ، و`grant` بنيةٌ مجمَّدة. فلا تحميلَ متأخّرٌ بعد إغلاق المعاملة.
+    guard = idempotency.LeaseGuard()
     async with session_maker() as session:
         if payload.project_id is not None:
             # والمستأجرُ وحده لم يكن كافيًا: كان سؤالٌ بريء الشكل يعيد عنوانَ
@@ -349,6 +357,31 @@ async def ask(
             grant = await consent.chat_authorization(
                 session, tenant_id=principal.tenant_id,
                 file_id=payload.selected_file)
+
+        # ══ الحجزُ **بعد** التفويض وفي معاملته (RC-T1-H2-B4) ══
+        #
+        # فوصولُ البحثِ والملفِّ والإذنُ كلُّها قُرئت أعلاه؛ فمن لا يملك
+        # الحقَّ لا يبلغ هذا السطر. **والإعادةُ ليست تجاوزًا للتفويض**:
+        # يُفحص الحقُّ الحاضرُ أوّلًا، ثمّ يُقال إن كان هناك جوابٌ مخزون.
+        #
+        # والبصمةُ معنى الطلب: السؤالُ، والملفُّ المختار، والبحثُ، واللغة.
+        # ولا معرّفَ طلبٍ فيها ولا زمن.
+        guard = await idempotency.begin_leased_in(
+            session, request,
+            tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+            body={
+                "question": payload.question,
+                "selected_file": (str(payload.selected_file)
+                                  if payload.selected_file else None),
+                "project_id": (str(payload.project_id)
+                               if payload.project_id else None),
+                "locale": locale,
+            },
+            ttl=idempotency.LEASE_MODEL)
+    if guard.answer is not None:
+        # إعادةٌ، أو «قائمٌ لغيرك»، أو تعارضٌ، أو **أثرٌ لا يُعرف** —
+        # وكلُّها بصفرِ نداءٍ للنموذج.
+        return guard.answer
     # ═════════ الأدبيات: طلبٌ صريح يُنفَّذ، لا إذنٌ يُستأذن عليه ثانيةً ═════════
     #
     # **الباحث الذي قال «ابحث لي في الأدبيات» طلب فعلًا.** فلا يُسأل مرّة
@@ -566,6 +599,14 @@ async def ask(
     #
     # والمنسّقُ يملك معاملاتِه: تحضيرٌ قصير، ثمّ الشبكةُ بلا معاملة، ثمّ أثرٌ
     # قصيرٌ بحالٍ نهائيّة. ولا صفَّ `running` يُترك معلَّقًا.
+    # ══ يُدوَّن عبورُ الحدِّ **قبل** النداء (RC-T1-H2-B4) ══
+    #
+    # ولا يكفي التقاطُ المهلة: العمليّةُ قد تموت وهي واقفةٌ داخل النداء،
+    # فلا استثناءَ ولا `finally`. فيُودَع التدوينُ أوّلًا في معاملةٍ قصيرة.
+    await idempotency.enter_external(
+        session_maker, guard, provider=provider,
+        capability=provider_idempotency_capability())
+
     try:
         result = await Orchestrator().run_agent_detached(
             session_maker,
@@ -597,14 +638,33 @@ async def ask(
                 object_type="ai_request", object_id=uuid.uuid4(),
                 actor_user_id=principal.user_id,
                 state_after={"provider": provider,
-                             "error_type": type(exc).__name__},
+                             "error_type": type(exc).__name__,
+                             # **ولا يُقال «لم يُنفَّذ» لمن عبَر الحدّ.**
+                             "external_effect": ("unknown" if guard.lease is not None
+                                                 else "not_attempted")},
                 request_id=principal.request_id,
             )
+        # ══ وطلبٌ مُمفتَحٌ عبَر الحدَّ لا يُقال له «لم يُولَّد شيء» ══
+        #
+        # **وكانت تُقال.** الجوابُ كان ٢٠٠ ونصُّه: «لم يُولَّد أي محتوى، ولم
+        # يُحفظ شيء» — وهي **دعوى واقعٍ كاذبةٌ بعد مهلة**: النموذجُ قد ولّد
+        # وحُوسِبنا ثمنَه، والذي انقطع هو السلكُ لا التوليد.
+        #
+        # فمن حجز جيلًا وعبَر الحدَّ يُردّ ٤٠٩ صادقة: قد يكون نُفِّذ، ولا
+        # يُعاد تلقائيًّا بالمفتاح نفسِه. ومن لا مفتاحَ له يبقى جوابُه كما
+        # كان — لكن بلا تلك الجملة: ما لا نعرفه لا نُخبر به.
+        if guard.lease is not None:
+            from ..errors import athera_error_handler  # noqa: PLC0415
+
+            return await athera_error_handler(
+                request, idempotency.ExternalResultUnknown())
         return AiAskResponse(
             answer=_t(
                 locale,
-                "تعذّر الوصول إلى مزوّد النموذج الآن. لم يُولَّد أي محتوى، ولم يُحفظ شيء.",
-                "The model provider could not be reached. No content was generated and nothing was saved.",
+                "تعذّر الوصول إلى مزوّد النموذج الآن، ولا سبيل إلى تأكيد ما إذا "
+                "كان الطلب قد نُفِّذ عنده. ولم يُحفظ شيء عندنا.",
+                "The model provider could not be reached, and we cannot confirm "
+                "whether it processed the request. Nothing was saved on our side.",
             ),
             status="provider_error",
             # **وما وُجد فعلًا لا يُخفى لأن النموذج تعذّر.** البحثُ جرى،
@@ -645,7 +705,7 @@ async def ask(
     limitations.extend(answer.unsupported_claims)
     limitations.extend(answer.evidence_gaps)
 
-    return AiAskResponse(
+    answer_body = AiAskResponse(
         answer=strip_markup(
             (answer.answer_en or answer.answer_ar) if locale == "en"
             else answer.answer_ar),
@@ -682,3 +742,14 @@ async def ask(
         external_link=external_link,
         project=project_view,
     )
+
+    # ══ إنهاءٌ ذرّيّ: الجوابُ يُثبَّت في معاملةٍ قصيرة (RC-T1-H2-B4) ══
+    #
+    # **والبائتُ يُرجَع لا يُبلَّغ**: عاملٌ فقد إجارتَه يرفع
+    # `LeaseSuperseded` داخل المعاملة فتُرجَع، فلا يُودَع إتمامٌ لجيلٍ
+    # صار لغيره. وبلا مفتاحٍ لا شيءَ يُثبَّت — المسلكُ القديم حرفيًّا.
+    if guard.lease is not None:
+        async with session_maker() as session:
+            await idempotency.settle_leased(
+                session, guard, status=200, body=jsonable_encoder(answer_body))
+    return answer_body

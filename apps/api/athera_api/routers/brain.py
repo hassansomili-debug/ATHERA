@@ -6,7 +6,9 @@
 """
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +17,9 @@ from ..brain import tools as tool_registry
 from ..brain.orchestrator import Orchestrator, ToolCall
 from ..db import tenant_session_maker
 from ..deps import Principal, get_principal, get_session
-from ..errors import NotFound
+from ..errors import AtheraError, NotFound
+from ..services import idempotency
+from ..providers.gateway import provider_idempotency_capability
 from ..models.brain import GuardrailCheck
 from ..models.runs import AgentRun, ModelRun, ToolRun
 from ..research_brain.catalogue import RULES
@@ -109,9 +113,10 @@ async def list_scientific_rules(
 
 @router.post("/brain/ask", response_model=AskResponse)
 async def ask(
+    request: Request,
     payload: AskRequest,
     principal: Principal = Depends(get_principal),
-) -> AskResponse:
+) -> AskResponse | JSONResponse:
     """سؤالُ أجنتٍ — **ولا معاملةَ قاعدةٍ تُمسَك أثناء نداء النموذج** (RC-T1-H3).
 
     ولا `Depends(get_session)` هنا بعد اليوم: كانت معاملةُ الطلب تُمرَّر إلى
@@ -123,22 +128,65 @@ async def ask(
     ونفسُ الأداة (`memory.search_verified`).
     """
     orchestrator = Orchestrator()
-    result = await orchestrator.run_agent_detached(
-        tenant_session_maker(principal.tenant_id, principal.user_id),
-        tenant_id=principal.tenant_id,
-        actor_user_id=principal.user_id,
-        agent_key=payload.agent_key,
-        question=payload.question,
-        tool_calls=[
-            ToolCall(
-                key="memory.search_verified",
-                kwargs={"query": payload.search, "category": payload.memory_category},
-            )
-        ],
-    )
+    session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+
+    # ══ تحضيرٌ يُودَع قبل نداء النموذج (RC-T1-H2-B4) ══
+    #
+    # والبصمةُ معنى الطلب: السؤالُ، والأجنت، ومنتقي الذاكرة، واللغة.
+    # ولا معرّفَ طلبٍ فيها ولا زمن.
+    guard = idempotency.LeaseGuard()
+    if idempotency.is_keyed(request):
+        guard = await idempotency.begin_model(
+            request, session_maker,
+            tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+            body={
+                "question": payload.question,
+                "agent_key": payload.agent_key,
+                "memory_category": payload.memory_category,
+                "search": payload.search,
+                "locale": principal.locale,
+            })
+        if guard.answer is not None:
+            return guard.answer
+
+    # ويُدوَّن عبورُ الحدِّ **قبل** النداء — لا بعد التقاطِ مهلة.
+    await idempotency.enter_external(
+        session_maker, guard, provider=orchestrator._gateway.provider_name,  # noqa: SLF001
+        capability=provider_idempotency_capability())
+
+    try:
+        result = await orchestrator.run_agent_detached(
+            session_maker,
+            tenant_id=principal.tenant_id,
+            actor_user_id=principal.user_id,
+            agent_key=payload.agent_key,
+            question=payload.question,
+            tool_calls=[
+                ToolCall(
+                    key="memory.search_verified",
+                    kwargs={"query": payload.search,
+                            "category": payload.memory_category},
+                )
+            ],
+        )
+    except (AtheraError, idempotency.LeaseSuperseded):
+        # أخطاءُ المنصّةِ المُصنَّفةُ تصعد كما هي (RC-T1-H1) — ومنها فقدانُ
+        # الإجارة: لا يُقال «أثرٌ لا يُعرف» لمن لم يبلغ المزوّدَ باسمه.
+        raise
+    except Exception:  # noqa: BLE001 — أثرٌ لا يُعرف، لا إخفاقٌ مؤكَّد
+        # **ولا يُقال «لم يُنفَّذ».** قد ولّد النموذجُ وحُوسِبنا ثمنَه ثمّ
+        # انقطع السلك. فمن حجز جيلًا يُردّ ٤٠٩ صادقة، ولا يُعاد النداءُ
+        # تلقائيًّا بالمفتاح نفسِه.
+        if guard.lease is not None:
+            from ..errors import athera_error_handler  # noqa: PLC0415
+
+            return await athera_error_handler(
+                request, idempotency.ExternalResultUnknown())
+        raise
+
     answer = result.answer
     assert answer is not None  # المنسّق يرفع استثناءً بدل إعادة None
-    return AskResponse(
+    answer_body = AskResponse(
         trace_id=result.trace_id,
         agent_run_id=result.agent_run_id,
         agent_key=payload.agent_key,
@@ -151,6 +199,13 @@ async def ask(
         context_items=result.context_items,
         provider=orchestrator._gateway.provider_name,  # noqa: SLF001 — يُعرض عمدًا في الأثر
     )
+
+    # ── إنهاءٌ في معاملةٍ قصيرة؛ والبائتُ يُرجَع لا يُبلَّغ ──
+    if guard.lease is not None:
+        async with session_maker() as session:
+            await idempotency.settle_leased(
+                session, guard, status=200, body=jsonable_encoder(answer_body))
+    return answer_body
 
 
 @router.get("/traces", response_model=list[TraceSummary])
