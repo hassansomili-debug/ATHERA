@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import threading
 import uuid
 
 import pytest
@@ -54,6 +55,19 @@ def _key() -> str:
     return uuid.uuid4().hex
 
 
+async def _await_entered(store: CountingStore, *, timeout: float = 30.0) -> None:
+    """ينتظر بلوغَ الكتابةِ المخزنَ **بلا حبسِ الحلقة**.
+
+    و`threading.Event.wait` تحبس الخيطَ، فلا تُنادى من كوروتين. فيُستطلَع
+    العَلَمُ بفواصلَ قصيرة: الحلقةُ تبقى حرّةً ليعمل الطلبُ المحبوس.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not (store.entered is not None and store.entered.is_set()):
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("لم تبلغ الكتابةُ المخزنَ — فالقياسُ لا يقيس")
+        await asyncio.sleep(0.01)
+
+
 # ═══════════════════ مخزنٌ يَعُدّ ويُخفق عند الطلب ═══════════════════
 
 
@@ -68,11 +82,20 @@ class CountingStore:
         self.objects: dict[str, tuple[bytes, str]] = {}
         self.put_calls: list[str] = []
         self.delete_calls: list[str] = []
+        #: كلُّ توقيعٍ صدر — فـ«لم تُمنَح قدرةٌ» دعوًى تُقاس لا تُطمَأنّ إليها.
+        self.presign_calls: list[str] = []
         self.fail_with: BaseException | None = None
         #: تحبس **النداءَ الأوّلَ وحدَه**. ولو حبست الجميعَ لَاحتُبس
         #: المُستولي أيضًا فتجمّد الفحصُ — وقد وقع ذلك حرفيًّا.
-        self.gate: asyncio.Event | None = None
-        self.entered: asyncio.Event | None = None
+        #:
+        #: **وبإشاراتِ خيوطٍ لا إشاراتِ حلقة.** `put_stream` يعمل في خيطٍ
+        #: جانبيّ (`run_in_threadpool`)، و`asyncio.Event.set()` من خيطٍ غير
+        #: خيطِ الحلقة **ليست آمنة**: فلا تُوقَظ المنتظِرةُ في وقتها. وقد
+        #: قِيس ذلك — `entered` كانت تُرى بعد **٢٠ ثانية** — وتحت حِمل
+        #: الحزمة الكاملة تجاوز التأخيرُ مدّةَ الإجارة (١٢٠ث)، فاستولى
+        #: التوأمُ بحقٍّ وأُجيب ٢٠١، فسقط فحصٌ سليمُ المتن.
+        self.gate: threading.Event | None = None
+        self.entered: threading.Event | None = None
         self._gated = False
 
     # ── واجهةُ المخزن ──
@@ -82,11 +105,8 @@ class CountingStore:
             self._gated = True
             if self.entered is not None:
                 self.entered.set()
-            # حبسٌ متزامنٌ في خيطٍ جانبيّ — و`run_in_threadpool` يُشغّلنا فيه.
-            import time
-
-            while not self.gate.is_set():
-                time.sleep(0.01)
+            # حبسٌ في خيطٍ جانبيّ — و`threading.Event.wait` تُوقَظ فورًا.
+            self.gate.wait(timeout=60)
         elif self.entered is not None:
             self.entered.set()
         if self.fail_with is not None:
@@ -109,6 +129,7 @@ class CountingStore:
 
     def presign_put(self, key: str, content_type: str, *, expires_in: int) -> str:
         # توقيعٌ يختلف في كلّ مرّة — كما يفعل المزوّد الحقيقيّ.
+        self.presign_calls.append(key)
         return f"https://example.invalid/{key}?sig={uuid.uuid4().hex}&exp={expires_in}"
 
     def presign_get(self, key: str, *, expires_in: int) -> str:
@@ -409,8 +430,8 @@ async def test_07_a_concurrent_twin_is_refused_and_writes_nothing(
     two_tenants, store,
 ):
     """الإجارةُ الحيّةُ تمنع كتابةً ثانيةً موازيةً للنيّة نفسِها."""
-    store.gate = asyncio.Event()
-    store.entered = asyncio.Event()
+    store.gate = threading.Event()
+    store.entered = threading.Event()
     slot = two_tenants["a"]
     key = _key()
 
@@ -419,7 +440,7 @@ async def test_07_a_concurrent_twin_is_refused_and_writes_nothing(
     first = asyncio.create_task(
         http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key}))
     try:
-        await asyncio.wait_for(store.entered.wait(), timeout=20)
+        await _await_entered(store)
         async with _client(slot) as other:
             twin = await asyncio.wait_for(
                 other.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key}),
@@ -547,8 +568,8 @@ async def test_10_a_stale_worker_cannot_finalize_nor_delete_the_winners_object(
     two_tenants, store,
 ):
     """البائتُ لا يُودِع صفًّا **ولا يمحو كائنَ المُستولي**."""
-    store.gate = asyncio.Event()
-    store.entered = asyncio.Event()
+    store.gate = threading.Event()
+    store.entered = threading.Event()
     slot = two_tenants["a"]
     key = _key()
 
@@ -557,10 +578,10 @@ async def test_10_a_stale_worker_cannot_finalize_nor_delete_the_winners_object(
     stale = asyncio.create_task(
         http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key}))
     try:
-        await asyncio.wait_for(store.entered.wait(), timeout=20)
+        await _await_entered(store)
         # تُنتهى إجارتُه ويستولي غيرُه ويُتمّ.
         await _expire_lease(slot["tenant_id"], key)
-        store.entered = asyncio.Event()
+        store.entered = threading.Event()
         async with _client(slot) as winner:
             took = await asyncio.wait_for(
                 winner.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key}),
@@ -1236,3 +1257,267 @@ async def test_30_a_retired_completed_generation_also_frees_a_failed_one(
         "جيلٌ مُخفِقٌ منقضٍ لم يُستعَد"
     assert two.json()["id"] != one.json()["id"]
     assert len(store.objects) == 2
+
+
+# ═════════ ١٠ · القدرةُ الموقّعةُ والتفويضُ الحاضر ═════════
+
+
+async def _folder(slot, name: str = "shelf") -> dict:
+    async with _client(slot) as http:
+        made = await http.post("/api/v1/files/folders",
+                               json={"name": name, "parent_folder_id": None})
+    assert made.status_code in (200, 201), made.text
+    return made.json()
+
+
+async def _revoke_folder_grant(tenant_id, user_id, folder_id) -> None:
+    """يُسحب منحةُ الكتابة على المجلَّد — **بحذف صفِّ المنحة القائم**.
+
+    ولا تُبنى تجهيزةُ صلاحيّاتٍ جديدة: `assert_writable` تقرأ
+    `require_object_action` على `object_grants`، فغيابُ الصفّ هو السحبُ
+    بعينه كما يراه المنتج.
+    """
+    from sqlalchemy import text
+
+    engine, factory = await _observer()
+    try:
+        async with factory() as session:
+            await session.execute(
+                text("DELETE FROM object_grants WHERE tenant_id = :t"
+                     "   AND user_id = :u AND object_id = :o"),
+                {"t": str(tenant_id), "u": str(user_id), "o": str(folder_id)})
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+@requires_db
+async def test_31_a_replayed_init_refuses_to_reopen_a_completed_file(
+    two_tenants, store,
+):
+    """**ولا تُجدَّد قدرةُ كتابةٍ فوق ملفٍّ خُتم** — ٤٠٩ صادقة.
+
+    فالرابطُ الموقّعُ إذنُ كتابةٍ إلى مفتاحٍ بعينه؛ وتجديدُه بعد الختم
+    يُبدّل بايتاتِ الكائن وتبقى `checksum_sha256` وحجمُه تصف ما كان.
+    """
+    slot = two_tenants["a"]
+    key = _key()
+    async with _client(slot) as http:
+        one = await http.post(INIT, json=_init_body(), headers={HEADER: key})
+        assert one.status_code == 201, one.text
+        fid, skey = one.json()["file_id"], one.json()["storage_key"]
+
+        done = await http.post(f"/api/v1/files/{fid}/complete",
+                               json={"checksum_sha256": "1" * 64})
+        assert done.status_code == 200, done.text
+
+        signed_before = len(store.presign_calls)
+        again = await http.post(INIT, json=_init_body(), headers={HEADER: key})
+
+    assert again.status_code == 409, \
+        f"جُدّدت قدرةٌ فوق ملفٍّ مختوم: {again.status_code} {again.text[:300]}"
+    assert again.json()["error"]["code"] == "file.upload_not_pending", again.text
+    assert again.headers.get("Idempotency-Replayed") != "true", \
+        "رفضٌ تنكّر في صورة إعادةٍ ناجحة"
+    assert len(store.presign_calls) == signed_before, \
+        "صدر توقيعٌ جديدٌ لملفٍّ مختوم"
+
+    # ولا يُمَسّ شيء: الحالُ والتجزئةُ والمفتاحُ وصفُّ الحجز.
+    row = (await _rows(
+        "SELECT status, checksum_sha256, storage_key FROM files WHERE id = :i",
+        {"i": fid}))[0]
+    assert row == ("stored", "1" * 64, skey), row
+    state, code, body, _f, _o = await _record(slot["tenant_id"], key)
+    assert state == "completed" and code == 201, (state, code)
+    assert (body or {}).get("storage_key") == skey
+    assert await _files(slot["tenant_id"], fid) == 1
+    assert await _grants(slot["tenant_id"], fid) == 1
+    assert await _provenance(slot["tenant_id"], fid) == 1
+    assert await _audits(slot["tenant_id"], "file.upload_initiated", fid) == 1
+
+
+@requires_db
+async def test_32_a_replayed_init_honours_current_authorization(
+    two_tenants, store,
+):
+    """صلاحيّةٌ سُحبت ⇒ الإعادةُ تُردّ، **ولا قدرةَ تُمنَح**.
+
+    فلا يُتجاوَز فحصٌ لأنّ صفَّ حجزٍ موجود.
+    """
+    slot = two_tenants["a"]
+    shelf = await _folder(slot, "revoked-shelf")
+    key = _key()
+    body = dict(_init_body(), folder_id=shelf["id"])
+
+    async with _client(slot) as http:
+        one = await http.post(INIT, json=body, headers={HEADER: key})
+    assert one.status_code == 201, one.text
+
+    await _revoke_folder_grant(slot["tenant_id"], slot["user_id"], shelf["id"])
+    signed_before = len(store.presign_calls)
+
+    async with _client(slot) as http:
+        again = await http.post(INIT, json=body, headers={HEADER: key})
+
+    assert again.status_code in (403, 404), \
+        f"مفتاحٌ قديمٌ منح قدرةً بعد سحب الصلاحيّة: {again.status_code}"
+    assert len(store.presign_calls) == signed_before, "صدر توقيعٌ بعد السحب"
+
+
+@requires_db
+async def test_33_a_keyed_upload_to_a_forbidden_folder_writes_nothing(
+    two_tenants, store,
+):
+    """**التفويضُ قبل الكتابة**: وجهةٌ ممنوعة ⇒ صفرُ PUT وصفرُ حجز.
+
+    وكان الفحصُ في معاملة الإنهاء — أي بعد بثِّ الملفّ — فيبقى كائنٌ
+    مُمفتَحٌ لا يحذفه أحد (والحذفُ الأعمى ممنوعٌ بحقّ) ولا يشير إليه صفّ.
+    """
+    from tests.test_at_rc_t1a_project_access import _second_user
+
+    slot = two_tenants["a"]
+    colleague = await _second_user(
+        slot["tenant_id"], email=f"h2b3f-{uuid.uuid4().hex[:10]}@example.com")
+    # مجلَّدٌ يملكه الزميل — قائمٌ في المستأجر، ولا منحةَ لصاحبنا عليه.
+    theirs = await _folder(colleague, "their-shelf")
+
+    before_records = await _scalar(
+        "SELECT count(*) FROM idempotency_records WHERE tenant_id = :t",
+        {"t": str(slot["tenant_id"])})
+    key = _key()
+    async with _client(slot) as http:
+        refused = await http.post(
+            UPLOAD,
+            files={"upload": ("paper.txt", io.BytesIO(DOC), "text/plain")},
+            data={"classification": "C2", "folder_id": theirs["id"]},
+            headers={HEADER: key})
+
+    assert refused.status_code in (403, 404), \
+        f"وجهةٌ ممنوعةٌ لم تُردّ: {refused.status_code} {refused.text[:300]}"
+    assert store.put_calls == [], f"كُتب المخزنُ قبل التفويض: {store.put_calls}"
+    assert store.objects == {}, "بقي كائنٌ لطلبٍ مرفوض"
+    assert await _scalar(
+        "SELECT count(*) FROM idempotency_records WHERE tenant_id = :t",
+        {"t": str(slot["tenant_id"])}) == before_records, \
+        "أُودع حجزٌ لطلبٍ رُدّ قبل تنفيذه"
+
+
+@requires_db
+async def test_34_authority_revoked_during_the_write_refuses_at_finalize(
+    two_tenants, store,
+):
+    """صلاحيّةٌ تُسحب **أثناء البثّ** ⇒ الإنهاءُ يرجع، ولا يُمحى الكائن."""
+    slot = two_tenants["a"]
+    shelf = await _folder(slot, "mid-flight")
+    store.gate = threading.Event()
+    store.entered = threading.Event()
+    key = _key()
+
+    http = _client(slot)
+    await http.__aenter__()
+    task = asyncio.create_task(http.post(
+        UPLOAD,
+        files={"upload": ("paper.txt", io.BytesIO(DOC), "text/plain")},
+        data={"classification": "C2", "folder_id": shelf["id"]},
+        headers={HEADER: key}))
+    try:
+        await _await_entered(store)
+        # التحضيرُ نجح، والبثُّ محبوس — فتُسحب الصلاحيّةُ الآن.
+        await _revoke_folder_grant(slot["tenant_id"], slot["user_id"], shelf["id"])
+    finally:
+        store.gate.set()
+        answered = await task
+        await http.__aexit__(None, None, None)
+
+    assert answered.status_code in (403, 404), \
+        f"أُودع عملٌ بعد سحب الصلاحيّة: {answered.status_code}"
+    assert len(store.put_calls) == 1, "لم يُبَثّ الملفُّ أصلًا — فالفحصُ لا يقيس"
+    assert store.delete_calls == [], \
+        f"مُحي الكائنُ المُمفتَكُ عميانًا: {store.delete_calls}"
+    assert len(store.objects) == 1, "الكائنُ لم يبقَ هدفَ مصالحة"
+
+    derived = _derived(await _generation(slot["tenant_id"], key))
+    assert await _files(slot["tenant_id"], derived) == 0, "أُودع صفُّ ملفّ"
+    assert await _grants(slot["tenant_id"], derived) == 0, "أُودعت منحة"
+    assert await _provenance(slot["tenant_id"], derived) == 0, "أُودع إسناد"
+    state, code, _b, _f, _o = await _record(slot["tenant_id"], key)
+    assert state == "in_progress" and code is None, (state, code)
+
+
+# ═════════ ١١ · ساعةُ القاعدة في التنظيف ═════════
+
+
+@requires_db
+async def test_35_bounded_cleanup_compares_against_database_time(
+    two_tenants, store,
+):
+    """التنظيفُ الافتراضيُّ يقيس بساعة **القاعدة** لا بساعة العمليّة.
+
+    وقرارُ البقاء في B-3 يُرتِّب عليه جيلًا وهدفًا جديدَين، فخادمٌ ساعتُه
+    متقدّمةٌ كان يُرتجِع جيلًا لم ينقضِ عند القاعدة بعد.
+
+    ويُقاس بأثرٍ مرئيّ: صفٌّ بقاؤه في **مستقبلِ القاعدة** لا يُحذف ولو
+    كانت ساعةُ العمليّة بعده.
+    """
+    from sqlalchemy import text
+
+    from athera_api.db import tenant_session
+    from athera_api.services import idempotency as idem
+
+    slot = two_tenants["a"]
+    key = _key()
+    async with _client(slot) as http:
+        one = await http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key})
+    assert one.status_code == 201, one.text
+    generation = await _generation(slot["tenant_id"], key)
+
+    # بقاءٌ في مستقبل القاعدة بقليل — وساعةُ العمليّةِ تُزاح بعده.
+    engine, factory = await _observer()
+    try:
+        async with factory() as session:
+            await session.execute(
+                text("UPDATE idempotency_records"
+                     "   SET expires_at = now() + interval '30 seconds'"
+                     " WHERE id = :i"), {"i": str(generation)})
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+    async with tenant_session(slot["tenant_id"], slot["user_id"]) as session:
+        removed = await idem.bounded_cleanup(session, tenant_id=slot["tenant_id"])
+    assert await _generation(slot["tenant_id"], key) == generation, \
+        f"حُذف صفٌّ لم ينقضِ عند القاعدة (حُذف {removed})"
+
+    # وبعد أن ينقضي **عند القاعدة** يُحذف — فالتنظيفُ يعمل ولا يتعطّل.
+    await _retire_generation(slot["tenant_id"], key)
+    async with tenant_session(slot["tenant_id"], slot["user_id"]) as session:
+        await idem.bounded_cleanup(session, tenant_id=slot["tenant_id"])
+    rows = await _rows(
+        "SELECT id FROM idempotency_records WHERE id = :i", {"i": str(generation)})
+    assert rows == [], "التنظيفُ لم يحذف المنقضيَ عند القاعدة"
+
+
+def test_36_bounded_cleanup_does_not_default_to_the_process_clock() -> None:
+    """حارسٌ بنيويّ: الافتراضُ `func.now()` لا `datetime.now`.
+
+    وحضورُ الاسم لا يكفي — يُطلَب أنّ **الافتراض** هو ساعةُ القاعدة: أي
+    أنّ `now is None` يُفضي إلى `func.now()`، وأنّ `datetime.now` لا يُنادى
+    في هذه الدالّة أصلًا.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from athera_api.services import idempotency as idem
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(idem.bounded_cleanup)))
+    fn = tree.body[0]
+
+    calls = {ast.unparse(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call)}
+    assert not {c for c in calls if c.endswith("datetime.now") or c == "dt.datetime.now"}, \
+        f"التنظيفُ ينادي ساعةَ العمليّة: {sorted(calls)}"
+    assert "func.now" in calls, f"لا ساعةَ قاعدةٍ في التنظيف: {sorted(calls)}"
+
+    # و`IN_PROGRESS` يبقى مستثنًى — ولا يُمَسّ هذا الشرط.
+    source = inspect.getsource(idem.bounded_cleanup)
+    assert "IN_PROGRESS" in source, "سقط استثناءُ الغامض من التنظيف"
