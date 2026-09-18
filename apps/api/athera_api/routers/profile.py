@@ -194,7 +194,18 @@ async def import_document(
         return guard.answer
 
     # ── الطورُ (٢): التخزين، بلا معاملة ──
-    data = await ingestion.load_object_bytes(storage_key)
+    #
+    # **وسقوطُ القراءةِ مسلكٌ طرفيٌّ عاديّ، لا أثرٌ غامض.** لا نموذجَ نُودي،
+    # ولا وسمَ حدٍّ كُتب — فلو تُرك الجيلُ `in_progress` لانتظر الباحثُ
+    # انقضاءَ الإجارة قبل إعادةٍ مشروعة، وعطبُ التخزينِ لحظيٌّ غالبًا.
+    # فيُغلَق الجيلُ إغلاقَ ما قبل الحدّ، ويبقى الخطأُ الصادقُ كما هو.
+    try:
+        data = await ingestion.load_object_bytes(storage_key)
+    except Exception as exc:
+        if guard.lease is not None:
+            await idempotency.close_pre_external(
+                session_maker, guard, reason=f"pre_external:{type(exc).__name__}")
+        raise
 
     # ── الطورُ (٣): التفكيكُ ثمّ الاقتراح، بلا معاملةٍ مفتوحة ──
     # **والقراءةُ من التخزين ليست أثرَ نموذج**: لا وسمَ حدٍّ حولها. فإن
@@ -215,14 +226,41 @@ async def import_document(
         chunks = parse(data, content_type, filename)
     except UnsupportedDocument as exc:
         # الرمزُ والموضعُ كما كانا في `ingest_file`، ويُسجَّل الإخفاق.
+        failure = AtheraError("ingestion.unsupported_document", status_code=422,
+                              detail=str(exc))
+        if guard.lease is None:
+            async with session_maker() as session:
+                await audit.record(
+                    session, tenant_id=principal.tenant_id,
+                    action="ingestion.failed", object_type="file",
+                    object_id=payload.file_id,
+                    actor_user_id=principal.user_id, reason=str(exc),
+                )
+            raise failure from exc
+
+        # ══ نتيجةٌ **حتميّة**: هذه البايتاتُ لا تُفكَّك، واليومَ كغدٍ ══
+        #
+        # فلا معنى لترك الجيلِ `in_progress`: إعادةٌ بالمفتاح نفسِه ستقرأ
+        # التخزينَ وتُفكِّك وتُخفق الإخفاقَ عينَه، وتكتب تدقيقًا ثانيًا
+        # لحدثٍ واحد. فيُثبَّت الجوابُ نفسُه — **بتنسيقِ معالجِ الأخطاء
+        # القائم، لا بشكلٍ موازٍ** — ويُكتب التدقيقُ مرّةً، في المعاملةِ
+        # نفسِها: كلاهما أو لا شيء.
+        import json as _json  # noqa: PLC0415
+
+        from ..errors import athera_error_handler  # noqa: PLC0415
+
+        response = await athera_error_handler(request, failure)
         async with session_maker() as session:
             await audit.record(
-                session, tenant_id=principal.tenant_id, action="ingestion.failed",
-                object_type="file", object_id=payload.file_id,
+                session, tenant_id=principal.tenant_id,
+                action="ingestion.failed", object_type="file",
+                object_id=payload.file_id,
                 actor_user_id=principal.user_id, reason=str(exc),
             )
-        raise AtheraError("ingestion.unsupported_document", status_code=422,
-                          detail=str(exc)) from exc
+            await idempotency.settle_leased(
+                session, guard, status=response.status_code,
+                body=_json.loads(bytes(response.body).decode("utf-8")))
+        return response
     try:
         proposal = await extractor.propose(chunks)
     except Exception as exc:  # noqa: BLE001 — يُفرَّق: قبل الحدِّ أم بعده

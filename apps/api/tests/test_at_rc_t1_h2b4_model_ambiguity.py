@@ -1342,6 +1342,19 @@ async def test_29_a_planning_timeout_leaves_zero_planning_runs(
         f"سجلُّ النموذجِ لا يقول «ambiguous» مرّةً واحدة: {ambiguous_models}"
 
 
+def _allow_c2(monkeypatch) -> None:
+    """سقفُ الإرسالِ الخارجيّ يُرفع إلى C2 — **كنشرةٍ أذن مشغّلُها بذلك**.
+
+    والافتراضُ C1، فمسارُ المُستخرِج النموذجيّ يُردّ ٤٠٣ بلا هذا. وهو
+    ضبطُ نشرةٍ لا عطبَ طور: يُرفع في الفحص كما يفعل H3-B، ولا يُمَسّ
+    الافتراضُ في الشيفرة.
+    """
+    from athera_api.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C2", raising=False)
+
+
 def _local_storage_read(monkeypatch, data: bytes = b"") -> None:
     """يقرأ البايتات محلّيًّا بدل MinIO.
 
@@ -2158,3 +2171,226 @@ async def test_42_consent_revoked_during_the_model_wait_blocks_the_write(
     state, status, _b, _f = await _record(tid, key)
     assert state != "completed", f"اكتمل الجيلُ بعد سحبِ الإذن: {state}"
     assert status is None
+
+
+# ═══════ ٨ · استيرادُ السِّيرة: مسالكُ ما قبل الحدّ، والنموذجُ نفسُه ═══════
+
+
+@requires_db
+async def test_43_a_storage_read_failure_does_not_strand_the_generation(
+    two_tenants, monkeypatch,
+):
+    """سقوطُ القراءةِ من التخزين **مسلكٌ طرفيٌّ عاديّ** — لا أثرٌ غامض.
+
+    ولا نموذجَ نُودي، ولا وسمَ حدٍّ كُتب. فالجيلُ يُغلَق إغلاقَ ما قبل
+    الحدّ، وإعادةٌ بالمفتاح نفسِه تمضي **فورًا** لا بعد انقضاء الإجارة.
+    """
+    from athera_api.services import ingestion
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    tid = slot["tenant_id"]
+    key = uuid.uuid4().hex
+    body = {"file_id": str(file_id), "extractor": "rules"}
+
+    reads = {"n": 0}
+
+    async def _broken(_storage_key: str) -> bytes:
+        reads["n"] += 1
+        raise OSError("storage unreachable")
+
+    monkeypatch.setattr(ingestion, "load_object_bytes", _broken)
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/profile/import", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code >= 500 or first.status_code == 503, first.text
+        assert reads["n"] == 1
+
+        state, status_code, stored, _f = await _record(tid, key)
+        assert state == "failed", f"الجيلُ بقي عالقًا بعد سقوطِ التخزين: {state}"
+        assert status_code is None, "خُزّن جوابٌ لطلبٍ لم يُنفَّذ"
+        from athera_api.services.idempotency import EXTERNAL_MARKER
+
+        assert not (isinstance(stored, dict) and EXTERNAL_MARKER in stored), \
+            "وُسم عبورُ حدٍّ ولا نموذجَ نُودي"
+
+        # وإعادةٌ **فورًا** بالمفتاح نفسِه تمضي — لا تنتظر انقضاءَ إجارة.
+        _local_storage_read(monkeypatch)
+        again = await http.post("/api/v1/profile/import", json=body,
+                                headers={"Idempotency-Key": key})
+
+    assert again.status_code == 202, f"{again.status_code}: {again.text[:250]}"
+    assert again.headers.get("Idempotency-Replayed") != "true"
+    runs = await _count(
+        "SELECT count(*) FROM model_runs WHERE tenant_id = :t", {"t": str(tid)})
+    assert runs == 0, f"سُجّل نداءُ نموذجٍ ولم يقع ({runs})"
+
+
+@requires_db
+async def test_44_an_unparsable_document_settles_once_and_replays(
+    two_tenants, monkeypatch,
+):
+    """مستندٌ لا يُفكَّك: **٤٢٢ تُثبَّت مرّةً**، وتدقيقٌ واحد، وإعادةٌ بلا عمل.
+
+    فالنتيجةُ حتميّة: البايتاتُ نفسُها لا تُفكَّك اليومَ ولا غدًا. وترْكُ
+    الجيلِ مفتوحًا يعني تدقيقَ إخفاقٍ ثانيًا لحدثٍ واحد.
+    """
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    tid = slot["tenant_id"]
+    key = uuid.uuid4().hex
+    body = {"file_id": str(file_id), "extractor": "rules"}
+
+    reads = {"n": 0}
+
+    async def _unparsable(_storage_key: str) -> bytes:
+        reads["n"] += 1
+        return b"\x00\x01\x02 not a document at all \xff\xfe"
+
+    from athera_api.services import ingestion
+    monkeypatch.setattr(ingestion, "load_object_bytes", _unparsable)
+
+    def _refuse(*_args, **_kwargs):
+        from athera_api.services.ingestion import UnsupportedDocument
+
+        raise UnsupportedDocument("no text layer")
+
+    from athera_api.routers import profile as profile_router
+    monkeypatch.setattr(profile_router, "parse", _refuse)
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/profile/import", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 422, f"{first.status_code}: {first.text[:250]}"
+        assert first.json()["error"]["code"] == "ingestion.unsupported_document", \
+            first.text
+        assert reads["n"] == 1
+
+        audits = await _count(
+            "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+            "   AND action = 'ingestion.failed'", {"t": str(tid)})
+        assert audits == 1, f"تدقيقُ الإخفاق كُتب {audits} مرّةً"
+
+        state, status_code, _b, _f = await _record(tid, key)
+        assert state == "completed", f"النتيجةُ الحتميّةُ لم تُثبَّت: {state}"
+        assert status_code == 422, status_code
+
+        replay = await http.post("/api/v1/profile/import", json=body,
+                                 headers={"Idempotency-Key": key})
+
+    assert replay.status_code == 422, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert replay.json() == first.json(), "الإعادةُ ليست الجوابَ الأصل"
+    assert reads["n"] == 1, "الإعادةُ قرأت التخزينَ ثانيةً"
+    assert await _count(
+        "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+        "   AND action = 'ingestion.failed'", {"t": str(tid)}) == 1, \
+        "الإعادةُ كتبت تدقيقَ إخفاقٍ ثانيًا"
+
+
+@requires_db
+async def test_45_a_model_extractor_timeout_is_ambiguous_and_writes_nothing(
+    two_tenants, monkeypatch,
+):
+    """المُستخرِجُ النموذجيّ: مهلةٌ بعد الحدّ ⇒ صفرُ صفوفٍ، ثمّ لا نداءَ ثانٍ."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    _local_storage_read(monkeypatch)
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    tid = slot["tenant_id"]
+    key = uuid.uuid4().hex
+    body = {"file_id": str(file_id), "extractor": "model"}
+
+    calls = {"n": 0}
+
+    class _Timeout:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            raise TimeoutError("provider timed out mid-extraction")
+
+    _allow_c2(monkeypatch)
+    _activate(monkeypatch, _Timeout())
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/profile/import", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 409, f"{first.status_code}: {first.text[:250]}"
+        assert first.json()["error"]["code"] == \
+            "idempotency.external_result_unknown", first.text
+        assert calls["n"] == 1
+
+        for table, label in (("extraction_runs", "تشغيلةُ استخراج"),
+                             ("fact_candidates", "مرشَّح"),
+                             ("researcher_profiles", "مِلفٌّ شخصيّ")):
+            written = await _count(
+                f"SELECT count(*) FROM {table} WHERE tenant_id = :t",
+                {"t": str(tid)})
+            assert written == 0, f"كُتب {label} على أثرٍ لا يُعرف ({written})"
+
+        await _expire_lease(tid, key)
+        after = await http.post("/api/v1/profile/import", json=body,
+                                headers={"Idempotency-Key": key})
+
+    assert after.status_code == 409, after.text
+    assert after.json()["error"]["code"] == \
+        "idempotency.external_result_unknown", after.text
+    assert calls["n"] == 1, f"نُودي النموذجُ {calls['n']} مرّةً لجيلٍ واحد"
+    ambiguous = await _rows(
+        "SELECT count(*) FROM model_runs WHERE tenant_id = :t AND status = 'ambiguous'",
+        {"t": str(tid)})
+    assert ambiguous == [(1,)], f"سجلُّ النموذجِ لا يقول «ambiguous»: {ambiguous}"
+
+
+@requires_db
+async def test_46_a_model_extractor_success_replays_without_a_second_call(
+    two_tenants, monkeypatch,
+):
+    """والمُستخرِجُ النموذجيُّ ناجحًا: صفٌّ واحدٌ لكلِّ شيء، وإعادةٌ لا تزيد."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    _local_storage_read(monkeypatch)
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    tid = slot["tenant_id"]
+    key = uuid.uuid4().hex
+    body = {"file_id": str(file_id), "extractor": "model"}
+
+    _allow_c2(monkeypatch)
+    provider = _Structured({"facts": []})
+    _activate(monkeypatch, provider)
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/profile/import", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 202, f"{first.status_code}: {first.text[:250]}"
+        assert provider.calls == 1, f"نُودي النموذجُ {provider.calls} مرّةً"
+
+        counts = {}
+        for table in ("extraction_runs", "fact_candidates", "researcher_profiles"):
+            counts[table] = await _count(
+                f"SELECT count(*) FROM {table} WHERE tenant_id = :t", {"t": str(tid)})
+        assert counts["extraction_runs"] == 1, counts
+        assert counts["researcher_profiles"] == 1, counts
+
+        replay = await http.post("/api/v1/profile/import", json=body,
+                                 headers={"Idempotency-Key": key})
+
+    assert replay.status_code == 202, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert replay.json() == first.json(), "الإعادةُ ليست الجوابَ الأصل"
+    assert provider.calls == 1, "الإعادةُ نادت النموذجَ ثانيةً"
+    for table, before in counts.items():
+        assert await _count(
+            f"SELECT count(*) FROM {table} WHERE tenant_id = :t",
+            {"t": str(tid)}) == before, f"الإعادةُ زادت صفوفَ {table}"
