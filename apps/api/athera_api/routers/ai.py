@@ -599,11 +599,15 @@ async def ask(
     #
     # والمنسّقُ يملك معاملاتِه: تحضيرٌ قصير، ثمّ الشبكةُ بلا معاملة، ثمّ أثرٌ
     # قصيرٌ بحالٍ نهائيّة. ولا صفَّ `running` يُترك معلَّقًا.
-    # ══ يُدوَّن عبورُ الحدِّ **قبل** النداء (RC-T1-H2-B4) ══
+    # ══ الحدُّ يقف حيث هو، لا حيث يبدأ المعالج (RC-T1-H2-B4) ══
     #
-    # ولا يكفي التقاطُ المهلة: العمليّةُ قد تموت وهي واقفةٌ داخل النداء،
-    # فلا استثناءَ ولا `finally`. فيُودَع التدوينُ أوّلًا في معاملةٍ قصيرة.
-    await idempotency.enter_external(
+    # **وكان التدوينُ هنا، وذاك مُبكّر.** فبعده في المنسّق عملٌ محليٌّ قد
+    # يُردّ قبل أيّ نداءٍ: سياسةُ الأدوات، وتنفيذُها، وبناءُ الطلب، ثمّ
+    # `gateway.authorize`. فوسمٌ يُكتب هنا يقول «عبَرنا» وقد رُدّ الطلبُ
+    # على أداةٍ ممنوعةٍ أو تصنيفٍ مرفوض — فيُحرَم صاحبُه إعادةً مشروعة.
+    #
+    # فالمُعلَّقُ يُمرَّر، والمنسّقُ ينادِيه بعد التفويض وقبل `invoke`.
+    boundary = idempotency.ModelBoundary(
         session_maker, guard, provider=provider,
         capability=provider_idempotency_capability())
 
@@ -620,6 +624,8 @@ async def ask(
             extra_system=policy,
             output_locale=locale,
             evidence_context=_evidence_rows(references),
+            before_provider_call=(boundary if guard.lease is not None
+                                  else None),
         )
     except AtheraError:
         # **وإخفاقُ إيداعٍ لا يُترجَم إلى «تعذّر المزوّد»** (RC-T1-H1).
@@ -653,7 +659,13 @@ async def ask(
         # فمن حجز جيلًا وعبَر الحدَّ يُردّ ٤٠٩ صادقة: قد يكون نُفِّذ، ولا
         # يُعاد تلقائيًّا بالمفتاح نفسِه. ومن لا مفتاحَ له يبقى جوابُه كما
         # كان — لكن بلا تلك الجملة: ما لا نعرفه لا نُخبر به.
-        if guard.lease is not None:
+        # **وما رُدّ قبل الحدِّ ليس غامضًا.** أداةٌ مُنعت، أو تصنيفٌ رُفض،
+        # أو تفويضُ مزوّدٍ سقط محليًّا — كلُّها **قبل** أيّ نداء. فيُغلَق
+        # المفتاحُ إخفاقًا معلومًا ويبقى قابلًا لإعادةٍ صادقة.
+        if guard.lease is not None and not boundary.crossed:
+            await idempotency.close_pre_external(
+                session_maker, guard, reason=f"pre_external:{type(exc).__name__}")
+        elif guard.lease is not None:
             from ..errors import athera_error_handler  # noqa: PLC0415
 
             return await athera_error_handler(

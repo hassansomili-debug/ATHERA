@@ -236,8 +236,14 @@ class ModelGateway:
     async def record(
         self, session: AsyncSession, *, tenant_id: uuid.UUID, call: ProviderCall,
         agent_run_id: uuid.UUID | None = None,
+        status_override: str | None = None,
     ) -> ModelRun:
-        """تسجيل النداء — كتابةٌ قصيرة بعد أن انتهت الشبكة."""
+        """تسجيل النداء — كتابةٌ قصيرة بعد أن انتهت الشبكة.
+
+        و`status_override` لحالٍ واحدة: نداءٌ **عبَر الحدَّ** ثمّ انقطع،
+        فأثرُه لا يُعرف. و«خطأ» دعوى أقوى من المعلوم — انظر
+        `RC-T1-H2-B4`. ولا يُختلق استهلاكٌ ولا كلفةٌ في الحالين.
+        """
         response = call.response
         usage = response.usage if response is not None else None
         run = ModelRun(
@@ -250,7 +256,7 @@ class ModelGateway:
             output_tokens=usage.output_tokens if usage else None,
             cost_usd=usage.cost_usd if usage else None,
             latency_ms=call.latency_ms,
-            status=call.status,
+            status=status_override or call.status,
             max_classification_sent=call.request.classification,
             error=call.error,
             created_at=dt.datetime.now(dt.UTC),

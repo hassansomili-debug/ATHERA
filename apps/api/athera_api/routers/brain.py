@@ -149,8 +149,12 @@ async def ask(
         if guard.answer is not None:
             return guard.answer
 
-    # ويُدوَّن عبورُ الحدِّ **قبل** النداء — لا بعد التقاطِ مهلة.
-    await idempotency.enter_external(
+    # ══ الحدُّ يقف حيث هو (RC-T1-H2-B4) ══
+    #
+    # وبعده في المنسّق عملٌ محليٌّ قد يُردّ قبل أيّ نداء: سياسةُ الأدوات
+    # وتنفيذُها (`memory.search_verified` هنا)، ثمّ `gateway.authorize`.
+    # فالمُعلَّقُ يُمرَّر ولا يُكتب الوسمُ في الموجِّه.
+    boundary = idempotency.ModelBoundary(
         session_maker, guard, provider=orchestrator._gateway.provider_name,  # noqa: SLF001
         capability=provider_idempotency_capability())
 
@@ -168,15 +172,20 @@ async def ask(
                             "category": payload.memory_category},
                 )
             ],
+            before_provider_call=(boundary if guard.lease is not None
+                                  else None),
         )
     except (AtheraError, idempotency.LeaseSuperseded):
         # أخطاءُ المنصّةِ المُصنَّفةُ تصعد كما هي (RC-T1-H1) — ومنها فقدانُ
         # الإجارة: لا يُقال «أثرٌ لا يُعرف» لمن لم يبلغ المزوّدَ باسمه.
         raise
-    except Exception:  # noqa: BLE001 — أثرٌ لا يُعرف، لا إخفاقٌ مؤكَّد
-        # **ولا يُقال «لم يُنفَّذ».** قد ولّد النموذجُ وحُوسِبنا ثمنَه ثمّ
-        # انقطع السلك. فمن حجز جيلًا يُردّ ٤٠٩ صادقة، ولا يُعاد النداءُ
-        # تلقائيًّا بالمفتاح نفسِه.
+    except Exception as exc:  # noqa: BLE001 — يُفرَّق: قبل الحدِّ أم بعده
+        # ما رُدّ **قبل** الحدّ لم يبلغ مزوّدًا: إخفاقٌ معلومٌ يبقى قابلًا
+        # للإعادة. وما عبَر لا يُعرف أثرُه: ٤٠٩ صادقة ولا نداءَ ثانيًا.
+        if guard.lease is not None and not boundary.crossed:
+            await idempotency.close_pre_external(
+                session_maker, guard, reason=f"pre_external:{type(exc).__name__}")
+            raise
         if guard.lease is not None:
             from ..errors import athera_error_handler  # noqa: PLC0415
 

@@ -1144,6 +1144,45 @@ async def enter_external(maker, guard: LeaseGuard, *, provider: str,
             raise LeaseSuperseded
 
 
+class ModelBoundary:
+    """مُعلَّقٌ يقف على حدِّ المزوّد — ويُخبر أَعبَرَه الطلبُ أم لا.
+
+    ويُمرَّر إلى المنسّقِ أو المستخرِج، فيُنادى **بعد** التفويض و**قبل**
+    `invoke` مباشرةً. فموضعُ الحدِّ يملكه المنسّق، ولا يُكرَّر في ستّة
+    موجِّهات، ولا يُخمّنه موجِّهٌ من خارجه.
+
+    و`crossed` هي فارقُ الصدق: ما رُدّ قبل العبور **لم يبلغ مزوّدًا**،
+    فيُغلَق مفتاحُه إخفاقًا معلومًا ويبقى قابلًا لإعادةٍ صادقة؛ وما عبَر
+    لا يُعرف أثرُه فلا يُعاد نداؤه.
+    """
+
+    __slots__ = ("_maker", "_guard", "_provider", "_capability", "crossed")
+
+    def __init__(self, maker, guard: LeaseGuard, *, provider: str,
+                 capability: str) -> None:
+        self._maker = maker
+        self._guard = guard
+        self._provider = provider
+        self._capability = capability
+        self.crossed = False
+
+    async def __call__(self) -> None:
+        await enter_external(self._maker, self._guard, provider=self._provider,
+                             capability=self._capability)
+        self.crossed = True
+
+
+async def close_pre_external(maker, guard: LeaseGuard, *, reason: str) -> None:
+    """يُغلق جيلًا رُدّ **قبل** الحدّ — فيبقى المفتاحُ قابلًا للإعادة.
+
+    ولا يُوسَم غامضًا: لم يُنادَ مزوّدٌ، وهذا معلومٌ لا مظنون.
+    """
+    if guard.lease is None:
+        return
+    async with maker() as session:
+        await fail_leased(session, guard.lease, reason=reason)
+
+
 async def settle_leased(
     session: AsyncSession, guard: LeaseGuard, *, status: int, body: Any,
 ) -> None:

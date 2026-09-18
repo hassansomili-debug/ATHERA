@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
@@ -333,6 +334,14 @@ def _structured_request(spec: AgentSpec, *, instruction: str, payload: str,
     )
 
 
+#: حالٌ صادقةٌ لأثرٍ عبَر الحدَّ ولا يُعرف — لا «أخفق» ولا «تَمّ».
+#:
+#: و`varchar(16)` يتّسع لها، فلا هجرة. وانظر `RC-T1-H2-B4`: مهلةٌ بعد
+#: إرسالِ طلبٍ لا تُثبت أنّ النموذجَ لم ينفّذ، فتسميتُها «أخفق» دعوى
+#: أقوى من المعلوم — وقد تُبنى عليها إعادةٌ تُنفّذ توليدًا ثانيًا.
+AMBIGUOUS = "ambiguous"
+
+
 class Orchestrator:
     def __init__(self, gateway: ModelGateway | None = None) -> None:
         self._gateway = gateway or ModelGateway()
@@ -514,8 +523,19 @@ class Orchestrator:
         grant: object | None = None,
         evidence_context: list[dict] | None = None,
         timings: dict[str, float] | None = None,
+        before_provider_call: Callable[[], Awaitable[None]] | None = None,
     ) -> AgentResult:
         """نفسُ عقد `run_agent` — **لكن بلا معاملةٍ أثناء نداء النموذج**.
+
+        ## و`before_provider_call` يقف على الحدِّ بعينه (RC-T1-H2-B4)
+
+        **والحدُّ ليس أوّلَ المعالج.** فبعده هنا عملٌ محليٌّ قد يُردّ قبل
+        أن يُنادى مزوّد: البحثُ عن الأجنت، وسياسةُ الأدوات، وتنفيذُها،
+        وبناءُ الطلب، و`gateway.authorize`. فوسمٌ يُكتب في الموجِّه يقول
+        «عبَرنا الحدّ» وقد رُدّ الطلبُ على أداةٍ ممنوعة — وذاك كذبٌ يمنع
+        إعادةً مشروعة.
+        فيُنادى هذا المُعلَّقُ **بعد** التفويض و**قبل** `invoke` مباشرةً،
+        ولا شيءَ بينهما.
 
         ## الأطوارُ ثلاثة
 
@@ -603,11 +623,16 @@ class Orchestrator:
         started = clock()
         call = None
         authorization_error: BaseException | None = None
+        boundary_crossed = False
         try:
             self._gateway.authorize(request, grant)
         except Exception as exc:  # noqa: BLE001 — يُسجَّل في الطور (٣) ثمّ يُرفع
             authorization_error = exc
         if authorization_error is None:
+            # ══ الحدُّ بعينه: لا شيءَ بين هذا وبين `invoke` ══
+            if before_provider_call is not None:
+                await before_provider_call()
+                boundary_crossed = True
             call = await self._gateway.invoke(request)
         if timings is not None:
             timings["external_s"] = clock() - started
@@ -658,10 +683,31 @@ class Orchestrator:
                     # الإذنُ مرّ ⇒ النداءُ وقع. والتأكيدُ يُطلع مُدقّقَ
                     # الأنواع على ما يعرفه الفرعُ أصلًا.
                     assert call is not None
+                    # **وأثرٌ عبَر الحدَّ ثمّ انقطع لا يُسمّى «خطأً».**
+                    ambiguous = (call.exception is not None and boundary_crossed)
                     model_run = await self._gateway.record(
-                        session, tenant_id=tenant_id, call=call, agent_run_id=run.id)
+                        session, tenant_id=tenant_id, call=call, agent_run_id=run.id,
+                        status_override=AMBIGUOUS if ambiguous else None)
                     if call.exception is not None:
-                        _fail(call.exception)
+                        # ══ و`agent_runs.status` مُقيَّدٌ بـCHECK ══
+                        #
+                        # القيمُ المسموحةُ أربع: `running`/`completed`/
+                        # `failed`/`blocked` — ولا واحدةَ منها تقول «لا
+                        # يُعرف». و«أخفق» دعوى أقوى من المعلوم، و«مُنع»
+                        # يقول إنّنا رفضنا ولم نرفض.
+                        #
+                        # فلا يُكتب صفُّ تشغيلةٍ **كاذب**: يُترك الأمرُ
+                        # لسجلّ النموذج (`model_runs` بلا قيدٍ، فيقول
+                        # `ambiguous` صراحةً) ولوسمِ الجيل الدائم — وهو
+                        # البرهانُ الباقي. ولا هجرةَ 0038.
+                        if ambiguous:
+                            run.error = ("AMBIGUOUS_EXTERNAL_EFFECT: "
+                                         f"{type(call.exception).__name__}")[:500]
+                            run.finished_at = dt.datetime.now(dt.UTC)
+                            await session.delete(run)
+                            model_run.agent_run_id = None
+                        else:
+                            _fail(call.exception)
                         failure = call.exception
                     else:
                         # ولا استثناء ⇒ جوابٌ موجود، بحكم عقد `invoke`.
@@ -765,8 +811,13 @@ class Orchestrator:
         trace_id: uuid.UUID | None = None,
         output_locale: str = "ar",
         grant: object | None = None,
+        before_provider_call: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[BaseModel, uuid.UUID]:
         """نفس عقد `run_structured` — **لكن بلا معاملة أثناء النداء**.
+
+        و`before_provider_call` يقف على الحدِّ بعينه: **بعد** التفويض
+        و**قبل** `invoke` مباشرةً (RC-T1-H2-B4). فما رُدّ قبله لم يبلغ
+        مزوّدًا، فلا يُوسَم غامضًا.
 
         ثلاث خطوات: معاملة قصيرة تفتح سجل التشغيلة وتُودَع، ثم النداء
         الخارجي **بلا أي معاملة مفتوحة**، ثم معاملة قصيرة تُسجّل النتيجة.
@@ -798,11 +849,16 @@ class Orchestrator:
         # يستحق التسجيل مثل أي فشل آخر، فيُلتقط ويُسجَّل في معاملة (2).
         call = None
         authorization_error: BaseException | None = None
+        boundary_crossed = False
         try:
             self._gateway.authorize(request, grant)
         except Exception as exc:  # noqa: BLE001
             authorization_error = exc
         if authorization_error is None:
+            # ══ الحدُّ بعينه: لا شيءَ بين هذا وبين `invoke` ══
+            if before_provider_call is not None:
+                await before_provider_call()
+                boundary_crossed = True
             call = await self._gateway.invoke(request)
 
         # ── معاملة (2): التسجيل، نجح النداء أم فشل ──
@@ -823,8 +879,8 @@ class Orchestrator:
                 await session.execute(select(AgentRun).where(AgentRun.id == run_id))
             ).scalar_one()
 
-            def _fail(error: BaseException) -> None:
-                run.status = "failed"
+            def _fail(error: BaseException, *, status: str = "failed") -> None:
+                run.status = status
                 run.error = f"{type(error).__name__}: {error}"[:500]
                 run.finished_at = dt.datetime.now(dt.UTC)
 
@@ -832,10 +888,14 @@ class Orchestrator:
                 _fail(authorization_error)
                 failure = authorization_error
             else:
+                # الإذنُ مرّ ⇒ النداءُ وقع (عقد `invoke`)، والتأكيدُ يُضيّق النوع.
+                assert call is not None  # noqa: S101
+                ambiguous = (call.exception is not None and boundary_crossed)
                 model_run = await self._gateway.record(
-                    session, tenant_id=tenant_id, call=call, agent_run_id=run_id)
+                    session, tenant_id=tenant_id, call=call, agent_run_id=run_id,
+                    status_override=AMBIGUOUS if ambiguous else None)
                 if call.exception is not None:
-                    _fail(call.exception)
+                    _fail(call.exception, status=AMBIGUOUS if ambiguous else "failed")
                     failure = call.exception
                 else:
                     try:
