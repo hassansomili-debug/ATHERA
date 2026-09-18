@@ -21,6 +21,7 @@ AI» هي الهوية، والتتبّع الداخلي يبقى في `traces` 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 
@@ -32,8 +33,7 @@ from sqlalchemy import select
 from ..db import tenant_session_maker
 from ..deps import Principal, get_principal
 from ..discovery import throttle
-from ..errors import AtheraError, NotFound
-from ..models.files import File
+from ..errors import AtheraError
 from ..models.research import ExtractionRun, FactCandidate, ResearcherMemory
 from ..brain.contracts import strip_markup
 from ..brain.orchestrator import Orchestrator
@@ -61,6 +61,7 @@ from ..services import (
     collaboration,
     consent,
     idempotency,
+    library,
     reference_discovery,
 )
 from ..transaction import TransactionalRoute
@@ -150,6 +151,27 @@ def _evidence_rows(
     ]
 
 
+def _context_digest(identity: list[dict]) -> str | None:
+    """بصمةٌ حتميّةٌ للمعرفةِ المعتمَدةِ من المستند — **ولا نصَّ يُحفظ**.
+
+    فجوابُ النموذجِ يُبنى على ما اعتمده الباحثُ من ملفِّه: حقولٌ وذاكرةٌ
+    موثقةٌ بمواضعها. فلو لم تدخل بصمةَ الطلب لكان اعتمادُ حقلٍ جديدٍ أو
+    سحبُ توثيقِ آخرَ **لا يُغيّر شيئًا** في نظر المفتاح، فيُعاد جوابٌ
+    بُني على معرفةٍ لم تعد قائمة.
+
+    والمحتوى يُختصَر إلى **مُلخَّصٍ لا يُعكَس**: معرّفُ الذاكرة، والحقل،
+    وتجزئةُ نصِّها، والموضع، وحالُ التوثيق — مرتَّبةً ترتيبًا قانونيًّا
+    فلا يُغيّر ترتيبُ الصفوفِ البصمةَ. ومتنُ بحثِ الباحثِ لا يُخزَّن في
+    جدولِ المفاتيح ولا يُرسَل إلى غير موضعه.
+    """
+    if not identity:
+        return None
+    canonical = json.dumps(
+        sorted(identity, key=lambda row: (row["memory_id"], row["field"])),
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 @router.get("/capabilities", response_model=AiCapabilitiesResponse)
 async def capabilities(
     principal: Principal = Depends(get_principal),
@@ -228,6 +250,8 @@ async def ask(
     document_context: list[dict] = []
     pending_fields: list[str] = []
     attachment: AttachmentState | None = None
+    context_identity: list[dict] = []
+    chat_consent_state: str | None = None
     grant = None
     session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)
 
@@ -269,13 +293,18 @@ async def ask(
         # فالمحادثة تقرأ ما **اعتمده الباحث بنفسه**: الذاكرة الموثقة المشتقّة من
         # هذا الملف بعينه. وهي معرفته لا محتوى مستنده، وقد مرّت بمراجعته.
         if payload.selected_file is not None:
-            record = (
-                await session.execute(select(File).where(
-                    File.id == payload.selected_file,
-                    File.tenant_id == principal.tenant_id))
-            ).scalar_one_or_none()
-            if record is None:
-                raise NotFound("file.not_found")
+            # ══ المنحةُ تُفحص، لا المستأجرُ وحده (RC-T1-H2-B4) ══
+            #
+            # **وكان استعلامًا بالمستأجر والمعرّف.** فزميلٌ في المستأجر
+            # نفسِه يعرف معرّفَ ملفٍّ ليست له عليه منحةٌ كان يسأل عنه
+            # فيصله ما اعتمده صاحبُه منه. والمحادثةُ أسهلُ بابٍ يُطرَق.
+            #
+            # فيُقرأ بالحارس المشترك — **قبل** قراءةِ المعرفةِ المعتمَدة
+            # وقبل قراءةِ الإذن وقبل أيّ تحكيمِ مفتاح.
+            record = await library.owned_file(
+                session, tenant_id=principal.tenant_id,
+                user_id=principal.user_id, file_id=payload.selected_file,
+                action="read")
 
             rows = (await session.execute(
                 select(FactCandidate, ResearcherMemory)
@@ -300,16 +329,28 @@ async def ask(
                         "value": memory.statement_ar,
                         "locator": memory.source_locator,
                     })
+                    # **هُويّةٌ لا نصّ**: ما يدخل بصمةَ الطلب مُلخَّصٌ
+                    # حتميّ، فلا يُخزَّن متنُ بحثِ الباحث في جدولِ
+                    # المفاتيح ولا في وسمِ الحدّ.
+                    context_identity.append({
+                        "memory_id": str(memory.id),
+                        "field": candidate.field_key,
+                        "statement": hashlib.sha256(
+                            (memory.statement_ar or "").encode("utf-8")).hexdigest(),
+                        "locator": memory.source_locator,
+                        "verification": memory.verification_status,
+                    })
                 elif candidate.status == "unverified":
                     pending_fields.append(candidate.field_key)
 
             # **حالٌ تقرؤها الواجهة، لا نصٌّ تفسّره.** فتبني الزرّ الصحيح بدل
             # أن تترك الباحث ينفّذ التعليمة بنفسه.
+            chat_consent_state = await consent.chat_state(
+                session, tenant_id=principal.tenant_id, file_id=record.id)
             attachment = AttachmentState(
                 file_id=record.id, filename=record.original_filename,
                 processing_status=run.status if run is not None else "not_processed",
-                consent_state=await consent.chat_state(
-                    session, tenant_id=principal.tenant_id, file_id=record.id),
+                consent_state=chat_consent_state,
                 approved_facts=len(document_context),
                 pending_review=len(set(pending_fields)),
                 needs="none",
@@ -373,6 +414,13 @@ async def ask(
                 "question": payload.question,
                 "selected_file": (str(payload.selected_file)
                                   if payload.selected_file else None),
+                # **ولقطةُ المستندِ معنًى في الطلب لا زينة.** جوابُ النموذج
+                # يُبنى على ما اعتمده الباحثُ من هذا الملفّ، فتبدُّلُ
+                # المعتمَدِ طلبٌ آخرُ في معناه — ولا يُعاد عليه جوابٌ قديم.
+                "document_context_fingerprint": _context_digest(context_identity),
+                # وحالُ إذنِ المحادثة كذلك: سُحب الإذنُ فتبدّلت البصمة،
+                # فلا يُعاد محتوًى وُلّد تحت إذنٍ زال.
+                "chat_consent_state": chat_consent_state,
                 "project_id": (str(payload.project_id)
                                if payload.project_id else None),
                 "locale": locale,

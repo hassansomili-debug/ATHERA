@@ -2394,3 +2394,203 @@ async def test_46_a_model_extractor_success_replays_without_a_second_call(
         assert await _count(
             f"SELECT count(*) FROM {table} WHERE tenant_id = :t",
             {"t": str(tid)}) == before, f"الإعادةُ زادت صفوفَ {table}"
+
+
+# ═══════ ٩ · المحادثة: منحةُ الملفِّ، ولقطةُ ما اعتمده الباحث ═══════
+
+
+#: مستندٌ **يُنتج مرشَّحاتٍ فعلًا** بالمُستخرِج الحتميّ: رتبةٌ ومعرّفٌ
+#: وأداتان ومنهج. والفقراتُ أطولُ من `MIN_CHUNK_CHARS`، وإلّا لم يُبنَ مقطع.
+RICH_DOCUMENT = (
+    "الباحث أستاذ مشارك في قسم المناهج وطرق التدريس، ومعرّفه "
+    "0000-0002-1825-0097 وهو منشور في صفحته.\n\n"
+    "اعتمدت الدراسة على استبانة موزّعة على عيّنة عشوائية من المعلّمين في "
+    "المدارس الثانوية الحكومية.\n\n"
+    "وحُلّلت البيانات باستخدام SPSS ثم تحقّق الباحث من النموذج القياسي عبر "
+    "SmartPLS في مرحلة لاحقة.\n"
+).encode("utf-8")
+
+
+async def _ingest_and_approve(slot, monkeypatch, *, document: bytes | None = None):
+    """يستورد ملفًّا **بالمسار الحقيقيّ** ثمّ يعتمد أوّلَ مرشَّح.
+
+    ولا تُدسّ الصفوفُ يدويًّا: `fact_candidates` تشترط تشغيلةً ومقطعًا،
+    والاعتمادُ هو ما يُنشئ الذاكرةَ الموثقة. فيُستعمل المساران كما هما.
+    """
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    _local_storage_read(monkeypatch, document or RICH_DOCUMENT)
+    file_id = await _make_file(slot)
+    async with _client(slot) as http:
+        imported = await http.post(
+            "/api/v1/profile/import",
+            json={"file_id": str(file_id), "extractor": "rules"})
+        assert imported.status_code == 202, imported.text
+        facts = await http.get("/api/v1/profile/facts?fact_status=unverified")
+        assert facts.status_code == 200, facts.text
+        rows = facts.json()
+        assert rows, "لم يُستخرَج مرشَّحٌ واحدٌ من المستند"
+        approved = await http.post(
+            f"/api/v1/profile/facts/{rows[0]['id']}/approve",
+            json={"reason": "راجعه الباحثُ واعتمده"})
+        assert approved.status_code in (200, 201), approved.text
+    return file_id, rows
+
+
+async def _approve_one_more(slot) -> bool:
+    """يعتمد مرشَّحًا آخرَ إن بقي — فتتبدّل لقطةُ المعتمَد."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    async with _client(slot) as http:
+        facts = await http.get("/api/v1/profile/facts?fact_status=unverified")
+        rows = facts.json()
+        if not rows:
+            return False
+        approved = await http.post(
+            f"/api/v1/profile/facts/{rows[0]['id']}/approve",
+            json={"reason": "واعتمد حقلًا آخرَ بعد مراجعته"})
+        assert approved.status_code in (200, 201), approved.text
+    return True
+
+
+async def _grant_chat(slot, file_id, *, granted: bool = True):
+    from athera_api.db import tenant_session
+    from athera_api.services import consent
+
+    async with tenant_session(slot["tenant_id"], slot["user_id"]) as session:
+        await consent.record_chat_decision(
+            session, tenant_id=slot["tenant_id"], file_id=file_id,
+            actor_user_id=slot["user_id"], granted=granted,
+            provider="anthropic", model="m", fact_count=1)
+
+
+@requires_db
+async def test_47_a_same_tenant_stranger_cannot_read_a_file_context(
+    two_tenants, monkeypatch,
+):
+    """زميلٌ بلا منحةٍ على الملفّ: **لا معرفةَ تُسرَّب، ولا جيلَ يُحجَز**.
+
+    فالمستأجرُ وحده لم يكن كافيًا: كان معرّفُ ملفٍّ معروفٌ يكفي لقراءة ما
+    اعتمده صاحبُه منه — والمحادثةُ أسهلُ بابٍ يُطرَق.
+    """
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+    from tests.test_at_rc_t1a_project_access import _second_user
+
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    secret = "قياس أثر التعلّم المدمج"
+    file_id, _rows = await _ingest_and_approve(slot, monkeypatch)
+    await _grant_chat(slot, file_id)
+
+    colleague = await _second_user(tid, email=f"stranger-{uuid.uuid4().hex[:8]}@fixtures.athera")
+
+    calls = {"n": 0}
+
+    class _Counted:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            raise AssertionError("نُودي النموذجُ لطلبٍ لا حقَّ لصاحبه")
+
+    _activate(monkeypatch, _Counted())
+    key = uuid.uuid4().hex
+    body = {"question": "ما حجمُ العيّنةِ في هذا المستند؟ سؤالٌ كافي الطول.",
+            "file_id": str(file_id)}
+
+    rows_before = await _count(
+        "SELECT count(*) FROM idempotency_records WHERE tenant_id = :t",
+        {"t": str(tid)})
+
+    async with _client(colleague) as http:
+        denied = await http.post("/api/v1/ai/ask", json=body,
+                                 headers={"Idempotency-Key": key})
+
+    assert denied.status_code in (403, 404), \
+        f"{denied.status_code}: {denied.text[:250]}"
+    assert secret not in denied.text, "تسرّبت معرفةُ زميلٍ في نصِّ الردّ"
+    assert calls["n"] == 0, "نُودي النموذجُ لطلبٍ مرفوض"
+    assert await _count(
+        "SELECT count(*) FROM idempotency_records WHERE tenant_id = :t",
+        {"t": str(tid)}) == rows_before, "حُجز جيلٌ لطلبٍ لا حقَّ لصاحبه"
+
+
+@requires_db
+async def test_48_approved_context_change_conflicts_instead_of_replaying(
+    two_tenants, monkeypatch,
+):
+    """تبدّل المعتمَدُ من المستند ⇒ **صِدامٌ لا إعادة**، وصفرُ نداءٍ ثانٍ."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    slot = two_tenants["a"]
+    file_id, _rows = await _ingest_and_approve(slot, monkeypatch)
+    await _grant_chat(slot, file_id)
+
+    provider = _Structured({"answer_ar": "جواب", "answer_en": "answer",
+                            "citations": [], "unsupported_claims": [],
+                            "evidence_gaps": []})
+    _activate(monkeypatch, provider)
+    key = uuid.uuid4().hex
+    body = {"question": "ما حجمُ العيّنةِ في هذا المستند؟ سؤالٌ كافي الطول.",
+            "file_id": str(file_id)}
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/ai/ask", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 200, f"{first.status_code}: {first.text[:250]}"
+        assert provider.calls == 1
+
+    # اعتمد الباحثُ حقلًا آخرَ من المستند نفسِه — فاللقطةُ غيرُ الأولى.
+    assert await _approve_one_more(slot), "لا مرشَّحَ ثانٍ يُعتمد، فالفحصُ فارغ"
+
+    async with _client(slot) as http:
+        conflict = await http.post("/api/v1/ai/ask", json=body,
+                                   headers={"Idempotency-Key": key})
+
+    assert conflict.status_code == 409, f"{conflict.status_code}: {conflict.text[:250]}"
+    assert conflict.json()["error"]["code"] == "idempotency.key_reused", conflict.text
+    assert conflict.headers.get("Idempotency-Replayed") != "true", \
+        "أُعيد جوابٌ بُني على معرفةٍ لم تعد هي المعتمَدة"
+    assert provider.calls == 1, f"نُودي النموذجُ {provider.calls} مرّةً"
+
+
+@requires_db
+async def test_49_revoked_chat_consent_conflicts_instead_of_replaying(
+    two_tenants, monkeypatch,
+):
+    """سُحب إذنُ المحادثة ⇒ لا يُعاد جوابٌ وُلّد تحته، وصفرُ نداءٍ ثانٍ."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    slot = two_tenants["a"]
+    file_id, _rows = await _ingest_and_approve(slot, monkeypatch)
+    await _grant_chat(slot, file_id)
+
+    provider = _Structured({"answer_ar": "جواب", "answer_en": "answer",
+                            "citations": [], "unsupported_claims": [],
+                            "evidence_gaps": []})
+    _activate(monkeypatch, provider)
+    key = uuid.uuid4().hex
+    body = {"question": "ما حجمُ العيّنةِ في هذا المستند؟ سؤالٌ كافي الطول.",
+            "file_id": str(file_id)}
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/ai/ask", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 200, first.text
+        assert provider.calls == 1
+
+    await _grant_chat(slot, file_id, granted=False)
+
+    async with _client(slot) as http:
+        after = await http.post("/api/v1/ai/ask", json=body,
+                                headers={"Idempotency-Key": key})
+
+    assert after.headers.get("Idempotency-Replayed") != "true", \
+        "أُعيد جوابٌ بعد سحبِ إذن المحادثة"
+    assert after.status_code == 409, f"{after.status_code}: {after.text[:250]}"
+    assert after.json()["error"]["code"] == "idempotency.key_reused", after.text
+    assert provider.calls == 1, "نُودي النموذجُ بعد سحبِ الإذن"
