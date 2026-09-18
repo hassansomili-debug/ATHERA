@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..errors import AtheraError
 from ..models.runs import ModelRun
-from .base import CLASSIFICATION_ORDER, ModelProvider, ModelRequest, ModelResponse
+from .base import UNPROVEN, CLASSIFICATION_ORDER, ModelProvider, ModelRequest, ModelResponse
 from .null_provider import NullProvider
 
 
@@ -166,6 +166,15 @@ class ModelGateway:
     def provider_name(self) -> str:
         return self._provider.name
 
+    @property
+    def model_idempotency_capability(self) -> str:
+        """قدرةُ المزوّدِ الحاليِّ على إزالة التكرار — **نصًّا محايدًا**.
+
+        فالمُنادي يقرّر بها ولا يعرف بائعًا، وADR-0003 قائم: أسماءُ
+        ترويسات البائعين وخياراتُه لا تخرج من `providers/`.
+        """
+        return getattr(self._provider, "model_idempotency_capability", UNPROVEN)
+
     def _effective_ceiling(self, grant: object | None) -> str:
         """السقف العام، أو سقف القدرة المأذونة — أيّهما أعلى، ولا شيء غيرهما.
 
@@ -275,3 +284,8 @@ class ModelGateway:
         if call.exception is not None:
             raise call.exception
         return call.response, run
+
+
+def provider_idempotency_capability() -> str:
+    """قدرةُ المزوّدِ المُهيَّأِ الآن — دالّةٌ يقرأها المسارُ بلا معرفةِ بائع."""
+    return ModelGateway().model_idempotency_capability
