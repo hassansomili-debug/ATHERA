@@ -21,21 +21,26 @@ AI» هي الهوية، والتتبّع الداخلي يبقى في `traces` 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from ..db import tenant_session_maker
 from ..deps import Principal, get_principal
 from ..discovery import throttle
-from ..errors import AtheraError, NotFound
-from ..models.files import File
+from ..errors import AtheraError
 from ..models.research import ExtractionRun, FactCandidate, ResearcherMemory
 from ..brain.contracts import strip_markup
 from ..brain.orchestrator import Orchestrator
-from ..providers.gateway import provider_readiness
+from ..providers.gateway import (
+    provider_idempotency_capability,
+    provider_readiness,
+)
 from ..schemas.ai import (
     AiAskRequest,
     AiAskResponse,
@@ -55,6 +60,8 @@ from ..services import (
     audit,
     collaboration,
     consent,
+    idempotency,
+    library,
     reference_discovery,
 )
 from ..transaction import TransactionalRoute
@@ -144,6 +151,27 @@ def _evidence_rows(
     ]
 
 
+def _context_digest(identity: list[dict]) -> str | None:
+    """بصمةٌ حتميّةٌ للمعرفةِ المعتمَدةِ من المستند — **ولا نصَّ يُحفظ**.
+
+    فجوابُ النموذجِ يُبنى على ما اعتمده الباحثُ من ملفِّه: حقولٌ وذاكرةٌ
+    موثقةٌ بمواضعها. فلو لم تدخل بصمةَ الطلب لكان اعتمادُ حقلٍ جديدٍ أو
+    سحبُ توثيقِ آخرَ **لا يُغيّر شيئًا** في نظر المفتاح، فيُعاد جوابٌ
+    بُني على معرفةٍ لم تعد قائمة.
+
+    والمحتوى يُختصَر إلى **مُلخَّصٍ لا يُعكَس**: معرّفُ الذاكرة، والحقل،
+    وتجزئةُ نصِّها، والموضع، وحالُ التوثيق — مرتَّبةً ترتيبًا قانونيًّا
+    فلا يُغيّر ترتيبُ الصفوفِ البصمةَ. ومتنُ بحثِ الباحثِ لا يُخزَّن في
+    جدولِ المفاتيح ولا يُرسَل إلى غير موضعه.
+    """
+    if not identity:
+        return None
+    canonical = json.dumps(
+        sorted(identity, key=lambda row: (row["memory_id"], row["field"])),
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 @router.get("/capabilities", response_model=AiCapabilitiesResponse)
 async def capabilities(
     principal: Principal = Depends(get_principal),
@@ -169,9 +197,10 @@ async def capabilities(
 
 @router.post("/ask", response_model=AiAskResponse)
 async def ask(
+    request: Request,
     payload: AiAskRequest,
     principal: Principal = Depends(get_principal),
-) -> AiAskResponse:
+) -> AiAskResponse | JSONResponse:
     """أثيرا AI — **ولا معاملةَ قاعدةٍ تُمسَك عبر أيّ انتظارٍ خارجيّ** (RC-T1-H3).
 
     وهذا المسارُ كان ينتظر **مرّتين** ومعاملةُ الطلب حيّة: الفهارسَ الخارجيّة
@@ -221,6 +250,8 @@ async def ask(
     document_context: list[dict] = []
     pending_fields: list[str] = []
     attachment: AttachmentState | None = None
+    context_identity: list[dict] = []
+    chat_consent_state: str | None = None
     grant = None
     session_maker = tenant_session_maker(principal.tenant_id, principal.user_id)
 
@@ -234,6 +265,7 @@ async def ask(
     # وما يُحمَل عبر الحدّ قيمٌ عاديّةٌ لا كائناتُ ORM: `ProjectContextView`
     # و`AttachmentState` نموذجانِ من Pydantic، و`document_context` قوائمُ
     # قواميسَ، و`grant` بنيةٌ مجمَّدة. فلا تحميلَ متأخّرٌ بعد إغلاق المعاملة.
+    guard = idempotency.LeaseGuard()
     async with session_maker() as session:
         if payload.project_id is not None:
             # والمستأجرُ وحده لم يكن كافيًا: كان سؤالٌ بريء الشكل يعيد عنوانَ
@@ -261,13 +293,18 @@ async def ask(
         # فالمحادثة تقرأ ما **اعتمده الباحث بنفسه**: الذاكرة الموثقة المشتقّة من
         # هذا الملف بعينه. وهي معرفته لا محتوى مستنده، وقد مرّت بمراجعته.
         if payload.selected_file is not None:
-            record = (
-                await session.execute(select(File).where(
-                    File.id == payload.selected_file,
-                    File.tenant_id == principal.tenant_id))
-            ).scalar_one_or_none()
-            if record is None:
-                raise NotFound("file.not_found")
+            # ══ المنحةُ تُفحص، لا المستأجرُ وحده (RC-T1-H2-B4) ══
+            #
+            # **وكان استعلامًا بالمستأجر والمعرّف.** فزميلٌ في المستأجر
+            # نفسِه يعرف معرّفَ ملفٍّ ليست له عليه منحةٌ كان يسأل عنه
+            # فيصله ما اعتمده صاحبُه منه. والمحادثةُ أسهلُ بابٍ يُطرَق.
+            #
+            # فيُقرأ بالحارس المشترك — **قبل** قراءةِ المعرفةِ المعتمَدة
+            # وقبل قراءةِ الإذن وقبل أيّ تحكيمِ مفتاح.
+            record = await library.owned_file(
+                session, tenant_id=principal.tenant_id,
+                user_id=principal.user_id, file_id=payload.selected_file,
+                action="read")
 
             rows = (await session.execute(
                 select(FactCandidate, ResearcherMemory)
@@ -292,16 +329,28 @@ async def ask(
                         "value": memory.statement_ar,
                         "locator": memory.source_locator,
                     })
+                    # **هُويّةٌ لا نصّ**: ما يدخل بصمةَ الطلب مُلخَّصٌ
+                    # حتميّ، فلا يُخزَّن متنُ بحثِ الباحث في جدولِ
+                    # المفاتيح ولا في وسمِ الحدّ.
+                    context_identity.append({
+                        "memory_id": str(memory.id),
+                        "field": candidate.field_key,
+                        "statement": hashlib.sha256(
+                            (memory.statement_ar or "").encode("utf-8")).hexdigest(),
+                        "locator": memory.source_locator,
+                        "verification": memory.verification_status,
+                    })
                 elif candidate.status == "unverified":
                     pending_fields.append(candidate.field_key)
 
             # **حالٌ تقرؤها الواجهة، لا نصٌّ تفسّره.** فتبني الزرّ الصحيح بدل
             # أن تترك الباحث ينفّذ التعليمة بنفسه.
+            chat_consent_state = await consent.chat_state(
+                session, tenant_id=principal.tenant_id, file_id=record.id)
             attachment = AttachmentState(
                 file_id=record.id, filename=record.original_filename,
                 processing_status=run.status if run is not None else "not_processed",
-                consent_state=await consent.chat_state(
-                    session, tenant_id=principal.tenant_id, file_id=record.id),
+                consent_state=chat_consent_state,
                 approved_facts=len(document_context),
                 pending_review=len(set(pending_fields)),
                 needs="none",
@@ -349,6 +398,38 @@ async def ask(
             grant = await consent.chat_authorization(
                 session, tenant_id=principal.tenant_id,
                 file_id=payload.selected_file)
+
+        # ══ الحجزُ **بعد** التفويض وفي معاملته (RC-T1-H2-B4) ══
+        #
+        # فوصولُ البحثِ والملفِّ والإذنُ كلُّها قُرئت أعلاه؛ فمن لا يملك
+        # الحقَّ لا يبلغ هذا السطر. **والإعادةُ ليست تجاوزًا للتفويض**:
+        # يُفحص الحقُّ الحاضرُ أوّلًا، ثمّ يُقال إن كان هناك جوابٌ مخزون.
+        #
+        # والبصمةُ معنى الطلب: السؤالُ، والملفُّ المختار، والبحثُ، واللغة.
+        # ولا معرّفَ طلبٍ فيها ولا زمن.
+        guard = await idempotency.begin_leased_in(
+            session, request,
+            tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+            body={
+                "question": payload.question,
+                "selected_file": (str(payload.selected_file)
+                                  if payload.selected_file else None),
+                # **ولقطةُ المستندِ معنًى في الطلب لا زينة.** جوابُ النموذج
+                # يُبنى على ما اعتمده الباحثُ من هذا الملفّ، فتبدُّلُ
+                # المعتمَدِ طلبٌ آخرُ في معناه — ولا يُعاد عليه جوابٌ قديم.
+                "document_context_fingerprint": _context_digest(context_identity),
+                # وحالُ إذنِ المحادثة كذلك: سُحب الإذنُ فتبدّلت البصمة،
+                # فلا يُعاد محتوًى وُلّد تحت إذنٍ زال.
+                "chat_consent_state": chat_consent_state,
+                "project_id": (str(payload.project_id)
+                               if payload.project_id else None),
+                "locale": locale,
+            },
+            ttl=idempotency.LEASE_MODEL)
+    if guard.answer is not None:
+        # إعادةٌ، أو «قائمٌ لغيرك»، أو تعارضٌ، أو **أثرٌ لا يُعرف** —
+        # وكلُّها بصفرِ نداءٍ للنموذج.
+        return guard.answer
     # ═════════ الأدبيات: طلبٌ صريح يُنفَّذ، لا إذنٌ يُستأذن عليه ثانيةً ═════════
     #
     # **الباحث الذي قال «ابحث لي في الأدبيات» طلب فعلًا.** فلا يُسأل مرّة
@@ -460,7 +541,7 @@ async def ask(
     # **والبحثُ لا يحتاج نموذجًا.** فمزوّدٌ غير مضبوط يمنع التوليد ولا يمنع
     # اكتشافَ المراجع؛ وإخفاءُ ما وُجد فعلًا لأن النموذج مطفأ حجبُ عملٍ تمّ.
     if not ready:
-        return AiAskResponse(
+        disabled = AiAskResponse(
             answer=_t(
                 locale,
                 "تنفيذ أثيرا AI غير مُفعَّل بعد: لم يُضبط مزوّد نموذج على الخادم. "
@@ -484,6 +565,20 @@ async def ask(
             external_link=external_link,
             project=project_view,
         )
+        # ══ وجيلٌ حُجز لا يُترك عالقًا (RC-T1-H2-B4) ══
+        #
+        # **وكان يُترك.** هذا مسلكٌ طرفيٌّ **بعد** الحجز وقبل النموذج:
+        # مزوّدٌ غيرُ مضبوط. فكان الصفُّ يبقى `in_progress` بلا وسمٍ ولا
+        # إتمام — فيُردّ صاحبُه ٤٠٩ إلى أن تنقضي الإجارةُ على عملٍ لم
+        # يُنفَّذ أصلًا ولا غموضَ فيه.
+        #
+        # فيُثبَّت الجوابُ المُعطَّلُ نفسُه: إعادةٌ لاحقةٌ تُعيده حرفيًّا،
+        # **وصفرُ نداءٍ للنموذج**.
+        if guard.lease is not None:
+            async with session_maker() as session:
+                await idempotency.settle_leased(
+                    session, guard, status=200, body=jsonable_encoder(disabled))
+        return disabled
 
     # ── الاستدعاء عبر المنسّق: هو الطبقة المعمارية، والبوابة تحته ──
     #
@@ -566,6 +661,18 @@ async def ask(
     #
     # والمنسّقُ يملك معاملاتِه: تحضيرٌ قصير، ثمّ الشبكةُ بلا معاملة، ثمّ أثرٌ
     # قصيرٌ بحالٍ نهائيّة. ولا صفَّ `running` يُترك معلَّقًا.
+    # ══ الحدُّ يقف حيث هو، لا حيث يبدأ المعالج (RC-T1-H2-B4) ══
+    #
+    # **وكان التدوينُ هنا، وذاك مُبكّر.** فبعده في المنسّق عملٌ محليٌّ قد
+    # يُردّ قبل أيّ نداءٍ: سياسةُ الأدوات، وتنفيذُها، وبناءُ الطلب، ثمّ
+    # `gateway.authorize`. فوسمٌ يُكتب هنا يقول «عبَرنا» وقد رُدّ الطلبُ
+    # على أداةٍ ممنوعةٍ أو تصنيفٍ مرفوض — فيُحرَم صاحبُه إعادةً مشروعة.
+    #
+    # فالمُعلَّقُ يُمرَّر، والمنسّقُ ينادِيه بعد التفويض وقبل `invoke`.
+    boundary = idempotency.ModelBoundary(
+        session_maker, guard, provider=provider,
+        capability=provider_idempotency_capability())
+
     try:
         result = await Orchestrator().run_agent_detached(
             session_maker,
@@ -579,8 +686,20 @@ async def ask(
             extra_system=policy,
             output_locale=locale,
             evidence_context=_evidence_rows(references),
+            before_provider_call=(boundary if guard.lease is not None
+                                  else None),
         )
-    except AtheraError:
+    except AtheraError as classified:
+        # ══ ورفضٌ مُصنَّفٌ **قبل** الحدّ يُغلق جيلَه (RC-T1-H2-B4) ══
+        #
+        # وسقفُ التصنيفِ يُردّ هنا — بعد التحضيرِ وقبل أيّ نداء — فكان
+        # الصفُّ يبقى `in_progress` بلا وسمٍ ولا إتمام، فيُحبَس صاحبُه
+        # على عملٍ لم يُنفَّذ ولا غموضَ فيه. **وبعد الحدِّ لا يُغلَق**:
+        # الوسمُ قائمٌ، وإعادةٌ لاحقةٌ تلقى «أثرًا لا يُعرف» بحقّ.
+        if guard.lease is not None and not boundary.crossed:
+            await idempotency.close_pre_external(
+                session_maker, guard,
+                reason=f"pre_external:{classified.code}")
         # **وإخفاقُ إيداعٍ لا يُترجَم إلى «تعذّر المزوّد»** (RC-T1-H1).
         #
         # وهذا الفرعُ كان قائمًا لأخطاء المنصّة المُصنَّفة، وصار يحمل معنًى
@@ -597,14 +716,39 @@ async def ask(
                 object_type="ai_request", object_id=uuid.uuid4(),
                 actor_user_id=principal.user_id,
                 state_after={"provider": provider,
-                             "error_type": type(exc).__name__},
+                             "error_type": type(exc).__name__,
+                             # **ولا يُقال «لم يُنفَّذ» لمن عبَر الحدّ.**
+                             "external_effect": ("unknown" if guard.lease is not None
+                                                 else "not_attempted")},
                 request_id=principal.request_id,
             )
+        # ══ وطلبٌ مُمفتَحٌ عبَر الحدَّ لا يُقال له «لم يُولَّد شيء» ══
+        #
+        # **وكانت تُقال.** الجوابُ كان ٢٠٠ ونصُّه: «لم يُولَّد أي محتوى، ولم
+        # يُحفظ شيء» — وهي **دعوى واقعٍ كاذبةٌ بعد مهلة**: النموذجُ قد ولّد
+        # وحُوسِبنا ثمنَه، والذي انقطع هو السلكُ لا التوليد.
+        #
+        # فمن حجز جيلًا وعبَر الحدَّ يُردّ ٤٠٩ صادقة: قد يكون نُفِّذ، ولا
+        # يُعاد تلقائيًّا بالمفتاح نفسِه. ومن لا مفتاحَ له يبقى جوابُه كما
+        # كان — لكن بلا تلك الجملة: ما لا نعرفه لا نُخبر به.
+        # **وما رُدّ قبل الحدِّ ليس غامضًا.** أداةٌ مُنعت، أو تصنيفٌ رُفض،
+        # أو تفويضُ مزوّدٍ سقط محليًّا — كلُّها **قبل** أيّ نداء. فيُغلَق
+        # المفتاحُ إخفاقًا معلومًا ويبقى قابلًا لإعادةٍ صادقة.
+        if guard.lease is not None and not boundary.crossed:
+            await idempotency.close_pre_external(
+                session_maker, guard, reason=f"pre_external:{type(exc).__name__}")
+        elif guard.lease is not None:
+            from ..errors import athera_error_handler  # noqa: PLC0415
+
+            return await athera_error_handler(
+                request, idempotency.ExternalResultUnknown())
         return AiAskResponse(
             answer=_t(
                 locale,
-                "تعذّر الوصول إلى مزوّد النموذج الآن. لم يُولَّد أي محتوى، ولم يُحفظ شيء.",
-                "The model provider could not be reached. No content was generated and nothing was saved.",
+                "تعذّر الوصول إلى مزوّد النموذج الآن، ولا سبيل إلى تأكيد ما إذا "
+                "كان الطلب قد نُفِّذ عنده. ولم يُحفظ شيء عندنا.",
+                "The model provider could not be reached, and we cannot confirm "
+                "whether it processed the request. Nothing was saved on our side.",
             ),
             status="provider_error",
             # **وما وُجد فعلًا لا يُخفى لأن النموذج تعذّر.** البحثُ جرى،
@@ -645,7 +789,7 @@ async def ask(
     limitations.extend(answer.unsupported_claims)
     limitations.extend(answer.evidence_gaps)
 
-    return AiAskResponse(
+    answer_body = AiAskResponse(
         answer=strip_markup(
             (answer.answer_en or answer.answer_ar) if locale == "en"
             else answer.answer_ar),
@@ -682,3 +826,14 @@ async def ask(
         external_link=external_link,
         project=project_view,
     )
+
+    # ══ إنهاءٌ ذرّيّ: الجوابُ يُثبَّت في معاملةٍ قصيرة (RC-T1-H2-B4) ══
+    #
+    # **والبائتُ يُرجَع لا يُبلَّغ**: عاملٌ فقد إجارتَه يرفع
+    # `LeaseSuperseded` داخل المعاملة فتُرجَع، فلا يُودَع إتمامٌ لجيلٍ
+    # صار لغيره. وبلا مفتاحٍ لا شيءَ يُثبَّت — المسلكُ القديم حرفيًّا.
+    if guard.lease is not None:
+        async with session_maker() as session:
+            await idempotency.settle_leased(
+                session, guard, status=200, body=jsonable_encoder(answer_body))
+    return answer_body

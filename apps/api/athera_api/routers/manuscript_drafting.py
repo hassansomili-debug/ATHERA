@@ -12,7 +12,9 @@ import datetime as dt
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,7 +34,11 @@ from ..models.publishing import (
 )
 from ..models.research import ResearcherMemory
 from ..models.thesis import PublicationOpportunity, Thesis
-from ..providers.gateway import active_model, provider_readiness
+from ..providers.gateway import (
+    active_model,
+    provider_idempotency_capability,
+    provider_readiness,
+)
 from ..schemas.drafting import (
     AnalysisOutputRef,
     ClaimView,
@@ -48,7 +54,7 @@ from ..schemas.drafting import (
     SectionReviewDecision,
     SectionView,
 )
-from ..services import audit, collaboration, consent
+from ..services import audit, collaboration, consent, idempotency
 from ..services.planning import context as research_context
 from ..services.publishing import consistency, vocab
 from ..services.publishing.drafting import checks as draft_checks
@@ -369,11 +375,28 @@ async def drafting_consent(
 @router.post("/{manuscript_id}/sections/{section_key}/draft",
              response_model=SectionView)
 async def draft_section(
+    request: Request,
     manuscript_id: uuid.UUID,
     section_key: str,
     principal: Principal = Depends(get_principal),
-) -> SectionView:
+) -> SectionView | JSONResponse:
+    """المعالجُ المُزخرَف — يفوّض إلى المتن (RC-T1-H2-B4)."""
+    return await draft_section_body(manuscript_id, section_key,
+                                    principal=principal, request=request)
+
+
+async def draft_section_body(
+    manuscript_id: uuid.UUID,
+    section_key: str,
+    *,
+    principal: Principal,
+    request: Request | None = None,
+) -> SectionView | JSONResponse:
     """يصوغ القسم — **حتميٌّ أولًا، ثم نداء بلا معاملة، ثم حفظ** (§14).
+
+    و`request=None` تعني **بلا مفتاح**: المسلكُ القديم حرفيًّا. ولهذا
+    موضعٌ واحد — مُنادٍ داخليٌّ (أو فحصٌ) يستعمل المتنَ دالّةً لا عبر
+    HTTP؛ ولا شواهدَ FastAPI في هذا التوقيع، فلا يُسلَّم `Form` مكان قيمة.
 
     **ولا تبعية `get_session` هنا، وذلك مقصود.** تلك تفتح معاملةً تبقى
     مفتوحة طوال الطلب، ونحن ننتظر مزوّدًا خارجيًّا داخله — وهي العلّة التي
@@ -408,8 +431,38 @@ async def draft_section(
                               fingerprint=context.fingerprint)
         project_id = record.project_id
         language = record.language
+        prepared_version_id = version.id
+
+        # ══ الحجزُ **بعد** كلّ البوّابات (RC-T1-H2-B4) ══
+        #
+        # التفويضُ والنسخةُ والقسمُ وحمايةُ المعتمَد والسياقُ والكفايةُ
+        # والإذنُ — كلُّها قُرئت أعلاه. فمن لا يملك الحقَّ لا يبلغ الحجز،
+        # **والإعادةُ ليست تجاوزًا لتفويض**.
+        #
+        # والبصمةُ تحمل **هُويّةَ اللقطة العلميّة**: بصمةُ السياق ومعرّفُ
+        # النسخة الحاليّة. فلو تغيّر الدليلُ أو تقدّمت النسخةُ صار الطلبُ
+        # طلبًا آخرَ في معناه — فيُردّ بتعارضٍ ولا يُعاد عليه صوغٌ بُني
+        # على لقطةٍ أخرى.
+        guard = idempotency.LeaseGuard()
+        if request is not None:
+            guard = await idempotency.begin_leased_in(
+                opening, request,
+                tenant_id=tenant_id, actor_user_id=actor_id,
+                body={
+                    "manuscript_id": str(manuscript_id),
+                    "section_key": section_key,
+                    "version_id": str(version.id),
+                    "context_fingerprint": context.fingerprint,
+                    "language": language,
+                },
+                ttl=idempotency.LEASE_MODEL)
+    if guard.answer is not None:
+        return guard.answer
 
     # ── بلا معاملة: النداء الخارجي ──
+    boundary = idempotency.ModelBoundary(
+        maker, guard, provider=provider_readiness()[0],
+        capability=provider_idempotency_capability())
     try:
         draft, agent_run_id = await Orchestrator().run_structured_detached(
             maker, tenant_id=tenant_id, actor_user_id=actor_id,
@@ -418,10 +471,22 @@ async def draft_section(
             payload=generate.build_prompt(context),
             # §6 — معرفة بحثية غير منشورة: C2. والقدرة تحكم، والإذن مقروء.
             input_classification="C2", output_locale=language, grant=grant,
+            before_provider_call=(boundary if guard.lease is not None else None),
         )
     except Exception as exc:  # noqa: BLE001 — الفشل يُروى ولا يُبتلع
         logger.exception("drafting: section %s failed for manuscript %s",
                          section_key, manuscript_id)
+        # ما رُدّ **قبل** الحدِّ لم يبلغ مزوّدًا: يُغلَق إخفاقًا معلومًا
+        # فيبقى المفتاحُ قابلًا لإعادةٍ صادقة. وما عبَر لا يُعرف أثرُه.
+        if guard.lease is not None and not boundary.crossed:
+            await idempotency.close_pre_external(
+                maker, guard, reason=f"pre_external:{type(exc).__name__}")
+        elif guard.lease is not None:
+            from ..errors import athera_error_handler  # noqa: PLC0415
+
+            assert request is not None  # noqa: S101 — إجارةٌ ⇒ طلبٌ حقيقيّ
+            return await athera_error_handler(
+                request, idempotency.ExternalResultUnknown())
         raise AtheraError("drafting.generation_failed", status_code=502,
                           section=section_key, error=type(exc).__name__) from exc
 
@@ -463,8 +528,22 @@ async def draft_section(
 
     # ── معاملة (أخيرة): نسخة جديدة، ثم الحفظ والربط والتدقيق ──
     async with maker() as fresh:
+        # ══ إعادةُ التفويضِ وفحصُ اللقطةِ قبل الإيداع (RC-T1-H2-B4) ══
+        #
+        # فالنموذجُ انتظر، وقد تُسحب الصلاحيّةُ أو يتقدّم الدليلُ أثناءه.
+        # ولا يُودَع صوغٌ بُني على لقطةٍ لم تعد قائمة.
         record = await manuscript_for_tenant_edit(fresh, principal, manuscript_id)
         version = await _current_version(fresh, principal, manuscript_id)
+        if guard.lease is not None and version.id != prepared_version_id:
+            raise AtheraError("drafting.context_changed", status_code=409,
+                              expected_version=str(prepared_version_id),
+                              current_version=str(version.id))
+        if guard.lease is not None:
+            live_context = await _build_context(fresh, principal, record, section_key)
+            if live_context.fingerprint != context.fingerprint:
+                raise AtheraError("drafting.context_changed", status_code=409,
+                                  expected_fingerprint=context.fingerprint,
+                                  current_fingerprint=live_context.fingerprint)
         current = await _section(fresh, principal, version.id, section_key)
         if current is not None:
             # §27 — كل صياغة جديدة نسخةٌ جديدة، بسببها، عبر النظام القائم.
@@ -498,9 +577,14 @@ async def draft_section(
             request_id=principal.request_id,
         )
 
-    async with maker() as reading:
-        return await read_section(manuscript_id, section_key, principal=principal,
-                                  session=reading)
+        # **والجوابُ يُبنى في معاملةِ الطفرة نفسِها**، فيُودَع معها ومع
+        # الإتمام: صوغٌ وإتمامٌ أو لا شيء. وعاملٌ بائتٌ يرفع
+        # `LeaseSuperseded` هنا فتُرجَع المعاملةُ كلُّها.
+        answer = await read_section(manuscript_id, section_key,
+                                    principal=principal, session=fresh)
+        await idempotency.settle_leased(
+            fresh, guard, status=200, body=jsonable_encoder(answer))
+    return answer
 
 
 async def _new_version(session: AsyncSession, principal: Principal, record: Manuscript,

@@ -244,7 +244,7 @@ def test_the_route_refuses_before_calling_the_model():
 
     from athera_api.routers import planning
 
-    source = inspect.getsource(planning.generate_opportunities)
+    source = inspect.getsource(planning.generate_opportunities_body)
     gate = source.index("if not context.sufficient:")
     call = source.index("run_structured_detached")
     assert gate < call, "بوابة الكفاية بعد النداء"
@@ -276,7 +276,7 @@ async def test_insufficient_evidence_causes_zero_provider_calls(two_tenants):
     planning.Orchestrator.run_structured_detached = spy
     try:
         with pytest.raises(AtheraError) as err:
-            await planning.generate_opportunities(project_id, principal=principal)
+            await planning.generate_opportunities_body(project_id, principal=principal)
         assert err.value.code == "planning.insufficient_evidence"
     finally:
         planning.Orchestrator.run_structured_detached = original
@@ -707,7 +707,7 @@ def test_audit_records_fingerprints_and_counts_not_research_text():
         block = source[source.find("state_after"):] if "state_after" in source else ""
         for leak in ("statement_ar", "source_quote", "prompt", "item.statement"):
             assert leak not in block, (fn.__name__, leak)
-    audit_block = inspect.getsource(planning.generate_opportunities)
+    audit_block = inspect.getsource(planning.generate_opportunities_body)
     assert '"context_fingerprint"' in audit_block
     assert '"evidence_count"' in audit_block
 
@@ -783,7 +783,7 @@ async def test_a_slow_planning_call_blocks_no_other_write(two_tenants, monkeypat
     monkeypatch.setattr(planning.Orchestrator, "run_structured_detached", slow)
 
     task = asyncio.create_task(
-        planning.generate_opportunities(project_id, principal=principal))
+        planning.generate_opportunities_body(project_id, principal=principal))
     await asyncio.wait_for(entered.wait(), timeout=30)
 
     async with tenant_session(tid, uid) as session:
@@ -833,7 +833,7 @@ async def test_a_failing_planning_call_leaves_no_poisoned_transaction(
     monkeypatch.setattr(planning.Orchestrator, "run_structured_detached", slow_then_fail)
 
     task = asyncio.create_task(
-        planning.generate_opportunities(project_id, principal=principal))
+        planning.generate_opportunities_body(project_id, principal=principal))
     await asyncio.wait_for(entered.wait(), timeout=30)
     async with tenant_session(tid, uid) as session:
         assert await _idle_in_transaction(session) == 0
@@ -873,7 +873,7 @@ async def test_the_evidence_snapshot_survives_the_provider_wait(two_tenants, mon
         return OpportunityBatch.model_validate(_batch_json()), uuid.uuid4()
 
     monkeypatch.setattr(planning.Orchestrator, "run_structured_detached", fake)
-    await planning.generate_opportunities(project_id, principal=principal)
+    await planning.generate_opportunities_body(project_id, principal=principal)
 
     async with tenant_session(tid, uid) as session:
         run_row = (await session.execute(
@@ -1468,7 +1468,7 @@ async def test_generation_reaches_the_provider_through_the_real_orchestrator(
 
     monkeypatch.setattr(gateway_module, "build_provider", lambda: _FakeProvider())
     # السقف يُرفع بالإذن لا بالإعداد — والإذن ممنوح في `_authorized_project`.
-    listing = await planning.generate_opportunities(project_id, principal=principal)
+    listing = await planning.generate_opportunities_body(project_id, principal=principal)
 
     assert seen.get("classification") == "C2", "لم يبلغ الطلب المزوّد"
     assert listing.opportunities, "لم تُحفظ فرصة"

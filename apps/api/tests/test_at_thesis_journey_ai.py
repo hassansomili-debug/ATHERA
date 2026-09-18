@@ -21,6 +21,18 @@ from athera_api.services.thesis import journey
 from tests.conftest import requires_db
 
 
+def _thread_source() -> str:
+    """مصدرُ خطِّ بناءِ الخيط كلِّه — **بترتيبِ تنفيذه لا بترتيبِ الملفّ**.
+
+    فالقراءةُ انتقلت إلى `prepare_thread` لتسبق تحكيمَ المفتاح (H2-B4)،
+    والبناءُ بقي في `build_thread`. ويُوصَل المصدران بذلك الترتيب، فكلُّ
+    دعوى «هذا يُفحص قبل نداء النموذج» تبقى صادقةً وتبقى معضوضة.
+    """
+    return (inspect.getsource(journey.prepare_thread)
+            + inspect.getsource(journey.build_thread))
+
+
+
 # ══════════ ١. لا نداءَ خارجيّ داخل معاملةٍ مفتوحة ══════════
 
 
@@ -77,7 +89,7 @@ def test_the_guard_would_catch_a_call_inside_a_transaction():
 
 
 def test_the_call_goes_through_the_orchestrator_and_gateway_only():
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     assert "run_structured_detached" in source
     assert 'input_classification="C2"' in source, "التصنيفُ ليس C2"
     for banned in ("openai", "anthropic", "httpx", "requests."):
@@ -86,7 +98,7 @@ def test_the_call_goes_through_the_orchestrator_and_gateway_only():
 
 def test_consent_is_checked_before_any_work_is_built():
     """**والرفضُ يقع قبل بناء أيّ حِمل** — لا payload يُبنى ثمّ يُرمى."""
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     consent_at = source.index("raise JourneyBlocked((BLOCK_NO_CONSENT,))")
     call_at = source.index("run_structured_detached")
     assert consent_at < call_at, "الإذنُ يُفحص بعد النداء — وهذا يعني نداءً بلا إذن"
@@ -94,7 +106,7 @@ def test_consent_is_checked_before_any_work_is_built():
 
 def test_the_thread_build_passes_the_source_scope():
     """**وحدُّ العزل يُمرَّر هنا أيضًا** — أدلّةُ هذه الرسالة وحدها."""
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     assert "source_file_id=file_id" in source, (
         "بناءُ الخيط يقرأ أدلّةَ المستأجر كلِّه — تسرُّبٌ بين رسالتين")
 
@@ -167,13 +179,13 @@ def test_a_model_element_with_an_invented_reference_is_rejected():
 
 def test_rejection_happens_before_any_row_is_written():
     """الرفضُ يسبق الكتابة — فلا صفٌّ مخترَع يُودَع ثمّ يُحذف."""
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     assert source.index("reject_unresolvable") < source.index("session.add(ThreadElement")
 
 
 def test_rejected_elements_are_counted_not_narrated():
     """عددُ المرفوض معلومةٌ للتدقيق، **ومتنُه اختلاقٌ لا يُحفظ**."""
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     assert '"rejected": len(rejected)' in source
     for leak in ("rejected[0]", "element.label_ar for element in rejected"):
         assert leak not in source, f"متنُ المرفوض يُكتب: {leak}"
@@ -205,10 +217,12 @@ async def test_without_consent_zero_external_calls_are_made(two_tenants, monkeyp
     a = two_tenants["a"]
     tid, uid = a["tenant_id"], a["user_id"]
 
+    # والبوّابةُ صارت في `prepare_thread` — وهي تسبق تحكيمَ المفتاح (H2-B4).
     with pytest.raises(journey.JourneyBlocked) as blocked:
-        await journey.build_thread(
-            lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
-            file_id=uuid.uuid4(), project_id=uuid.uuid4())
+        async with tenant_session(tid, uid) as session:
+            await journey.prepare_thread(
+                session, tenant_id=tid, project_id=uuid.uuid4(),
+                file_id=uuid.uuid4())
 
     assert journey.BLOCK_NO_CONSENT in blocked.value.reasons
     assert calls == [], f"وقع {len(calls)} نداءً خارجيًّا بلا إذن"
@@ -237,9 +251,13 @@ async def test_a_model_failure_leaves_no_partial_thread(two_tenants, monkeypatch
     monkeypatch.setattr(Orchestrator, "run_structured_detached", _explode)
 
     with pytest.raises((RuntimeError, journey.JourneyBlocked)):
+        async with tenant_session(tid, uid) as session:
+            prepared = await journey.prepare_thread(
+                session, tenant_id=tid, project_id=project_id,
+                file_id=uuid.uuid4())
         await journey.build_thread(
             lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
-            file_id=uuid.uuid4(), project_id=project_id)
+            file_id=uuid.uuid4(), project_id=project_id, prepared=prepared)
 
     async with tenant_session(tid, uid) as session:
         written = (await session.execute(
@@ -253,7 +271,7 @@ async def test_a_model_failure_leaves_no_partial_thread(two_tenants, monkeypatch
 
 def test_the_stale_fingerprint_gate_precedes_the_model_call():
     """**والرفضُ قبل النداء لا بعده** — فحصٌ على ترتيب المصدر."""
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     assert "planning_state" in source, "لا فحصَ لبصمة اللقطة"
     assert source.index("BLOCK_STALE_CONSENT") < source.index("run_structured_detached"), (
         "البصمةُ تُفحص بعد النداء — أي أنّ النداء وقع على لقطةٍ بائتة")
@@ -261,9 +279,14 @@ def test_the_stale_fingerprint_gate_precedes_the_model_call():
 
 def test_the_stale_check_uses_the_fingerprint_of_the_snapshot_just_built():
     """ولا تُفحص بصمةٌ غيرُ بصمةِ الأدلّة التي ستُرسَل فعلًا."""
-    source = inspect.getsource(journey.build_thread)
-    assert "fingerprint = evidence.fingerprint" in source
-    assert "context_fingerprint=fingerprint" in source
+    source = _thread_source()
+    # والشاهدُ أن تكون البصمةُ المفحوصةُ **بصمةَ اللقطةِ المبنيّةِ آنَها**
+    # لا متغيّرًا آخرَ يحمل الاسمَ نفسَه: `evidence` هي التي تُرسَل فعلًا.
+    assert "context_fingerprint=evidence.fingerprint" in source, (
+        "البصمةُ المفحوصةُ ليست بصمةَ الأدلّةِ التي ستُرسَل")
+    # وبصمةُ اللقطةِ هي التي تُحمَل في البنية المحضَّرة، فتُقارَن بالحيّة.
+    assert "evidence_fingerprint=evidence.fingerprint" in source, (
+        "اللقطةُ المحضَّرةُ لا تحمل بصمةَ الأدلّة")
 
 
 def test_stale_is_its_own_reason_not_folded_into_refusal():
@@ -316,9 +339,9 @@ async def test_a_stale_fingerprint_makes_zero_external_calls(two_tenants, monkey
     assert live.fingerprint != "a-fingerprint-from-an-older-snapshot"
 
     with pytest.raises(journey.JourneyBlocked) as blocked:
-        await journey.build_thread(
-            lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
-            file_id=file_id, project_id=project_id)
+        async with tenant_session(tid, uid) as session:
+            await journey.prepare_thread(
+                session, tenant_id=tid, project_id=project_id, file_id=file_id)
 
     assert journey.BLOCK_STALE_CONSENT in blocked.value.reasons
     assert calls == [], f"وقع {len(calls)} نداءً على لقطةٍ بائتة"
@@ -334,7 +357,7 @@ async def test_a_stale_fingerprint_makes_zero_external_calls(two_tenants, monkey
 
 def test_an_existing_thread_short_circuits_before_the_model_is_called():
     """**فحصُ إعادة الاستعمال يسبق النداء** — لا كلفةَ نموذجٍ لخيطٍ قائم."""
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     assert "reused=True" in source, "لا سبيلَ لإعادة استعمال خيطٍ قائم"
     assert source.index("reused=True") < source.index("run_structured_detached"), (
         "إعادةُ الاستعمال تُفحص بعد النداء — أي أنّ النداء وقع بلا داعٍ")
@@ -342,7 +365,7 @@ def test_an_existing_thread_short_circuits_before_the_model_is_called():
 
 def test_the_reuse_check_never_skips_a_consent_gate():
     """**والبوّابتان تسبقانه**: خيطٌ قائمٌ لا يفتح بابًا حول الإذن."""
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     reuse_at = source.index("reused=True")
     assert source.index("BLOCK_NO_CONSENT") < reuse_at, "إعادةُ الاستعمال قبل الإذن"
     assert source.index("BLOCK_STALE_CONSENT") < reuse_at, (
@@ -356,7 +379,7 @@ def test_reuse_writes_no_row_and_claims_no_agent_run():
     assert outcome.reused is True
     assert outcome.agent_run_id is None
 
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     early = source[:source.index("reused=True")]
     assert "session.add(ThreadElement" not in early, (
         "صفٌّ يُكتب في مسار إعادة الاستعمال — وهو التكرارُ بعينه")
@@ -415,9 +438,12 @@ async def test_building_the_thread_twice_creates_no_duplicate_elements(
 
     monkeypatch.setattr(Orchestrator, "run_structured_detached", _counted)
 
+    async with tenant_session(tid, uid) as session:
+        prepared = await journey.prepare_thread(
+            session, tenant_id=tid, project_id=project_id, file_id=file_id)
     outcome = await journey.build_thread(
         lambda: tenant_session(tid, uid), tenant_id=tid, actor_user_id=uid,
-        file_id=file_id, project_id=project_id)
+        file_id=file_id, project_id=project_id, prepared=prepared)
 
     assert outcome.reused is True, "خيطٌ قائمٌ أُعيد بناؤه"
     assert outcome.created == 0, "دعوى إنشاءٍ لم يقع"
@@ -439,21 +465,23 @@ def test_the_thread_reads_only_this_thesis_evidence():
     وهذا هو الحدُّ الذي يمنع أدلّةَ رسالةٍ (أ) من دخول خيطِ رسالةٍ (ب):
     `source_file_id` هو ملفُّ **هذه** الرسالة وحده.
     """
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     assert "source_file_id=file_id" in source
     # وملفُّ الرسالة يُقرأ من صفّها في نقطة النهاية، لا يأتي من المُدخل.
     from athera_api.routers import thesis as thesis_router
 
     endpoint = inspect.getsource(thesis_router.build_thread)
-    assert "file_id = thesis.file_id" in endpoint, (
+    assert "thesis.file_id" in endpoint, (
         "ملفُّ الرسالة لا يُقرأ من صفّها — فقد يصل ملفُّ رسالةٍ أخرى")
+    assert "file_id=payload" not in endpoint and "file_id: uuid" not in endpoint, (
+        "ملفُّ الرسالة يأتي من المُدخل — فملفُّ رسالةٍ أخرى قد يُمرَّر")
     assert "_opportunity_of_thesis(" in endpoint, (
         "النسبُ لا يُفحص — فرصةُ رسالةٍ أخرى قد تُبنى هنا")
 
 
 def test_the_thread_endpoint_scopes_every_read_to_one_tenant():
     """**ولا قراءةَ عابرةَ مستأجر.** الحدُّ في كلِّ استعلام، لا في واحد."""
-    source = inspect.getsource(journey.build_thread)
+    source = _thread_source()
     reads = source.count("tenant_id=tenant_id") + source.count(
         "ThreadElement.tenant_id == tenant_id")
     assert reads >= 3, "استعلامٌ بلا حدِّ مستأجر في بناء الخيط"

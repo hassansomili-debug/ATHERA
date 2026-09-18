@@ -494,7 +494,7 @@ def test_a_persisted_section_is_reachable_from_the_journey_screen():
     # ٣
     assert "/draft`" in _section_workspace()
     # ٤
-    drafting = _inspect.getsource(manuscript_drafting.draft_section)
+    drafting = _inspect.getsource(manuscript_drafting.draft_section_body)
     assert "ManuscriptSection(" in drafting, "نقطةُ الصياغة لا تكتب صفَّ قسم"
     # ٥
     facts = j.JourneyFacts(

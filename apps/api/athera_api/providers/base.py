@@ -13,6 +13,19 @@ from typing import Any
 # ترتيب تصنيفات الحساسية | data classification ordering (§36، Data Classification Matrix)
 CLASSIFICATION_ORDER = ("C0", "C1", "C2", "C3", "C4")
 
+# ══════════ قدرةُ المزوّد على إزالة التكرار (RC-T1-H2-B4) ══════════
+#
+# **ولا يعرف الموجِّهُ ولا المنسّقُ بائعًا.** يسأل عن قدرةٍ مُعلَنة، فيقرّر.
+# وADR-0003 قائم: أسماءُ ترويسات البائعين وخياراتُه تبقى في `providers/`.
+#
+# `SERVER_DEDUPLICATED` — أثبتت موادُّ المزوّد الرسميّةُ أنّ مفتاحًا
+#   يُرسله العميلُ يمنع تنفيذًا مكرَّرًا للطلب نفسِه عند الخادم.
+#
+# `UNPROVEN` — لم يُثبَت ذلك. **وهو الافتراض**، ولا يُرقّى بترويسةٍ اسمُها
+#   موحٍ ولا بمعرّفِ طلبٍ تشخيصيّ ولا بعدّادِ إعادةٍ في SDK.
+SERVER_DEDUPLICATED = "server_deduplicated"
+UNPROVEN = "unproven"
+
 
 @dataclass(slots=True)
 class Message:
@@ -56,6 +69,12 @@ class ModelProvider(abc.ABC):
     """الواجهة الموحدة الواردة في §32."""
 
     name: str = "abstract"
+
+    #: قدرةُ هذا المزوّد على إزالة التكرار — **والافتراضُ عدمُها**.
+    #:
+    #: فمن أراد ترقيتَها فعليه البرهان، ولا يُرقّى محوّلٌ بالسكوت. وانظر
+    #: `SERVER_DEDUPLICATED` أعلاه.
+    model_idempotency_capability: str = UNPROVEN
 
     @abc.abstractmethod
     async def generate_structured(self, request: ModelRequest) -> ModelResponse: ...

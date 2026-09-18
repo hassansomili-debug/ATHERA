@@ -12,7 +12,7 @@ import json
 from collections.abc import AsyncIterator
 from time import perf_counter
 
-from .base import ModelProvider, ModelRequest, ModelResponse, ModelUsage
+from .base import UNPROVEN, ModelProvider, ModelRequest, ModelResponse, ModelUsage
 
 # أحدث عائلة نماذج Claude. النسخة صريحة لا «الأحدث»: تغيّر النموذج تحت
 # التحليل نفسه يجعل نتيجتين غير قابلتين للمقارنة بلا أن يتغيّر شيء ظاهر.
@@ -59,6 +59,12 @@ def _text(response) -> str:
 class AnthropicAdapter(ModelProvider):
     name = "anthropic"
 
+    #: **غيرُ مُثبَت** — وقد فُحص المصدرُ المُثبَّت: `messages.create` لا
+    #: تقبل `idempotency_key`، و`with_options` ترفضه، و`_idempotency_header`
+    #: يبقى `None`. و`request-id` تشخيصيٌّ للدعم لا مفتاحُ إعادة.
+    #: (anthropic 1.6.0)
+    model_idempotency_capability = UNPROVEN
+
     def __init__(self, api_key: str, default_model: str, workspace_id: str = "") -> None:
         """النموذج معامل إلزامي بلا قيمة افتراضية — عمدًا.
 
@@ -84,7 +90,10 @@ class AnthropicAdapter(ModelProvider):
             #
             # وهي تفصيل مزوّد بحت، فموضعها هنا لا في المنسّق ولا في الموجّه.
             headers = {"anthropic-workspace-id": self._workspace_id} if self._workspace_id else None
-            self._client = AsyncAnthropic(api_key=self._api_key, default_headers=headers)
+            # ولا إعادةَ يُخفيها SDK (RC-T1-H2-B4) — انظر `openai_adapter`.
+            # `DEFAULT_MAX_RETRIES = 2` هنا أيضًا، ونداءٌ واحدٌ قد يصير ثلاثًا.
+            self._client = AsyncAnthropic(api_key=self._api_key,
+                                          default_headers=headers, max_retries=0)
         return self._client
 
     async def generate_structured(self, request: ModelRequest) -> ModelResponse:

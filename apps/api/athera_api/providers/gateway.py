@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..errors import AtheraError
 from ..models.runs import ModelRun
-from .base import CLASSIFICATION_ORDER, ModelProvider, ModelRequest, ModelResponse
+from .base import UNPROVEN, CLASSIFICATION_ORDER, ModelProvider, ModelRequest, ModelResponse
 from .null_provider import NullProvider
 
 
@@ -166,6 +166,15 @@ class ModelGateway:
     def provider_name(self) -> str:
         return self._provider.name
 
+    @property
+    def model_idempotency_capability(self) -> str:
+        """قدرةُ المزوّدِ الحاليِّ على إزالة التكرار — **نصًّا محايدًا**.
+
+        فالمُنادي يقرّر بها ولا يعرف بائعًا، وADR-0003 قائم: أسماءُ
+        ترويسات البائعين وخياراتُه لا تخرج من `providers/`.
+        """
+        return getattr(self._provider, "model_idempotency_capability", UNPROVEN)
+
     def _effective_ceiling(self, grant: object | None) -> str:
         """السقف العام، أو سقف القدرة المأذونة — أيّهما أعلى، ولا شيء غيرهما.
 
@@ -227,8 +236,14 @@ class ModelGateway:
     async def record(
         self, session: AsyncSession, *, tenant_id: uuid.UUID, call: ProviderCall,
         agent_run_id: uuid.UUID | None = None,
+        status_override: str | None = None,
     ) -> ModelRun:
-        """تسجيل النداء — كتابةٌ قصيرة بعد أن انتهت الشبكة."""
+        """تسجيل النداء — كتابةٌ قصيرة بعد أن انتهت الشبكة.
+
+        و`status_override` لحالٍ واحدة: نداءٌ **عبَر الحدَّ** ثمّ انقطع،
+        فأثرُه لا يُعرف. و«خطأ» دعوى أقوى من المعلوم — انظر
+        `RC-T1-H2-B4`. ولا يُختلق استهلاكٌ ولا كلفةٌ في الحالين.
+        """
         response = call.response
         usage = response.usage if response is not None else None
         run = ModelRun(
@@ -241,7 +256,7 @@ class ModelGateway:
             output_tokens=usage.output_tokens if usage else None,
             cost_usd=usage.cost_usd if usage else None,
             latency_ms=call.latency_ms,
-            status=call.status,
+            status=status_override or call.status,
             max_classification_sent=call.request.classification,
             error=call.error,
             created_at=dt.datetime.now(dt.UTC),
@@ -275,3 +290,8 @@ class ModelGateway:
         if call.exception is not None:
             raise call.exception
         return call.response, run
+
+
+def provider_idempotency_capability() -> str:
+    """قدرةُ المزوّدِ المُهيَّأِ الآن — دالّةٌ يقرأها المسارُ بلا معرفةِ بائع."""
+    return ModelGateway().model_idempotency_capability

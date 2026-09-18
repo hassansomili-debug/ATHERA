@@ -8,11 +8,17 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from time import perf_counter
 
-from .base import ModelProvider, ModelRequest, ModelResponse, ModelUsage
+from .base import UNPROVEN, ModelProvider, ModelRequest, ModelResponse, ModelUsage
 
 
 class OpenAIAdapter(ModelProvider):
     name = "openai"
+
+    #: **غيرُ مُثبَت** — وقد فُحص المصدرُ المُثبَّت لا الوثائقُ وحدها:
+    #: `responses.create` لا تقبل `idempotency_key`، و`with_options` ترفضه،
+    #: و`_idempotency_header` يبقى `None` فلا يُرسَل شيءٌ على السلك.
+    #: (openai 1.109.1)
+    model_idempotency_capability = UNPROVEN
 
     def __init__(self, api_key: str, default_model: str = "gpt-4.1") -> None:
         if not api_key:
@@ -25,7 +31,15 @@ class OpenAIAdapter(ModelProvider):
         if self._client is None:
             from openai import AsyncOpenAI  # noqa: PLC0415 — استيراد كسول مقصود
 
-            self._client = AsyncOpenAI(api_key=self._api_key)
+            # ══ ولا إعادةَ يُخفيها SDK (RC-T1-H2-B4) ══
+            #
+            # `DEFAULT_MAX_RETRIES = 2` في هذا الإصدار، فنداءٌ واحدٌ من
+            # `gateway.invoke` قد يصير **ثلاثَ محاولات HTTP** — وكلُّ محاولةٍ
+            # قد تولّد وتُحاسَب. وذاك ينقض سجلَّ التنفيذ عندنا: نظنّ
+            # محاولةً وقد وقعت ثلاث.
+            #
+            # فـPUBRIVA تملك قرارَ الإعادة والمصالحة، لا الـSDK.
+            self._client = AsyncOpenAI(api_key=self._api_key, max_retries=0)
         return self._client
 
     async def generate_structured(self, request: ModelRequest) -> ModelResponse:

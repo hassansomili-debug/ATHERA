@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +32,7 @@ from ..models.planning import (
 )
 from ..models.portfolio import ResearchProject
 from ..models.thesis import PublicationOpportunity
-from ..providers.gateway import active_model, provider_readiness
+from ..providers.gateway import active_model, provider_idempotency_capability, provider_readiness
 from ..schemas.planning import (
     ContextState,
     EvidenceMapEntry,
@@ -43,7 +45,7 @@ from ..schemas.planning import (
     ThreadIssue,
     ThreadView,
 )
-from ..services import audit, collaboration, consent
+from ..services import audit, collaboration, consent, idempotency
 from ..services.planning import context as ctx
 from ..services.planning import generate, outline, thread
 from ..services.planning.contracts import OpportunityBatch
@@ -197,10 +199,25 @@ async def planning_consent(
 
 @router.post("/{project_id}/publication-opportunities", response_model=OpportunityList)
 async def generate_opportunities(
+    request: Request,
     project_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-) -> OpportunityList:
+) -> OpportunityList | JSONResponse:
+    """المعالجُ المُزخرَف — يفوّض إلى المتن (RC-T1-H2-B4)."""
+    return await generate_opportunities_body(project_id, principal=principal,
+                                             request=request)
+
+
+async def generate_opportunities_body(
+    project_id: uuid.UUID,
+    *,
+    principal: Principal,
+    request: Request | None = None,
+) -> OpportunityList | JSONResponse:
     """يولّد الفرص — **حتميٌّ أولًا، ثم نداء بلا معاملة، ثم حفظ** (§33).
+
+    و`request=None` تعني **بلا مفتاح**: المسلكُ القديم حرفيًّا، وتُفتَح
+    التشغيلةُ في التحضير كما كانت. ولا شواهدَ FastAPI في هذا التوقيع.
 
     وبوابة الكفاية تسبق كل شيء: أدلةٌ لا تكفي تعني **صفر نداء** — لا مقترحات
     تُخترع من فراغ ولا رموز تُنفَق على سؤال لا جواب له.
@@ -239,14 +256,57 @@ async def generate_opportunities(
             raise AtheraError("planning.consent_required", status_code=403,
                               capability=consent.PLANNING_CAPABILITY,
                               fingerprint=context.fingerprint)
-        run_id = await generate.open_run(
-            opening, tenant_id=tenant_id, project_id=project_id,
-            context=context, capability=grant.capability)
+        # ══ الحجزُ بالمستأجر **النافذ** لا بمستأجر الرمز (H2-B4) ══
+        #
+        # **وهذا المسارُ يعمل على بحثٍ قد يكون مستأجرُه غيرَ مستأجرِ
+        # الرمز** (جسرُ التعاون). فحجزٌ بـ`principal.tenant_id` يضع صفَّ
+        # الجيل في مستأجرٍ آخر: فتُعاد أجوبةٌ عبر الحدّ، أو لا تُعاد حيث
+        # يجب. فيُستعمل `tenant_id` النافذُ المقروءُ أعلاه.
+        #
+        # والبصمةُ تحمل **بصمةَ السياق العلميّ**، فتغيُّرُ الدليل يجعل
+        # الطلبَ طلبًا آخر.
+        keyed = request is not None and idempotency.is_keyed(request)
+        guard = idempotency.LeaseGuard()
+        if keyed:
+            guard = await idempotency.begin_leased_in(
+                opening, request,
+                tenant_id=tenant_id, actor_user_id=actor_id,
+                body={
+                    "project_id": str(project_id),
+                    "context_fingerprint": context.fingerprint,
+                    "locale": principal.locale,
+                    "capability": grant.capability,
+                },
+                ttl=idempotency.LEASE_MODEL)
+
+        # ══ ولا `PlanningRun` قبل المزوّد للعملِ المُمفتَح (الخيار أ) ══
+        #
+        # `planning_runs.status` مُقيَّدٌ بـ`CHECK` على أربعٍ ليس فيها ما
+        # يقول «لا يُعرف». فصفٌّ يُفتح قبل النداء يبقى `running` إلى الأبد
+        # عند سقوطٍ، أو يُكذَّب بـ`failed` عند غموض. فيُؤجَّل فتحُه إلى
+        # معاملة النجاح: **سقوطٌ قبل الحدّ ⇒ صفرُ تشغيلات**، وغموضٌ ⇒
+        # صفرُ تشغيلات، ووسمُ الجيل الدائمُ هو البرهان.
+        #
+        # وبلا مفتاحٍ يبقى السلوكُ القديم — والرصدُ القائمُ لا يُنقَص.
+        # **والشرطُ «بلا مفتاح» لا «بلا إجارة».** وكانا يُخلطان: فإعادةٌ
+        # أو تعارضٌ أو غموضٌ تُعيد `guard.lease = None` أيضًا — فكان
+        # `open_run` يعمل على مسلكِ الإعادة فيُودِع تشغيلةً شاردة. وقد
+        # قِيس: عدُّ التشغيلات صار ٢ بعد إعادةٍ لم تُنفّذ شيئًا.
+        run_id = None
+        if not keyed:
+            run_id = await generate.open_run(
+                opening, tenant_id=tenant_id, project_id=project_id,
+                context=context, capability=grant.capability)
+    if guard.answer is not None:
+        return guard.answer
 
     locale = principal.locale
     thesis_id = None
 
     # ── بلا معاملة: النداء الخارجي ──
+    boundary = idempotency.ModelBoundary(
+        maker, guard, provider=provider_readiness()[0],
+        capability=provider_idempotency_capability())
     try:
         batch, agent_run_id = await Orchestrator().run_structured_detached(
             maker, tenant_id=tenant_id, actor_user_id=actor_id,
@@ -255,9 +315,23 @@ async def generate_opportunities(
             payload=generate.build_prompt(context),
             # §6 — معرفة بحثية غير منشورة: C2. والبوابة تحكم، والإذن مقروء.
             input_classification="C2", output_locale=locale, grant=grant,
+            before_provider_call=(boundary if guard.lease is not None else None),
         )
     except Exception as exc:  # noqa: BLE001 — الفشل يُروى في معاملة مستقلة
         logger.exception("planning: run %s failed for project %s", run_id, project_id)
+        if guard.lease is not None:
+            # **ولا `mark_failed` لأثرٍ لا يُعرف.** وما رُدّ قبل الحدِّ
+            # يُغلَق إخفاقًا معلومًا فيبقى المفتاحُ قابلًا للإعادة.
+            if not boundary.crossed:
+                await idempotency.close_pre_external(
+                    maker, guard, reason=f"pre_external:{type(exc).__name__}")
+                raise
+            from ..errors import athera_error_handler  # noqa: PLC0415
+
+            return await athera_error_handler(
+                request, idempotency.ExternalResultUnknown())
+        # بلا مفتاحٍ ⇒ التشغيلةُ فُتحت في التحضير، فالمعرّفُ موجود.
+        assert run_id is not None  # noqa: S101
         async with maker() as fresh:
             await generate.mark_failed(fresh, tenant_id=tenant_id, run_id=run_id,
                                        error=f"{type(exc).__name__}: {exc}")
@@ -266,6 +340,19 @@ async def generate_opportunities(
     # ── معاملة (أخيرة): الحفظ والتدقيق ──
     grounded, rejected = generate.ground(batch, context)
     async with maker() as fresh:
+        # وإعادةُ التفويضِ وفحصُ اللقطة قبل الإيداع: النموذجُ انتظر.
+        if guard.lease is not None:
+            await _project(fresh, principal, project_id, permission=EDIT)
+            live = await _build_context(fresh, principal, project_id)
+            if live.fingerprint != context.fingerprint:
+                raise AtheraError("planning.context_changed", status_code=409,
+                                  expected_fingerprint=context.fingerprint,
+                                  current_fingerprint=live.fingerprint)
+            run_id = await generate.open_run(
+                fresh, tenant_id=tenant_id, project_id=project_id,
+                context=context, capability=grant.capability)
+        # وقد فُتحت التشغيلةُ إمّا في التحضير (بلا مفتاح) أو هنا (بمفتاح).
+        assert run_id is not None  # noqa: S101
         result = await generate.persist(
             fresh, tenant_id=tenant_id, project_id=project_id, run_id=run_id,
             thesis_id=thesis_id, grounded=grounded, context=context,
@@ -290,6 +377,13 @@ async def generate_opportunities(
             reason="model proposals generated from verified evidence; nothing verified",
             request_id=principal.request_id,
         )
+        if guard.lease is not None:
+            # **الجوابُ والإتمامُ في معاملةِ الطفرة نفسِها.**
+            answer = await list_opportunities(project_id, principal=principal,
+                                              session=fresh)
+            await idempotency.settle_leased(
+                fresh, guard, status=200, body=jsonable_encoder(answer))
+            return answer
     async with maker() as reading:
         return await list_opportunities(project_id, principal=principal, session=reading)
 

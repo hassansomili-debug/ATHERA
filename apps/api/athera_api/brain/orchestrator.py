@@ -17,12 +17,12 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AtheraError
@@ -333,6 +333,14 @@ def _structured_request(spec: AgentSpec, *, instruction: str, payload: str,
     )
 
 
+#: حالٌ صادقةٌ لأثرٍ عبَر الحدَّ ولا يُعرف — لا «أخفق» ولا «تَمّ».
+#:
+#: و`varchar(16)` يتّسع لها، فلا هجرة. وانظر `RC-T1-H2-B4`: مهلةٌ بعد
+#: إرسالِ طلبٍ لا تُثبت أنّ النموذجَ لم ينفّذ، فتسميتُها «أخفق» دعوى
+#: أقوى من المعلوم — وقد تُبنى عليها إعادةٌ تُنفّذ توليدًا ثانيًا.
+AMBIGUOUS = "ambiguous"
+
+
 class Orchestrator:
     def __init__(self, gateway: ModelGateway | None = None) -> None:
         self._gateway = gateway or ModelGateway()
@@ -514,8 +522,19 @@ class Orchestrator:
         grant: object | None = None,
         evidence_context: list[dict] | None = None,
         timings: dict[str, float] | None = None,
+        before_provider_call: Callable[[], Awaitable[None]] | None = None,
     ) -> AgentResult:
         """نفسُ عقد `run_agent` — **لكن بلا معاملةٍ أثناء نداء النموذج**.
+
+        ## و`before_provider_call` يقف على الحدِّ بعينه (RC-T1-H2-B4)
+
+        **والحدُّ ليس أوّلَ المعالج.** فبعده هنا عملٌ محليٌّ قد يُردّ قبل
+        أن يُنادى مزوّد: البحثُ عن الأجنت، وسياسةُ الأدوات، وتنفيذُها،
+        وبناءُ الطلب، و`gateway.authorize`. فوسمٌ يُكتب في الموجِّه يقول
+        «عبَرنا الحدّ» وقد رُدّ الطلبُ على أداةٍ ممنوعة — وذاك كذبٌ يمنع
+        إعادةً مشروعة.
+        فيُنادى هذا المُعلَّقُ **بعد** التفويض و**قبل** `invoke` مباشرةً،
+        ولا شيءَ بينهما.
 
         ## الأطوارُ ثلاثة
 
@@ -603,11 +622,16 @@ class Orchestrator:
         started = clock()
         call = None
         authorization_error: BaseException | None = None
+        boundary_crossed = False
         try:
             self._gateway.authorize(request, grant)
         except Exception as exc:  # noqa: BLE001 — يُسجَّل في الطور (٣) ثمّ يُرفع
             authorization_error = exc
         if authorization_error is None:
+            # ══ الحدُّ بعينه: لا شيءَ بين هذا وبين `invoke` ══
+            if before_provider_call is not None:
+                await before_provider_call()
+                boundary_crossed = True
             call = await self._gateway.invoke(request)
         if timings is not None:
             timings["external_s"] = clock() - started
@@ -658,10 +682,33 @@ class Orchestrator:
                     # الإذنُ مرّ ⇒ النداءُ وقع. والتأكيدُ يُطلع مُدقّقَ
                     # الأنواع على ما يعرفه الفرعُ أصلًا.
                     assert call is not None
+                    # **وأثرٌ عبَر الحدَّ ثمّ انقطع لا يُسمّى «خطأً».**
+                    ambiguous = (call.exception is not None and boundary_crossed)
                     model_run = await self._gateway.record(
-                        session, tenant_id=tenant_id, call=call, agent_run_id=run.id)
+                        session, tenant_id=tenant_id, call=call, agent_run_id=run.id,
+                        status_override=AMBIGUOUS if ambiguous else None)
                     if call.exception is not None:
-                        _fail(call.exception)
+                        # ══ و`agent_runs.status` مُقيَّدٌ بـCHECK ══
+                        #
+                        # القيمُ المسموحةُ أربع: `running`/`completed`/
+                        # `failed`/`blocked` — ولا واحدةَ منها تقول «لا
+                        # يُعرف». و«أخفق» دعوى أقوى من المعلوم، و«مُنع»
+                        # يقول إنّنا رفضنا ولم نرفض.
+                        #
+                        # فلا يُكتب صفُّ تشغيلةٍ **كاذب**: يُترك الأمرُ
+                        # لسجلّ النموذج (`model_runs` بلا قيدٍ، فيقول
+                        # `ambiguous` صراحةً) ولوسمِ الجيل الدائم — وهو
+                        # البرهانُ الباقي. ولا هجرةَ 0038.
+                        if ambiguous:
+                            # لا صفَّ تشغيلةٍ كاذب: يُحذف ما أُنشئ، ويبقى
+                            # سجلُّ النموذجِ قائلًا `ambiguous` بلا مالك.
+                            # (و`tool_runs.agent_run_id` عليه
+                            # `ON DELETE SET NULL`، فلا قيدَ يُخالَف —
+                            # وقد قِيس لا افتُرض.)
+                            await session.delete(run)
+                            model_run.agent_run_id = None
+                        else:
+                            _fail(call.exception)
                         failure = call.exception
                     else:
                         # ولا استثناء ⇒ جوابٌ موجود، بحكم عقد `invoke`.
@@ -765,8 +812,13 @@ class Orchestrator:
         trace_id: uuid.UUID | None = None,
         output_locale: str = "ar",
         grant: object | None = None,
+        before_provider_call: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[BaseModel, uuid.UUID]:
         """نفس عقد `run_structured` — **لكن بلا معاملة أثناء النداء**.
+
+        و`before_provider_call` يقف على الحدِّ بعينه: **بعد** التفويض
+        و**قبل** `invoke` مباشرةً (RC-T1-H2-B4). فما رُدّ قبله لم يبلغ
+        مزوّدًا، فلا يُوسَم غامضًا.
 
         ثلاث خطوات: معاملة قصيرة تفتح سجل التشغيلة وتُودَع، ثم النداء
         الخارجي **بلا أي معاملة مفتوحة**، ثم معاملة قصيرة تُسجّل النتيجة.
@@ -783,26 +835,32 @@ class Orchestrator:
                                       contract=contract, locale=output_locale,
                                       classification=input_classification)
 
-        # ── معاملة (1): التشغيلة تصير مرئية قبل أي انتظار ──
-        async with session_maker() as session:
-            run = self._new_agent_run(spec, tenant_id=tenant_id,
-                                      actor_user_id=actor_user_id,
-                                      payload=payload, trace_id=trace_id)
-            session.add(run)
-            await session.flush()
-            run_id = run.id
-
+        # ══ ولا سجلَّ تشغيلةٍ يُودَع قبل الشبكة (RC-T1-H2-B4) ══
+        #
+        # **وكان يُودَع.** فسقوطُ آلةٍ قبل الحدِّ أو أثناءه يترك صفًّا
+        # `running` إلى الأبد ولا مزوّدَ نُودي — أو نُودي ولا يُعرف. وأشدُّ
+        # من ذلك: `agent_runs.status` مُقيَّدٌ بـ`CHECK` على أربع قيمٍ ليس
+        # فيها ما يقول «لا يُعرف»، فلا مخرجَ صادقٌ لذلك الصفّ أصلًا.
+        #
+        # فصار الأثرُ كلُّه في معاملةٍ واحدةٍ **بحالٍ نهائيّة** — كما في
+        # `run_agent_detached`. وحالةُ التنفيذ تُحمَل في الذاكرة حتى تُعرف.
+        #
         # ── بلا معاملة: الإذن ثم الشبكة ──
         #
         # `authorize` قد ترفع `provider.disabled_for_classification`؛ وهو فشل
         # يستحق التسجيل مثل أي فشل آخر، فيُلتقط ويُسجَّل في معاملة (2).
         call = None
         authorization_error: BaseException | None = None
+        boundary_crossed = False
         try:
             self._gateway.authorize(request, grant)
         except Exception as exc:  # noqa: BLE001
             authorization_error = exc
         if authorization_error is None:
+            # ══ الحدُّ بعينه: لا شيءَ بين هذا وبين `invoke` ══
+            if before_provider_call is not None:
+                await before_provider_call()
+                boundary_crossed = True
             call = await self._gateway.invoke(request)
 
         # ── معاملة (2): التسجيل، نجح النداء أم فشل ──
@@ -818,45 +876,79 @@ class Orchestrator:
         # ثم يُرفع.
         failure: BaseException | None = None
         parsed = None
+        run_id: uuid.UUID | None = None
         async with session_maker() as session:
-            run = (
-                await session.execute(select(AgentRun).where(AgentRun.id == run_id))
-            ).scalar_one()
 
-            def _fail(error: BaseException) -> None:
-                run.status = "failed"
-                run.error = f"{type(error).__name__}: {error}"[:500]
-                run.finished_at = dt.datetime.now(dt.UTC)
+            def _open_run(status: str) -> AgentRun:
+                made = self._new_agent_run(spec, tenant_id=tenant_id,
+                                           actor_user_id=actor_user_id,
+                                           payload=payload, trace_id=trace_id)
+                made.status = status
+                made.finished_at = dt.datetime.now(dt.UTC)
+                session.add(made)
+                return made
 
             if authorization_error is not None:
-                _fail(authorization_error)
+                # رفضٌ **قبل** الحدّ: لا مزوّدَ نُودي، فـ«أخفق» صادقة.
+                run = _open_run("failed")
+                run.error = (f"{type(authorization_error).__name__}: "
+                             f"{authorization_error}")[:500]
+                await session.flush()
+                run_id = run.id
                 failure = authorization_error
             else:
-                model_run = await self._gateway.record(
-                    session, tenant_id=tenant_id, call=call, agent_run_id=run_id)
-                if call.exception is not None:
-                    _fail(call.exception)
+                # الإذنُ مرّ ⇒ النداءُ وقع (عقد `invoke`)، والتأكيدُ يُضيّق النوع.
+                assert call is not None  # noqa: S101
+                if call.exception is not None and boundary_crossed:
+                    # ══ أثرٌ لا يُعرف: **ولا صفَّ تشغيلةٍ كاذب** ══
+                    #
+                    # فلا «أخفق» (دعوى أقوى من المعلوم)، ولا «مُنع» (يقول
+                    # إنّنا رفضنا)، ولا «ambiguous» (يخالف القيد). فيُقال
+                    # الحقُّ حيث يُقبَل: `model_runs` بلا قيد.
+                    await self._gateway.record(
+                        session, tenant_id=tenant_id, call=call,
+                        agent_run_id=None, status_override=AMBIGUOUS)
                     failure = call.exception
                 else:
-                    try:
-                        parsed = parse_contract(contract, call.response.structured)
-                    except ContractViolation as exc:
-                        _fail(exc)
-                        await audit.record(
-                            session, tenant_id=tenant_id,
-                            action="brain.contract_violation", object_type="agent_run",
-                            object_id=run_id, actor_user_id=actor_user_id,
-                            reason=str(exc)[:500], agent_run_id=run_id,
-                            model_run_id=model_run.id,
-                        )
-                        failure = exc
-                    else:
-                        run.status = "completed"
+                    run = _open_run("running")
+                    await session.flush()
+                    run_id = run.id
+
+                    def _fail(error: BaseException) -> None:
+                        run.status = "failed"
+                        run.error = f"{type(error).__name__}: {error}"[:500]
                         run.finished_at = dt.datetime.now(dt.UTC)
-                        run.output_summary = {"contract": contract.__name__}
+
+                    model_run = await self._gateway.record(
+                        session, tenant_id=tenant_id, call=call, agent_run_id=run_id)
+                    if call.exception is not None:
+                        # إخفاقٌ بلا عبورِ حدٍّ: معلومٌ فيُسمّى باسمه.
+                        _fail(call.exception)
+                        failure = call.exception
+                    else:
+                        try:
+                            parsed = parse_contract(contract, call.response.structured)
+                        except ContractViolation as exc:
+                            # **والمزوّدُ نفّذ يقينًا** — فالعقدُ هو الذي خُولف،
+                            # لا الأثرُ الذي يُجهَل. فـ«أخفق» صادقةٌ هنا.
+                            _fail(exc)
+                            await audit.record(
+                                session, tenant_id=tenant_id,
+                                action="brain.contract_violation",
+                                object_type="agent_run",
+                                object_id=run_id, actor_user_id=actor_user_id,
+                                reason=str(exc)[:500], agent_run_id=run_id,
+                                model_run_id=model_run.id,
+                            )
+                            failure = exc
+                        else:
+                            run.status = "completed"
+                            run.finished_at = dt.datetime.now(dt.UTC)
+                            run.output_summary = {"contract": contract.__name__}
 
         if failure is not None:
             raise failure
+        assert run_id is not None  # noqa: S101 — نجاحٌ ⇒ صفٌّ مُودَع
         return parsed, run_id
 
     async def run_structured(

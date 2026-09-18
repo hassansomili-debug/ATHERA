@@ -607,7 +607,7 @@ async def acquire_lease(
     session: AsyncSession, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
     operation: str, key: str, fingerprint: str,
     ttl: dt.timedelta = LEASE_MODEL,
-) -> Lease | Replay | InProgress:
+) -> Lease | Replay | InProgress | ExternalUnknown:
     """يكتسب إجارةً، أو يعيد جوابًا مخزونًا، أو يقول «قائمٌ لغيرك».
 
     **وتُنادى داخل معاملةٍ يُودِعها المُنادي قبل أيّ عملٍ خارجيّ.** ولا
@@ -699,6 +699,32 @@ async def acquire_lease(
 
     if existing.state == COMPLETED and existing.response_status is not None:
         return Replay(status=existing.response_status, body=existing.response_body)
+
+    # ══ جيلٌ عبَر الحدَّ الخارجيَّ لا يُعاد نداؤه (RC-T1-H2-B4) ══
+    #
+    # **وهذا موضعُ افتراقِ B-4 عن B-2/B-3.** هناك كان الاستيلاءُ بعد انتهاء
+    # الإجارة صحيحًا لأنّ الهدفَ ثابتٌ والمحتوى هو هو: كتابةٌ ثانيةٌ إلى
+    # المفتاح نفسِه لا تُفسد شيئًا. وهنا الأثرُ **توليدٌ مدفوع**: تكرارُه
+    # يُحاسَب ولا يُسترَدّ.
+    #
+    # فإن حمل الصفُّ وسمَ العبور ولم يُثبَت لمزوّده إزالةُ تكرارٍ عند
+    # الخادم، فلا استيلاءَ ولا نداءَ — بل قولُ الحقّ: لا يُعرف.
+    #
+    # ولا يعرف هذا الموضعُ بائعًا: الوسمُ يحمل القدرةَ نصًّا كتبه المُنادي.
+    # **وإجارةٌ حيّةٌ تبقى «قائمًا لغيرك»**: صاحبُها ما زال يعمل وقد يعود
+    # بجوابٍ ناجح. فالغموضُ لا يُعلَن إلّا حين تنقضي الإجارةُ ولا مالكَ.
+    # ويُسأل الانقضاءُ **بساعة القاعدة** لا بساعة العمليّة.
+    marker = _external_attempted(existing)
+    if existing.state == IN_PROGRESS and marker is not None:
+        abandoned = (await session.execute(
+            select(IdempotencyRecord.id).where(
+                IdempotencyRecord.id == existing.id,
+                or_(IdempotencyRecord.lease_expires_at.is_(None),
+                    IdempotencyRecord.lease_expires_at <= func.now()))
+        )).first() is not None
+        if abandoned and marker.get("capability") != "server_deduplicated":
+            return ExternalUnknown(provider=str(marker.get("provider", "")),
+                                   capability=str(marker.get("capability", "")))
 
     # ══ استيلاءٌ: القاعدةُ هي الحَكَم، ولا قفلَ في العمليّة ══
     #
@@ -854,6 +880,91 @@ class LeaseGuard:
     replay: Replay | None = None
 
 
+# ══════════ حدُّ التنفيذ الخارجيّ — الطور B-4 ══════════
+#
+# ## العطبُ الذي يُغلق
+#
+# **مهلةٌ بعد إرسال طلبٍ إلى نموذجٍ لا تُثبت أنّ النموذجَ لم ينفّذ.** فقد
+# ولّد وحُوسِبنا ثمنَه، وانقطع السلكُ قبل أن يعود الجواب. فإعادةُ النداء
+# عميانًا تُنفّذ توليدًا ثانيًا وتُحاسَب مرّةً ثانية.
+#
+# ## ولمَ لا يكفي التقاطُ الاستثناء
+#
+# العمليّةُ قد تموت **وهي واقفةٌ داخل نداء المزوّد**: لا استثناءَ يُلتقَط،
+# ولا `finally` يعمل. فلا بدّ من تدوينٍ **مُودَعٍ قبل النداء** يقول إنّ
+# هذا الجيلَ عبَر الحدّ.
+#
+# وتبقى نافذةٌ ضيّقة: يُودَع التدوينُ ثمّ تموت العمليّةُ قبل أن يخرج
+# الطلبُ فعلًا. وحينها نقول «لا يُعرف» ونحن نعلم أنّه لم يُرسَل —
+# **والسلامةُ قبل الإعادةِ التلقائيّة**: أن نمتنع عن توليدٍ مدفوعٍ ثانٍ
+# أهونُ من أن نُكرّره.
+#
+# ## وكيف يُمثَّل في المخطَّط 0037 بلا هجرة
+#
+#     `state='in_progress'` وبلا وسمٍ  ⇒ عملٌ مهجورٌ **قبل** الحدّ  ⇒ يُستولى عليه
+#     `state='in_progress'` ومعه وسمٌ ⇒ عبَر الحدَّ ولا يُعرف أثرُه ⇒ لا يُعاد النداء
+#     `state='completed'`             ⇒ إعادةٌ من عندنا بلا مزوّد
+#     `state='failed'`                ⇒ إخفاقٌ **معلومٌ** قبل الحدّ ⇒ يُعاد بأمان
+#
+# والوسمُ يُكتب في `response_body` و`response_status` يبقى `NULL`، وشرطُ
+# الإعادة `state == COMPLETED and response_status is not None` — فلا يصير
+# وسمٌ جوابًا يُعاد. ويمحوه الإتمامُ لأنّه يكتب الجسمَ الحقيقيّ فوقه.
+#: مفتاحُ الوسم — حضورُه في `response_body` مع `in_progress` هو الدعوى.
+EXTERNAL_MARKER = "__athera_external_attempt__"
+
+#: رمزٌ صادقٌ لأثرٍ لا يُعرف — لا «أخفق» ولا «لم يُنفَّذ».
+EXTERNAL_UNKNOWN_CODE = "idempotency.external_result_unknown"
+
+
+class ExternalResultUnknown(AtheraError):
+    """قد يكون النموذجُ نفّذ — ولا يُعاد النداءُ تحت الجيل نفسِه.
+
+    ومن أراد تنفيذًا جديدًا فليبدأ **جيلًا جديدًا** بمفتاحٍ آخر: القرارُ
+    قرارُه، ولا يُتّخذ عنه صامتًا.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(EXTERNAL_UNKNOWN_CODE, status_code=409)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalUnknown:
+    """نتيجةُ تحكيمٍ: هذا الجيلُ عبَر الحدَّ ولا يُعرف أثرُه."""
+
+    provider: str = ""
+    capability: str = ""
+
+
+def _external_attempted(row) -> dict | None:
+    """وسمُ عبورِ الحدّ إن كان الصفُّ يحمله — وإلّا `None`."""
+    body = row.response_body
+    if isinstance(body, dict):
+        marker = body.get(EXTERNAL_MARKER)
+        if isinstance(marker, dict):
+            return marker
+    return None
+
+
+async def mark_external_attempt(
+    session: AsyncSession, lease: Lease, *, provider: str, capability: str,
+) -> Stale | None:
+    """يُدوّن عبورَ الحدّ — **ويُنادى في معاملةٍ تُودَع قبل نداء المزوّد**.
+
+    ومُسَيَّجٌ كالإنهاء: عاملٌ فقد إجارتَه لا يُدوّن على جيلٍ صار لغيره.
+    """
+    settled = await session.execute(
+        update(IdempotencyRecord)
+        .where(IdempotencyRecord.id == lease.record_id,
+               IdempotencyRecord.state == IN_PROGRESS,
+               IdempotencyRecord.lease_expires_at == lease.fence)
+        .values(response_body={EXTERNAL_MARKER: {
+            "provider": provider[:64], "capability": capability[:64]}})
+    )
+    if (getattr(settled, "rowcount", 0) or 0) == 1:
+        return None
+    return Stale()
+
+
 #: فضاءُ أسماءٍ ثابتٌ لهُويّات الطور B-3 — لا يتغيّر بعد اليوم.
 #:
 #: وتغييرُه يعني أنّ إعادةَ طلبٍ قديمٍ تُولّد هُويّةً أخرى، فيُكتب كائنٌ
@@ -962,6 +1073,13 @@ async def begin_leased_in(
         if replay_as_value:
             return LeaseGuard(operation=operation, replay=outcome)
         return LeaseGuard(operation=operation, answer=_replay_response(outcome))
+    if isinstance(outcome, ExternalUnknown):
+        # أثرٌ لا يُعرف — ٤٠٩ صادقة، ولا نداءَ ثانيًا لمزوّدٍ قد نفّذ.
+        from ..errors import athera_error_handler  # noqa: PLC0415
+
+        return LeaseGuard(operation=operation,
+                          answer=await athera_error_handler(request,
+                                                            ExternalResultUnknown()))
     if isinstance(outcome, InProgress):
         from ..errors import athera_error_handler  # noqa: PLC0415
 
@@ -993,6 +1111,76 @@ def _operation_of(request) -> str:
     """
     route_path = getattr(request.scope.get("route"), "path", None)
     return f"{request.method.upper()} {route_path or request.url.path}"
+
+
+async def begin_model(
+    request, maker, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
+    body: Any, ttl: dt.timedelta = LEASE_MODEL,
+) -> LeaseGuard:
+    """تحضيرُ مسارِ نموذج — إجارةٌ تُودَع قبل أيّ نداءٍ للمزوّد.
+
+    وهو `begin_leased` بمدّةِ النموذج؛ ويُفرَد باسمه لأنّ مساراتِ النموذج
+    تلزمها خطوةٌ لا يلزم غيرَها: `enter_external` قبل النداء.
+    """
+    return await begin_leased(request, maker, tenant_id=tenant_id,
+                              actor_user_id=actor_user_id, body=body, ttl=ttl)
+
+
+async def enter_external(maker, guard: LeaseGuard, *, provider: str,
+                         capability: str) -> None:
+    """يُودِع وسمَ عبورِ الحدّ — **ويُنادى قبل نداء المزوّد لا بعده**.
+
+    ومعاملتُه قصيرةٌ تُغلق فورًا، فلا تمتدّ معاملةٌ على انتظارِ نموذج
+    (RC-T1-H3). وبلا مفتاحٍ لا يفعل شيئًا: لا حجزَ فلا وسم.
+
+    ويرفع `LeaseSuperseded` إن كان قد فُقد السياج — فلا يُنادى المزوّدُ
+    باسم جيلٍ صار لغيرنا.
+    """
+    if guard.lease is None:
+        return
+    async with maker() as session:
+        if await mark_external_attempt(session, guard.lease, provider=provider,
+                                       capability=capability) is not None:
+            raise LeaseSuperseded
+
+
+class ModelBoundary:
+    """مُعلَّقٌ يقف على حدِّ المزوّد — ويُخبر أَعبَرَه الطلبُ أم لا.
+
+    ويُمرَّر إلى المنسّقِ أو المستخرِج، فيُنادى **بعد** التفويض و**قبل**
+    `invoke` مباشرةً. فموضعُ الحدِّ يملكه المنسّق، ولا يُكرَّر في ستّة
+    موجِّهات، ولا يُخمّنه موجِّهٌ من خارجه.
+
+    و`crossed` هي فارقُ الصدق: ما رُدّ قبل العبور **لم يبلغ مزوّدًا**،
+    فيُغلَق مفتاحُه إخفاقًا معلومًا ويبقى قابلًا لإعادةٍ صادقة؛ وما عبَر
+    لا يُعرف أثرُه فلا يُعاد نداؤه.
+    """
+
+    __slots__ = ("_maker", "_guard", "_provider", "_capability", "crossed")
+
+    def __init__(self, maker, guard: LeaseGuard, *, provider: str,
+                 capability: str) -> None:
+        self._maker = maker
+        self._guard = guard
+        self._provider = provider
+        self._capability = capability
+        self.crossed = False
+
+    async def __call__(self) -> None:
+        await enter_external(self._maker, self._guard, provider=self._provider,
+                             capability=self._capability)
+        self.crossed = True
+
+
+async def close_pre_external(maker, guard: LeaseGuard, *, reason: str) -> None:
+    """يُغلق جيلًا رُدّ **قبل** الحدّ — فيبقى المفتاحُ قابلًا للإعادة.
+
+    ولا يُوسَم غامضًا: لم يُنادَ مزوّدٌ، وهذا معلومٌ لا مظنون.
+    """
+    if guard.lease is None:
+        return
+    async with maker() as session:
+        await fail_leased(session, guard.lease, reason=reason)
 
 
 async def settle_leased(

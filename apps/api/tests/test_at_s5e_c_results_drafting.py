@@ -318,7 +318,10 @@ def test_the_router_refuses_before_persisting():
 
     from athera_api.routers import manuscript_drafting as drafting
 
-    source = inspect.getsource(drafting.draft_section)
+    # **والمتنُ `draft_section_body`** لا المعالجَ المُزخرَف (الطور B-4):
+    # خرج المتنُ كي ينادَه مُنادٍ داخليٌّ بلا طلبٍ ولا مفتاح. والدعوى هي
+    # هي: الرفضُ الحتميُّ قبل الإيداع.
+    source = inspect.getsource(drafting.draft_section_body)
     assert source.index("draft_checks.fabrications") < source.index("generate.persist")
     assert "drafting.unsupported_content" in source
 

@@ -78,7 +78,7 @@ class ModelExtractor(Extractor):
     name = "model"
 
     def __init__(self, gateway, session_or_maker, tenant_id: uuid.UUID,
-                 classification: str = "C2") -> None:
+                 classification: str = "C2", before_provider_call=None) -> None:
         """**دالّةُ جلسةٍ أو جلسة** — والأولى وحدها تُبقي الحدَّ سليمًا.
 
         وكان هذا المُستخرِج يمسك `AsyncSession` ويُمرّرها إلى
@@ -95,6 +95,9 @@ class ModelExtractor(Extractor):
         self._session = None if self._session_maker else session_or_maker
         self._tenant_id = tenant_id
         self._classification = classification
+        #: مُعلَّقُ حدِّ المزوّد (RC-T1-H2-B4) — يُنادى بعد التفويضِ وقبل
+        #: النداءِ مباشرةً، فما رُدّ محليًّا لا يُوسَم غامضًا.
+        self._before_provider_call = before_provider_call
 
     async def _call(self, request):
         """النداءُ ثمّ التسجيل — منفصلَين إن أمكن، مجتمعَين إن لزم."""
@@ -102,17 +105,27 @@ class ModelExtractor(Extractor):
             return await self._gateway.generate_structured(
                 self._session, tenant_id=self._tenant_id, request=request)
 
-        # ── بلا معاملة: الإذن ثمّ الشبكة ──
+        # ── بلا معاملة: الإذن ثمّ الحدُّ ثمّ الشبكة ──
         self._gateway.authorize(request)
+        # ══ الحدُّ بعينه: لا شيءَ بين هذا وبين `invoke` ══
+        boundary_crossed = False
+        if self._before_provider_call is not None:
+            await self._before_provider_call()
+            boundary_crossed = True
         call = await self._gateway.invoke(request)
 
         # ── معاملةٌ قصيرة: التسجيل، نجح النداء أم أخفق ──
         #
         # **والرفعُ بعد إغلاق المعاملة لا داخله**: الرفعُ داخلها يُلغي
         # السجلَّ الذي كتب الإخفاقَ للتوّ.
+        #
+        # **وأثرٌ عبَر الحدَّ ثمّ انقطع لا يُسمّى «خطأً».** و`model_runs`
+        # بلا قيدٍ على الحال، فيقول `ambiguous` صراحةً (RC-T1-H2-B4).
+        ambiguous = (call.exception is not None and boundary_crossed)
         async with self._session_maker() as session:
             model_run = await self._gateway.record(
-                session, tenant_id=self._tenant_id, call=call)
+                session, tenant_id=self._tenant_id, call=call,
+                status_override="ambiguous" if ambiguous else None)
         if call.exception is not None:
             raise call.exception
         return call.response, model_run
