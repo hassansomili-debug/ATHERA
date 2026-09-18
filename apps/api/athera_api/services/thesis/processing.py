@@ -557,6 +557,29 @@ def _stale_after() -> dt.timedelta:
 STALE_AFTER: Final[dt.timedelta] = _stale_after()
 
 
+#: فضاءُ أسماءٍ ثابتٌ لهُويّةِ تشغيلةِ المعالجة (RC-T1-H2-B5).
+#:
+#: **ولا يُشتقُّ من معرّفِ طلبٍ ولا من مفتاحٍ خامٍّ ولا من زمنٍ ولا من الفاعلِ
+#: المستعيد.** هُويّةُ التشغيلة يجب أن تتطابق حين يستأنف عاملٌ آخرُ المحاولةَ
+#: نفسَها، وأن تختلف حين يقرّر الباحثُ إعادةً جديدة — فالمحاولةُ وحدها هي
+#: التي تفرّق.
+PROCESSING_NAMESPACE: Final = uuid.UUID("3d5f1c84-9a27-5e6b-8f41-b2c7d0e93a56")
+
+
+def run_id_for(tenant_id: uuid.UUID, file_id: uuid.UUID, attempt: int) -> uuid.UUID:
+    """هُويّةُ تشغيلةِ الاستخراجِ لمحاولةٍ واحدة — **ثابتةٌ عبر الاستئناف**.
+
+    فالتشغيلةُ كانت تُنشأ بمعرّفٍ عشوائيٍّ قبل كلّ عمل، فاستئنافُ محاولةٍ
+    مهجورةٍ يخلق تشغيلةً ثانيةً للعمل نفسِه: عددان في القاعدة لعملٍ واحد،
+    ومرشّحاتٌ تُنسب إلى تشغيلةٍ غير التي بدأتها.
+
+    والمحاولةُ الجديدةُ المقصودةُ تعطي معرّفًا آخرَ — وهو المطلوب: جيلُ
+    استخراجٍ جديدٌ لا استئنافٌ لقديم.
+    """
+    return uuid.uuid5(PROCESSING_NAMESPACE,
+                      f"thesis-processing:{tenant_id}:{file_id}:{attempt}")
+
+
 class ProcessingSuperseded(Exception):
     """كُتب بعد أن فُقد السياج — **وتُرجَع معاملتُه كلُّها**.
 
@@ -636,6 +659,32 @@ async def is_stale(
 
 
 
+async def within_ledger_horizon(
+    session: AsyncSession, *, tenant_id: uuid.UUID, file_id: uuid.UUID, attempt: int,
+) -> bool:
+    """أما زال سِجلُّ تنفيذِ أقسامِ هذه المحاولةِ قادرًا على إثباتِ ما تمّ؟
+
+    ومرساةُ العمر `ExtractionRun.started_at` للمحاولة نفسِها — لا
+    `processing_state_changed_at`، فذاك يتجدّد مع كلِّ استعادةٍ فيُخفي العمرَ
+    الحقيقيَّ إلى الأبد.
+
+    ويُقارَن **بساعة القاعدة**، وبهامشِ أمانٍ دون البقاء الكامل: محاولةٌ
+    تُستعاد قُبيل الانقضاء قد تعمل ساعةً ثمّ تجد سجلَّها قد زال تحتها.
+    """
+    from ..idempotency import TTL  # noqa: PLC0415
+
+    run_id = run_id_for(tenant_id, file_id, attempt)
+    # لا تشغيلةَ بعد؟ فلا سِجلَّ أقسامٍ يُخشى انقضاؤه — والاستعادةُ آمنة.
+    horizon = TTL - STALE_AFTER
+    safe = (await session.execute(
+        text("SELECT started_at > now() - CAST(:horizon AS interval) "
+             "  FROM extraction_runs WHERE id = :run_id AND tenant_id = :tenant_id"),
+        {"horizon": f"{int(horizon.total_seconds())} seconds",
+         "run_id": str(run_id), "tenant_id": str(tenant_id)},
+    )).scalar_one_or_none()
+    return True if safe is None else bool(safe)
+
+
 async def claim_generation(
     session: AsyncSession, *, tenant_id: uuid.UUID, thesis_id: uuid.UUID,
 ) -> ProcessingClaim:
@@ -665,6 +714,34 @@ async def claim_generation(
         stale = await is_stale(session, tenant_id=tenant_id, thesis_id=thesis_id)
         if not stale:
             raise ProcessingConflict("thesis.processing_in_flight", state=state)
+        if not await within_ledger_horizon(
+                session, tenant_id=tenant_id, file_id=file_id, attempt=attempt):
+            # ══ أفقُ السِّجلّ: بعده لا تُستعاد المحاولةُ نفسُها (H2-B5) ══
+            #
+            # فسِجلُّ تنفيذِ الأقسام له بقاءٌ منطقيٌّ (٢٤ ساعة، الترحيل 0037).
+            # ومحاولةٌ تُستعاد بعد انقضائه تجد مفاتيحَ أقسامها **كأنّها
+            # جديدة** — فيُنادى المزوّدُ من جديدٍ على أقسامٍ ربّما نُفِّذت.
+            # وذاك بعينه ما يمنعه الطور B-4.
+            #
+            # فلا تُستعاد تلك المحاولةُ تلقائيًّا: تُغلَق بصدقٍ، ويبدأ
+            # **جيلٌ جديدٌ مقصود** — رقمٌ جديد، وتشغيلةٌ جديدة، ومفاتيحُ
+            # أقسامٍ جديدة. فالنداءُ حينئذٍ مأذونٌ لا أعمى.
+            claimed = (await session.execute(
+                update(Thesis)
+                .where(Thesis.id == thesis_id, Thesis.tenant_id == tenant_id,
+                       Thesis.processing_attempts == attempt,
+                       Thesis.processing_state.in_(IN_FLIGHT))
+                .values(processing_state=QUEUED,
+                        processing_state_changed_at=func.now(),
+                        processing_attempts=Thesis.processing_attempts + 1,
+                        failure_code=None, failure_detail=None)
+                .returning(Thesis.processing_attempts,
+                           Thesis.processing_state_changed_at)
+                .execution_options(synchronize_session=False)
+            )).first()
+            if claimed is None:  # pragma: no cover — القفلُ يمنعها
+                raise ProcessingConflict("thesis.processing_in_flight", state=state)
+            return ProcessingClaim(thesis_id, file_id, claimed[0], claimed[1])
         # ── استعادةٌ: الجيلُ نفسُه، وسياجٌ جديدٌ بساعة القاعدة ──
         fence = (await session.execute(
             update(Thesis)

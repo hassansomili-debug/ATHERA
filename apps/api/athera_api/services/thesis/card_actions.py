@@ -288,6 +288,7 @@ def compute(
     archived: bool = False,
     opportunities: int = 0,
     thesis_mining_state: str = "not_started",
+    processing_stale: bool = False,
 ) -> CardActions:
     """آلةُ حالِ البطاقة — **وكلُّ فعلٍ معروضٍ فعلٌ يقبله الخادم**.
 
@@ -311,10 +312,25 @@ def compute(
       ٦ **والمؤرشَفة لا تُعرض عليها أفعالُ العمل**، بل الاسترجاع وحده:
         قراءةٌ أو تنقيبٌ على سجلٍّ مُخفًى يكتب في ما لا يراه صاحبه.
     """
-    in_flight = processing_state in processing.IN_FLIGHT
+    # ══ «جاريةٌ الآن» غيرُ «عالقةٌ منذ ساعات» (RC-T1-H2-B5) ══
+    #
+    # **والفرقُ يُقال، ولا يُترك الباحثُ أمام دوّارٍ لا ينتهي.** مهامُّ
+    # `BackgroundTasks` تعيش في عملية الـAPI: إعادةُ نشرٍ تتركها لا تعمل
+    # وحالُها `parsing`. فكانت البطاقةُ تقول «جارٍ» أبدًا، ولا فعلَ يُعرض.
+    #
+    # فحالٌ جاريةٌ **حيّة**: `is_running` صادقة، ولا فعلَ استعادة.
+    # وحالٌ جاريةٌ **مهجورة**: لا يُدَّعى أنّ عاملًا يعمل، ويُعرض فعلُ
+    # الاستعادة — وهو `reprocess` نفسُه، فمساره يستعيد الجيلَ عينَه.
+    #
+    # **و`processing_stale` قيمةٌ تصل محسوبةً بساعة القاعدة** — ولا تُحسب
+    # هنا ولا تُكتب حالٌ في طلبِ قراءة ليجمُل العرض.
+    live = processing_state in processing.IN_FLIGHT and not processing_stale
+    stranded = processing_state in processing.IN_FLIGHT and processing_stale
+    in_flight = live
     has_file = file_id is not None
     # **والمؤرشَفة ساكنة**: لا يُعرض عليها فعلُ عملٍ ما دامت خارج القائمة.
-    retryable = has_file and processing_state in processing.RETRYABLE and not archived
+    retryable = has_file and not archived and (
+        processing_state in processing.RETRYABLE or stranded)
 
     can_review = (not in_flight) and (not archived) and processing_state in REVIEWABLE
     # «اقرأ» و«أعد القراءة» نقطةٌ واحدة وفعلان مختلفان في نصّهما: أوّلُ قراءةٍ
@@ -381,7 +397,7 @@ def compute(
         primary = None
 
     blocked: str | None = None
-    if in_flight:
+    if live:
         blocked = _pick(locale, *processing.STATE_LABELS[processing_state])
     elif processing_state == processing.TEXT_LAYER_MISSING:
         blocked = _pick(locale, *processing.FAILURE_LABELS["text_layer_missing"])

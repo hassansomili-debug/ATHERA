@@ -1351,7 +1351,26 @@ def _search_predicate(tenant_id: uuid.UUID, term: str | None):
 _UNSET = object()
 
 
-def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
+def _stale_expression(state_column, changed_column):
+    """أمهجورةٌ هذه المحاولة؟ — **تعبيرٌ يُقيَّم في القاعدة بساعتها**.
+
+    ولا يُقارَن بزمنِ العمليّة: خوادمُ عدّةٌ وساعاتُها تتفاوت، والحَكَمُ
+    واحد. والعتبةُ من `processing.STALE_AFTER` المشتقّةِ من زمنِ العملِ
+    نفسِه، فلا رقمَ يُكتب هنا ولا ينفصل عنها.
+    """
+    from sqlalchemy import Interval, and_, cast, func, literal, or_  # noqa: PLC0415
+
+    return and_(
+        state_column.in_(processing.IN_FLIGHT),
+        or_(changed_column.is_(None),
+            changed_column <= func.now() - cast(
+                literal(f"{int(processing.STALE_AFTER.total_seconds())} seconds"),
+                Interval)),
+    )
+
+
+def _card(row, locale: str, *, processing_stale: bool = False,
+          source_filename=_UNSET, sections=_UNSET,
           opportunities=_UNSET, results=_UNSET, archived=_UNSET) -> ThesisResponse:
     """بطاقةٌ واحدة — **والرقمُ فيها لا يخرج بلا سببه**.
 
@@ -1451,7 +1470,10 @@ def _card(row, locale: str, *, source_filename=_UNSET, sections=_UNSET,
             # **ويُقرأ العمودُ صراحةً.** على مخطَّط 0031 هو قائمٌ فعلًا،
             # وقيمةٌ افتراضية تُخفي إسقاطًا ناقصًا بدل أن تكشفه. والتوافقُ
             # المتدحرج يُحَلّ عند حدّ النشر: ترحيلٌ أوّلًا ثمّ خدمة.
-            thesis_mining_state=row.mining_state))),
+            thesis_mining_state=row.mining_state,
+            # **وهجرانُ المحاولةِ يصل محسوبًا بساعة القاعدة** (H2-B5) —
+            # فبطاقةٌ تقول «جارٍ» أبدًا بعد إعادةِ نشرٍ كذبٌ بالانتظار.
+            processing_stale=processing_stale))),
     )
 
 
@@ -1557,12 +1579,21 @@ async def list_theses(
         .scalar_subquery()
     )
 
+    # **وهجرانُ المحاولةِ عمودٌ مشتقٌّ في العبارة نفسِها** (H2-B5) — لا
+    # رحلةٌ لكلّ بطاقة: القاعدةُ في مومباي والخادمُ في سنغافورة، واستعلامٌ
+    # إضافيٌّ لكلّ صفٍّ يعني عشراتِ الرحلات في شاشةٍ واحدة. وساعةُ القاعدة
+    # هي الحَكَم، ولا يُكتب شيءٌ في طلبِ قراءة.
+    stale = _stale_expression(window.c.processing_state,
+                              window.c.processing_state_changed_at)
+
     rows = (await session.execute(
         select(window, filename.label("source_filename"),
                sections.label("sections_extracted"),
                opportunities.label("opportunities_found"),
-               results.label("results_extracted"))
+               results.label("results_extracted"),
+               stale.label("processing_stale"))
         .order_by(window.c.created_at.desc(), window.c.id.desc())
     )).all()
-    return [_card(row, principal.locale) for row in rows]
+    return [_card(row, principal.locale,
+                  processing_stale=bool(row.processing_stale)) for row in rows]
 

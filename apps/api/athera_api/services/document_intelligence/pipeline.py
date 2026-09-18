@@ -27,6 +27,10 @@ from ...models.thesis import Thesis
 from ..extraction.base import quote_is_grounded
 from ..parsing import NoTextLayer, UnsupportedDocument, parse
 from ..thesis import processing
+from ..thesis.processing import (  # noqa: F401 — يُعاد تصديرُه للمُنادين
+    PROCESSING_NAMESPACE,
+    run_id_for,
+)
 from . import section_ledger
 from .contracts import STATUS_EXTRACTED, STATUS_NOT_FOUND, ExtractionBatch
 from .deterministic import extract as deterministic_extract
@@ -713,29 +717,6 @@ async def _record_mining_failure(
             thesis.mining_last_error = code
     except Exception:  # noqa: BLE001, S110 — تسجيلُ الفشل لا يُفشل شيئًا بدوره
         pass
-
-
-#: فضاءُ أسماءٍ ثابتٌ لهُويّةِ تشغيلةِ المعالجة (RC-T1-H2-B5).
-#:
-#: **ولا يُشتقُّ من معرّفِ طلبٍ ولا من مفتاحٍ خامٍّ ولا من زمنٍ ولا من الفاعلِ
-#: المستعيد.** هُويّةُ التشغيلة يجب أن تتطابق حين يستأنف عاملٌ آخرُ المحاولةَ
-#: نفسَها، وأن تختلف حين يقرّر الباحثُ إعادةً جديدة — فالمحاولةُ وحدها هي
-#: التي تفرّق.
-PROCESSING_NAMESPACE: Final = uuid.UUID("3d5f1c84-9a27-5e6b-8f41-b2c7d0e93a56")
-
-
-def run_id_for(tenant_id: uuid.UUID, file_id: uuid.UUID, attempt: int) -> uuid.UUID:
-    """هُويّةُ تشغيلةِ الاستخراجِ لمحاولةٍ واحدة — **ثابتةٌ عبر الاستئناف**.
-
-    فالتشغيلةُ كانت تُنشأ بمعرّفٍ عشوائيٍّ قبل كلّ عمل، فاستئنافُ محاولةٍ
-    مهجورةٍ يخلق تشغيلةً ثانيةً للعمل نفسِه: عددان في القاعدة لعملٍ واحد،
-    ومرشّحاتٌ تُنسب إلى تشغيلةٍ غير التي بدأتها.
-
-    والمحاولةُ الجديدةُ المقصودةُ تعطي معرّفًا آخرَ — وهو المطلوب: جيلُ
-    استخراجٍ جديدٌ لا استئنافٌ لقديم.
-    """
-    return uuid.uuid5(PROCESSING_NAMESPACE,
-                      f"thesis-processing:{tenant_id}:{file_id}:{attempt}")
 
 
 async def ensure_thesis_for_file(
