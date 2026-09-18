@@ -295,13 +295,24 @@ async def test_building_the_shell_without_consent_is_allowed_but_ai_is_not(two_t
     assert outcome.manuscript_id is not None
 
     # **والإذنُ لم يُمنح ولم يُفترض** — ويُسمّى فيما يمنع ما هو أبعد.
+    #
+    # **ولا جلسةَ تُستعمل بعد خروج مالكها.** كان سؤالُ الإذن يقع على
+    # `session` بعد انتهاء `async with`: و`close()` يُخلي الجلسةَ ولا
+    # يُعطّلها، فالاستعمالُ التالي يفتح معاملةً جديدةً ويسحب اتصالًا لا
+    # مالكَ له — فيبقى مسحوبًا حتى يجمعه جامعُ المهملات. وذاك تحذيرُ
+    # «اتصالٌ غير مُعاد» الذي كان يظهر في فحصٍ آخر لا في هذا.
+    #
+    # فيُعبَر الحدُّ بقيمةٍ عاديّة (`file_id`) لا بجلسةٍ ولا بصفّ ORM.
     async with tenant_session(tid, uid) as session:
         thesis = (await session.execute(
             select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
         view = await journey.view(session, tenant_id=tid, thesis=thesis)
+        file_id = thesis.file_id
     assert journey.BLOCK_NO_CONSENT in view["blocking_reasons"]
-    assert await journey.consent_granted(
-        session, tenant_id=tid, file_id=thesis.file_id) is False
+
+    async with tenant_session(tid, uid) as session:
+        assert await journey.consent_granted(
+            session, tenant_id=tid, file_id=file_id) is False
 
 
 @requires_db
