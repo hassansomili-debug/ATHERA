@@ -7,14 +7,15 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import tenant_session_maker
 from ..deps import Principal, get_principal, get_session
-from ..errors import AtheraError, NotFound
-from ..models.files import File
+from ..errors import AtheraError
 from ..models.research import FactCandidate, ResearcherMemory, ResearcherProfile
 from ..schemas.profile import (
     DecisionRequest,
@@ -25,7 +26,11 @@ from ..schemas.profile import (
     ProfilePatch,
     ProfileResponse,
 )
-from ..services import audit, ingestion, memory
+from ..providers.gateway import (
+    provider_idempotency_capability,
+    provider_readiness,
+)
+from ..services import audit, idempotency, ingestion, library, memory
 from ..services.extraction.base import Extractor
 from ..services.extraction.rules import RuleBasedExtractor
 from ..services.parsing import UnsupportedDocument, parse
@@ -113,9 +118,10 @@ async def patch_profile(
 
 @router.post("/import", response_model=ImportResponse, status_code=status.HTTP_202_ACCEPTED)
 async def import_document(
+    request: Request,
     payload: ImportRequest,
     principal: Principal = Depends(get_principal),
-) -> ImportResponse:
+) -> ImportResponse | JSONResponse:
     """§35.1 — ملف مرفوع → مقاطع بموضع → مرشّحات غير متحققة.
 
     **ولا معاملةَ قاعدةٍ عبر التخزين ولا عبر النموذج** (RC-T1-H3):
@@ -149,12 +155,15 @@ async def import_document(
     # فصار الإنشاءُ في معاملة الإنهاء مع الاستخراج: إمّا يقعان معًا أو
     # لا يقع أيٌّ منهما.
     async with session_maker() as session:
-        record = (await session.execute(
-            select(File).where(File.id == payload.file_id,
-                               File.tenant_id == principal.tenant_id)
-        )).scalar_one_or_none()
-        if record is None:
-            raise NotFound("file.not_found")
+        # ══ تفويضُ الملفِّ الحاضر، لا مجرَّدُ استعلامٍ بالمستأجر (H2-B4) ══
+        #
+        # **وكان استعلامًا بالمستأجر وحده.** فزميلٌ في المستأجر نفسِه بلا
+        # منحةٍ على الملفّ كان يستورد ملفَّ غيره — ويُعيده بمفتاحٍ قديم
+        # حتى بعد سحب وصوله. فيُقرأ بالحارس المشترك (`library.owned_file`)
+        # الذي يفحص المنحةَ، **قبل** أيّ تحكيمِ مفتاح.
+        record = await library.owned_file(
+            session, tenant_id=principal.tenant_id, user_id=principal.user_id,
+            file_id=payload.file_id, action="read")
         if record.status != "stored":
             raise AtheraError("ingestion.file_not_ready", status_code=409,
                               status=record.status)
@@ -162,18 +171,45 @@ async def import_document(
         storage_key = record.storage_key
         content_type = record.content_type
         filename = record.original_filename
+        checksum = record.checksum_sha256
+
+        # ══ الحجزُ **بعد** التفويض ══
+        #
+        # والبصمةُ تحمل **هُويّةَ المصدر**: تجزئةُ الملفّ ونوعُه والمُستخرِج.
+        # فمحتوًى تغيّر تحت المفتاح نفسِه طلبٌ آخرُ في معناه — يُردّ
+        # بتعارضٍ ولا يُعاد عليه استخراجُ محتوًى آخر.
+        guard = idempotency.LeaseGuard()
+        if idempotency.is_keyed(request):
+            guard = await idempotency.begin_leased_in(
+                session, request,
+                tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+                body={
+                    "file_id": str(payload.file_id),
+                    "extractor": payload.extractor,
+                    "checksum_sha256": checksum,
+                    "content_type": content_type,
+                },
+                ttl=idempotency.LEASE_MODEL)
+    if guard.answer is not None:
+        return guard.answer
 
     # ── الطورُ (٢): التخزين، بلا معاملة ──
     data = await ingestion.load_object_bytes(storage_key)
 
     # ── الطورُ (٣): التفكيكُ ثمّ الاقتراح، بلا معاملةٍ مفتوحة ──
+    # **والقراءةُ من التخزين ليست أثرَ نموذج**: لا وسمَ حدٍّ حولها. فإن
+    # أخفقت قبل النموذج بقي المفتاحُ قابلًا لإعادةٍ صادقة.
+    boundary = idempotency.ModelBoundary(
+        session_maker, guard, provider=provider_readiness()[0],
+        capability=provider_idempotency_capability())
     extractor: Extractor = RuleBasedExtractor()
     if payload.extractor == "model":
         from ..providers.gateway import ModelGateway  # noqa: PLC0415
         from ..services.extraction.model import ModelExtractor  # noqa: PLC0415
 
         extractor = ModelExtractor(
-            ModelGateway(), session_maker, principal.tenant_id, classification="C2"
+            ModelGateway(), session_maker, principal.tenant_id, classification="C2",
+            before_provider_call=(boundary if guard.lease is not None else None),
         )
     try:
         chunks = parse(data, content_type, filename)
@@ -187,7 +223,20 @@ async def import_document(
             )
         raise AtheraError("ingestion.unsupported_document", status_code=422,
                           detail=str(exc)) from exc
-    proposal = await extractor.propose(chunks)
+    try:
+        proposal = await extractor.propose(chunks)
+    except Exception as exc:  # noqa: BLE001 — يُفرَّق: قبل الحدِّ أم بعده
+        if guard.lease is not None and not boundary.crossed:
+            # قراءةٌ أو تفكيكٌ أو تفويضُ مزوّدٍ — كلُّها قبل أيّ نداء.
+            await idempotency.close_pre_external(
+                session_maker, guard, reason=f"pre_external:{type(exc).__name__}")
+            raise
+        if guard.lease is not None:
+            from ..errors import athera_error_handler  # noqa: PLC0415
+
+            return await athera_error_handler(
+                request, idempotency.ExternalResultUnknown())
+        raise
 
     # ── الطورُ (٤): الإنشاءُ والتخزينُ والإيداع — **في معاملةٍ واحدة** ──
     #
@@ -198,6 +247,19 @@ async def import_document(
     # ومِلفٌّ كان موجودًا قبل الطلب لا يُمَسّ: `_get_or_create_profile`
     # تقرؤه ولا تُنشئ بديلًا، ولا تحذف شيئًا عند الإخفاق.
     async with session_maker() as session:
+        # ── وإعادةُ التفويضِ وفحصُ هُويّةِ المصدر قبل الإيداع ──
+        #
+        # فالقراءةُ والنموذجُ انتظرا، وقد تُسحب المنحةُ أو يتغيّر الملفّ.
+        fresh_file = await library.owned_file(
+            session, tenant_id=principal.tenant_id, user_id=principal.user_id,
+            file_id=payload.file_id, action="read")
+        if fresh_file.status != "stored":
+            raise AtheraError("ingestion.file_not_ready", status_code=409,
+                              status=fresh_file.status)
+        if guard.lease is not None and fresh_file.checksum_sha256 != checksum:
+            raise AtheraError("ingestion.source_changed", status_code=409,
+                              expected_checksum=checksum,
+                              current_checksum=fresh_file.checksum_sha256)
         await _get_or_create_profile(session, principal.tenant_id, principal.user_id)
         run, candidates = await ingestion.ingest_file(
             session,
@@ -208,13 +270,18 @@ async def import_document(
             raw_bytes=data,
             proposal=proposal,
         )
-        return ImportResponse(
+        answer = ImportResponse(
             extraction_run_id=run.id,
             chunks_parsed=run.chunks_parsed,
             candidates_proposed=run.candidates_proposed,
             candidates_rejected_unquoted=run.candidates_rejected_unquoted,
             extractor=run.extractor,
         )
+        # **الاستخراجُ والإتمامُ في المعاملة نفسِها**: كلُّها أو لا شيء.
+        await idempotency.settle_leased(
+            session, guard, status=status.HTTP_202_ACCEPTED,
+            body=jsonable_encoder(answer))
+        return answer
 
 
 @router.get("/facts", response_model=list[FactCandidateResponse])
