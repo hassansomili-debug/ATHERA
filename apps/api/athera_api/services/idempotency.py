@@ -770,6 +770,70 @@ class LeaseGuard:
     lease: Lease | None = None
     answer: Any = None
     operation: str = ""
+    #: هُويّةٌ ثابتةٌ لهذا النطاق — `None` بلا مفتاح (الطور B-3).
+    stable_id: uuid.UUID | None = None
+    #: الإعادةُ **قيمةً** حين يطلب المسارُ ذلك: جسمٌ مخزونٌ يُعاد بناؤه.
+    #:
+    #: ولهذا موضعٌ واحد: جوابٌ يحمل **قدرةً عابرة** (رابطٌ موقّع) لا يجوز
+    #: تخزينُها ولا إعادتُها بعد انتهائها. فيُخزَّن ما يدوم، ويُولَّد
+    #: العابرُ من جديدٍ عند كلّ إعادة.
+    replay: Replay | None = None
+
+
+#: فضاءُ أسماءٍ ثابتٌ لهُويّات الطور B-3 — لا يتغيّر بعد اليوم.
+#:
+#: وتغييرُه يعني أنّ إعادةَ طلبٍ قديمٍ تُولّد هُويّةً أخرى، فيُكتب كائنٌ
+#: ثانٍ لنيّةٍ واحدة. فهو ثابتٌ كالمخطَّط، لا إعدادٌ يُضبط.
+STABLE_NAMESPACE = uuid.UUID("6f1c9a52-0e4d-5b77-9c3a-2d8e41b0f6a7")
+
+
+def stable_object_id(*, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
+                     operation: str, key_digest: str) -> uuid.UUID:
+    """هُويّةٌ **تُشتقّ ولا تُخزَّن** — فيبلغها المُستولي كما بلغها الأوّل.
+
+    ## لمَ لا `uuid4()`
+
+    مسارُ الرفع كان يُولّد `uuid4()` بعد التجزئة، ومنه مفتاحُ التخزين.
+    فإعادةٌ بعد إخفاقٍ **غامض** تُولّد معرّفًا جديدًا ومفتاحًا جديدًا —
+    فيصير لنيّةٍ واحدةٍ كائنان في المخزن، أحدهما لا صفَّ له. وذاك ما
+    يمنعه هذا الطور.
+
+    ## ولمَ اشتقاقٌ لا عمودٌ في المخطَّط
+
+    المُستولي بعد انتهاء الإجارة يملك المدخلاتِ الأربعةَ نفسَها (هي نطاقُ
+    `uq_idempotency_scope` بعينه)، فيشتقّ الهُويّةَ نفسَها بلا قراءةٍ ولا
+    عمودٍ جديد. **فلا حاجةَ إلى هجرة 0038.**
+
+    ## والنطاقُ أربعةٌ لا أقلّ
+
+    المستأجر، والفاعل، والعمليّة، و**بصمةُ** المفتاح. فلا يتصادم مستأجران
+    ولا فاعلان ولا مساران على مفتاحٍ واحد.
+
+    **ولا يدخل الخامُ هنا قطّ** — `key_digest` سبق أن مرّ بـ`sha256`،
+    فالهُويّةُ المشتقّةُ لا تُفشي المفتاح. ولا يُشتقّ من اسم ملفٍّ ولا من
+    تجزئةِ محتوًى ولا من معرّفٍ يرسله العميل: أوّلُها يتصادم، وآخرُها
+    يُمكّن عميلًا من انتحال هُويّةِ ملفِّ غيره.
+    """
+    seed = f"{tenant_id}|{actor_user_id}|{operation}|{key_digest}"
+    return uuid.uuid5(STABLE_NAMESPACE, seed)
+
+
+def stable_id_for(request, *, tenant_id: uuid.UUID,
+                  actor_user_id: uuid.UUID) -> uuid.UUID | None:
+    """الهُويّةُ الثابتةُ لهذا الطلب — **بلا قاعدةٍ ولا معاملة**.
+
+    دالّةٌ نقيّة: ترويسةٌ ونطاقٌ ثمّ اشتقاق. ولهذا ثمرةٌ عمليّة — المسارُ
+    الموقّع يبني مفتاحَه ويوقّعه **قبل** أن يفتح معاملةً أصلًا، فلا تمتدّ
+    معاملةٌ على نداءٍ يعدّه الماسحُ تخزينًا.
+
+    وتُعيد `None` بلا مفتاح، وترفع ٤٠٠ لمفتاحٍ مشوَّه — كسائر الطبقة.
+    """
+    key = validate_key(request.headers.get(HEADER))
+    if key is None:
+        return None
+    return stable_object_id(tenant_id=tenant_id, actor_user_id=actor_user_id,
+                            operation=_operation_of(request),
+                            key_digest=digest_key(key))
 
 
 def is_keyed(request) -> bool:
@@ -785,7 +849,7 @@ def is_keyed(request) -> bool:
 
 async def begin_leased(
     request, maker, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
-    body: Any, ttl: dt.timedelta,
+    body: Any, ttl: dt.timedelta, replay_as_value: bool = False,
 ) -> LeaseGuard:
     """التحضير في معاملةٍ **خاصّةٍ به** ثمّ يُعيد التحكّم بلا معاملةٍ مفتوحة.
 
@@ -801,12 +865,13 @@ async def begin_leased(
     async with maker() as session:
         return await begin_leased_in(
             session, request, tenant_id=tenant_id, actor_user_id=actor_user_id,
-            body=body, ttl=ttl)
+            body=body, ttl=ttl, replay_as_value=replay_as_value)
 
 
 async def begin_leased_in(
     session: AsyncSession, request, *, tenant_id: uuid.UUID,
     actor_user_id: uuid.UUID, body: Any, ttl: dt.timedelta,
+    replay_as_value: bool = False,
 ) -> LeaseGuard:
     """التحضيرُ نفسُه **في معاملةٍ يملكها المُنادي**.
 
@@ -822,6 +887,9 @@ async def begin_leased_in(
     fingerprint = canonical_fingerprint(
         method=request.method, operation=operation, body=body,
         query=dict(request.query_params))
+    # **تُشتقّ قبل أيّ عملٍ خارجيّ**، ويشتقّها المُستولي كما اشتقّها الأوّل.
+    stable = stable_object_id(tenant_id=tenant_id, actor_user_id=actor_user_id,
+                              operation=operation, key_digest=digest_key(key))
 
     try:
         outcome = await acquire_lease(
@@ -836,17 +904,22 @@ async def begin_leased_in(
             request_id=request.headers.get("x-request-id"))
         from ..errors import athera_error_handler  # noqa: PLC0415
 
-        return LeaseGuard(operation=operation,
+        return LeaseGuard(operation=operation, stable_id=stable,
                           answer=await athera_error_handler(request, conflict))
 
     if isinstance(outcome, Replay):
-        return LeaseGuard(operation=operation, answer=_replay_response(outcome))
+        # **والإعادةُ قيمةً حين يطلبها المسار**: جوابٌ يحمل قدرةً عابرة
+        # يُعاد بناؤه من المخزون الدائم، ولا يُعاد المخزونُ حرفيًّا.
+        if replay_as_value:
+            return LeaseGuard(operation=operation, stable_id=stable, replay=outcome)
+        return LeaseGuard(operation=operation, stable_id=stable,
+                          answer=_replay_response(outcome))
     if isinstance(outcome, InProgress):
         from ..errors import athera_error_handler  # noqa: PLC0415
 
-        return LeaseGuard(operation=operation,
+        return LeaseGuard(operation=operation, stable_id=stable,
                           answer=await athera_error_handler(request, InProgressRefused()))
-    return LeaseGuard(lease=outcome, operation=operation)
+    return LeaseGuard(lease=outcome, operation=operation, stable_id=stable)
 
 
 def _operation_of(request) -> str:
