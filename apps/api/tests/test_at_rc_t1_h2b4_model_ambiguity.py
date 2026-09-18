@@ -29,6 +29,19 @@ from tests.test_at_rc_t1_h3_ai_long_transactions import _observer
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _memory_storage(monkeypatch):
+    """مخزنٌ في الذاكرة — فلا MinIO على هذه الآلة (ولا شأنَ له بـB4)."""
+    from athera_api.config import get_settings
+    from athera_api.services import storage
+
+    monkeypatch.setattr(get_settings(), "storage_provider", "memory",
+                        raising=False)
+    storage.reset_store_cache()
+    yield
+    storage.reset_store_cache()
+
+
 # ═════════ ١ · قدرةُ المزوّد: غيرُ مُثبَتةٍ لكِلَيهما ═════════
 
 
@@ -413,9 +426,16 @@ def test_14_the_boundary_hook_sits_between_authorize_and_invoke() -> None:
     import textwrap
 
     from athera_api.brain.orchestrator import Orchestrator
+    from athera_api.services.extraction.model import ModelExtractor
 
-    for name in ("run_agent_detached", "run_structured_detached"):
-        src = textwrap.dedent(inspect.getsource(getattr(Orchestrator, name)))
+    # **والمستخرِجُ النموذجيُّ يخضع للقاعدة نفسِها**: له مسارُ نداءٍ خاصّ،
+    # فلو فُحص المنسّقُ وحدَه بقي بابٌ ثالثٌ بلا حارس.
+    targets = [Orchestrator.run_agent_detached,
+               Orchestrator.run_structured_detached,
+               ModelExtractor._call]  # noqa: SLF001 — مسارُ النداء بعينه
+    for target in targets:
+        name = target.__qualname__
+        src = textwrap.dedent(inspect.getsource(target))
         fn = ast.parse(src).body[0]
         at: dict[str, int] = {}
         for node in ast.walk(fn):
@@ -426,7 +446,8 @@ def test_14_the_boundary_hook_sits_between_authorize_and_invoke() -> None:
                 at["authorize"] = node.lineno
             elif label.endswith("_gateway.invoke"):
                 at["invoke"] = node.lineno
-            elif label == "before_provider_call":
+            elif label in {"before_provider_call",
+                           "self._before_provider_call"}:
                 at["hook"] = node.lineno
         assert {"authorize", "hook", "invoke"} <= set(at), f"{name}: {at}"
         assert at["authorize"] < at["hook"] < at["invoke"], f"{name}: {at}"
@@ -443,7 +464,9 @@ def test_14_the_boundary_hook_sits_between_authorize_and_invoke() -> None:
                 continue
             for index, statement in enumerate(body):
                 holds_hook = any(
-                    isinstance(c, ast.Call) and ast.unparse(c.func) == "before_provider_call"
+                    isinstance(c, ast.Call)
+                    and ast.unparse(c.func) in {"before_provider_call",
+                                                 "self._before_provider_call"}
                     for c in ast.walk(statement))
                 if not holds_hook or index + 1 >= len(body):
                     continue
@@ -635,3 +658,1031 @@ async def test_17_a_pre_boundary_rejection_keeps_the_key_retryable(
     await idem.close_pre_external(maker, guard, reason="pre_external:test")
     again = await _claim(slot, key)
     assert isinstance(again, idem.Lease), f"سُمِّم مفتاحٌ رُدّ قبل الحدّ: {again}"
+
+
+# ═════════ ٥ · حارسُ المسالك الطرفيّة ═════════
+
+
+def test_18_no_keyed_terminal_branch_forgets_its_generation() -> None:
+    """**كلُّ مسلكٍ طرفيٍّ بعد الحجز ينتهي إلى حالٍ معلومة.**
+
+    فمن حجز جيلًا ثمّ عاد أو رفع بلا إتمامٍ ولا إغلاقٍ ولا وسمٍ يترك صفًّا
+    `in_progress` عالقًا: يُردّ صاحبُه ٤٠٩ إلى أن تنقضي الإجارةُ على عملٍ
+    لم يُنفَّذ ولا يُعرف.
+
+    ولا يُقاس بمطابقةِ نصّ: تُحدَّد الدالّاتُ التي **تحجز** (نداءٌ إلى
+    `begin_leased_in` أو `begin_model`)، ثمّ يُشترط أن تذكر كلٌّ منها
+    الثلاثيَّ الذي يُغلق الجيل — إتمامًا أو إغلاقًا قبل الحدِّ أو وسمَ
+    حدٍّ عبَر. وغيابُ الثلاثةِ جميعًا هو النسيان.
+    """
+    import ast
+    import pathlib
+
+    # **ولا يكفي حضورُ أحدِها.** وأوّلُ صيغةٍ قبلت أيَّ واحدٍ من الأربعة،
+    # فمرّ عليها حذفُ `close_pre_external` من `brain.ask` لأنّ
+    # `ModelBoundary` باقٍ. فالشرطُ الآن: **الإتمامُ لازمٌ لكلّ حاجز**،
+    # ومَن يستعمل مُعلَّقَ الحدّ يلزمه **إغلاقٌ قبل الحدّ** أيضًا.
+    root = pathlib.Path(__file__).resolve().parents[1] / "athera_api"
+    # **ووحدةُ الأوّليّات نفسُها مستثناة**: `begin_leased` تفوّض إلى
+    # `begin_leased_in` ولا تملك مسلكًا طرفيًّا — والمقصودُ مُستهلكوها.
+    primitives = {"idempotency.py"}
+    forgetful: list[str] = []
+    reserving: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name in primitives:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            calls = {ast.unparse(n.func).split(".")[-1]
+                     for n in ast.walk(fn) if isinstance(n, ast.Call)}
+            if not calls & {"begin_leased_in", "begin_model"}:
+                continue
+            reserving.append(f"{path.name}::{fn.name}")
+            if "settle_leased" not in calls:
+                forgetful.append(f"{path.name}::{fn.name} (no settle)")
+            if "ModelBoundary" in calls and "close_pre_external" not in calls:
+                forgetful.append(f"{path.name}::{fn.name} (no pre-external close)")
+
+    assert reserving, "لم يُعثر على دالّةٍ تحجز — فالحارسُ لا يحرس شيئًا"
+    assert forgetful == [], (
+        "دالّةٌ تحجز جيلًا ولا تُغلقه في أيّ مسلك: " + ", ".join(forgetful))
+
+
+def test_19_the_terminal_guard_bites_a_forgotten_branch() -> None:
+    """والحارسُ يعضّ نصًّا يحجز ولا يُغلق — وحارسٌ لا يعضّ ليس حارسًا."""
+    import ast
+
+    def _forgetful(source: str) -> list[str]:
+        found = []
+        for fn in ast.walk(ast.parse(source)):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            calls = {ast.unparse(n.func).split(".")[-1]
+                     for n in ast.walk(fn) if isinstance(n, ast.Call)}
+            if not calls & {"begin_leased_in", "begin_model"}:
+                continue
+            if "settle_leased" not in calls:
+                found.append(fn.name)
+            elif "ModelBoundary" in calls and "close_pre_external" not in calls:
+                found.append(fn.name)
+        return found
+
+    forgotten = (
+        "async def handler(request, principal):\n"
+        "    async with maker() as session:\n"
+        "        guard = await idempotency.begin_leased_in(session, request)\n"
+        "    if not ready:\n"
+        "        return Disabled()\n"      # ← جيلٌ مُودَعٌ ولا إتمام
+        "    return Ok()\n"
+    )
+    assert _forgetful(forgotten) == ["handler"], "الحارسُ لم يعضّ النسيان"
+
+    closed = (
+        "async def handler(request, principal):\n"
+        "    async with maker() as session:\n"
+        "        guard = await idempotency.begin_leased_in(session, request)\n"
+        "        await idempotency.settle_leased(session, guard, status=200, body={})\n"
+        "    return Ok()\n"
+    )
+    assert _forgetful(closed) == [], "الحارسُ اتّهم مسلكًا مُغلَقًا"
+
+
+def test_20_every_authorized_b4_flow_passes_the_boundary_hook() -> None:
+    """الستّةُ كلُّها تُمرّر مُعلَّقَ الحدّ — **ولا نداءَ نموذجٍ بلا وسم**.
+
+    ومسارُ معالجةِ الرسالة (`document_intelligence`) مستثنًى صريحًا: موعدُه
+    الطور B-5، ولا يُقحَم هنا.
+    """
+    import ast
+    import pathlib
+
+    ENTRIES = {"run_agent_detached", "run_structured_detached", "ModelExtractor"}
+    OUT_OF_SCOPE = {"document_intelligence.py"}
+    root = pathlib.Path(__file__).resolve().parents[1] / "athera_api"
+    unhooked: list[str] = []
+    seen = 0
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if ast.unparse(node.func).split(".")[-1] not in ENTRIES:
+                continue
+            seen += 1
+            if path.name in OUT_OF_SCOPE:
+                continue
+            if "before_provider_call" not in {k.arg for k in node.keywords}:
+                unhooked.append(f"{path.name}:{node.lineno}")
+    assert seen >= 7, f"لم تُحصَ منافذُ النموذج ({seen}) — يُراجَع المسح"
+    assert unhooked == [], f"نداءُ نموذجٍ بلا مُعلَّقِ حدّ: {unhooked}"
+
+    # ولا يكفي أن تكون المنافذُ الثلاثةُ موسومة: للمنسّقِ صِنفان آخران
+    # يصلان إلى المزوّدِ ولا يقبلان مُعلَّقًا — `run_agent` و`run_structured`.
+    # فمسلكٌ من الستّةِ لو تحوّل إليهما عبَر الحدَّ بلا وسمٍ، وبقي هذا
+    # الفحصُ أخضرَ. فيُمنع ذلك صراحةً — على الستّةِ وحدها، فـ B-5 حرٌّ بعد.
+    HOOKLESS = {"run_agent", "run_structured"}
+    AUTHORIZED = {
+        "ai.py", "brain.py", "manuscript_drafting.py", "planning.py",
+        "profile.py", "journey.py",
+    }
+    escapes: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name not in AUTHORIZED:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and \
+                    ast.unparse(node.func).split(".")[-1] in HOOKLESS:
+                escapes.append(f"{path.name}:{node.lineno}")
+    assert escapes == [], \
+        f"مسلكٌ مأذونٌ يصل إلى المزوّدِ بصنفٍ لا يقبل مُعلَّقَ الحدّ: {escapes}"
+
+
+def _activate(monkeypatch, provider):
+    """يُفعّل مزوّدًا وهميًّا **وجهوزيّتَه** — وإلّا سلك المسارُ فرعَ التعطيل.
+
+    فـ`provider_readiness` تقرأ الإعدادَ ووجودَ الحزمة، لا `build_provider`.
+    ويُعاد استعمالُ نهجِ `test_at_s5b_ai_activation` نفسِه بلا مفتاحٍ حقيقيّ.
+    """
+    import importlib.util
+
+    from athera_api.config import get_settings
+    from athera_api.providers import gateway as gateway_module
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "model_provider", "openai", raising=False)
+    monkeypatch.setattr(settings, "openai_api_key", "test-only-not-a-real-key",
+                        raising=False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(gateway_module, "build_provider", lambda: provider)
+    return provider
+
+
+# ═════════ ٦ · المسالكُ الطرفيّةُ في المنتج، لا في النصّ وحده ═════════
+
+
+@requires_db
+async def test_21_a_disabled_provider_settles_its_generation(two_tenants, monkeypatch):
+    """مزوّدٌ غيرُ مضبوط **بعد** الحجز: الجوابُ يُثبَّت ولا يُترك الجيلُ عالقًا.
+
+    وهذا مسلكٌ طرفيٌّ بين الحجزِ والنموذج، وكان يُترك `in_progress` بلا
+    وسمٍ ولا إتمام — فيُردّ صاحبُه ٤٠٩ على عملٍ لم يُنفَّذ ولا غموضَ فيه.
+    """
+    from athera_api.routers import ai as ai_router
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    key = uuid.uuid4().hex
+    monkeypatch.setattr(ai_router, "provider_readiness",
+                        lambda: ("null", False, "no provider configured"))
+
+    body = {"question": "سؤالٌ بحثيٌّ كافي الطول للفحص."}
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/ai/ask", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 200, first.text
+        assert first.json()["status"] == "disabled", first.json()["status"]
+
+        state, code, marker, _f = await _record(slot["tenant_id"], key)
+        assert state == "completed", f"الجيلُ بقي عالقًا: {state}"
+        assert code == 200
+
+        replay = await http.post("/api/v1/ai/ask", json=body,
+                                 headers={"Idempotency-Key": key})
+    assert replay.status_code == 200, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert replay.json() == first.json(), "الإعادةُ ليست الجوابَ الأصل"
+
+
+@requires_db
+async def test_22_a_keyed_ai_ask_replays_without_a_second_model_call(
+    two_tenants, monkeypatch,
+):
+    """`/ai/ask` المُمفتَح: نجاحٌ ثمّ إعادةٌ بصفرِ نداءٍ وصفرِ تشغيلةٍ ثانية."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    calls = {"n": 0}
+
+    class _Fake:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            from athera_api.providers.base import ModelResponse, ModelUsage
+
+            return ModelResponse(
+                content="", provider="fake", model="m",
+                usage=ModelUsage(input_tokens=1, output_tokens=1, cost_usd=0.0,
+                                 latency_ms=1),
+                structured={"answer_ar": "جوابٌ مقترَح", "answer_en": "A proposal",
+                            "citations": [], "unsupported_claims": [],
+                            "evidence_gaps": []})
+
+    _activate(monkeypatch, _Fake())
+    key = uuid.uuid4().hex
+    body = {"question": "سؤالٌ بحثيٌّ كافي الطول للفحص."}
+
+    before_runs = await _rows(
+        "SELECT count(*) FROM agent_runs WHERE tenant_id = :t",
+        {"t": str(slot["tenant_id"])})
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/ai/ask", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 200, first.text
+        after_first = calls["n"]
+        runs_after_first = await _rows(
+            "SELECT count(*) FROM agent_runs WHERE tenant_id = :t",
+            {"t": str(slot["tenant_id"])})
+        replay = await http.post("/api/v1/ai/ask", json=body,
+                                 headers={"Idempotency-Key": key})
+        conflict = await http.post("/api/v1/ai/ask",
+                                   json={"question": "سؤالٌ آخرُ مختلفٌ تمامًا هنا."},
+                                   headers={"Idempotency-Key": key})
+
+    assert replay.status_code == 200, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert replay.json() == first.json()
+    assert calls["n"] == after_first, "الإعادةُ نادت النموذج"
+    assert await _rows("SELECT count(*) FROM agent_runs WHERE tenant_id = :t",
+                       {"t": str(slot["tenant_id"])}) == runs_after_first, \
+        "الإعادةُ أنشأت تشغيلةً ثانية"
+    assert runs_after_first != before_runs, "لم تُسجَّل تشغيلةٌ للنجاح الأوّل"
+
+    assert conflict.status_code == 409, conflict.text
+    assert conflict.json()["error"]["code"] == "idempotency.key_reused", conflict.text
+    assert calls["n"] == after_first, "التعارضُ نادى النموذج"
+
+
+@requires_db
+async def test_23_a_keyed_ai_ask_timeout_is_ambiguous_and_never_recalled(
+    two_tenants, monkeypatch,
+):
+    """`/ai/ask`: مهلةٌ بعد الحدّ ⇒ ٤٠٩ صادقة، وبعد الانقضاء لا نداءَ ثانيًا."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    calls = {"n": 0}
+
+    class _Timeout:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            raise TimeoutError("provider timed out mid-generation")
+
+    _activate(monkeypatch, _Timeout())
+    key = uuid.uuid4().hex
+    body = {"question": "سؤالٌ بحثيٌّ كافي الطول للفحص."}
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/ai/ask", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 409, f"{first.status_code}: {first.text[:200]}"
+        assert first.json()["error"]["code"] == "idempotency.external_result_unknown", \
+            first.text
+        assert calls["n"] == 1
+
+        # قبل انقضاء الإجارة: «قائمٌ لغيرك» — ولا نداء.
+        early = await http.post("/api/v1/ai/ask", json=body,
+                                headers={"Idempotency-Key": key})
+        assert early.status_code == 409, early.text
+        assert early.json()["error"]["code"] == "idempotency.in_progress", early.text
+        assert calls["n"] == 1
+
+        await _expire_lease(slot["tenant_id"], key)
+        after = await http.post("/api/v1/ai/ask", json=body,
+                                headers={"Idempotency-Key": key})
+    assert after.status_code == 409, after.text
+    assert after.json()["error"]["code"] == "idempotency.external_result_unknown", \
+        after.text
+    assert calls["n"] == 1, f"نُودي النموذجُ {calls['n']} مرّةً لجيلٍ واحد"
+
+    # ولا تشغيلةَ تقول «أخفق»، وسجلُّ النموذجِ يقول الحقّ.
+    failed = await _rows(
+        "SELECT count(*) FROM agent_runs WHERE tenant_id = :t AND status = 'failed'"
+        "   AND error LIKE '%Timeout%'", {"t": str(slot["tenant_id"])})
+    assert failed == [(0,)], f"تشغيلةٌ كاذبة: {failed}"
+    ambiguous = await _rows(
+        "SELECT count(*) FROM model_runs WHERE tenant_id = :t AND status = 'ambiguous'",
+        {"t": str(slot["tenant_id"])})
+    assert ambiguous == [(1,)], f"سجلُّ النموذجِ لا يقول «ambiguous»: {ambiguous}"
+
+
+@requires_db
+async def test_24_tenant_and_actor_isolation_on_ai_ask(two_tenants, monkeypatch):
+    """مفتاحٌ واحدٌ عبر مستأجرَين وفاعلَين ⇒ أعمالٌ مستقلّة."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1a_project_access import _second_user
+
+    class _Fake:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            from athera_api.providers.base import ModelResponse, ModelUsage
+
+            return ModelResponse(
+                content="", provider="fake", model="m", usage=ModelUsage(),
+                structured={"answer_ar": "جواب", "answer_en": "answer",
+                            "citations": [], "unsupported_claims": [],
+                            "evidence_gaps": []})
+
+    _activate(monkeypatch, _Fake())
+    key = uuid.uuid4().hex
+    body = {"question": "سؤالٌ بحثيٌّ كافي الطول للفحص."}
+
+    async with _client(two_tenants["a"]) as http:
+        mine = await http.post("/api/v1/ai/ask", json=body,
+                               headers={"Idempotency-Key": key})
+    async with _client(two_tenants["b"]) as http:
+        theirs = await http.post("/api/v1/ai/ask", json=body,
+                                 headers={"Idempotency-Key": key})
+    assert mine.status_code == 200 and theirs.status_code == 200
+    assert "Idempotency-Replayed" not in theirs.headers, "مفتاحٌ عبَر مستأجرًا"
+
+    colleague = await _second_user(
+        two_tenants["a"]["tenant_id"],
+        email=f"h2b4-{uuid.uuid4().hex[:10]}@example.com")
+    async with _client(colleague) as http:
+        peer = await http.post("/api/v1/ai/ask", json=body,
+                               headers={"Idempotency-Key": key})
+    assert peer.status_code == 200, peer.text
+    assert "Idempotency-Replayed" not in peer.headers, "مفتاحٌ عبَر فاعلًا"
+
+
+@requires_db
+async def test_25_the_raw_key_is_never_persisted_by_model_routes(
+    two_tenants, monkeypatch,
+):
+    """الخامُ لا يُخزَّن: لا في الإجارة ولا التشغيلة ولا النموذج ولا التدقيق."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    class _Fake:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            from athera_api.providers.base import ModelResponse, ModelUsage
+
+            return ModelResponse(
+                content="", provider="fake", model="m", usage=ModelUsage(),
+                structured={"answer_ar": "جواب", "answer_en": "answer",
+                            "citations": [], "unsupported_claims": [],
+                            "evidence_gaps": []})
+
+    _activate(monkeypatch, _Fake())
+    slot = two_tenants["a"]
+    key = uuid.uuid4().hex
+    async with _client(slot) as http:
+        answered = await http.post(
+            "/api/v1/ai/ask",
+            json={"question": "سؤالٌ بحثيٌّ كافي الطول للفحص."},
+            headers={"Idempotency-Key": key})
+    assert answered.status_code == 200, answered.text
+
+    like = f"%{key}%"
+    for sql, label in (
+        ("SELECT count(*) FROM idempotency_records WHERE tenant_id = :t"
+         "   AND (key_digest = :raw OR response_body::text LIKE :like)", "الإجارة"),
+        ("SELECT count(*) FROM agent_runs WHERE tenant_id = :t"
+         "   AND (coalesce(error,'') LIKE :like"
+         "        OR coalesce(input_summary::text,'') LIKE :like)", "التشغيلة"),
+        ("SELECT count(*) FROM model_runs WHERE tenant_id = :t"
+         "   AND coalesce(error,'') LIKE :like", "سجلّ النموذج"),
+        ("SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+         "   AND (coalesce(state_after::text,'') LIKE :like"
+         "        OR coalesce(reason,'') LIKE :like)", "التدقيق"),
+    ):
+        hits = await _rows(sql, {"t": str(slot["tenant_id"]), "raw": key,
+                                 "like": like})
+        assert hits == [(0,)], f"المفتاحُ الخامُ ظهر في {label}: {hits}"
+
+
+# ═════════ ٧ · المسارات الأربعةُ الأخرى: أعدادُ المجال ═════════
+#
+# **والأعدادُ هي الدعوى.** «لا تكرار» تُقاس بعدِّ صفوفِ المجال قبل الإعادة
+# وبعدها، لا بالثقة في مسلكٍ يبدو صحيحًا.
+
+
+async def _count(sql: str, params: dict) -> int:
+    rows = await _rows(sql, params)
+    return int(rows[0][0]) if rows else 0
+
+
+class _Structured:
+    """مزوّدٌ يُعيد حِملًا بنيويًّا لأيّ عقد — ويَعُدّ نداءاته."""
+
+    name = "fake"
+
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+        self.calls = 0
+
+    async def generate_structured(self, request):
+        from athera_api.providers.base import ModelResponse, ModelUsage
+
+        self.calls += 1
+        return ModelResponse(
+            content="", provider="fake", model="m",
+            usage=ModelUsage(input_tokens=1, output_tokens=1, cost_usd=0.0,
+                             latency_ms=1),
+            structured=self._payload)
+
+    async def embed(self, texts, *, model=None):  # pragma: no cover
+        return [[0.0] * 4 for _ in texts]
+
+    async def stream(self, request):  # pragma: no cover
+        yield ""
+
+
+async def _grant_drafting(slot, manuscript_id, section_key: str = "method") -> None:
+    """يمنح إذنَ الصياغة **على البصمة الحاضرة** — كما يفعل المنتج.
+
+    فالإذنُ مربوطٌ بلقطةِ الدليل: إذنٌ على بصمةٍ أخرى ليس إذنًا.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.routers import manuscript_drafting as drafting
+    from athera_api.services import consent
+    from tests.test_at_s5e_b_methods_drafting import _principal
+
+    principal = _principal(slot)
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    async with tenant_session(tid, uid) as session:
+        record = await drafting.manuscript_for_tenant_edit(
+            session, principal, manuscript_id)
+        context = await drafting._build_context(  # noqa: SLF001 — تجهيزةُ فحص
+            session, principal, record, section_key)
+        await consent.record_drafting_decision(
+            session, tenant_id=tid, manuscript_id=manuscript_id,
+            section_key=section_key, actor_user_id=uid, granted=True,
+            provider="anthropic", model="m",
+            context_fingerprint=context.fingerprint,
+            evidence_count=len(context.items))
+
+
+async def _grant_planning(slot, project_id) -> None:
+    """يمنح إذنَ التخطيط على البصمة الحاضرة."""
+    from athera_api.db import tenant_session
+    from athera_api.services import consent
+    from athera_api.services.planning import context as ctx
+    from tests.test_at_s5e_b_methods_drafting import _principal
+
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    async with tenant_session(tid, uid) as session:
+        built = await ctx.build(session, tenant_id=tid, project_id=project_id,
+                                capability=consent.PLANNING_CAPABILITY)
+        await consent.record_planning_decision(
+            session, tenant_id=tid, project_id=project_id, actor_user_id=uid,
+            granted=True, provider="anthropic", model="m",
+            context_fingerprint=built.fingerprint, evidence_count=len(built.items))
+    assert _principal is not None  # الاستيرادُ يُثبّت وجودَ التجهيزة
+
+
+@requires_db
+async def test_26_manuscript_draft_replay_adds_no_domain_rows(
+    two_tenants, monkeypatch,
+):
+    """`/…/draft`: إعادةٌ بصفرِ نداءٍ وصفرِ نسخةٍ وصفرِ قسمٍ وصفرِ تدقيق."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_s5e_b_methods_drafting import _seed_manuscript
+
+    slot = two_tenants["a"]
+    _project, manuscript_id, _sel = await _seed_manuscript(
+        slot["tenant_id"], slot["user_id"])
+    await _grant_drafting(slot, manuscript_id)
+    # **وحمولةٌ تُرضي العقد**، من الحزمة القائمة لا من اختراع: حمولةٌ
+    # مخالفةٌ للعقد تُرفَع **بعد** الحدّ، فيصير الفحصُ يقيس الغموضَ لا النجاح.
+    from tests.test_at_s5e_b_methods_drafting import _draft_json
+
+    draft_payload = _draft_json()
+    draft_payload["claims"] = []
+    provider = _activate(monkeypatch, _Structured(draft_payload))
+
+    tid = str(slot["tenant_id"])
+    key = uuid.uuid4().hex
+    url = f"/api/v1/manuscripts/{manuscript_id}/sections/method/draft"
+
+    async with _client(slot) as http:
+        first = await http.post(url, headers={"Idempotency-Key": key})
+        assert first.status_code == 200, f"{first.status_code}: {first.text[:300]}"
+        after = provider.calls
+        counts = {
+            "versions": await _count(
+                "SELECT count(*) FROM manuscript_versions WHERE tenant_id = :t", {"t": tid}),
+            "sections": await _count(
+                "SELECT count(*) FROM manuscript_sections WHERE tenant_id = :t", {"t": tid}),
+            "audits": await _count(
+                "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+                "   AND action = 'manuscript.section_drafted'", {"t": tid}),
+            "runs": await _count(
+                "SELECT count(*) FROM agent_runs WHERE tenant_id = :t", {"t": tid}),
+        }
+        replay = await http.post(url, headers={"Idempotency-Key": key})
+
+    assert replay.status_code == 200, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert replay.json() == first.json(), "الإعادةُ ليست الجوابَ الأصل"
+    assert provider.calls == after, "الإعادةُ نادت النموذج"
+    for label, sql in (
+        ("versions", "SELECT count(*) FROM manuscript_versions WHERE tenant_id = :t"),
+        ("sections", "SELECT count(*) FROM manuscript_sections WHERE tenant_id = :t"),
+        ("audits", "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+                   "   AND action = 'manuscript.section_drafted'"),
+        ("runs", "SELECT count(*) FROM agent_runs WHERE tenant_id = :t"),
+    ):
+        assert await _count(sql, {"t": tid}) == counts[label], \
+            f"الإعادةُ زادت {label}"
+
+
+@requires_db
+async def test_27_manuscript_draft_conflicts_when_the_snapshot_changes(
+    two_tenants, monkeypatch,
+):
+    """بصمةُ سياقٍ أخرى بالمفتاح نفسِه ⇒ ٤٠٩ **قبل** أيّ نداءٍ ثانٍ."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_s5e_b_methods_drafting import _seed_manuscript
+
+    slot = two_tenants["a"]
+    _project, manuscript_id, _sel = await _seed_manuscript(
+        slot["tenant_id"], slot["user_id"])
+    await _grant_drafting(slot, manuscript_id)
+    await _grant_drafting(slot, manuscript_id, "results")
+    from tests.test_at_s5e_b_methods_drafting import _draft_json
+
+    draft_payload = _draft_json()
+    draft_payload["claims"] = []
+    provider = _activate(monkeypatch, _Structured(draft_payload))
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        first = await http.post(
+            f"/api/v1/manuscripts/{manuscript_id}/sections/method/draft",
+            headers={"Idempotency-Key": key})
+        assert first.status_code == 200, first.text
+        after = provider.calls
+        # قسمٌ آخرُ بالمفتاح نفسِه ⇒ معنًى آخر ⇒ تعارض.
+        other = await http.post(
+            f"/api/v1/manuscripts/{manuscript_id}/sections/results/draft",
+            headers={"Idempotency-Key": key})
+    assert other.status_code == 409, f"{other.status_code}: {other.text[:200]}"
+    assert other.json()["error"]["code"] == "idempotency.key_reused", other.text
+    assert provider.calls == after, "التعارضُ نادى النموذج"
+
+
+@requires_db
+async def test_28_planning_creates_exactly_one_run_and_no_duplicates(
+    two_tenants, monkeypatch,
+):
+    """`/publication-opportunities`: تشغيلةٌ واحدة، وإعادةٌ بصفرِ زيادة.
+
+    **ولا `PlanningRun` قبل المزوّد للعملِ المُمفتَح** (الخيار أ): فحالُها
+    مُقيَّدٌ بـ`CHECK` ولا يقول «لا يُعرف»، فتُفتح في معاملة النجاح وحدَها.
+    """
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_s5d_publication_planning import _seed_project_with_memory
+
+    slot = two_tenants["a"]
+    project_id, _verified, _file = await _seed_project_with_memory(
+        slot["tenant_id"], slot["user_id"])
+    await _grant_planning(slot, project_id)
+    provider = _activate(monkeypatch, _Structured({"opportunities": []}))
+    tid = str(slot["tenant_id"])
+    key = uuid.uuid4().hex
+    url = f"/api/v1/projects/{project_id}/publication-opportunities"
+
+    async with _client(slot) as http:
+        first = await http.post(url, headers={"Idempotency-Key": key})
+        assert first.status_code == 200, f"{first.status_code}: {first.text[:300]}"
+        after = provider.calls
+        runs = await _count(
+            "SELECT count(*) FROM planning_runs WHERE tenant_id = :t", {"t": tid})
+        opportunities = await _count(
+            "SELECT count(*) FROM publication_opportunities WHERE tenant_id = :t",
+            {"t": tid})
+        audits = await _count(
+            "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+            "   AND action = 'planning.opportunities_generated'", {"t": tid})
+        replay = await http.post(url, headers={"Idempotency-Key": key})
+
+    assert runs == 1, f"عددُ التشغيلات {runs} — والمطلوبُ واحدة"
+    assert replay.status_code == 200, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert provider.calls == after, "الإعادةُ نادت النموذج"
+    assert await _count("SELECT count(*) FROM planning_runs WHERE tenant_id = :t",
+                        {"t": tid}) == runs, "الإعادةُ أنشأت تشغيلةً ثانية"
+    assert await _count(
+        "SELECT count(*) FROM publication_opportunities WHERE tenant_id = :t",
+        {"t": tid}) == opportunities, "الإعادةُ أنشأت فرصًا مكرَّرة"
+    assert await _count(
+        "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+        "   AND action = 'planning.opportunities_generated'",
+        {"t": tid}) == audits, "الإعادةُ دوّنت حدثًا ثانيًا"
+
+
+@requires_db
+async def test_29_a_planning_timeout_leaves_zero_planning_runs(
+    two_tenants, monkeypatch,
+):
+    """مهلةٌ بعد الحدّ ⇒ **صفرُ تشغيلاتِ تخطيط**، ولا صفَّ «أخفق» كاذب.
+
+    فالتشغيلةُ لا تُفتح قبل المزوّد للعملِ المُمفتَح، والغموضُ يحمله وسمُ
+    الجيل الدائم.
+    """
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_s5d_publication_planning import _seed_project_with_memory
+
+    slot = two_tenants["a"]
+    project_id, _verified, _file = await _seed_project_with_memory(
+        slot["tenant_id"], slot["user_id"])
+
+    class _Timeout:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_structured(self, request):
+            self.calls += 1
+            raise TimeoutError("planning provider timed out")
+
+    await _grant_planning(slot, project_id)
+    provider = _activate(monkeypatch, _Timeout())
+    tid = str(slot["tenant_id"])
+    key = uuid.uuid4().hex
+    url = f"/api/v1/projects/{project_id}/publication-opportunities"
+
+    async with _client(slot) as http:
+        answered = await http.post(url, headers={"Idempotency-Key": key})
+        assert answered.status_code == 409, f"{answered.status_code}: {answered.text[:250]}"
+        assert answered.json()["error"]["code"] == \
+            "idempotency.external_result_unknown", answered.text
+        assert provider.calls == 1
+
+        assert await _count("SELECT count(*) FROM planning_runs WHERE tenant_id = :t",
+                            {"t": tid}) == 0, "فُتحت تشغيلةُ تخطيطٍ لأثرٍ لا يُعرف"
+
+        await _expire_lease(slot["tenant_id"], key)
+        after = await http.post(url, headers={"Idempotency-Key": key})
+    assert after.status_code == 409, after.text
+    assert after.json()["error"]["code"] == "idempotency.external_result_unknown"
+    assert provider.calls == 1, f"نُودي المزوّدُ {provider.calls} مرّةً"
+    assert await _count("SELECT count(*) FROM planning_runs WHERE tenant_id = :t",
+                        {"t": tid}) == 0
+    # **ولا تشغيلةَ أجنتٍ شاردة**: لا `running` مُعلَّقةٌ إلى الأبد، ولا
+    # «أخفق» كاذبةٌ — و`run_structured_detached` لا يفتح صفًّا قبل الشبكة.
+    stranded = await _rows(
+        "SELECT status, count(*) FROM agent_runs WHERE tenant_id = :t"
+        " GROUP BY status", {"t": tid})
+    assert stranded == [], f"صفوفُ تشغيلةٍ بعد مهلةٍ غامضة: {stranded}"
+    ambiguous_models = await _count(
+        "SELECT count(*) FROM model_runs WHERE tenant_id = :t"
+        "   AND status = 'ambiguous'", {"t": tid})
+    assert ambiguous_models == 1, \
+        f"سجلُّ النموذجِ لا يقول «ambiguous» مرّةً واحدة: {ambiguous_models}"
+
+
+def _local_storage_read(monkeypatch, data: bytes = b"") -> None:
+    """يقرأ البايتات محلّيًّا بدل MinIO.
+
+    **و`ingestion.load_object_bytes` تستورد `boto3` مباشرةً وتتجاهل
+    `storage_provider`** — فلا يكفي ضبطُ المخزن في الذاكرة. وهو تفاوتٌ
+    قائمٌ في طبقة التخزين، لا شأنَ له بالطور B-4، فلا يُصلَح هنا؛
+    ويُزيَّف في الفحص كما تفعل حزمةُ H3-B.
+    """
+    from athera_api.services import ingestion
+
+    document = data or (
+        "مشكلة الدراسة: قياس أثر التعلّم المدمج.\n\n"
+        "المنهج: تصميمٌ شبه تجريبيّ.\n\nالنتائج: فرقٌ لصالح التجريبيّة.\n"
+    ).encode("utf-8")
+
+    async def _read(_storage_key: str) -> bytes:
+        return document
+
+    monkeypatch.setattr(ingestion, "load_object_bytes", _read)
+
+
+# ═════════ ٨ · استيرادُ المِلفّ: تفويضٌ وتجزئةٌ وأعدادٌ ═════════
+
+
+@requires_db
+async def test_30_profile_import_requires_current_file_authorization(
+    two_tenants, monkeypatch,
+):
+    """**ومفتاحٌ قديمٌ لا يُستورد ملفَّ غيرك.**
+
+    وكان المسارُ يستعلم بالمستأجر وحده، فزميلٌ بلا منحةٍ على الملفّ كان
+    يستورده. فصار يُقرأ بالحارس المشترك الذي يفحص المنحة — **قبل** أيّ
+    تحكيمِ مفتاح.
+    """
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+    from tests.test_at_rc_t1a_project_access import _second_user
+
+    _local_storage_read(monkeypatch)
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    colleague = await _second_user(
+        slot["tenant_id"], email=f"h2b4p-{uuid.uuid4().hex[:10]}@example.com")
+
+    body = {"file_id": str(file_id), "extractor": "rules"}
+    async with _client(colleague) as http:
+        refused = await http.post("/api/v1/profile/import", json=body,
+                                  headers={"Idempotency-Key": uuid.uuid4().hex})
+    assert refused.status_code in (403, 404), \
+        f"زميلٌ بلا منحةٍ استورد ملفَّ غيره: {refused.status_code}"
+
+    # وصاحبُ الملفّ يستورده — فالرفضُ كان عن منحةٍ لا عن عطب.
+    async with _client(slot) as http:
+        allowed = await http.post("/api/v1/profile/import", json=body,
+                                  headers={"Idempotency-Key": uuid.uuid4().hex})
+    assert allowed.status_code == 202, allowed.text
+
+
+@requires_db
+async def test_31_profile_import_replay_adds_no_extraction_rows(
+    two_tenants, monkeypatch,
+):
+    """إعادةٌ بصفرِ تشغيلةِ استخراجٍ وصفرِ مرشَّحٍ وصفرِ مِلفٍّ شخصيّ ثانٍ."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    _local_storage_read(monkeypatch)
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    tid = str(slot["tenant_id"])
+    key = uuid.uuid4().hex
+    body = {"file_id": str(file_id), "extractor": "rules"}
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/profile/import", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 202, first.text
+        runs = await _count(
+            "SELECT count(*) FROM extraction_runs WHERE tenant_id = :t", {"t": tid})
+        candidates = await _count(
+            "SELECT count(*) FROM fact_candidates WHERE tenant_id = :t", {"t": tid})
+        profiles = await _count(
+            "SELECT count(*) FROM researcher_profiles WHERE tenant_id = :t", {"t": tid})
+        replay = await http.post("/api/v1/profile/import", json=body,
+                                 headers={"Idempotency-Key": key})
+
+    assert replay.status_code == 202, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert replay.json() == first.json(), "الإعادةُ ليست الجوابَ الأصل"
+    assert runs == 1, f"عددُ تشغيلات الاستخراج {runs}"
+    assert await _count(
+        "SELECT count(*) FROM extraction_runs WHERE tenant_id = :t",
+        {"t": tid}) == runs, "الإعادةُ أنشأت تشغيلةَ استخراجٍ ثانية"
+    assert await _count(
+        "SELECT count(*) FROM fact_candidates WHERE tenant_id = :t",
+        {"t": tid}) == candidates, "الإعادةُ أنشأت مرشَّحاتٍ مكرَّرة"
+    assert await _count(
+        "SELECT count(*) FROM researcher_profiles WHERE tenant_id = :t",
+        {"t": tid}) == profiles, "الإعادةُ أنشأت مِلفًّا شخصيًّا ثانيًا"
+
+
+@requires_db
+async def test_32_a_changed_source_checksum_conflicts(two_tenants, monkeypatch):
+    """تجزئةٌ تغيّرت تحت المفتاح نفسِه ⇒ ٤٠٩، وصفرُ كتابةٍ ثانية.
+
+    فالتجزئةُ **هُويّةُ المصدر**: محتوًى آخرُ طلبٌ آخرُ في معناه.
+    """
+    from sqlalchemy import text
+
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    _local_storage_read(monkeypatch)
+    _local_storage_read(monkeypatch)
+    slot = two_tenants["a"]
+    file_id = await _make_file(slot)
+    tid = str(slot["tenant_id"])
+    key = uuid.uuid4().hex
+    body = {"file_id": str(file_id), "extractor": "rules"}
+
+    async with _client(slot) as http:
+        first = await http.post("/api/v1/profile/import", json=body,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 202, first.text
+        runs = await _count(
+            "SELECT count(*) FROM extraction_runs WHERE tenant_id = :t", {"t": tid})
+
+        engine, factory = await _observer()
+        try:
+            async with factory() as session:
+                await session.execute(
+                    text("UPDATE files SET checksum_sha256 = :c WHERE id = :i"),
+                    {"c": "9" * 64, "i": str(file_id)})
+                await session.commit()
+        finally:
+            await engine.dispose()
+
+        changed = await http.post("/api/v1/profile/import", json=body,
+                                  headers={"Idempotency-Key": key})
+    assert changed.status_code == 409, f"{changed.status_code}: {changed.text[:200]}"
+    assert changed.json()["error"]["code"] == "idempotency.key_reused", changed.text
+    assert await _count(
+        "SELECT count(*) FROM extraction_runs WHERE tenant_id = :t",
+        {"t": tid}) == runs, "التعارضُ كتب استخراجًا"
+
+
+# ═════════ ٩ · تركيبُ البصمة: لقطةٌ علميّةٌ لا زمنٌ ولا معرّفُ طلب ═════════
+
+
+def test_33_each_model_route_fingerprints_its_scientific_snapshot() -> None:
+    """**ما يحدّد مخرَجَ النموذج يدخل البصمة** — وإلّا أُعيد جوابُ لقطةٍ أخرى.
+
+    ويُقاس بالبنية: يُقرأ قاموسُ `body=` المُمرَّر إلى الحجز في كلّ مسار،
+    وتُطلَب مفاتيحُه اللازمة. فحذفُ بصمةِ السياق أو معرّفِ النسخة أو
+    تجزئةِ المصدر يُسقِط هذا الفحصَ فورًا.
+
+    **ولا زمنَ ولا معرّفَ طلبٍ ولا مفتاحٌ خامّ** في أيٍّ منها.
+    """
+    import ast
+    import pathlib
+
+    REQUIRED = {
+        "ai.py": {"question", "project_id", "locale"},
+        "brain.py": {"question", "agent_key", "locale"},
+        "manuscript_drafting.py": {"manuscript_id", "section_key", "version_id",
+                                    "context_fingerprint", "language"},
+        "planning.py": {"project_id", "context_fingerprint", "locale"},
+        "thesis.py": {"thesis_id", "opportunity_id", "project_id", "file_id"},
+        "profile.py": {"file_id", "extractor", "checksum_sha256"},
+    }
+    FORBIDDEN = {"request_id", "timestamp", "now", "created_at",
+                 "idempotency_key", "key"}
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "athera_api" / "routers"
+    seen: dict[str, set[str]] = {}
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if ast.unparse(node.func).split(".")[-1] not in {"begin_leased_in",
+                                                              "begin_model"}:
+                continue
+            for kw in node.keywords:
+                if kw.arg != "body" or not isinstance(kw.value, ast.Dict):
+                    continue
+                keys = {k.value for k in kw.value.keys
+                        if isinstance(k, ast.Constant)}
+                seen.setdefault(path.name, set()).update(keys)
+
+    for name, required in REQUIRED.items():
+        assert name in seen, f"لم يُعثر على بصمةِ حجزٍ في {name}"
+        missing = required - seen[name]
+        assert not missing, f"{name}: مفاتيحٌ لازمةٌ غائبةٌ من البصمة: {sorted(missing)}"
+        leaked = seen[name] & FORBIDDEN
+        assert not leaked, f"{name}: البصمةُ تحمل ما لا يُبصَم: {sorted(leaked)}"
+
+
+# ═════════ ١٠ · خيطُ الرسالة، ومستأجرُ البحثِ النافذ ═════════
+
+
+@requires_db
+async def test_34_an_existing_thread_settles_without_a_model_call(
+    two_tenants, monkeypatch,
+):
+    """خيطٌ قائمٌ: `reused=True` **بصفرِ نداءٍ**، والجيلُ يُتمّ ولا يُترك.
+
+    وإعادةٌ بعده تُعيد الجوابَ نفسَه، **ولا عقدةَ ثانيةً تُدرَج**.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.models.golden_thread import ThreadElement
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_thesis_journey_build import _seed_thesis_and_opportunity
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    thesis_id, opportunity_id = await _seed_thesis_and_opportunity(tid, uid)
+
+    # يُبنى مشروعٌ وعقدةٌ قائمة، فيسلك المسارُ الطريقَ السريع.
+    #
+    # ويُقرأ المشروعُ من صفّ الفرصة مباشرةً: حرّاسُ التفويض تُفحص في
+    # المسار نفسِه، وتجهيزةُ الفحص لا تحتاج أن تمرّ بها.
+    from sqlalchemy import select
+
+    from athera_api.models.portfolio import ResearchProject
+    from athera_api.models.thesis import PublicationOpportunity
+
+    async with tenant_session(tid, uid) as session:
+        opportunity = (await session.execute(
+            select(PublicationOpportunity).where(
+                PublicationOpportunity.id == opportunity_id))).scalar_one()
+        project_id = opportunity.project_id or opportunity.converted_project_id
+        if project_id is None:
+            # **والخيطُ يُعلَّق بمشروعٍ قائم** — فيُنشأ هنا بدل تخطّي الفحص.
+            project = ResearchProject(tenant_id=tid,
+                                      working_title_ar="مشروعُ خيطٍ للفحص")
+            session.add(project)
+            await session.flush()
+            project_id = project.id
+            opportunity.project_id = project_id
+        # **ومنحةُ الملفّ تُدسّ كما يفعل الرفعُ الحقيقيّ**: تجهيزةُ
+        # `seed_file` تُنشئ صفًّا بلا منحة، والمسارُ يشترط الكتابةَ عليه.
+        from athera_api.models.identity import ObjectGrant
+        from athera_api.models.thesis import Thesis
+
+        thesis_row = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        if thesis_row.file_id is not None:
+            session.add(ObjectGrant(
+                tenant_id=tid, object_type="file", object_id=thesis_row.file_id,
+                user_id=uid, grant_level="owner", granted_by=uid))
+
+        # و`element_type` مُقيَّدٌ بـ`CHECK` على قائمةٍ مُعلَنة — و«claim»
+        # ليست منها. فتُستعمل قيمةٌ مشروعة.
+        session.add(ThreadElement(
+            tenant_id=tid, project_id=project_id, element_type="problem",
+            label_ar="عقدةٌ قائمة", ordinal=1, metadata_json={"evidence_refs": []}))
+
+    calls = {"n": 0}
+
+    class _NeverCalled:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            raise AssertionError("must not be reached when a thread exists")
+
+    _activate(monkeypatch, _NeverCalled())
+    key = uuid.uuid4().hex
+    url = f"/api/v1/theses/{thesis_id}/opportunities/{opportunity_id}/thread"
+
+    async with _client(slot) as http:
+        first = await http.post(url, headers={"Idempotency-Key": key})
+        assert first.status_code == 200, f"{first.status_code}: {first.text[:250]}"
+        assert first.json()["reused"] is True, first.json()
+        assert calls["n"] == 0, "نُودي النموذجُ وخيطٌ قائم"
+
+        state, code, _b, _f = await _record(tid, key)
+        assert state == "completed", f"الجيلُ بقي عالقًا على المسلك السريع: {state}"
+
+        elements = await _count(
+            "SELECT count(*) FROM thread_elements WHERE tenant_id = :t",
+            {"t": str(tid)})
+        replay = await http.post(url, headers={"Idempotency-Key": key})
+
+    assert replay.status_code == 200, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert replay.json() == first.json()
+    assert calls["n"] == 0
+    assert await _count(
+        "SELECT count(*) FROM thread_elements WHERE tenant_id = :t",
+        {"t": str(tid)}) == elements, "الإعادةُ أدرجت عقدةً ثانية"
+    assert code == 200
+
+
+def test_35_planning_scopes_its_generation_to_the_project_tenant() -> None:
+    """**مستأجرُ البحثِ النافذُ لا مستأجرُ الرمز** — ويُثبَّت مصدرُه بنيويًّا.
+
+    فهذا المسارُ وحدَه يعمل على بحثٍ قد يكون مستأجرُه غيرَ مستأجرِ الرمز
+    (جسرُ التعاون، والجلسةُ `project_session`). فحجزٌ بمستأجر الرمز يضع
+    صفَّ الجيل في مستأجرٍ آخر: فتُعاد أجوبةٌ عبر الحدّ، أو لا تُعاد حيث
+    يجب — وهو عطبُ عزلٍ لا عطبُ راحة.
+
+    **ويُقاس مصدرُ القيمة لا اسمُها**: يُشترط أنّ `tenant_id` المُمرَّرَ
+    إلى الحجز هو المُسنَدُ من `project_tenant(...)`، وأنّ
+    `principal.tenant_id` لا يُمرَّر إليه.
+
+    (والبرهانُ الزمنيُّ عبر جسرٍ حقيقيٍّ يبقى على تجهيزات التعاون القائمة
+    في `test_at_rc_t1a_project_access` و`test_at_sec_p0_tenant_isolation`؛
+    وهذا الحارسُ يُثبّت الموضعَ الذي يُخطئ فيه التعديل.)
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from athera_api.routers import planning
+
+    src = textwrap.dedent(inspect.getsource(planning.generate_opportunities_body))
+    fn = ast.parse(src).body[0]
+
+    # (أ) `tenant_id` يُسنَد من `project_tenant(...)` في هذا المتن.
+    assigned_from_project_tenant = any(
+        isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "tenant_id" for t in node.targets)
+        and "project_tenant" in ast.unparse(node.value)
+        for node in ast.walk(fn))
+    assert assigned_from_project_tenant, \
+        "`tenant_id` لم يُسنَد من `project_tenant(...)` في متن التوليد"
+
+    # (ب) والحجزُ يُمرَّر ذاك المتغيّرَ، لا مستأجرَ الرمز.
+    checked = 0
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        if ast.unparse(node.func).split(".")[-1] not in {"begin_leased_in",
+                                                          "begin_model"}:
+            continue
+        passed = {k.arg: ast.unparse(k.value) for k in node.keywords}
+        assert passed.get("tenant_id") == "tenant_id", (
+            "الحجزُ يُمرَّر مستأجرًا غيرَ مستأجر البحث النافذ: "
+            f"{passed.get('tenant_id')!r}")
+        assert passed.get("tenant_id") != "principal.tenant_id"
+        checked += 1
+    assert checked == 1, f"عددُ مواضعِ الحجز في المتن {checked}"
