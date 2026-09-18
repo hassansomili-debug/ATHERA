@@ -562,6 +562,38 @@ def _project_routes() -> list[tuple[str, str, tuple[str, ...], set[str], str]]:
     return found
 
 
+def _through_body_split(file_name: str, func_name: str, body: str) -> str:
+    """يتبع قسمةَ المعالج: المزيَّنُ يفوّض، والشاهدُ في المتن (RC-T1-H2-B4).
+
+    وقسمةُ المعالجِ ضرورةٌ لا زينة: المزيَّنُ يأخذ `Request` ليقرأ مفتاحَ
+    الإعادة، والمتنُ يُنادى من نصٍّ أو خدمةٍ بلا مفتاح. فلو طُلب الشاهدُ
+    في المزيَّنِ وحدَه لفشل الحارسُ على قسمةٍ سليمة.
+
+    **والتفويضُ يُفحص محضًا**: عبارةُ إرجاعٍ واحدةٌ تنادي المتنَ ولا شيءَ
+    غيرُها. فلو بنى المزيَّنُ جلسةً بمستأجرِ الرمزِ ثمّ فوّض، لم يُقبل
+    الاتّباعُ ورجع الشاهدُ إلى جسمِه — فتبقى العضّةُ عاضّة.
+    """
+    tree = ast.parse((ROUTERS / file_name).read_text())
+    functions = {n.name: n for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    route = functions.get(func_name)
+    delegate = functions.get(f"{func_name}_body")
+    if route is None or delegate is None:
+        return body
+    statements = [n for n in route.body if not isinstance(n, ast.Expr)
+                  or not isinstance(n.value, ast.Constant)]
+    if len(statements) != 1 or not isinstance(statements[0], ast.Return):
+        return body
+    called = statements[0].value
+    if isinstance(called, ast.Await):
+        called = called.value
+    if not isinstance(called, ast.Call) or \
+            ast.unparse(called.func) != f"{func_name}_body":
+        return body
+    return ast.get_source_segment((ROUTERS / file_name).read_text(),
+                                  delegate) or body
+
+
 @requires_db
 def test_22_every_project_scoped_route_enters_through_the_canonical_bridge():
     """**ولا مسارَ بحثٍ يدخل من جلسة البيت ثمّ يفوّض.**
@@ -581,6 +613,7 @@ def test_22_every_project_scoped_route_enters_through_the_canonical_bridge():
             # القانونيُّ مبنيٌّ في الجسم — شاهدٌ فيه وشاهدٌ في وحدته.
             assert not deps, (file_name, func_name, deps)
             in_body, in_module = IN_BODY_EVIDENCE[func_name]
+            body = _through_body_split(file_name, func_name, body)
             assert in_body in body, (file_name, func_name, in_body)
             module = (ROUTERS / file_name).read_text()
             assert in_module in module, (file_name, func_name, in_module)
