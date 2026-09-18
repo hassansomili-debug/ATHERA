@@ -175,7 +175,21 @@ async def ask(
             before_provider_call=(boundary if guard.lease is not None
                                   else None),
         )
-    except (AtheraError, idempotency.LeaseSuperseded):
+    except idempotency.LeaseSuperseded:
+        # فُقد السياجُ: **لا يُغلَق جيلٌ صار لغيرنا**، ولا يُقال «أثرٌ لا
+        # يُعرف» لمن لم يبلغ المزوّدَ باسمه.
+        raise
+    except AtheraError as classified:
+        # ══ ورفضٌ مُصنَّفٌ **قبل** الحدّ يُغلق جيلَه (RC-T1-H2-B4) ══
+        #
+        # **وكان يُترك.** سياسةُ الأدواتِ وسقفُ التصنيفِ يُردّان هنا —
+        # أي بعد التحضيرِ وقبل أيّ نداء — فكان الصفُّ يبقى `in_progress`
+        # بلا وسمٍ ولا إتمام، فيُردّ صاحبُه «قائمٌ لغيرك» إلى أن تنقضي
+        # الإجارةُ على عملٍ لم يُنفَّذ أصلًا ولا غموضَ فيه.
+        if guard.lease is not None and not boundary.crossed:
+            await idempotency.close_pre_external(
+                session_maker, guard,
+                reason=f"pre_external:{classified.code}")
         # أخطاءُ المنصّةِ المُصنَّفةُ تصعد كما هي (RC-T1-H1) — ومنها فقدانُ
         # الإجارة: لا يُقال «أثرٌ لا يُعرف» لمن لم يبلغ المزوّدَ باسمه.
         raise

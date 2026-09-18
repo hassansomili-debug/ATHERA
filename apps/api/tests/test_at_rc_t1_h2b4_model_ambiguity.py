@@ -210,6 +210,31 @@ async def _record(tenant_id, key: str) -> tuple:
     return rows[0] if rows else ()
 
 
+async def _reopen_in_progress(tenant_id, key: str) -> None:
+    """يُعيد الجيلَ إلى «قائمٍ» بإجارةٍ حيّة — **كعاملٍ ما زال يعمل**.
+
+    فالتوأمُ الحيُّ لا يُصنع بطلبَين متوازيَين على عميلٍ واحد: ذاك يتسلسل.
+    فتُحاكى الحالُ في القاعدة نفسِها، ثمّ يُطلب بالمفتاح نفسِه.
+    """
+    from sqlalchemy import text
+
+    from athera_api.services.idempotency import digest_key
+
+    engine, factory = await _observer()
+    try:
+        async with factory() as session:
+            await session.execute(
+                text("UPDATE idempotency_records"
+                     "   SET state = 'in_progress', response_status = NULL,"
+                     "       response_body = NULL,"
+                     "       lease_expires_at = now() + interval '120 seconds'"
+                     " WHERE tenant_id = :t AND key_digest = :d"),
+                {"t": str(tenant_id), "d": digest_key(key)})
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
 async def _expire_lease(tenant_id, key: str) -> None:
     """تُنتهى الإجارةُ **بساعة القاعدة** — كموتِ عمليّةٍ تركت جيلَها."""
     from sqlalchemy import text
@@ -2594,3 +2619,247 @@ async def test_49_revoked_chat_consent_conflicts_instead_of_replaying(
     assert after.status_code == 409, f"{after.status_code}: {after.text[:250]}"
     assert after.json()["error"]["code"] == "idempotency.key_reused", after.text
     assert provider.calls == 1, "نُودي النموذجُ بعد سحبِ الإذن"
+
+
+# ═══════ ١٠ · عائلةُ `/brain/ask`: قبولٌ مباشرٌ لا استدلالٌ بالبنية ═══════
+#
+# **وكان هذا المسلكُ مُثبَتًا بالبنية وحدها.** يُمرَّر المُعلَّقُ، وتُقرأ
+# الشيفرة — ولا طلبَ واحدٌ يمرّ عليه في حزمة الطور. فتُضاف الدعاوى مقيسةً.
+
+BRAIN_ASK = "/api/v1/brain/ask"
+BRAIN_BODY = {"question": "ما المنهجُ الأنسبُ لدراسةِ أثرٍ تعليميّ؟",
+              "agent_key": "research_manager"}
+
+
+def _brain_answer(calls: dict | None = None):
+    """مزوّدٌ يُعيد جوابَ أجنتٍ صالحًا — ويَعُدّ نداءاته."""
+
+    class _Agent:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            from athera_api.providers.base import ModelResponse, ModelUsage
+
+            if calls is not None:
+                calls["n"] = calls.get("n", 0) + 1
+            return ModelResponse(
+                content="", provider="fake", model="m", usage=ModelUsage(),
+                structured={"answer_ar": "جوابُ الأجنت",
+                            "answer_en": "the agent answer",
+                            "citations": [], "unsupported_claims": [],
+                            "evidence_gaps": []})
+
+    return _Agent()
+
+
+@requires_db
+async def test_50_a_keyed_brain_ask_replays_without_a_second_call(
+    two_tenants, monkeypatch,
+):
+    """نجاحٌ ثمّ إعادة: **صفرُ نداءٍ ثانٍ، ولا تشغيلةَ أجنتٍ مكرَّرة**."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    calls: dict = {}
+    _activate(monkeypatch, _brain_answer(calls))
+    _allow_c2(monkeypatch)
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        first = await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 200, f"{first.status_code}: {first.text[:250]}"
+        assert calls["n"] == 1
+
+        agent_runs = await _count(
+            "SELECT count(*) FROM agent_runs WHERE tenant_id = :t", {"t": str(tid)})
+        model_runs = await _count(
+            "SELECT count(*) FROM model_runs WHERE tenant_id = :t", {"t": str(tid)})
+        assert agent_runs == 1 and model_runs == 1, (agent_runs, model_runs)
+
+        replay = await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                                 headers={"Idempotency-Key": key})
+
+    assert replay.status_code == 200, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert replay.json() == first.json(), "الإعادةُ ليست الجوابَ الأصل"
+    assert calls["n"] == 1, f"نُودي النموذجُ {calls['n']} مرّةً"
+    assert await _count(
+        "SELECT count(*) FROM agent_runs WHERE tenant_id = :t",
+        {"t": str(tid)}) == 1, "الإعادةُ أنشأت تشغيلةَ أجنتٍ ثانية"
+    assert await _count(
+        "SELECT count(*) FROM model_runs WHERE tenant_id = :t",
+        {"t": str(tid)}) == 1, "الإعادةُ أنشأت سجلَّ نموذجٍ ثانيًا"
+
+
+@requires_db
+async def test_51_a_live_brain_twin_gets_one_owner_and_one_call(
+    two_tenants, monkeypatch,
+):
+    """توأمان بالمفتاح نفسِه على إجارةٍ حيّة: **مالكٌ واحدٌ ونداءٌ واحد**."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    calls: dict = {}
+    _activate(monkeypatch, _brain_answer(calls))
+    _allow_c2(monkeypatch)
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        first = await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 200, first.text
+        # الإجارةُ حيّةٌ بعدُ؟ لا — اكتملت. فيُحيا الجيلُ ليُحاكى التوأم.
+        await _reopen_in_progress(slot["tenant_id"], key)
+        twin = await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                               headers={"Idempotency-Key": key})
+
+    assert twin.status_code == 409, f"{twin.status_code}: {twin.text[:250]}"
+    assert twin.json()["error"]["code"] == "idempotency.in_progress", twin.text
+    assert calls["n"] == 1, f"نُودي النموذجُ {calls['n']} مرّةً لجيلٍ واحد"
+
+
+@requires_db
+async def test_52_a_brain_provider_timeout_is_ambiguous_and_never_recalled(
+    two_tenants, monkeypatch,
+):
+    """مهلةٌ بعد الحدّ: لا تشغيلةَ تقول «أخفقت»، ولا نداءَ ثانٍ بعد الانقضاء."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    calls = {"n": 0}
+
+    class _Timeout:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            raise TimeoutError("provider timed out mid-agent")
+
+    _activate(monkeypatch, _Timeout())
+    _allow_c2(monkeypatch)
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        first = await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                                headers={"Idempotency-Key": key})
+        assert first.status_code == 409, f"{first.status_code}: {first.text[:250]}"
+        assert first.json()["error"]["code"] == \
+            "idempotency.external_result_unknown", first.text
+        assert calls["n"] == 1
+
+        await _expire_lease(tid, key)
+        after = await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                                headers={"Idempotency-Key": key})
+
+    assert after.status_code == 409, after.text
+    assert after.json()["error"]["code"] == \
+        "idempotency.external_result_unknown", after.text
+    assert calls["n"] == 1, f"نُودي النموذجُ {calls['n']} مرّةً لجيلٍ واحد"
+
+    failed = await _rows(
+        "SELECT count(*) FROM agent_runs WHERE tenant_id = :t AND status = 'failed'",
+        {"t": str(tid)})
+    assert failed == [(0,)], f"تشغيلةٌ كاذبةٌ تقول «أخفقت»: {failed}"
+    ambiguous = await _rows(
+        "SELECT count(*) FROM model_runs WHERE tenant_id = :t AND status = 'ambiguous'",
+        {"t": str(tid)})
+    assert ambiguous == [(1,)], f"سجلُّ النموذجِ لا يقول «ambiguous»: {ambiguous}"
+
+
+@requires_db
+async def test_53_a_pre_boundary_brain_refusal_leaves_no_marker(
+    two_tenants, monkeypatch,
+):
+    """رفضٌ **قبل** الحدّ: لا وسمَ عبور، والمفتاحُ يبقى قابلًا لإعادةٍ صادقة.
+
+    فسقفُ الإرسالِ يُخفَّض، فيُردّ الطلبُ في `gateway.authorize` — أي بعد
+    السياسةِ والأدواتِ وقبل أيّ نداء. وهو إخفاقٌ معلومٌ لا أثرٌ غامض.
+    """
+    from athera_api.config import get_settings
+    from athera_api.services.idempotency import EXTERNAL_MARKER
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    calls: dict = {}
+    _activate(monkeypatch, _brain_answer(calls))
+    # تصنيفُ سؤالِ الأجنتِ فوق السقف ⇒ رفضٌ قبل النداء.
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C0", raising=False)
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        refused = await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                                  headers={"Idempotency-Key": key})
+        assert refused.status_code == 403, f"{refused.status_code}: {refused.text[:250]}"
+        assert calls.get("n", 0) == 0, "نُودي النموذجُ رغم الرفضِ قبل الحدّ"
+
+        state, status_code, stored, _f = await _record(tid, key)
+        assert state == "failed", f"الجيلُ بقي عالقًا على رفضٍ معلوم: {state}"
+        assert status_code is None
+        assert not (isinstance(stored, dict) and EXTERNAL_MARKER in stored), \
+            "وُسم عبورُ حدٍّ ولا نموذجَ نُودي"
+
+        # وإعادةٌ فورًا بالمفتاح نفسِه تمضي — الإخفاقُ المعلومُ لا يحبس.
+        monkeypatch.setattr(get_settings(),
+                            "model_external_send_max_classification", "C2",
+                            raising=False)
+        again = await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                                headers={"Idempotency-Key": key})
+
+    assert again.status_code == 200, f"{again.status_code}: {again.text[:250]}"
+    assert calls["n"] == 1
+
+
+@requires_db
+async def test_54_a_pre_boundary_ai_refusal_leaves_no_marker(
+    two_tenants, monkeypatch,
+):
+    """و`/ai/ask` كذلك: رفضٌ مُصنَّفٌ قبل الحدّ يُغلق جيلَه ولا يحبسه.
+
+    والفرعُ الذي كان يتركه فرعٌ ثانٍ غيرُ العامّ: `except AtheraError`
+    يصعد به كما هو — وهو الفرعُ الذي يمرّ منه سقفُ التصنيف.
+    """
+    from athera_api.config import get_settings
+    from athera_api.services.idempotency import EXTERNAL_MARKER
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    # **ولا إذنَ محادثةٍ هنا عمدًا**: الإذنُ يرفع سقفَ قدرته، فلو مُنح
+    # لَما بلغ الطلبُ الرفضَ المقصود. فالسؤالُ يبقى C1 والسقفُ C0.
+    calls = {"n": 0}
+
+    class _Counted:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            from athera_api.providers.base import ModelResponse, ModelUsage
+
+            return ModelResponse(
+                content="", provider="fake", model="m", usage=ModelUsage(),
+                structured={"answer_ar": "ج", "answer_en": "a", "citations": [],
+                            "unsupported_claims": [], "evidence_gaps": []})
+
+    _activate(monkeypatch, _Counted())
+    # سياقُ المستندِ يرفع التصنيفَ إلى C2، والسقفُ C0 ⇒ رفضٌ قبل النداء.
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C0", raising=False)
+    key = uuid.uuid4().hex
+    body = {"question": "ما المنهجُ الأنسبُ لدراسةِ أثرٍ تعليميّ؟"}
+
+    async with _client(slot) as http:
+        refused = await http.post("/api/v1/ai/ask", json=body,
+                                  headers={"Idempotency-Key": key})
+        assert refused.status_code == 403, f"{refused.status_code}: {refused.text[:250]}"
+        assert calls["n"] == 0, "نُودي النموذجُ رغم الرفضِ قبل الحدّ"
+
+        state, status_code, stored, _f = await _record(tid, key)
+        assert state == "failed", f"الجيلُ بقي عالقًا على رفضٍ معلوم: {state}"
+        assert status_code is None
+        assert not (isinstance(stored, dict) and EXTERNAL_MARKER in stored), \
+            "وُسم عبورُ حدٍّ ولا نموذجَ نُودي"

@@ -689,7 +689,17 @@ async def ask(
             before_provider_call=(boundary if guard.lease is not None
                                   else None),
         )
-    except AtheraError:
+    except AtheraError as classified:
+        # ══ ورفضٌ مُصنَّفٌ **قبل** الحدّ يُغلق جيلَه (RC-T1-H2-B4) ══
+        #
+        # وسقفُ التصنيفِ يُردّ هنا — بعد التحضيرِ وقبل أيّ نداء — فكان
+        # الصفُّ يبقى `in_progress` بلا وسمٍ ولا إتمام، فيُحبَس صاحبُه
+        # على عملٍ لم يُنفَّذ ولا غموضَ فيه. **وبعد الحدِّ لا يُغلَق**:
+        # الوسمُ قائمٌ، وإعادةٌ لاحقةٌ تلقى «أثرًا لا يُعرف» بحقّ.
+        if guard.lease is not None and not boundary.crossed:
+            await idempotency.close_pre_external(
+                session_maker, guard,
+                reason=f"pre_external:{classified.code}")
         # **وإخفاقُ إيداعٍ لا يُترجَم إلى «تعذّر المزوّد»** (RC-T1-H1).
         #
         # وهذا الفرعُ كان قائمًا لأخطاء المنصّة المُصنَّفة، وصار يحمل معنًى
