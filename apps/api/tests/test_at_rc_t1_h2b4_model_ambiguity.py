@@ -1533,21 +1533,34 @@ def test_33_each_model_route_fingerprints_its_scientific_snapshot() -> None:
     """**ما يحدّد مخرَجَ النموذج يدخل البصمة** — وإلّا أُعيد جوابُ لقطةٍ أخرى.
 
     ويُقاس بالبنية: يُقرأ قاموسُ `body=` المُمرَّر إلى الحجز في كلّ مسار،
-    وتُطلَب مفاتيحُه اللازمة. فحذفُ بصمةِ السياق أو معرّفِ النسخة أو
-    تجزئةِ المصدر يُسقِط هذا الفحصَ فورًا.
+    وتُطلَب مفاتيحُه اللازمة. فحذفُ بصمةِ الأدلّةِ أو بصمةِ سياقِ المستندِ
+    أو معرّفِ النسخةِ أو تجزئةِ المصدر يُسقِط هذا الفحصَ فورًا.
+
+    **وهذا فحصُ بنيةٍ لا فحصُ معنى**: وجودُ الاسمِ لا يُثبت أنّ القيمةَ
+    تُحسب من القاعدة ولا أنّ تبدُّلَها يُغيّر شيئًا. والمعنى مُثبَتٌ
+    بالتشغيل في مواضعه — تبدُّلُ أدلّةِ الخيط، وتبدُّلُ المعتمَدِ من
+    المستند، وسحبُ إذنِ المحادثة، وتبدُّلُ لقطةِ التخطيط.
 
     **ولا زمنَ ولا معرّفَ طلبٍ ولا مفتاحٌ خامّ** في أيٍّ منها.
     """
     import ast
     import pathlib
 
+    # **واللقطةُ العلميّةُ مطلوبةٌ بعينها، لا معرّفاتُها وحدها.** وكان هذا
+    # الفحصُ يدّعي «لقطةً علميّة» ويطلب من الرسالةِ معرّفاتٍ أربعةً فقط —
+    # فبصمةُ الأدلّةِ كانت غائبةً والفحصُ أخضر. واسمُ الفحصِ لا يُترك
+    # أوسعَ ممّا يفحص.
     REQUIRED = {
-        "ai.py": {"question", "project_id", "locale"},
+        "ai.py": {"question", "project_id", "locale",
+                  # ما يُرسَل فعلًا من المستند، وحالُ الإذن الذي أباحه
+                  "document_context_fingerprint", "chat_consent_state"},
         "brain.py": {"question", "agent_key", "locale"},
         "manuscript_drafting.py": {"manuscript_id", "section_key", "version_id",
                                     "context_fingerprint", "language"},
         "planning.py": {"project_id", "context_fingerprint", "locale"},
-        "thesis.py": {"thesis_id", "opportunity_id", "project_id", "file_id"},
+        "thesis.py": {"thesis_id", "opportunity_id", "project_id", "file_id",
+                      # لقطةُ الأدلّةِ نفسُها — لا معرّفاتُ أصحابها
+                      "evidence_fingerprint"},
         "profile.py": {"file_id", "extractor", "checksum_sha256"},
     }
     FORBIDDEN = {"request_id", "timestamp", "now", "created_at",
@@ -2863,3 +2876,135 @@ async def test_54_a_pre_boundary_ai_refusal_leaves_no_marker(
         assert status_code is None
         assert not (isinstance(stored, dict) and EXTERNAL_MARKER in stored), \
             "وُسم عبورُ حدٍّ ولا نموذجَ نُودي"
+
+
+@requires_db
+async def test_55_a_manuscript_draft_timeout_mutates_nothing(
+    two_tenants, monkeypatch,
+):
+    """صوغُ الفصل: مهلةٌ بعد الحدّ ⇒ **لا نسخةَ ولا قسمَ ولا تدقيق**.
+
+    ثمّ تنقضي الإجارةُ فيُردّ «أثرٌ لا يُعرف» — ولا نداءَ ثانٍ لجيلٍ واحد.
+    """
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_s5e_b_methods_drafting import _seed_manuscript
+
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    _project, manuscript_id, _sel = await _seed_manuscript(tid, slot["user_id"])
+    await _grant_drafting(slot, manuscript_id)
+
+    calls = {"n": 0}
+
+    class _Timeout:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            raise TimeoutError("provider timed out mid-draft")
+
+    _activate(monkeypatch, _Timeout())
+    key = uuid.uuid4().hex
+    url = f"/api/v1/manuscripts/{manuscript_id}/sections/method/draft"
+
+    before = {
+        "versions": await _count(
+            "SELECT count(*) FROM manuscript_versions WHERE tenant_id = :t",
+            {"t": str(tid)}),
+        "sections": await _count(
+            "SELECT count(*) FROM manuscript_sections WHERE tenant_id = :t",
+            {"t": str(tid)}),
+    }
+
+    async with _client(slot) as http:
+        first = await http.post(url, headers={"Idempotency-Key": key})
+        assert first.status_code == 409, f"{first.status_code}: {first.text[:250]}"
+        assert first.json()["error"]["code"] == \
+            "idempotency.external_result_unknown", first.text
+        assert calls["n"] == 1
+
+        for label, sql in (
+            ("versions",
+             "SELECT count(*) FROM manuscript_versions WHERE tenant_id = :t"),
+            ("sections",
+             "SELECT count(*) FROM manuscript_sections WHERE tenant_id = :t"),
+        ):
+            assert await _count(sql, {"t": str(tid)}) == before[label], \
+                f"تبدّل {label} على أثرٍ لا يُعرف"
+        assert await _count(
+            "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+            "   AND action = 'manuscript.section_drafted'",
+            {"t": str(tid)}) == 0, "كُتب تدقيقُ صياغةٍ لأثرٍ لا يُعرف"
+
+        await _expire_lease(tid, key)
+        after = await http.post(url, headers={"Idempotency-Key": key})
+
+    assert after.status_code == 409, after.text
+    assert after.json()["error"]["code"] == \
+        "idempotency.external_result_unknown", after.text
+    assert calls["n"] == 1, f"نُودي النموذجُ {calls['n']} مرّةً لجيلٍ واحد"
+    ambiguous = await _rows(
+        "SELECT count(*) FROM model_runs WHERE tenant_id = :t AND status = 'ambiguous'",
+        {"t": str(tid)})
+    assert ambiguous == [(1,)], f"سجلُّ النموذجِ لا يقول «ambiguous»: {ambiguous}"
+
+
+@requires_db
+async def test_56_planning_evidence_change_conflicts_instead_of_replaying(
+    two_tenants, monkeypatch,
+):
+    """تخطيطُ النشر: تبدّلت الأدلّةُ ⇒ **صِدامٌ لا إعادة**، وصفرُ نداءٍ ثانٍ.
+
+    فبصمةُ الطلبِ تحمل بصمةَ لقطةِ الأدلّة؛ ولولاها لأُعيد جوابٌ بُني على
+    أدلّةٍ لم تعد قائمة.
+    """
+    from sqlalchemy import func
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import ResearcherMemory
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+    from tests.test_at_s5d_publication_planning import _seed_project_with_memory
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    project_id, _verified, file_id = await _seed_project_with_memory(tid, uid)
+    await _grant_planning(slot, project_id)
+    provider = _activate(monkeypatch, _Structured({"opportunities": []}))
+    key = uuid.uuid4().hex
+    url = f"/api/v1/projects/{project_id}/publication-opportunities"
+
+    async with _client(slot) as http:
+        first = await http.post(url, headers={"Idempotency-Key": key})
+        assert first.status_code == 200, f"{first.status_code}: {first.text[:250]}"
+        assert provider.calls == 1
+
+    # دليلٌ موثقٌ جديدٌ ⇒ لقطةٌ أخرى ⇒ بصمةٌ أخرى.
+    async with tenant_session(tid, uid) as session:
+        session.add(ResearcherMemory(
+            tenant_id=tid, memory_category="project_decision",
+            statement_ar="دليلٌ موثقٌ مستجدٌّ للتخطيط",
+            value={"field_key": "sample_size"}, source_type="upload",
+            source_file_id=file_id, source_locator="§7 ¶2",
+            source_quote="دليلٌ موثقٌ مستجدٌّ للتخطيط",
+            verification_status="verified", verified_by=uid,
+            verified_at=func.now()))
+
+    # ‏(١) والإذنُ التخطيطيُّ صار للقطةٍ أخرى، فيُردّ **قبل التحكيم**.
+    async with _client(slot) as http:
+        stale = await http.post(url, headers={"Idempotency-Key": key})
+    assert stale.status_code == 403, f"{stale.status_code}: {stale.text[:250]}"
+    assert stale.headers.get("Idempotency-Replayed") != "true", \
+        "أُعيد جوابٌ بعد أن صار الإذنُ للقطةٍ أخرى"
+    assert provider.calls == 1, "نُودي النموذجُ على لقطةٍ بائتة"
+
+    # ‏(٢) ويأذن الباحثُ للّقطة الجديدة، فيبلغ الطلبُ التحكيم — فيصطدم.
+    await _grant_planning(slot, project_id)
+
+    async with _client(slot) as http:
+        second = await http.post(url, headers={"Idempotency-Key": key})
+
+    assert second.headers.get("Idempotency-Replayed") != "true", \
+        "أُعيد جوابٌ بُني على أدلّةٍ لم تعد قائمة"
+    assert second.status_code == 409, f"{second.status_code}: {second.text[:250]}"
+    assert second.json()["error"]["code"] == "idempotency.key_reused", second.text
+    assert provider.calls == 1, f"نُودي النموذجُ {provider.calls} مرّةً"
