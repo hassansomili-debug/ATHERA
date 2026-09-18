@@ -766,7 +766,10 @@ _THREAD_INSTRUCTION: Final = (
 
 
 async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
-                       file_id, project_id: uuid.UUID) -> ThreadOutcome:
+                       file_id, project_id: uuid.UUID,
+                       before_provider_call=None,
+                       finalizer=None,
+                       evidence_fingerprint_expected: str | None = None) -> ThreadOutcome:
     """يبني عقدَ الخيط من الأدلّة الموثقة — **بثلاث خطواتٍ لا تتداخل**.
 
     ‏(١) معاملةٌ قصيرة تقرأ الإذنَ والأدلّة ثمّ **تُغلق**.
@@ -779,6 +782,17 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
     نصفِ مبنيّة.
 
     **والإذنُ لا يُمنح تلقائيًّا**: بلا إذنٍ لا يقع نداءٌ واحد.
+
+    ## ومُعلَّقان للطور B-4
+
+    `before_provider_call` يقف على حدِّ المزوّد بعينه (بعد التفويض وقبل
+    النداء)، فيُدوَّن عبورُ الحدِّ دُرَريًّا ولا يُوسَم غامضًا ما رُدّ
+    محليًّا. و`finalizer` يُنادى **داخل معاملة الكتابة نفسِها**، فيُودَع
+    إتمامُ الجيل مع العقد والتدقيق: كلُّها أو لا شيء.
+
+    و`evidence_fingerprint_expected` يُعاد فحصُه قبل الكتابة: بصمةُ دليلٍ
+    تغيّرت أثناء انتظار النموذج تعني لقطةً أخرى، فلا تُكتب عقدٌ بُنيت على
+    لقطةٍ لم تعد قائمة.
     """
     import json
 
@@ -834,8 +848,13 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
         # من `thread_ready` في حال الرحلة؛ وكتابتُه هنا تحت اسم «أُنشئ»
         # دعوى عملٍ لم يقع — وهو ما يُحرَس منه في هذا الملفّ كلِّه.
         if existing:
-            return ThreadOutcome(created=0, rejected=0, fingerprint=fingerprint,
-                                 agent_run_id=None, reused=True)
+            # **وخيطٌ قائمٌ يُتمّ جيلَه أيضًا**: صفرُ نداء، والجوابُ يُثبَّت
+            # فتُعيده الإعادةُ صادقًا (`reused=True`).
+            reused = ThreadOutcome(created=0, rejected=0, fingerprint=fingerprint,
+                                   agent_run_id=None, reused=True)
+            if finalizer is not None:
+                await finalizer(session, reused)
+            return reused
 
         known = frozenset(str(item.memory_id) for item in evidence.items)
         payload = json.dumps(
@@ -849,6 +868,7 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
         instruction=_THREAD_INSTRUCTION, payload=payload,
         # §6 — معرفةٌ بحثية غير منشورة: C2. والقدرةُ تحكم، والإذنُ مقروء.
         input_classification="C2", output_locale="ar", grant=grant,
+        before_provider_call=before_provider_call,
     )
 
     # ── (٣) معاملةٌ قصيرة: الرفضُ أوّلًا، ثمّ الكتابة ──
@@ -856,6 +876,22 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
         draft.elements, known, refs_of=lambda element: element.evidence_refs)
 
     async with session_maker() as session:
+        # ── وإعادةُ فحصِ اللقطةِ وعقدِ الخيط قبل الكتابة ──
+        if evidence_fingerprint_expected is not None \
+                and evidence_fingerprint_expected != fingerprint:
+            raise JourneyBlocked(["evidence_changed_during_model_wait"])
+        raced = int((await session.execute(
+            select(func.count(ThreadElement.id))
+            .where(ThreadElement.tenant_id == tenant_id,
+                   ThreadElement.project_id == project_id)
+        )).scalar_one())
+        if raced:
+            # كاتبٌ شرعيٌّ آخرُ سبقنا: **لا تُضاعَف العقد**، ويُقال الحقّ.
+            reused = ThreadOutcome(created=0, rejected=0, fingerprint=fingerprint,
+                                   agent_run_id=agent_run_id, reused=True)
+            if finalizer is not None:
+                await finalizer(session, reused)
+            return reused
         for ordinal, element in enumerate(kept, start=1):
             session.add(ThreadElement(
                 tenant_id=tenant_id, project_id=project_id,
@@ -876,5 +912,11 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
                    "rows were rejected outright, never repaired or substituted",
         )
 
-    return ThreadOutcome(created=len(kept), rejected=len(rejected),
-                         fingerprint=fingerprint, agent_run_id=agent_run_id)
+        # **والإتمامُ في معاملةِ الكتابة نفسِها**: عقدٌ وتدقيقٌ وإتمامٌ
+        # معًا أو لا شيء. وعاملٌ بائتٌ يرفع هنا فتُرجَع المعاملةُ كلُّها.
+        outcome = ThreadOutcome(created=len(kept), rejected=len(rejected),
+                                fingerprint=fingerprint, agent_run_id=agent_run_id)
+        if finalizer is not None:
+            await finalizer(session, outcome)
+
+    return outcome
