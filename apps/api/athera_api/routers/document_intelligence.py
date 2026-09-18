@@ -13,6 +13,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File as FormFile, Uploa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from starlette.concurrency import run_in_threadpool
+
 from ..brain.orchestrator import Orchestrator
 from ..db import tenant_session
 from ..deps import Principal, get_principal, get_session
@@ -32,9 +34,14 @@ from ..schemas.document_intelligence import (
 )
 from ..services import audit, consent, memory, parsing, rbac, storage
 from ..services.document_intelligence import fields as catalogue
-from ..services.document_intelligence import pipeline
+from ..services.document_intelligence import pipeline, section_ledger
 from ..services.document_intelligence.contracts import STATUS_EXTRACTED, ExtractionBatch
 from ..services.document_intelligence.states import Status
+from ..providers.gateway import (
+    active_model,
+    provider_idempotency_capability,
+    provider_readiness,
+)
 from ..services.thesis import processing
 from ..transaction import TransactionalRoute
 from ..schemas.files import FileResponse
@@ -115,36 +122,65 @@ def _tenant_session_maker(tenant_id: uuid.UUID, actor_id: uuid.UUID):
     return _make
 
 
-async def _model_reader(session_maker, *, tenant_id, actor_user_id, locale, grant):
+async def _model_reader(session_maker, *, tenant_id, actor_user_id, locale, grant,
+                        ledger_maker=None):
     """محوّل بين خط الأنابيب والمنسّق — والنداء يمرّ بالمنسّق حصرًا.
 
     ويستعمل `run_structured_detached`: معاملة قصيرة تفتح سجل التشغيلة، ثم
     الشبكة **بلا معاملة**، ثم معاملة قصيرة تُسجّل النتيجة.
-    """
 
-    async def call(*, question: str, schema: dict, classification: str, locale: str = locale):
-        batch, _run_id = await Orchestrator().run_structured_detached(
-            session_maker,
-            tenant_id=tenant_id,
-            actor_user_id=actor_user_id,
-            agent_key="document_reader",
-            contract=ExtractionBatch,
-            instruction=EXTRACTION_INSTRUCTION,
-            payload=question,
-            # §7 — نصّ رسالة غير منشورة: C2. والبوابة هي التي تسمح أو تمنع،
-            # ولا يُرفع السقف من هنا: الإذن مقروء من موافقة الباحث لا مُعطى
-            # لنفسه، والتصنيف يبقى C2 ولا يُخفَّض ليمرّ.
-            input_classification=classification,
-            output_locale=locale,
-            grant=grant,
-        )
+    ## وحدُّ المزوّدِ لكلِّ قسمٍ على حدة (RC-T1-H2-B5)
+
+    وهذا هو المنفذُ الذي تُرك للطور B-5 عمدًا: كان النداءُ يقع بلا
+    `before_provider_call`، فسقوطٌ أثناءه لا يترك أثرًا يقول «قد نُفِّذ».
+
+    والمُعلَّقُ الآن يُدوّن عبورَ حدِّ **هذا القسم** في معاملةٍ تُودَع قبل
+    النداء — بين `gateway.authorize` و`gateway.invoke` بعينهما، فما رُدَّ
+    محلّيًّا لا يُوسَم غامضًا. وما عبَر ثمّ انقطع يُرفع `_SectionAmbiguous`،
+    ولا يُسمّى إخفاقَ مزوّدٍ ولا عدمَ تنفيذ.
+    """
+    ledger_maker = ledger_maker or session_maker
+
+    async def call(*, question: str, schema: dict, classification: str,
+                   locale: str = locale, section: str | None = None, lease=None):
+        crossed = {"yes": False}
+
+        async def _boundary() -> None:
+            # ══ الحدُّ بعينه: يُودَع الوسمُ ثمّ يُنادى المزوّد ══
+            async with ledger_maker() as ledger:
+                await section_ledger.mark_section_external(
+                    ledger, lease, provider=provider_readiness()[0],
+                    capability=provider_idempotency_capability())
+            crossed["yes"] = True
+
+        try:
+            batch, _run_id = await Orchestrator().run_structured_detached(
+                session_maker,
+                tenant_id=tenant_id,
+                actor_user_id=actor_user_id,
+                agent_key="document_reader",
+                contract=ExtractionBatch,
+                instruction=EXTRACTION_INSTRUCTION,
+                payload=question,
+                # §7 — نصّ رسالة غير منشورة: C2. والبوابة هي التي تسمح أو تمنع،
+                # ولا يُرفع السقف من هنا: الإذن مقروء من موافقة الباحث لا مُعطى
+                # لنفسه، والتصنيف يبقى C2 ولا يُخفَّض ليمرّ.
+                input_classification=classification,
+                output_locale=locale,
+                grant=grant,
+                before_provider_call=(_boundary if lease is not None else None),
+            )
+        except Exception as exc:
+            if crossed["yes"]:
+                raise pipeline._SectionAmbiguous(str(exc)[:200]) from exc  # noqa: SLF001
+            raise
         return batch.model_dump()
 
     return call
 
 
 async def _claim(session: AsyncSession, principal: Principal,
-                 thesis_id: uuid.UUID) -> str:
+                 thesis_id: uuid.UUID) -> processing.ProcessingClaim:
     """يحجز الرسالة قبل جدولة المهمّة — **أو يردّ الطلب بسببه**.
 
     **ولا معالجتان متزامنتان على ملفٍّ واحد.** ضغطتان على «أعد القراءة»
@@ -153,7 +189,7 @@ async def _claim(session: AsyncSession, principal: Principal,
     الكتابة نفسها لا فحصٌ قبلها، فالقاعدة هي الحَكَم لا ترتيبُ الطلبين.
     """
     try:
-        return await processing.claim_for_processing(
+        return await processing.claim_generation(
             session, tenant_id=principal.tenant_id, thesis_id=thesis_id)
     except processing.ProcessingConflict as conflict:
         if conflict.code == "thesis.not_found":
@@ -162,8 +198,8 @@ async def _claim(session: AsyncSession, principal: Principal,
                           state=conflict.state or "unknown") from conflict
 
 
-async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID,
-                   locale: str) -> None:
+async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID,
+                   claim: processing.ProcessingClaim, locale: str) -> None:
     """القراءة كاملة — **ومعاملات قصيرة لا واحدة طويلة.**
 
     كل كتابة في معاملتها، وكل نداء خارجي بلا معاملة أصلًا. ولولا ذلك لبقيت
@@ -171,12 +207,28 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
     `idle in transaction`، ويُمسَك فيها قفل سلسلة التدقيق للمستأجر فتقف
     كتاباته كلها خلفه حتى تنتهي مهلة التنفيذ.
 
-    وأول معاملة تُنشئ التشغيلة وتُودعها، فيبقى للفشل صوتٌ: انهيارٌ بعدها
-    يجد صفًّا يكتب فيه سببه، ولا يمحو روايته معه.
+    ## ولا يُصدَّق الرمزُ الممرَّرُ بلا فحص (RC-T1-H2-B5)
+
+    أوّلُ فعلٍ في القاعدة هو `start_worker`: تحويلُ المطالبةِ تحت سياجها.
+    فمهمّتان جُدولتا سهوًا بالمطالبة نفسِها لا تعملان معًا — واحدةٌ تفوز
+    والأخرى تعود بلا أثر: صفرُ نداءٍ وصفرُ مرشّحٍ وصفرُ تدقيق.
+
+    وكلُّ كتابةٍ بعدها مُسيَّجة. وعاملٌ قديمٌ عاد بعد أن استُعيدت محاولتُه
+    يرفع `ProcessingSuperseded` فتُرجَع معاملتُه ويخرج صامتًا.
     """
+    file_id = claim.file_id
     session_maker = _tenant_session_maker(tenant_id, actor_id)
 
-    # ── معاملة (1): تشغيلة مرئية قبل أي عمل قد يسقط ──
+    # ── معاملة (0): المطالبةُ تُحوَّل، أو ينسحب هذا العاملُ بلا أثر ──
+    async with session_maker() as session:
+        started = await processing.start_worker(session, claim, tenant_id=tenant_id)
+    if started is None:
+        logger.info("document_intelligence: worker superseded for thesis %s attempt %s",
+                    claim.thesis_id, claim.attempt)
+        return
+    claim = started
+
+    # ── معاملة (1): الملفُّ والتشغيلةُ الثابتة ──
     async with session_maker() as session:
         record = (
             await session.execute(select(File).where(File.id == file_id,
@@ -187,21 +239,42 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
                            file_id, tenant_id)
             # **وانسحابٌ صامت يترك الرسالة في `queued` إلى الأبد.** الشاشة
             # تقول «في انتظار الدور» ولا شيء ينتظر — وهو الكذب بالانتظار.
-            # فيُكتب الفشل باسمه قبل الخروج.
-            await processing.mark(
-                session, tenant_id=tenant_id, file_id=file_id,
-                state=processing.FAILED, failure_code="file_missing",
-                failure_detail="the file row is not visible to its tenant")
+            # فيُكتب الفشل باسمه قبل الخروج، **وتحت السياج**.
+            try:
+                await processing.advance(
+                    session, claim, tenant_id=tenant_id, state=processing.FAILED,
+                    failure_code="file_missing",
+                    failure_detail="the file row is not visible to its tenant")
+            except processing.ProcessingSuperseded:
+                pass
             return
         storage_key = record.storage_key
-        run = ExtractionRun(
-            tenant_id=tenant_id, file_id=file_id, extractor="document_intelligence",
-            status=Status.PARSING.value, chunks_parsed=0, candidates_proposed=0,
-            candidates_rejected_unquoted=0, started_at=dt.datetime.now(dt.UTC),
-        )
-        session.add(run)
-        await session.flush()
-        run_id = run.id
+        checksum = record.checksum_sha256
+        # **الفاعلُ التقنيُّ الثابت** لسِجلِّ الأقسام — لا الطالبُ الحاليّ.
+        subject_id = record.uploaded_by
+        run_id = pipeline.run_id_for(tenant_id, file_id, claim.attempt)
+
+        # ══ وتشغيلةٌ مرئيّةٌ **قبل** أيّ عملٍ قد يسقط ══
+        #
+        # فانهيارُ التخزين بعد هذه النقطة يجد صفًّا يكتب فيه سببَه، فيرى
+        # الباحثُ «تعذّرت القراءة» لا «لم تبدأ» — وهو انحدارٌ إنتاجيٌّ
+        # مسجَّل. وهُويّتُها ثابتةٌ للمحاولة، فالاستئنافُ يجدها ولا يخلق
+        # ثانيةً: `INSERT` واحدةٌ هنا، و`prepare` تُعيد استعمالَها.
+        existing_run = (await session.execute(
+            select(ExtractionRun).where(ExtractionRun.id == run_id,
+                                        ExtractionRun.tenant_id == tenant_id))
+        ).scalar_one_or_none()
+        if existing_run is None:
+            session.add(ExtractionRun(
+                id=run_id, tenant_id=tenant_id, file_id=file_id,
+                extractor="document_intelligence", status=Status.PARSING.value,
+                chunks_parsed=0, candidates_proposed=0,
+                candidates_rejected_unquoted=0,
+                started_at=dt.datetime.now(dt.UTC)))
+
+    # وجلسةُ السِّجلِّ تحمل سياقَ ذلك الفاعلِ وحدَه: `idempotency_records`
+    # محكومةٌ بالفاعل، وما عداها بالمستأجر — فلا يتغيّر ما يراه العامل.
+    ledger_maker = _tenant_session_maker(tenant_id, subject_id)
 
     try:
         # ── معاملة (2): الإذن يُقرأ ويُحمَل قيمةً لا كائنًا ──
@@ -212,24 +285,32 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
                 session, tenant_id=tenant_id, file_id=file_id)
 
         # ── بلا معاملة: جلب الملف من التخزين (شبكة أيضًا) ──
-        data = storage.get_store().get(storage_key)
+        #
+        # **ولا يُحبَس حلقةُ الأحداث على نداءٍ متزامن**: عمليّةُ المخزن
+        # تُسلَّم إلى خيطٍ من المجمّع، وهي حافّةٌ يراها ماسحُ H3.
+        data = await run_in_threadpool(storage.get_store().get, storage_key)
 
         reader = await _model_reader(session_maker, tenant_id=tenant_id,
                                      actor_user_id=actor_id, locale=locale,
-                                     grant=grant)
+                                     grant=grant, ledger_maker=ledger_maker)
         result = await pipeline.run_extraction(
             session_maker, tenant_id=tenant_id, actor_user_id=actor_id,
             file_id=file_id, data=data, model_call=reader, locale=locale,
             run_id=run_id,
             external_allowed=grant is not None,
             consent_state=consent_state,
+            claim=claim, subject_id=subject_id, ledger_maker=ledger_maker,
+            checksum_sha256=checksum,
+            provider_name=provider_readiness()[0], model_name=active_model(),
+            capability=(grant.capability if grant is not None else None),
         )
 
-        # ── معاملة (أخيرة): سجل ما جرى ──
+        # ── معاملة (أخيرة): سجل ما جرى — **تحت السياج** ──
         #
         # وما استُبعد يُسجَّل عددًا لا نصًّا: «حُجبت ثلاثة مقاطع لوجود معرّفات
         # شخصية» معلومةٌ للباحث وللتدقيق، ومحتواها ليس كذلك.
         async with session_maker() as session:
+            await processing.hold(session, claim, tenant_id=tenant_id)
             await audit.record(
                 session, tenant_id=tenant_id, action="thesis.extraction_completed",
                 object_type="file", object_id=file_id, actor_user_id=actor_id,
@@ -239,6 +320,8 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
                     "not_found": len(result.not_found),
                     "excluded_from_external_send": result.excluded,
                     "failed_sections": result.failed_sections,
+                    "processing_attempt": claim.attempt,
+                    "extraction_run_id": str(run_id),
                     # §12 — هل أُذن بالإرسال الخارجي، وبأي قدرة.
                     "external_c2_authorized": grant is not None,
                     "capability": consent.CAPABILITY if grant else None,
@@ -247,6 +330,19 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
                 reason="document read and structured proposals recorded; "
                        "nothing verified yet",
             )
+            # ── وقسمٌ لا يُعرف أثرُه يمنع دعوى الاكتمال ──
+            if result.status is Status.EXTRACTION_FAILED:
+                await processing.advance(
+                    session, claim, tenant_id=tenant_id, state=processing.FAILED,
+                    failure_code="extraction_failed",
+                    # **ولا يُقال إنّ المزوّدَ أخفق ولا إنّه لم يُنفّذ.**
+                    failure_detail="extraction could not be completed: the external "
+                                   "result for one or more sections is unknown")
+    except processing.ProcessingSuperseded:
+        # استُعيدت المحاولةُ منّا أثناء العمل: **لا نكتب حرفًا فوق من استلم**.
+        logger.info("document_intelligence: superseded mid-flight, thesis %s attempt %s",
+                    claim.thesis_id, claim.attempt)
+        return
     except Exception as exc:  # noqa: BLE001 — الفشل يُروى ولا يُبتلع
         # **لا نصّ مستند هنا.** نوع الاستثناء ورسالته ومعرّفات التشغيل تكفي
         # للتشخيص؛ ومحتوى الرسالة لا يخصّ سجلًّا تشغيليًّا.
@@ -254,6 +350,10 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
         # ومعاملةٌ جديدة مستقلّة: تسجيل الفشل لا يعتمد على معاملةٍ سقطت.
         logger.exception("document_intelligence: run %s failed on file %s", run_id, file_id)
         async with session_maker() as session:
+            try:
+                await processing.hold(session, claim, tenant_id=tenant_id)
+            except processing.ProcessingSuperseded:
+                return
             failed_run = (
                 await session.execute(select(ExtractionRun).where(
                     ExtractionRun.id == run_id, ExtractionRun.tenant_id == tenant_id))
@@ -265,9 +365,9 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID, file_id: uuid.UUID
             # **والرسالة نفسها تحمل الخبر، لا التشغيلة وحدها.** الشاشة تقرأ
             # الرسالة؛ وفشلٌ يُكتب في `extraction_runs` فقط يصل إليها
             # «٠ أقسام» بلا سبب — وهو بعينه «الصفر الصامت».
-            await processing.mark(
-                session, tenant_id=tenant_id, file_id=file_id,
-                state=processing.FAILED, failure_code="extraction_failed",
+            await processing.advance(
+                session, claim, tenant_id=tenant_id, state=processing.FAILED,
+                failure_code="extraction_failed",
                 # صنفُ الاستثناء ورسالتُه مقصوصة — **ولا مقتطف من المستند**.
                 failure_detail=f"{type(exc).__name__}: {exc}"[:500])
 
@@ -344,7 +444,7 @@ async def upload_thesis(
         )
         # حالُ الرسالة تُحجز للمعالجة قبل الجدولة (ترحيل 0027) — فلا تبقى
         # `uploaded` بينما مهمّةٌ تعمل عليها، ولا تُجدوَل تشغيلتان معًا.
-        await _claim(session, principal, thesis.id)
+        claim = await _claim(session, principal, thesis.id)
         await audit.record(
             session, tenant_id=principal.tenant_id,
             action="thesis.auto_registered" if created else "thesis.upload_reused",
@@ -357,7 +457,7 @@ async def upload_thesis(
     # ← أُودعت المعاملةُ هنا، فترى المهمّةُ الملفَّ والسجلَّ معًا.
 
     background.add_task(_process, principal.tenant_id, principal.user_id,
-                        stored.id, principal.locale)
+                        claim, principal.locale)
     # **و«جارٍ قراءة الملف» لم تكن قد وقعت بعد.** المهمّة لم تبدأ حين تُرسَل
     # هذه الاستجابة؛ والحال الصادقة `queued`، وتصير `parsing` حين تصير.
     return ExtractionStateResponse(
@@ -409,7 +509,7 @@ async def process_stored_file(
 
     thesis, created = await pipeline.ensure_thesis_for_file(
         session, tenant_id=principal.tenant_id, file_id=record.id)
-    await _claim(session, principal, thesis.id)
+    claim = await _claim(session, principal, thesis.id)
     await audit.record(
         session, tenant_id=principal.tenant_id,
         action="document.processing_requested",
@@ -421,7 +521,7 @@ async def process_stored_file(
     await session.commit()
 
     background.add_task(_process, principal.tenant_id, principal.user_id,
-                        record.id, principal.locale)
+                        claim, principal.locale)
     return ExtractionStateResponse(
         thesis_id=thesis.id, file_id=record.id, status=processing.QUEUED,
         chunks=0, candidates=0,
@@ -716,12 +816,27 @@ async def decide_consent(
 
     # الموافقة وحدها تبدأ المعالجة الخارجية — والرفض والسحب لا يشغّلان شيئًا.
     if payload.decision == "grant":
-        # الموافقة تُودَع قبل جدولة المعالجة، وإلا قرأتها المهمة غائبة
-        # فامتنعت عن الإرسال — وهو فشلٌ آمن، لكنه يخالف قرار الباحث.
+        # ══ والموافقةُ مُطلِقٌ حقيقيٌّ للمعالجة، فتمرّ بالبوّابة نفسِها ══
+        #
+        # **وكانت تُجدول `_process` مباشرةً بلا مطالبة** — مسلكُ هروبٍ يتجاوز
+        # كلَّ ما يحرسه هذا الطور: لا جيلَ ولا سياجَ ولا استعادة.
+        #
+        # **وتكرارُ الطلبِ لا يبدأ محاولةً جديدة.** فالشبكةُ تُسقط جوابًا
+        # فيُعيد العميلُ الإرسال؛ ومنحٌ مكرَّرٌ لرسالةٍ تعمل أو تمّت لا يعني
+        # أنّ الباحثَ طلب قراءةً ثانية. فلا يُجدوَل شيءٌ إلّا إن كان ثمّة
+        # عملٌ حقيقيّ: حالٌ طرفيّةٌ تقبل الإعادة، أو محاولةٌ مهجورةٌ تُستعاد.
         view = await _consent_view(session, principal, thesis)
+        claim = None
+        try:
+            claim = await processing.claim_generation(
+                session, tenant_id=principal.tenant_id, thesis_id=thesis.id)
+        except processing.ProcessingConflict:
+            # قائمةٌ حيّةٌ أو لا عملَ لها: الموافقةُ تُحفظ ولا تُجدوَل ثانية.
+            claim = None
         await session.commit()
-        background.add_task(_process, principal.tenant_id, principal.user_id,
-                            thesis.file_id, principal.locale)
+        if claim is not None:
+            background.add_task(_process, principal.tenant_id, principal.user_id,
+                                claim, principal.locale)
         return view
     return await _consent_view(session, principal, thesis)
 
@@ -945,7 +1060,8 @@ async def reprocess(
     thesis = await _guard(session, principal, thesis_id)
     if thesis.file_id is None:
         raise AtheraError("thesis.no_file", status_code=422)
-    previous = await _claim(session, principal, thesis.id)
+    claim = await _claim(session, principal, thesis.id)
+    previous = "recovered" if claim.recovered else "new_attempt"
 
     rows = (
         await session.execute(
@@ -967,7 +1083,7 @@ async def reprocess(
     # نفس القاعدة: ما تقرؤه المهمة يجب أن يكون مُودَعًا قبل جدولتها.
     await session.commit()
     background.add_task(_process, principal.tenant_id, principal.user_id,
-                        thesis.file_id, principal.locale)
+                        claim, principal.locale)
     return ExtractionStateResponse(
         thesis_id=thesis_id, file_id=thesis.file_id, status=processing.QUEUED,
         chunks=0, candidates=0,

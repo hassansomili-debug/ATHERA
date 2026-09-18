@@ -1832,7 +1832,20 @@ async def test_a_crash_mid_processing_leaves_a_visible_failed_run(two_tenants, m
             raise RuntimeError("storage unreachable")
 
     monkeypatch.setattr(storage_module, "get_store", lambda: _BrokenStore())
-    await di._process(tid, uid, file_id, "ar")
+
+    # **والعاملُ صار يأخذ مطالبةَ جيلٍ لا معرّفَ ملفّ** (RC-T1-H2-B5): رمزٌ
+    # يُصدَّق بلا فحصٍ يجعل مهمّتَين تعملان معًا. فتُنشأ الرسالةُ ويُكتسب
+    # جيلُها كما يفعل المسارُ الحقيقيّ، ثمّ يُنادى العامل.
+    from athera_api.services.document_intelligence import pipeline as di_pipeline
+    from athera_api.services.thesis import processing as di_processing
+
+    async with tenant_session(tid, uid) as session:
+        thesis, _created = await di_pipeline.ensure_thesis_for_file(
+            session, tenant_id=tid, file_id=file_id)
+        claim = await di_processing.claim_generation(
+            session, tenant_id=tid, thesis_id=thesis.id)
+
+    await di._process(tid, uid, claim, "ar")
 
     async with tenant_session(tid, uid) as session:
         runs = (await session.execute(
