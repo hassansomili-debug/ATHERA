@@ -242,6 +242,14 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "ar": "الملف لم يكتمل رفعه بعد.",
         "en": "The file upload is not complete yet.",
     },
+    # وتبدُّلُ المصدرِ تحت المفتاح نفسِه: البايتاتُ غيرُ التي فُحصت، فلا
+    # يُستأنَف استخراجٌ على مصدرٍ آخر باسم جيلٍ سابق.
+    "ingestion.source_changed": {
+        "ar": "تغيّر الملف المصدر منذ بداية هذا الطلب — ابدأ استيرادًا جديدًا "
+              "للملف الحالي.",
+        "en": "The source file changed since this request began — start a new "
+              "import for the current file.",
+    },
     "ingestion.unsupported_document": {
         "ar": "تعذّر تفكيك هذا المستند؛ قد يكون ممسوحًا ضوئيًا بلا طبقة نص.",
         "en": "This document could not be parsed; it may be scanned with no text layer.",
@@ -340,6 +348,14 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     "planning.project_not_found": {
         "ar": "لم يُعثر على هذا البحث.",
         "en": "This project was not found.",
+    },
+    # ورمزٌ كان يُرفع بلا نصٍّ، وصار يُرفع في موضعٍ ثانٍ (RC-T1-H2-B4):
+    # تبدُّلُ الأدلّةِ بين تهيئةِ الجيلِ وإتمامِه. فلا يُعرَض رمزٌ خامٌّ.
+    "planning.context_changed": {
+        "ar": "تغيّرت الأدلة منذ بداية هذا الطلب — راجع الأدلة الحالية ثم "
+              "أعد التوليد.",
+        "en": "The evidence changed since this request began — review the "
+              "current evidence, then generate again.",
     },
     "synthesis.project_not_found": {
         "ar": "لم يُعثر على هذا البحث.",

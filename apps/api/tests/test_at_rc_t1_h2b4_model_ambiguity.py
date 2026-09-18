@@ -1686,3 +1686,42 @@ def test_35_planning_scopes_its_generation_to_the_project_tenant() -> None:
         assert passed.get("tenant_id") != "principal.tenant_id"
         checked += 1
     assert checked == 1, f"عددُ مواضعِ الحجز في المتن {checked}"
+
+def test_36_every_generation_lifecycle_code_speaks_both_languages() -> None:
+    """ورموزُ دورةِ الجيلِ كلُّها لها نصٌّ بالعربيّةِ والإنجليزيّة.
+
+    و`translate` تُعيد المفتاحَ نفسَه إن غاب النصُّ — فرمزٌ بلا مدخلٍ يظهر
+    للباحثِ حروفًا خامًّا مثل `ingestion.source_changed`. وقد وقع ذلك
+    فعلًا في هذا الطور: رمزُ تبدُّلِ المصدرِ رُفع بلا نصّ، ورمزُ تبدُّلِ
+    أدلّةِ التخطيطِ كان بلا نصٍّ ثمّ صار يُرفع في موضعٍ ثانٍ.
+
+    والعائلةُ مُثبَّتة: فرمزٌ جديدٌ في دورةِ الجيلِ يُراجَع ولا يُشحن صامتًا.
+    """
+    from athera_api.i18n.catalog import CATALOG, translate
+
+    FAMILY = (
+        "idempotency.external_result_unknown",
+        "idempotency.in_progress",
+        "idempotency.key_invalid",
+        "idempotency.key_reused",
+        "idempotency.lease_superseded",
+        "drafting.context_changed",
+        "planning.context_changed",
+        "ingestion.source_changed",
+        "file.upload_not_pending",
+    )
+    missing = [code for code in FAMILY
+               if set(CATALOG.get(code, {})) < {"ar", "en"}]
+    assert missing == [], f"رمزٌ بلا نصٍّ في لغةٍ: {missing}"
+
+    # ولا يكفي وجودُ المفتاح: النصُّ يجب أن يكون نصًّا لا صدى للرمز.
+    echoes = [code for code in FAMILY
+              for locale in ("ar", "en")
+              if translate(code, locale).strip() in (code, "")]
+    assert echoes == [], f"نصٌّ يُعيد الرمزَ نفسَه: {echoes}"
+
+    # ورسالةُ الغموضِ لا تقول «أخفق» ولا «لم يُنفَّذ» ولا «نُعيد المحاولة».
+    unknown_en = translate("idempotency.external_result_unknown", "en").lower()
+    for forbidden in ("failed", "did not run", "was not executed",
+                      "retrying automatically"):
+        assert forbidden not in unknown_en, forbidden
