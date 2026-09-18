@@ -188,6 +188,12 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
               "hides it from them. Deleting moves it to the trash and destroys "
               "nothing — confirm to continue.",
     },
+    # ورفعٌ خُتم لا يُفتَح ثانيةً: الرابطُ الموقّعُ إذنُ كتابة، وتجديدُه
+    # فوق ملفٍّ نهائيٍّ يُبدّل بايتاتَه وتبقى تجزئتُه تصف ما كان.
+    "file.upload_not_pending": {
+        "ar": "هذا الملف اكتمل رفعه، فلا يُصدر له رابط رفع جديد.",
+        "en": "This file's upload is already complete; no new upload link is issued.",
+    },
     "file.checksum_mismatch": {
         "ar": "بصمة الملف لا تطابق المرفوع؛ لم يُعتمد الرفع.",
         "en": "Checksum mismatch; the upload was not accepted.",

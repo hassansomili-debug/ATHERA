@@ -329,6 +329,15 @@ async def init_upload(
     key = storage.build_storage_key(principal.tenant_id, file_id, payload.filename)
 
     async with maker() as session:
+        # ══ التفويضُ **قبل** تحكيمِ المفتاح (RC-T1-H2-B3) ══
+        #
+        # **وكان بعدَه وفي فرعِ العملِ الجديد وحدَه.** فمن سُحبت صلاحيّتُه
+        # على المجلَّد كان يستعمل مفتاحًا قديمًا فيُسلك مسلكَ الإعادة —
+        # ولا يُفحص شيء — فيُمنَح **قدرةَ كتابةٍ جديدة** إلى وجهةٍ لم يعد
+        # يملكها. فلا يُتجاوَز فحصٌ لأنّ صفَّ حجزٍ موجود.
+        if payload.folder_id is not None:
+            await _writable_folder(session, principal, payload.folder_id)
+
         guard = idempotency.LeaseGuard()
         if idempotency.is_keyed(request):
             guard = await idempotency.begin_leased_in(
@@ -345,15 +354,40 @@ async def init_upload(
                     principal.tenant_id, file_id, payload.filename)
 
         if guard.replay is not None:
-            # إعادةٌ: يُقرأ الدائمُ من المخزون، ويُوقَّع العابرُ لاحقًا.
+            # ══ إعادةٌ تُجدّد قدرةً — **وللقدرةِ شرطٌ** ══
+            #
+            # الرابطُ الموقّعُ إذنُ كتابةٍ إلى مفتاحٍ بعينه. وكان يُجدَّد
+            # بمجرّد وجود صفِّ حجزٍ مُتَمّ — **ولو كان الملفُّ قد خُتم
+            # وصار `stored`**. فيُمنَح إذنُ كتابةٍ فوق كائنٍ نهائيّ:
+            # فتتبدّل بايتاتُه، وتبقى `checksum_sha256` وحجمُه وإسنادُه
+            # تصف ما كان. وذاك إفسادُ بيانات، لا إعادةُ جوابٍ.
+            #
+            # فيُعاد تحميلُ الصفّ **في هذه المعاملة**، ويُفحص التفويضُ
+            # الحاضر، ويُشترط أنّه ما زال قابلًا للرفع. وإلّا فـ٤٠٩ صادقة
+            # — ولا رابطَ، ولا مساسَ بالصفّ ولا بصفِّ الحجز.
             stored = guard.replay.body or {}
             file_id = uuid.UUID(str(stored["file_id"]))
             key = str(stored["storage_key"])
             folder_id = (uuid.UUID(str(stored["folder_id"]))
                          if stored.get("folder_id") else None)
+
+            live = (await session.execute(
+                select(File).where(File.id == file_id,
+                                   File.tenant_id == principal.tenant_id)
+            )).scalar_one_or_none()
+            if live is None:
+                raise NotFound("file.not_found")
+            await rbac.require_object_action(
+                session, principal.tenant_id, principal.user_id,
+                "file", file_id, "write")
+            if live.status != "pending" or live.trashed_at is not None:
+                raise AtheraError("file.upload_not_pending", status_code=409,
+                                  file_id=str(file_id), status=live.status)
+            # والمفتاحُ يُقرأ من الصفّ الحاضر لا من المخزون وحدَه، فلا
+            # يُوقَّع مفتاحٌ لا يملكه هذا الصفّ.
+            key = live.storage_key
+            folder_id = live.folder_id
         else:
-            if payload.folder_id is not None:
-                await _writable_folder(session, principal, payload.folder_id)
             folder_id = payload.folder_id
             # **والصفُّ المعلَّق جزءٌ من المصالحة لا يتيمٌ يُتجاوَز.**
             # مُستولٍ بعد انتهاء إجارةٍ يجد صفَّه بهُويّته الثابتة فيُعيد
@@ -669,18 +703,32 @@ async def store_uploaded_file(
     maker = tenant_session_maker(principal.tenant_id, principal.user_id)
     guard = idempotency.LeaseGuard()
     if request is not None and idempotency.is_keyed(request):
-        guard = await idempotency.begin_leased(
-            request, maker,
-            tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
-            body={
-                "filename": filename,
-                "content_type": declared,
-                "classification": classification,
-                "folder_id": str(target_folder) if target_folder else None,
-                "size_bytes": size,
-                "checksum_sha256": checksum,
-            },
-            ttl=idempotency.LEASE_STORAGE)
+        # ══ التفويضُ **قبل** الكتابة، في معاملة التحضير نفسِها ══
+        #
+        # **وكان بعدها.** فحصُ الوجهة كان في معاملة الإنهاء وحدَها — أي
+        # **بعد** بثِّ الملفّ إلى المخزن. فطلبٌ مُمفتَحٌ إلى مجلَّدٍ لا
+        # يملكه صاحبُه كان يكتب الكائنَ أوّلًا ثمّ يُردّ ٤٠٣، **والكائنُ
+        # المُمفتَحُ لا يُحذف** (وذاك صحيحٌ في الغموض) — فيبقى كائنٌ لا
+        # يشير إليه صفٌّ ولا يملكه أحد. وليس ذلك غموضَ مزوّدٍ، بل فحصًا
+        # وقع متأخّرًا.
+        #
+        # فيُفحص هنا: إن رُدّ فصفرُ نداءِ تخزين، وصفرُ حجزٍ مُودَع (المعاملةُ
+        # ترجع)، وصفرُ كائن — ويبقى عقدُ ٤٠٣/٤٠٤ كما هو.
+        async with maker() as session:
+            if target_folder is not None:
+                await _writable_folder(session, principal, target_folder)
+            guard = await idempotency.begin_leased_in(
+                session, request,
+                tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+                body={
+                    "filename": filename,
+                    "content_type": declared,
+                    "classification": classification,
+                    "folder_id": str(target_folder) if target_folder else None,
+                    "size_bytes": size,
+                    "checksum_sha256": checksum,
+                },
+                ttl=idempotency.LEASE_STORAGE)
         if guard.answer is not None:
             # إعادةٌ أو «قائمٌ لغيرك» أو تعارض — **وصفرُ كتابةٍ في المخزن**.
             return guard.answer
@@ -723,6 +771,10 @@ async def store_uploaded_file(
     # الكائن في التخزين، والصفّ في القاعدة.
     try:
         async with maker() as session:
+            # **ويُعاد الفحصُ هنا ولو فُحص في التحضير**: الصلاحيّةُ قد
+            # تُسحب بينما الملفُّ يُبَثّ. فإن سُحبت رجعت معاملةُ الإنهاء —
+            # ولا يُحذف الكائنُ المُمفتَح عميانًا (فقد يكون لمُستولٍ)،
+            # وتنظيفُ المهجورِ حقًّا شأنُ الطور C.
             if target_folder is not None:
                 await _writable_folder(session, principal, target_folder)
             # ══ يُنشأ الصفُّ أو **يُعاد استعماله** (RC-T1-H2-B3) ══
