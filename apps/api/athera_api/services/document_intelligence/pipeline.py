@@ -20,6 +20,7 @@ from typing import Final
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...errors import AtheraError, NotFound
 from ...models.files import File
 from ...models.research import DocumentChunk, ExtractionRun, FactCandidate
 from ...models.thesis import Thesis
@@ -575,22 +576,69 @@ async def _record_mining_failure(
         pass
 
 
+#: فضاءُ أسماءٍ ثابتٌ لهُويّةِ تشغيلةِ المعالجة (RC-T1-H2-B5).
+#:
+#: **ولا يُشتقُّ من معرّفِ طلبٍ ولا من مفتاحٍ خامٍّ ولا من زمنٍ ولا من الفاعلِ
+#: المستعيد.** هُويّةُ التشغيلة يجب أن تتطابق حين يستأنف عاملٌ آخرُ المحاولةَ
+#: نفسَها، وأن تختلف حين يقرّر الباحثُ إعادةً جديدة — فالمحاولةُ وحدها هي
+#: التي تفرّق.
+PROCESSING_NAMESPACE: Final = uuid.UUID("3d5f1c84-9a27-5e6b-8f41-b2c7d0e93a56")
+
+
+def run_id_for(tenant_id: uuid.UUID, file_id: uuid.UUID, attempt: int) -> uuid.UUID:
+    """هُويّةُ تشغيلةِ الاستخراجِ لمحاولةٍ واحدة — **ثابتةٌ عبر الاستئناف**.
+
+    فالتشغيلةُ كانت تُنشأ بمعرّفٍ عشوائيٍّ قبل كلّ عمل، فاستئنافُ محاولةٍ
+    مهجورةٍ يخلق تشغيلةً ثانيةً للعمل نفسِه: عددان في القاعدة لعملٍ واحد،
+    ومرشّحاتٌ تُنسب إلى تشغيلةٍ غير التي بدأتها.
+
+    والمحاولةُ الجديدةُ المقصودةُ تعطي معرّفًا آخرَ — وهو المطلوب: جيلُ
+    استخراجٍ جديدٌ لا استئنافٌ لقديم.
+    """
+    return uuid.uuid5(PROCESSING_NAMESPACE,
+                      f"thesis-processing:{tenant_id}:{file_id}:{attempt}")
+
+
 async def ensure_thesis_for_file(
     session: AsyncSession, *, tenant_id: uuid.UUID, file_id: uuid.UUID,
 ) -> tuple[Thesis, bool]:
     """سجل الرسالة — يُنشأ مرة واحدة لكل ملف (§4، §5).
 
-    **والتكرار يُمنع بالبحث لا بقيد جديد:** `theses.file_id` قائم، فالاستعلام
-    عنه قبل الإنشاء يجعل إعادة المحاولة آمنة بلا ترحيل إضافي.
-
     ويُنشأ بلا عنوان ولا درجة: `NULL` تعني «لم يُستخرَج بعد» — واسم الملف
     عنوانًا أو درجةً مخمَّنة اختلاقٌ يمنعه §11.
+
+    ## والتكرارُ يُمنع بالتسلسلِ في القاعدة، لا بالبحثِ وحده (RC-T1-H2-B5)
+
+    **وكان التعليقُ يدّعي أنّ البحثَ قبل الإنشاء يكفي.** لا يكفي: طلبان
+    متزامنان على الملفّ نفسِه يقرآن «لا شيء» معًا فيُدرجان صفَّين، و
+    `theses.file_id` **بلا قيدِ تفرّد** — فُحص ذلك في القاعدة الحيّة. فرسالتان
+    لملفٍّ واحد: بطاقتان في الشاشة، وحالان تتقدّمان على التوازي، ومرشّحاتٌ
+    تنقسم بينهما.
+
+    فيُقفَل صفُّ **الملفّ** أوّلًا (`SELECT … FOR UPDATE`). والملفُّ هو
+    المرساةُ الصحيحة: هو المفتاحُ الذي نتفرّد عليه، وهو قائمٌ قبل الرسالة.
+    فالثاني ينتظر الأوّلَ ثمّ يقرأ ما أودعه — فيجد رسالةً ويعيدها.
     """
+    # **والقفلُ على صفٍّ قائمٍ لا على الرسالةِ المنشودة.** قفلُ صفٍّ غيرِ
+    # موجودٍ لا يمنع إدراجَ غيره؛ وقفلُ الملفِّ يُسلسِل كلَّ من يقصده.
+    anchored = (await session.execute(
+        select(File.id).where(File.id == file_id, File.tenant_id == tenant_id)
+        .with_for_update()
+    )).scalar_one_or_none()
+    if anchored is None:
+        raise NotFound("file.not_found")
+
     existing = (
-        await session.execute(select(Thesis).where(Thesis.file_id == file_id))
-    ).scalar_one_or_none()
-    if existing is not None:
-        return existing, False
+        await session.execute(select(Thesis).where(Thesis.file_id == file_id)
+                              .order_by(Thesis.created_at.asc()))
+    ).scalars().all()
+    if len(existing) > 1:
+        # **ولا تُخمَّن الصحيحةُ من بين مكرَّرتَين تاريخيّتَين.** ثالثةٌ لا
+        # تُصنع، والطلبُ يُردّ بحقيقته ليُعالَج بيدٍ واعية.
+        raise AtheraError("thesis.duplicate_for_file", status_code=409,
+                          file_id=str(file_id), count=len(existing))
+    if existing:
+        return existing[0], False
 
     thesis = Thesis(tenant_id=tenant_id, file_id=file_id, title_ar=None, degree=None)
     session.add(thesis)
