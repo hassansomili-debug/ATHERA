@@ -493,7 +493,7 @@ async def ask(
     # **والبحثُ لا يحتاج نموذجًا.** فمزوّدٌ غير مضبوط يمنع التوليد ولا يمنع
     # اكتشافَ المراجع؛ وإخفاءُ ما وُجد فعلًا لأن النموذج مطفأ حجبُ عملٍ تمّ.
     if not ready:
-        return AiAskResponse(
+        disabled = AiAskResponse(
             answer=_t(
                 locale,
                 "تنفيذ أثيرا AI غير مُفعَّل بعد: لم يُضبط مزوّد نموذج على الخادم. "
@@ -517,6 +517,20 @@ async def ask(
             external_link=external_link,
             project=project_view,
         )
+        # ══ وجيلٌ حُجز لا يُترك عالقًا (RC-T1-H2-B4) ══
+        #
+        # **وكان يُترك.** هذا مسلكٌ طرفيٌّ **بعد** الحجز وقبل النموذج:
+        # مزوّدٌ غيرُ مضبوط. فكان الصفُّ يبقى `in_progress` بلا وسمٍ ولا
+        # إتمام — فيُردّ صاحبُه ٤٠٩ إلى أن تنقضي الإجارةُ على عملٍ لم
+        # يُنفَّذ أصلًا ولا غموضَ فيه.
+        #
+        # فيُثبَّت الجوابُ المُعطَّلُ نفسُه: إعادةٌ لاحقةٌ تُعيده حرفيًّا،
+        # **وصفرُ نداءٍ للنموذج**.
+        if guard.lease is not None:
+            async with session_maker() as session:
+                await idempotency.settle_leased(
+                    session, guard, status=200, body=jsonable_encoder(disabled))
+        return disabled
 
     # ── الاستدعاء عبر المنسّق: هو الطبقة المعمارية، والبوابة تحته ──
     #
