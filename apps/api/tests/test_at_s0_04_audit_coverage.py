@@ -23,6 +23,10 @@ DELEGATES = {
     "ingestion.ingest_file": ingestion.ingest_file,
     "memory.approve_candidate": memory.approve_candidate,
     "memory.reject_candidate": memory.reject_candidate,
+    # **ومتنُ الرفع مفوَّضٌ** (الطور B-3): `upload_file` صار معالجًا يفوّض،
+    # والحدثُ يُكتب في المتن. ولا استثناءَ هنا: `test_each_delegate_...`
+    # يُثبت أنّ هذا المفوَّضَ يكتب `audit.record` فعلًا، كسائر المفوَّضين.
+    "files.store_uploaded_file": files_router.store_uploaded_file,
 }
 
 ROUTER_MODULES = (auth_router, files_router, tenants_router, profile_router)

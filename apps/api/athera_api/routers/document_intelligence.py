@@ -37,7 +37,8 @@ from ..services.document_intelligence.contracts import STATUS_EXTRACTED, Extract
 from ..services.document_intelligence.states import Status
 from ..services.thesis import processing
 from ..transaction import TransactionalRoute
-from .files import upload_file
+from ..schemas.files import FileResponse
+from .files import store_uploaded_file
 
 logger = logging.getLogger("athera.document_intelligence")
 
@@ -317,8 +318,14 @@ async def upload_thesis(
     # ولم يُكشف الأمرُ حتى وُسّعت تغطيةُ الماسح في H2-B1: عملياتُ مخزن
     # الكائنات لم تكن منافذَ مُعلَنة، وتسليمُ الطريقة إلى `run_in_threadpool`
     # لم يكن حافةً — فكان المسارُ غيرَ مرئيٍّ للحارس.
-    stored = await upload_file(upload=upload, classification="C2",
-                               folder_id=None, principal=principal)
+    #
+    # **و`request=None` عمدًا**: رفعُ الرسالة خارج نطاق الطور B-3 (موعدُه
+    # B-5)، فيسلك متنُ الرفع مسلكَه القديم حرفيًّا — معرّفٌ عشوائيّ، ولا
+    # حجزَ، وحذفُ الكائن عند سقوط القاعدة كما كان.
+    stored = await store_uploaded_file(
+        request=None, upload=upload, classification="C2",
+        folder_id=None, principal=principal)
+    assert isinstance(stored, FileResponse)  # noqa: S101 — بلا مفتاحٍ لا إعادة
 
     # ══ ثمّ معاملةٌ قصيرةٌ تملك نفسَها ══
     #

@@ -338,16 +338,40 @@ async def bounded_cleanup(
     بمئةِ صفٍّ، وبفهرسٍ على `expires_at`. ومفتاحٌ منتهٍ يُعالَج صحيحًا ولو
     لم يُنظَّف شيءٌ قطّ — انظر استعادةَ المنتهي في `acquire_or_replay`.
 
+    **ولا يمسّ `in_progress`**: ذاك أثرٌ غامضٌ ومرساةُ مصالحة — انظر
+    الشرطَ في المتن.
+
     **والنطاقُ الفعليُّ أضيقُ من الشرط المكتوب**: الشرطُ مستأجرٌ،
     وسياسةُ الصفّ تشترط الفاعلَ أيضًا — فلا تُحذف إلّا صفوفُ الفاعل
     الحاليّ المنتهية. وذاك مقصود: التنظيفُ لا يُمنح صلاحيةً لا يملكها
     الطلب، والحدُّ الأمنيّ أوّلًا والصيانةُ بعده.
     """
-    moment = now or dt.datetime.now(dt.UTC)
+    # ══ وساعةُ القاعدة هي الحَكَم (RC-T1-H2-B3) ══
+    #
+    # **وكانت ساعةَ العمليّة.** وقرارُ البقاء في الطور B-3 يُرتِّب عليه
+    # **جيلًا جديدًا وهدفَ تخزينٍ جديدًا**: فخادمٌ ساعتُه متقدّمةٌ على
+    # القاعدة كان يُرتجِع جيلًا لم تنقضِ ٢٤ ساعتُه عند القاعدة بعد —
+    # فيُولَد هدفٌ جديدٌ قبل وقته، ويبقى كائنُ الجيل السابق بلا مالك.
+    #
+    # فالمقارنةُ بـ`func.now()`، ولا تُمرَّر ساعةٌ إلّا في فحصٍ يريد لحظةً
+    # بعينها. والمُنادي الحيُّ لا يُمرّر شيئًا.
+    moment: Any = func.now() if now is None else now
     doomed = (
         select(IdempotencyRecord.id)
         .where(IdempotencyRecord.tenant_id == tenant_id,
-               IdempotencyRecord.expires_at <= moment)
+               IdempotencyRecord.expires_at <= moment,
+               # ══ و`in_progress` لا يُمحى هنا أبدًا (RC-T1-H2-B3) ══
+               #
+               # **فقد يعني أنّ أثرًا خارجيًّا وقع ولا يُعرف أوقع أم لا.**
+               # وفي الطور B-3 هذا الصفُّ هو **مرساةُ المصالحة**: منه
+               # تُشتقّ هُويّةُ الملفّ ومفتاحُ التخزين، فمحوُه يجعل
+               # الإعادةَ تُولّد هدفًا جديدًا — فيبقى كائنُ المحاولةِ
+               # الأولى في المخزن لا صفَّ له ولا مالك.
+               #
+               # وانقضاءُ الإجارة (`lease_expires_at`) يكفي للاستيلاء،
+               # فلا يُحتجَز العملُ. وتنظيفُ المهجورِ حقًّا — بعد التحقّق
+               # من المخزن — شأنُ الطور C لا شأنُ تنظيفٍ عامٍّ أعمى.
+               IdempotencyRecord.state != IN_PROGRESS)
         .limit(limit)
     ).scalar_subquery()
     result = await session.execute(
@@ -626,6 +650,50 @@ async def acquire_lease(
                          operation=operation, fence=fence)
         raise KeyReused(KeyReused.LOST_RACE)
 
+    # ══ جيلٌ انقضى بقاؤه يُستعاد — ولا مفتاحَ أبديّ ══
+    #
+    # **وهذا عقدُ الطور A نفسُه** (`acquire_or_replay`): بعد `expires_at` لا
+    # يمنع مفتاحٌ مُتَمٌّ طفرةً جديدة. ولم تكن هذه الدالّةُ تقرأ `expires_at`
+    # قطّ، فكان مفتاحٌ مُتَمٌّ يُعيد جوابَه **إلى الأبد** — عقدٌ يناقض
+    # الطور A، ويُفسد الطور B-3 حين تُشتقّ هُويّةُ التخزين من المفتاح.
+    #
+    # والاستعادةُ حذفٌ ثمّ إدراجٌ في المعاملة نفسِها، فيتغيّر `id` —
+    # **وذاك بعينه جيلٌ جديدٌ وهدفُ تخزينٍ جديد**.
+    #
+    # **و`in_progress` لا يُستعاد هكذا أبدًا**: قد يكون أثرٌ خارجيٌّ وقع
+    # ولا يُعرف أوقع أم لا. فأمرُه إلى `lease_expires_at` (استيلاءٌ) لا
+    # إلى `expires_at` (استعادة). وخلطُهما يجعل الغامضَ هدفًا جديدًا.
+    #
+    # **وبساعةِ القاعدة** (`func.now()`) لا بساعةِ العمليّة: الخوادمُ عدّةٌ
+    # وساعاتُها تتفارق، والحَكَمُ واحد.
+    if existing.state in (COMPLETED, FAILED):
+        retired = await session.execute(
+            delete(IdempotencyRecord)
+            .where(IdempotencyRecord.id == existing.id,
+                   IdempotencyRecord.state.in_((COMPLETED, FAILED)),
+                   IdempotencyRecord.expires_at <= func.now())
+        )
+        if (getattr(retired, "rowcount", 0) or 0) == 1:
+            # فاز بالاستعادة: جيلٌ جديدٌ بمعرّفٍ جديد.
+            fence = await _claim_with_lease(session, scope=scope,
+                                            fingerprint=fingerprint, ttl=ttl)
+            if fence is not None:
+                return Lease(record_id=await _record_id(session, scope),
+                             operation=operation, fence=fence)
+        # لم يُستعَد — إمّا البقاءُ قائم، وإمّا سبقنا مُستعيدٌ آخر. ويُعاد
+        # القراءةُ فيُحكَم على **الصفّ القائم الآن** لا على لقطةٍ قديمة.
+        refreshed = (await session.execute(
+            select(IdempotencyRecord).where(
+                IdempotencyRecord.tenant_id == tenant_id,
+                IdempotencyRecord.actor_user_id == actor_user_id,
+                IdempotencyRecord.operation == operation,
+                IdempotencyRecord.key_digest == digest,
+            )
+        )).scalar_one_or_none()
+        if refreshed is None:
+            raise KeyReused(KeyReused.LOST_RACE)
+        existing = refreshed
+
     if existing.request_fingerprint != fingerprint:
         raise KeyReused(KeyReused.FINGERPRINT)
 
@@ -646,6 +714,9 @@ async def acquire_lease(
                    IdempotencyRecord.lease_expires_at <= func.now()))
         .values(state=IN_PROGRESS,
                 lease_expires_at=func.now() + dt.timedelta(seconds=seconds),
+                # **ويُمدّ البقاءُ مع الاستيلاء**: جيلٌ يُعمل عليه الآن لا
+                # يُرتجَع من تحت عامله لأنّ ساعةً قديمةً انقضت.
+                expires_at=func.now() + TTL,
                 completed_at=None, response_status=None, response_body=None)
         .returning(IdempotencyRecord.lease_expires_at)
     )).first()
@@ -770,6 +841,51 @@ class LeaseGuard:
     lease: Lease | None = None
     answer: Any = None
     operation: str = ""
+    #: هُويّةٌ ثابتةٌ **لهذا الجيل** — `None` بلا إجارةٍ مكتسَبة (B-3).
+    #:
+    #: ومرساتُها `Lease.record_id`: تبقى عبر الاستيلاء وانتهاء الإجارة،
+    #: وتتغيّر حين يُستعاد المفتاحُ بعد انقضاء بقائه.
+    stable_id: uuid.UUID | None = None
+    #: الإعادةُ **قيمةً** حين يطلب المسارُ ذلك: جسمٌ مخزونٌ يُعاد بناؤه.
+    #:
+    #: ولهذا موضعٌ واحد: جوابٌ يحمل **قدرةً عابرة** (رابطٌ موقّع) لا يجوز
+    #: تخزينُها ولا إعادتُها بعد انتهائها. فيُخزَّن ما يدوم، ويُولَّد
+    #: العابرُ من جديدٍ عند كلّ إعادة.
+    replay: Replay | None = None
+
+
+#: فضاءُ أسماءٍ ثابتٌ لهُويّات الطور B-3 — لا يتغيّر بعد اليوم.
+#:
+#: وتغييرُه يعني أنّ إعادةَ طلبٍ قديمٍ تُولّد هُويّةً أخرى، فيُكتب كائنٌ
+#: ثانٍ لنيّةٍ واحدة. فهو ثابتٌ كالمخطَّط، لا إعدادٌ يُضبط.
+STABLE_NAMESPACE = uuid.UUID("6f1c9a52-0e4d-5b77-9c3a-2d8e41b0f6a7")
+
+
+def stable_object_id(record_id: uuid.UUID) -> uuid.UUID:
+    """هُويّةٌ ثابتةٌ **لجيلِ حجزٍ واحد** — مرساتُها صفُّ الإجارة.
+
+    ## ولمَ لا تُشتقّ من نطاق المفتاح
+
+    كانت تُشتقّ من (مستأجر + فاعل + عمليّة + بصمةُ مفتاح). وذاك **دائمٌ
+    للمفتاح**، وهو يناقض عقدَ البقاء ٢٤ ساعة (`TTL`) — فيُفسد البيانات:
+
+        ١· رفعٌ بمفتاح K وبايتات A ينجح؛ فصفٌّ A وكائنٌ A قائمان.
+        ٢· ينقضي `expires_at` ويُنظَّف صفُّ الحجز.
+        ٣· يُعاد K لاحقًا ببايتات B والاسم نفسِه.
+        ٤· جيلٌ جديدٌ ببصمة B — **لكنّ الهُويّةَ المشتقّةَ هي القديمة**.
+        ٥· فتُكتب B على **مفتاح A**، ويُعاد استعمالُ صفِّ A.
+        ⇒ القاعدةُ تصف A والمخزنُ يحمل B.
+
+    ## والمرساةُ الصحيحة: `id` صفِّ الإجارة
+
+    المعرّفُ يبقى نفسَه للمُطالِب الأوّل، وعبر انتهاء الإجارة، وعبر
+    الاستيلاء، ولعامِلين متزامنين — **ويتغيّر حين يُستعاد المفتاحُ بعد
+    انقضاء بقائه**، لأنّ الاستعادةَ تحذف الصفَّ وتُدرج غيرَه. فالثباتُ
+    ثباتُ **جيل**، لا ثباتٌ أبديٌّ للمفتاح. ولا إزالةَ تكرارٍ أبديّة.
+
+    **ولا عمودَ جديد**: `id` مُودَعٌ في المخطَّط 0037 أصلًا.
+    """
+    return uuid.uuid5(STABLE_NAMESPACE, f"idempotency-generation:{record_id}")
 
 
 def is_keyed(request) -> bool:
@@ -785,7 +901,7 @@ def is_keyed(request) -> bool:
 
 async def begin_leased(
     request, maker, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
-    body: Any, ttl: dt.timedelta,
+    body: Any, ttl: dt.timedelta, replay_as_value: bool = False,
 ) -> LeaseGuard:
     """التحضير في معاملةٍ **خاصّةٍ به** ثمّ يُعيد التحكّم بلا معاملةٍ مفتوحة.
 
@@ -801,12 +917,13 @@ async def begin_leased(
     async with maker() as session:
         return await begin_leased_in(
             session, request, tenant_id=tenant_id, actor_user_id=actor_user_id,
-            body=body, ttl=ttl)
+            body=body, ttl=ttl, replay_as_value=replay_as_value)
 
 
 async def begin_leased_in(
     session: AsyncSession, request, *, tenant_id: uuid.UUID,
     actor_user_id: uuid.UUID, body: Any, ttl: dt.timedelta,
+    replay_as_value: bool = False,
 ) -> LeaseGuard:
     """التحضيرُ نفسُه **في معاملةٍ يملكها المُنادي**.
 
@@ -840,13 +957,20 @@ async def begin_leased_in(
                           answer=await athera_error_handler(request, conflict))
 
     if isinstance(outcome, Replay):
+        # **والإعادةُ قيمةً حين يطلبها المسار**: جوابٌ يحمل قدرةً عابرة
+        # يُعاد بناؤه من المخزون الدائم، ولا يُعاد المخزونُ حرفيًّا.
+        if replay_as_value:
+            return LeaseGuard(operation=operation, replay=outcome)
         return LeaseGuard(operation=operation, answer=_replay_response(outcome))
     if isinstance(outcome, InProgress):
         from ..errors import athera_error_handler  # noqa: PLC0415
 
         return LeaseGuard(operation=operation,
                           answer=await athera_error_handler(request, InProgressRefused()))
-    return LeaseGuard(lease=outcome, operation=operation)
+    # **والهُويّةُ من الإجارة وحدَها**: مرساتُها `record_id`، فلا تُعرَف قبل
+    # اكتسابها — ولا تُعرَف لجيلٍ غير هذا.
+    return LeaseGuard(lease=outcome, operation=operation,
+                      stable_id=stable_object_id(outcome.record_id))
 
 
 def _operation_of(request) -> str:

@@ -8,14 +8,17 @@ import hashlib
 import uuid
 from time import perf_counter
 
-from fastapi import APIRouter, Depends, File as FormFile, Form, Query, UploadFile, status
+from fastapi import (
+    APIRouter, Depends, File as FormFile, Form, Query, Request, UploadFile, status,
+)
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..db import tenant_session
+from ..db import tenant_session_maker
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.audit import ProvenanceEvent
@@ -32,7 +35,7 @@ from ..schemas.files import (
 )
 from ..schemas.library import FileMoveRequest, FileTrashView, TrashRequest
 from ..models.thesis import Thesis
-from ..services import audit, library, rbac, storage, workspace
+from ..services import audit, idempotency, library, rbac, storage, workspace
 from ..services.thesis import processing as thesis_processing
 from ..transaction import TransactionalRoute
 from .folders import router as folders_router
@@ -280,10 +283,10 @@ async def list_files(
 
 @router.post("", response_model=FileInitResponse, status_code=status.HTTP_201_CREATED)
 async def init_upload(
+    request: Request,
     payload: FileInitRequest,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
-) -> FileInitResponse:
+) -> FileInitResponse | JSONResponse:
     """نيّةُ رفعٍ عبر رابطٍ موقّع — **والملف ينزل حيث يقف الباحث**.
 
     **وكان ينزل في الجذر دائمًا.** هذا المسار لم يكن يعرف `folder_id`
@@ -307,66 +310,160 @@ async def init_upload(
     عنوانُ كائنٍ يشير إليه كلُّ رابطٍ موقّع وكلُّ سجلّ إسناد.
     """
     storage.validate_upload(payload.content_type, payload.size_bytes)
-    if payload.folder_id is not None:
-        await _writable_folder(session, principal, payload.folder_id)
 
+    # ══ الهُويّةُ أوّلًا، والتوقيعُ خارج كلّ معاملة (RC-T1-H2-B3) ══
+    #
+    # **والرابطُ الموقّعُ قدرةٌ عابرة، لا جزءٌ من الجواب المخزون.** لو
+    # خُزّن في `idempotency_records.response_body` لَأعادت إعادةٌ بعد يومٍ
+    # رابطًا ميّتًا: توقيعُه انتهى، والعميلُ يراه جوابًا ناجحًا. فيُخزَّن
+    # **ما يدوم** (الهُويّة والمفتاح والموضع والمدّة)، ويُوقَّع من جديدٍ
+    # عند كلّ إعادة.
+    #
+    # و`presign_put` يعدّها الماسحُ عمليّةَ تخزين، فلا تمتدّ عليها معاملة:
+    # تُحسب الهُويّةُ بدوالَّ نقيّة، ثمّ تُفتح المعاملةُ وتُغلق، ثمّ
+    # يُوقَّع. ولا رحلةَ شبكةٍ في التوقيع أصلًا — لكنّ الترتيبَ يبقى
+    # صادقًا مع القاعدة لا مع ما نظنّه عن المُنفِّذ.
+    body = payload.model_dump(mode="json")
+    maker = tenant_session_maker(principal.tenant_id, principal.user_id)
     file_id = uuid.uuid4()
     key = storage.build_storage_key(principal.tenant_id, file_id, payload.filename)
-    record = File(
-        id=file_id,
-        tenant_id=principal.tenant_id,
-        storage_key=key,
-        original_filename=payload.filename,
-        content_type=payload.content_type,
-        size_bytes=payload.size_bytes,
-        classification=payload.classification,
-        is_untrusted_content=True,  # §33.3 — محتوى الملفات بيانات لا تعليمات.
-        status="pending",
-        uploaded_by=principal.user_id,
-        folder_id=payload.folder_id,
-    )
-    session.add(record)
-    await session.flush()
 
-    session.add(
-        ObjectGrant(
-            tenant_id=principal.tenant_id,
-            object_type="file",
-            object_id=file_id,
-            user_id=principal.user_id,
-            grant_level="owner",
-            granted_by=principal.user_id,
-        )
-    )
-    await audit.record(
-        session,
-        tenant_id=principal.tenant_id,
-        action="file.upload_initiated",
-        object_type="file",
-        object_id=file_id,
-        actor_user_id=principal.user_id,
-        state_after={"filename": payload.filename, "classification": payload.classification,
-                     "folder_id": str(payload.folder_id) if payload.folder_id else None},
-        request_id=principal.request_id,
-        ip_address=principal.ip_address,
-    )
+    async with maker() as session:
+        # ══ التفويضُ **قبل** تحكيمِ المفتاح (RC-T1-H2-B3) ══
+        #
+        # **وكان بعدَه وفي فرعِ العملِ الجديد وحدَه.** فمن سُحبت صلاحيّتُه
+        # على المجلَّد كان يستعمل مفتاحًا قديمًا فيُسلك مسلكَ الإعادة —
+        # ولا يُفحص شيء — فيُمنَح **قدرةَ كتابةٍ جديدة** إلى وجهةٍ لم يعد
+        # يملكها. فلا يُتجاوَز فحصٌ لأنّ صفَّ حجزٍ موجود.
+        if payload.folder_id is not None:
+            await _writable_folder(session, principal, payload.folder_id)
 
-    return FileInitResponse(
+        guard = idempotency.LeaseGuard()
+        if idempotency.is_keyed(request):
+            guard = await idempotency.begin_leased_in(
+                session, request, tenant_id=principal.tenant_id,
+                actor_user_id=principal.user_id, body=body,
+                ttl=idempotency.LEASE_STORAGE, replay_as_value=True)
+            if guard.answer is not None:
+                return guard.answer
+            if guard.stable_id is not None:
+                # **والهُويّةُ بعد اكتساب الجيل لا قبله**: مرساتُها صفُّ
+                # الإجارة، فلا تُعرَف إلّا بعد أن يُعرَف الجيل.
+                file_id = guard.stable_id
+                key = storage.build_storage_key(
+                    principal.tenant_id, file_id, payload.filename)
+
+        if guard.replay is not None:
+            # ══ إعادةٌ تُجدّد قدرةً — **وللقدرةِ شرطٌ** ══
+            #
+            # الرابطُ الموقّعُ إذنُ كتابةٍ إلى مفتاحٍ بعينه. وكان يُجدَّد
+            # بمجرّد وجود صفِّ حجزٍ مُتَمّ — **ولو كان الملفُّ قد خُتم
+            # وصار `stored`**. فيُمنَح إذنُ كتابةٍ فوق كائنٍ نهائيّ:
+            # فتتبدّل بايتاتُه، وتبقى `checksum_sha256` وحجمُه وإسنادُه
+            # تصف ما كان. وذاك إفسادُ بيانات، لا إعادةُ جوابٍ.
+            #
+            # فيُعاد تحميلُ الصفّ **في هذه المعاملة**، ويُفحص التفويضُ
+            # الحاضر، ويُشترط أنّه ما زال قابلًا للرفع. وإلّا فـ٤٠٩ صادقة
+            # — ولا رابطَ، ولا مساسَ بالصفّ ولا بصفِّ الحجز.
+            stored = guard.replay.body or {}
+            file_id = uuid.UUID(str(stored["file_id"]))
+            key = str(stored["storage_key"])
+            folder_id = (uuid.UUID(str(stored["folder_id"]))
+                         if stored.get("folder_id") else None)
+
+            live = (await session.execute(
+                select(File).where(File.id == file_id,
+                                   File.tenant_id == principal.tenant_id)
+            )).scalar_one_or_none()
+            if live is None:
+                raise NotFound("file.not_found")
+            await rbac.require_object_action(
+                session, principal.tenant_id, principal.user_id,
+                "file", file_id, "write")
+            if live.status != "pending" or live.trashed_at is not None:
+                raise AtheraError("file.upload_not_pending", status_code=409,
+                                  file_id=str(file_id), status=live.status)
+            # والمفتاحُ يُقرأ من الصفّ الحاضر لا من المخزون وحدَه، فلا
+            # يُوقَّع مفتاحٌ لا يملكه هذا الصفّ.
+            key = live.storage_key
+            folder_id = live.folder_id
+        else:
+            folder_id = payload.folder_id
+            # **والصفُّ المعلَّق جزءٌ من المصالحة لا يتيمٌ يُتجاوَز.**
+            # مُستولٍ بعد انتهاء إجارةٍ يجد صفَّه بهُويّته الثابتة فيُعيد
+            # استعماله — ولا يُنشئ ثانيًا ولا منحةً ثانيةً ولا حدثًا ثانيًا.
+            existing = (await session.execute(
+                select(File).where(File.id == file_id,
+                                   File.tenant_id == principal.tenant_id)
+            )).scalar_one_or_none()
+            if existing is None:
+                session.add(File(
+                    id=file_id,
+                    tenant_id=principal.tenant_id,
+                    storage_key=key,
+                    original_filename=payload.filename,
+                    content_type=payload.content_type,
+                    size_bytes=payload.size_bytes,
+                    classification=payload.classification,
+                    is_untrusted_content=True,  # §33.3 — المحتوى بيانات لا تعليمات.
+                    status="pending",
+                    uploaded_by=principal.user_id,
+                    folder_id=payload.folder_id,
+                ))
+                await session.flush()
+                session.add(ObjectGrant(
+                    tenant_id=principal.tenant_id, object_type="file",
+                    object_id=file_id, user_id=principal.user_id,
+                    grant_level="owner", granted_by=principal.user_id,
+                ))
+                await audit.record(
+                    session,
+                    tenant_id=principal.tenant_id,
+                    action="file.upload_initiated",
+                    object_type="file",
+                    object_id=file_id,
+                    actor_user_id=principal.user_id,
+                    state_after={
+                        "filename": payload.filename,
+                        "classification": payload.classification,
+                        "folder_id": str(payload.folder_id) if payload.folder_id else None,
+                    },
+                    request_id=principal.request_id,
+                    ip_address=principal.ip_address,
+                )
+            # **ولا رابطَ ولا توقيعَ في المخزون** — الدائمُ وحده.
+            await idempotency.settle_leased(
+                session, guard, status=status.HTTP_201_CREATED,
+                body={
+                    "file_id": str(file_id), "storage_key": key,
+                    "folder_id": str(folder_id) if folder_id else None,
+                    "expires_in": settings.s3_presign_ttl_seconds,
+                })
+
+    # ── التوقيعُ بعد إغلاق المعاملة، ويُولَّد طازجًا في كلّ مرّة ──
+    answer = FileInitResponse(
         file_id=file_id,
         upload_url=storage.presign_put(key, payload.content_type),
         storage_key=key,
         expires_in=settings.s3_presign_ttl_seconds,
-        folder_id=payload.folder_id,
+        folder_id=folder_id,
     )
+    if guard.replay is not None:
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED,
+            content=jsonable_encoder(answer),
+            headers={idempotency.REPLAYED_HEADER: "true"})
+    return answer
 
 
 @router.post("/{file_id}/complete", response_model=FileResponse)
 async def complete_upload(
+    request: Request,
     file_id: uuid.UUID,
     payload: FileCompleteRequest,
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
-) -> FileResponse:
+) -> FileResponse | JSONResponse:
     """ختمُ الرفع الموقّع — **والموضع الذي أُعلن عند النيّة هو الذي يستقرّ**.
 
     **والسكوتُ يُبقي، لا يُلغي.** جسمٌ بلا `folder_id` — وهو كل عميلٍ كُتب
@@ -386,6 +483,28 @@ async def complete_upload(
         raise NotFound("file.not_found")
     await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
                                      "file", file_id, "write")
+
+    # ══ الحجزُ **بعد** التفويض (RC-T1-H2-B3) ══
+    #
+    # فالحجزُ ليس بوّابةَ وصول: من لا يملك الكتابةَ يُردّ ٤٠٣ ولا يحجز
+    # مفتاحًا، ولا يُفشي وجودَ ملفٍّ ليس له بأن يُردّ بتعارضِ مفاتيح.
+    #
+    # وهذا مسارٌ **ذرّيٌّ في القاعدة** لا انتظارَ خارجيًّا فيه: فلا إجارة،
+    # بل حجزٌ في معاملة الطلب نفسِها كما في الطور A. والمعرّفُ والتجزئةُ
+    # والموضعُ في البصمة — فمفتاحٌ أُعيد على ملفٍّ آخر أو بتجزئةٍ أخرى
+    # تعارضٌ يُردّ، ولا يُكتب إسنادٌ ثانٍ ولا حدثُ ختمٍ ثانٍ.
+    claim = await idempotency.begin(
+        request, session,
+        tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+        body={
+            "file_id": str(file_id),
+            "checksum_sha256": payload.checksum_sha256,
+            "folder_named": payload.folder_named,
+            "folder_id": str(payload.folder_id) if payload.folder_id else None,
+        })
+    if claim.answer is not None:
+        return claim.answer
+
     if payload.folder_named and payload.folder_id is not None:
         await _writable_folder(session, principal, payload.folder_id)
 
@@ -422,7 +541,9 @@ async def complete_upload(
                      "folder_id": str(record.folder_id) if record.folder_id else None},
         request_id=principal.request_id,
     )
-    return FileResponse.model_validate(record, from_attributes=True)
+    answer = FileResponse.model_validate(record, from_attributes=True)
+    await claim.finish(session, status=200, body=jsonable_encoder(answer))
+    return answer
 
 
 @router.get("/{file_id}", response_model=FileResponse)
@@ -490,13 +611,14 @@ def sha256_of(data: bytes) -> str:
 # ══════════════════════════════════════════════════════════════════════
 @router.post("/upload", response_model=FileResponse, status_code=status.HTTP_201_CREATED)
 async def upload_file(
+    request: Request,
     upload: UploadFile = FormFile(...),
     classification: str = Form(default="C2"),
     # **الملف ينزل حيث يقف الباحث.** والرفع إلى الجذر ثم نقلٌ ثانٍ يترك
     # نافذةً يظهر فيها الملف في غير موضعه، ويكلّف طلبًا زائدًا على كل رفع.
     folder_id: str | None = Form(default=None),
     principal: Principal = Depends(get_principal),
-) -> FileResponse:
+) -> FileResponse | JSONResponse:
     """رفع يمرّ بالخادم لا بالمتصفح إلى التخزين.
 
     **لماذا لا رابط موقّع هنا؟** لأن ترويسة CSP تحصر اتصال المتصفح بالـAPI
@@ -507,6 +629,28 @@ async def upload_file(
     **الترتيب مقصود: التخزين أولًا ثم القاعدة.** فشل التخزين لا يترك سجلًّا
     يتيمًا يدّعي ملفًا لا وجود له، وفشل القاعدة يحذف الكائن قبل أن يُبلَّغ
     نجاح. ولا يُعاد «تم» إلا بعد تأكّد الاثنين.
+    """
+    return await store_uploaded_file(
+        request=request, upload=upload, classification=classification,
+        folder_id=folder_id, principal=principal)
+
+
+async def store_uploaded_file(
+    *,
+    request: Request | None,
+    upload: UploadFile,
+    classification: str,
+    folder_id: str | None,
+    principal: Principal,
+) -> FileResponse | JSONResponse:
+    """متنُ الرفع — و`request=None` تعني **المسلكَ القديم حرفيًّا**.
+
+    ولهذا موضعٌ واحد: `document_intelligence.upload_thesis` ينادي هذا
+    المتنَ دالّةً لا عبر HTTP. ورفعُ الرسالة **خارج نطاق الطور B-3**
+    (موعدُه B-5)، فلا يُقحَم فيه حجزٌ ولا هُويّةٌ مشتقّة: لو مُرِّر طلبُ
+    الرسالة هنا لَصار مفتاحٌ يُرسَل إلى `/thesis/upload` يحجز باسم عمليّةٍ
+    أخرى، ثمّ تُعاد `JSONResponse` إلى مُنادٍ ينتظر `FileResponse` فيسقط
+    على `stored.id`. فالفصلُ صريحٌ هنا، لا مضمَرٌ في ترتيب المعاملات.
     """
     declared = upload.content_type or "application/octet-stream"
     filename = upload.filename or "file"
@@ -541,10 +685,57 @@ async def upload_file(
     storage.validate_size(declared, size)
     storage.validate_content(declared, head)
 
-    file_id = uuid.uuid4()
+    checksum = digest.hexdigest()
+
+    # ══ تحضيرٌ يُودَع قبل التخزين (RC-T1-H2-B3) ══
+    #
+    # **والهُويّةُ تُشتقّ ولا تُولَّد.** كان هنا `uuid.uuid4()`، ومنه مفتاحُ
+    # التخزين. فإعادةٌ بعد إخفاقٍ **غامض** تُولّد معرّفًا جديدًا ومفتاحًا
+    # جديدًا، فيصير لنيّةٍ واحدةٍ كائنان في المخزن أحدُهما بلا صفّ. والهُويّةُ
+    # الآن مشتقّةٌ من نطاق المفتاح، فيبلغها المُستولي كما بلغها الأوّل.
+    #
+    # **وبلا مفتاحٍ لا يُغيَّر شيء**: `uuid4()` كما كان، ولا حجزَ ولا رحلةَ
+    # تحضيرٍ إلى القاعدة.
+    #
+    # والبصمةُ من قيمٍ عاديّة، و`checksum_sha256` فيها **هُويّةُ المحتوى**:
+    # فبايتاتٌ أخرى بالمفتاح نفسِه تعارضٌ يُردّ قبل أيّ كتابةٍ ثانية. ولا
+    # تُخزَّن البايتاتُ نفسُها في مكان.
+    maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+    guard = idempotency.LeaseGuard()
+    if request is not None and idempotency.is_keyed(request):
+        # ══ التفويضُ **قبل** الكتابة، في معاملة التحضير نفسِها ══
+        #
+        # **وكان بعدها.** فحصُ الوجهة كان في معاملة الإنهاء وحدَها — أي
+        # **بعد** بثِّ الملفّ إلى المخزن. فطلبٌ مُمفتَحٌ إلى مجلَّدٍ لا
+        # يملكه صاحبُه كان يكتب الكائنَ أوّلًا ثمّ يُردّ ٤٠٣، **والكائنُ
+        # المُمفتَحُ لا يُحذف** (وذاك صحيحٌ في الغموض) — فيبقى كائنٌ لا
+        # يشير إليه صفٌّ ولا يملكه أحد. وليس ذلك غموضَ مزوّدٍ، بل فحصًا
+        # وقع متأخّرًا.
+        #
+        # فيُفحص هنا: إن رُدّ فصفرُ نداءِ تخزين، وصفرُ حجزٍ مُودَع (المعاملةُ
+        # ترجع)، وصفرُ كائن — ويبقى عقدُ ٤٠٣/٤٠٤ كما هو.
+        async with maker() as session:
+            if target_folder is not None:
+                await _writable_folder(session, principal, target_folder)
+            guard = await idempotency.begin_leased_in(
+                session, request,
+                tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+                body={
+                    "filename": filename,
+                    "content_type": declared,
+                    "classification": classification,
+                    "folder_id": str(target_folder) if target_folder else None,
+                    "size_bytes": size,
+                    "checksum_sha256": checksum,
+                },
+                ttl=idempotency.LEASE_STORAGE)
+        if guard.answer is not None:
+            # إعادةٌ أو «قائمٌ لغيرك» أو تعارض — **وصفرُ كتابةٍ في المخزن**.
+            return guard.answer
+
+    file_id = guard.stable_id or uuid.uuid4()
     key = storage.build_storage_key(principal.tenant_id, file_id, filename,
                                     user_id=principal.user_id)
-    checksum = digest.hexdigest()
 
     # ── المرور الثاني: بثّ إلى التخزين من بداية الملف المؤقت ──
     #
@@ -579,9 +770,35 @@ async def upload_file(
     # لمن يحتاج ختمًا قبل الردّ — ولا يُعاد «تم» إلا وقد استقرّ الاثنان:
     # الكائن في التخزين، والصفّ في القاعدة.
     try:
-        async with tenant_session(principal.tenant_id, principal.user_id) as session:
+        async with maker() as session:
+            # **ويُعاد الفحصُ هنا ولو فُحص في التحضير**: الصلاحيّةُ قد
+            # تُسحب بينما الملفُّ يُبَثّ. فإن سُحبت رجعت معاملةُ الإنهاء —
+            # ولا يُحذف الكائنُ المُمفتَح عميانًا (فقد يكون لمُستولٍ)،
+            # وتنظيفُ المهجورِ حقًّا شأنُ الطور C.
             if target_folder is not None:
                 await _writable_folder(session, principal, target_folder)
+            # ══ يُنشأ الصفُّ أو **يُعاد استعماله** (RC-T1-H2-B3) ══
+            #
+            # فالهُويّةُ ثابتة، فقد يكون مُستولٍ سبقنا فأودع صفَّها. ولو
+            # أُدرج عميانًا لَسقط على `pk_files` بخطأ ٥٠٠ **قبل** أن يبلغ
+            # `settle_leased` — فيُحجب عن العميل الجوابُ الصادق (٤٠٩
+            # «فُقدت الإجارة») خلف «خطأ غير متوقّع». وقد قِيس ذلك حرفيًّا.
+            #
+            # فيُقرأ أوّلًا: فإن وُجد أُعيد استعمالُه بلا منحةٍ ثانيةٍ ولا
+            # إسنادٍ ثانٍ ولا حدثِ تدقيقٍ ثانٍ، ثمّ يُسأل السياجُ فيقول
+            # كلمتَه — وهي الرجوعُ لمن فقد إجارتَه.
+            existing = (await session.execute(
+                select(File).where(File.id == file_id,
+                                   File.tenant_id == principal.tenant_id)
+            )).scalar_one_or_none()
+            if existing is not None:
+                record = existing
+                await idempotency.settle_leased(
+                    session, guard, status=status.HTTP_201_CREATED,
+                    body=jsonable_encoder(
+                        FileResponse.model_validate(record, from_attributes=True)))
+                return FileResponse.model_validate(record, from_attributes=True)
+
             record = File(
                 id=file_id,
                 tenant_id=principal.tenant_id,
@@ -626,34 +843,69 @@ async def upload_file(
                 request_id=principal.request_id,
                 ip_address=principal.ip_address,
             )
+            answer = FileResponse.model_validate(record, from_attributes=True)
+            # **الإنهاءُ في المعاملة نفسِها**: الصفُّ والمنحةُ والإسنادُ
+            # والتدقيقُ والإتمامُ معًا أو لا شيء. وعاملٌ بائتٌ يرفع
+            # `LeaseSuperseded` هنا فتُرجَع المعاملةُ كلُّها.
+            await idempotency.settle_leased(
+                session, guard, status=status.HTTP_201_CREATED,
+                body=jsonable_encoder(answer))
     except Exception:
-        # القاعدة سقطت بعد نجاح التخزين: يُحذف الكائن فلا يبقى بلا سجل.
-        # والإيداع داخل النطاق أعلاه، فسقوطُه يُمسك هنا أيضًا — لا بعد الردّ.
-        await run_in_threadpool(storage.get_store().delete, key)
+        # ══ ولمَ لا يُحذف الكائنُ المُمفتَح (RC-T1-H2-B3) ══
+        #
+        # بلا مفتاح: المفتاحُ عشوائيٌّ لا يشاركه أحد، فحذفُه عند سقوط
+        # القاعدة يمنع كائنًا يتيمًا — **وهو السلوكُ القديم، ويبقى**.
+        #
+        # وبمفتاح: المفتاحُ **مشتركٌ** بين كلّ محاولات هذه النيّة. فقد
+        # يكون مُستولٍ جديدٌ قد كتب الكائنَ نفسَه وأتمّ صفَّه بينما كنّا
+        # نسقط؛ فحذفٌ «تنظيفًا» يمحو كائنَ المالكِ القائمِ الصحيح —
+        # ويبقى صفُّه يشير إلى عدم. فالكائنُ يبقى **هدفَ مصالحة**:
+        # محتواه هو المحتوى نفسُه (البصمةُ تضمن ذلك)، ومفتاحُه هو المفتاح
+        # نفسُه. وحذفُ المهجورِ حقًّا شأنُ الطور C لا شأنُ عاملٍ ساقط.
+        if guard.lease is None:
+            await run_in_threadpool(storage.get_store().delete, key)
         raise
 
     # `expire_on_commit=False` يبقي الحقول محمَّلة بعد الإيداع، فلا قراءة
     # على جلسةٍ مغلقة.
-    return FileResponse.model_validate(record, from_attributes=True)
+    return answer
 
 
 @router.get("/{file_id}/content")
 async def stream_file(
     file_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
-    session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     """بثّ مصادق — بلا رابط عام ولا كشف لمضيف التخزين.
 
     التخويل يُفحص قبل قراءة بايت واحد، وRLS تمنع أصلًا رؤية سجل مستأجر آخر:
     تخمين معرّف ملف لا يعطي شيئًا.
+
+    **ولا معاملةَ تمتدّ على فتح المجرى** (RC-T1-H3). كانت الجلسةُ تبعيّةً
+    (`Depends(get_session)`)، فتبقى معاملةُ الطلب مفتوحةً بينما يُفتح مجرى
+    الكائن عند مزوّدِ تخزينٍ في مدينةٍ أخرى — والاتصالُ `idle in transaction`
+    طوال ذلك. فالأطوارُ ثلاثةٌ الآن: قراءةٌ وتفويض، ثمّ فتحُ المجرى بلا
+    معاملة، ثمّ تسجيلُ الوصول.
+
+    **وهذا عطبٌ كشفه توسيعُ الماسح في هذه الدفعة**: تسليمُ عمليّةِ المخزن
+    إلى `run_in_threadpool` لم يكن يُقرأ في `offenders` إلّا حين يناديه
+    غيرُه، فكان هذا المسارُ يمرّ. ولا صلةَ له بتحمُّلِ الإعادة — إصلاحُ
+    حدٍّ لا غير، ولا يتغيّر عقدُ المسار حرفًا.
     """
-    record = (await session.execute(select(File).where(File.id == file_id,
-                                            File.tenant_id == principal.tenant_id))).scalar_one_or_none()
-    if record is None:
-        raise NotFound("file.not_found")
-    await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
-                                     "file", file_id, "read")
+    maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+
+    # ── (١) معاملةٌ قصيرة: القراءةُ والتفويض، ثمّ تعبُر قيمٌ عاديّة ──
+    async with maker() as session:
+        record = (await session.execute(select(File).where(
+            File.id == file_id,
+            File.tenant_id == principal.tenant_id))).scalar_one_or_none()
+        if record is None:
+            raise NotFound("file.not_found")
+        await rbac.require_object_action(session, principal.tenant_id, principal.user_id,
+                                         "file", file_id, "read")
+        storage_key = record.storage_key
+        content_type = record.content_type
+        filename = record.original_filename
 
     # **والتسليم بثٌّ لا تحميل.** كانت الصياغة `get(...)` ثم `iter([data])`:
     # الكائن كله في ذاكرة العملية قبل أن يُرسل منه بايت. فرسالةٌ ممسوحة
@@ -663,23 +915,29 @@ async def stream_file(
     # و`get_object` نفسها استدعاءٌ متزامن، فتُنفَّذ في خيطٍ جانبي: فتحُ
     # المجرى لا يُجمّد حلقة الأحداث. وStarlette يستهلك المُكرِّر المتزامن
     # في خيطٍ جانبي أيضًا، فلا يعود شيءٌ من مسار التنزيل يحجز الحلقة.
-    stream = await run_in_threadpool(storage.get_store().get_stream, record.storage_key)
+    # ── (٢) بلا معاملة: يُفتح المجرى عند المزوّد ──
+    stream = await run_in_threadpool(storage.get_store().get_stream, storage_key)
 
-    session.add(FileAccessLog(
-        tenant_id=principal.tenant_id, file_id=file_id, user_id=principal.user_id,
-        action="download", accessed_at=dt.datetime.now(dt.UTC), ip_address=principal.ip_address,
-    ))
-    await audit.record(
-        session, tenant_id=principal.tenant_id, action="file.downloaded",
-        object_type="file", object_id=file_id, actor_user_id=principal.user_id,
-        request_id=principal.request_id, ip_address=principal.ip_address,
-    )
+    # ── (٣) معاملةٌ قصيرة: الوصولُ وقع فيُسجَّل ──
+    #
+    # **وبعد فتح المجرى لا قبله**: تنزيلٌ لم يبدأ لا يُسجَّل أنّه وقع.
+    async with maker() as session:
+        session.add(FileAccessLog(
+            tenant_id=principal.tenant_id, file_id=file_id, user_id=principal.user_id,
+            action="download", accessed_at=dt.datetime.now(dt.UTC),
+            ip_address=principal.ip_address,
+        ))
+        await audit.record(
+            session, tenant_id=principal.tenant_id, action="file.downloaded",
+            object_type="file", object_id=file_id, actor_user_id=principal.user_id,
+            request_id=principal.request_id, ip_address=principal.ip_address,
+        )
     return StreamingResponse(
         stream,
-        media_type=record.content_type,
+        media_type=content_type,
         headers={
             "Content-Disposition":
-                f'attachment; filename="{storage.safe_filename(record.original_filename)}"',
+                f'attachment; filename="{storage.safe_filename(filename)}"',
             "Cache-Control": "private, no-store",
         },
     )

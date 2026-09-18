@@ -185,7 +185,7 @@ def test_nothing_in_the_library_surface_destroys_anything_permanently():
                if callable(endpoint) and getattr(endpoint, "__module__", "")
                == files_router.__name__
                and "store().delete" in inspect.getsource(endpoint)]
-    assert deletes == ["upload_file"], (
+    assert deletes == ["store_uploaded_file"], (
         f"حذفٌ من المخزن في غير مسار التعويض: {deletes}")
 
 
