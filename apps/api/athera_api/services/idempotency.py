@@ -338,6 +338,9 @@ async def bounded_cleanup(
     بمئةِ صفٍّ، وبفهرسٍ على `expires_at`. ومفتاحٌ منتهٍ يُعالَج صحيحًا ولو
     لم يُنظَّف شيءٌ قطّ — انظر استعادةَ المنتهي في `acquire_or_replay`.
 
+    **ولا يمسّ `in_progress`**: ذاك أثرٌ غامضٌ ومرساةُ مصالحة — انظر
+    الشرطَ في المتن.
+
     **والنطاقُ الفعليُّ أضيقُ من الشرط المكتوب**: الشرطُ مستأجرٌ،
     وسياسةُ الصفّ تشترط الفاعلَ أيضًا — فلا تُحذف إلّا صفوفُ الفاعل
     الحاليّ المنتهية. وذاك مقصود: التنظيفُ لا يُمنح صلاحيةً لا يملكها
@@ -347,7 +350,19 @@ async def bounded_cleanup(
     doomed = (
         select(IdempotencyRecord.id)
         .where(IdempotencyRecord.tenant_id == tenant_id,
-               IdempotencyRecord.expires_at <= moment)
+               IdempotencyRecord.expires_at <= moment,
+               # ══ و`in_progress` لا يُمحى هنا أبدًا (RC-T1-H2-B3) ══
+               #
+               # **فقد يعني أنّ أثرًا خارجيًّا وقع ولا يُعرف أوقع أم لا.**
+               # وفي الطور B-3 هذا الصفُّ هو **مرساةُ المصالحة**: منه
+               # تُشتقّ هُويّةُ الملفّ ومفتاحُ التخزين، فمحوُه يجعل
+               # الإعادةَ تُولّد هدفًا جديدًا — فيبقى كائنُ المحاولةِ
+               # الأولى في المخزن لا صفَّ له ولا مالك.
+               #
+               # وانقضاءُ الإجارة (`lease_expires_at`) يكفي للاستيلاء،
+               # فلا يُحتجَز العملُ. وتنظيفُ المهجورِ حقًّا — بعد التحقّق
+               # من المخزن — شأنُ الطور C لا شأنُ تنظيفٍ عامٍّ أعمى.
+               IdempotencyRecord.state != IN_PROGRESS)
         .limit(limit)
     ).scalar_subquery()
     result = await session.execute(
@@ -626,6 +641,50 @@ async def acquire_lease(
                          operation=operation, fence=fence)
         raise KeyReused(KeyReused.LOST_RACE)
 
+    # ══ جيلٌ انقضى بقاؤه يُستعاد — ولا مفتاحَ أبديّ ══
+    #
+    # **وهذا عقدُ الطور A نفسُه** (`acquire_or_replay`): بعد `expires_at` لا
+    # يمنع مفتاحٌ مُتَمٌّ طفرةً جديدة. ولم تكن هذه الدالّةُ تقرأ `expires_at`
+    # قطّ، فكان مفتاحٌ مُتَمٌّ يُعيد جوابَه **إلى الأبد** — عقدٌ يناقض
+    # الطور A، ويُفسد الطور B-3 حين تُشتقّ هُويّةُ التخزين من المفتاح.
+    #
+    # والاستعادةُ حذفٌ ثمّ إدراجٌ في المعاملة نفسِها، فيتغيّر `id` —
+    # **وذاك بعينه جيلٌ جديدٌ وهدفُ تخزينٍ جديد**.
+    #
+    # **و`in_progress` لا يُستعاد هكذا أبدًا**: قد يكون أثرٌ خارجيٌّ وقع
+    # ولا يُعرف أوقع أم لا. فأمرُه إلى `lease_expires_at` (استيلاءٌ) لا
+    # إلى `expires_at` (استعادة). وخلطُهما يجعل الغامضَ هدفًا جديدًا.
+    #
+    # **وبساعةِ القاعدة** (`func.now()`) لا بساعةِ العمليّة: الخوادمُ عدّةٌ
+    # وساعاتُها تتفارق، والحَكَمُ واحد.
+    if existing.state in (COMPLETED, FAILED):
+        retired = await session.execute(
+            delete(IdempotencyRecord)
+            .where(IdempotencyRecord.id == existing.id,
+                   IdempotencyRecord.state.in_((COMPLETED, FAILED)),
+                   IdempotencyRecord.expires_at <= func.now())
+        )
+        if (getattr(retired, "rowcount", 0) or 0) == 1:
+            # فاز بالاستعادة: جيلٌ جديدٌ بمعرّفٍ جديد.
+            fence = await _claim_with_lease(session, scope=scope,
+                                            fingerprint=fingerprint, ttl=ttl)
+            if fence is not None:
+                return Lease(record_id=await _record_id(session, scope),
+                             operation=operation, fence=fence)
+        # لم يُستعَد — إمّا البقاءُ قائم، وإمّا سبقنا مُستعيدٌ آخر. ويُعاد
+        # القراءةُ فيُحكَم على **الصفّ القائم الآن** لا على لقطةٍ قديمة.
+        refreshed = (await session.execute(
+            select(IdempotencyRecord).where(
+                IdempotencyRecord.tenant_id == tenant_id,
+                IdempotencyRecord.actor_user_id == actor_user_id,
+                IdempotencyRecord.operation == operation,
+                IdempotencyRecord.key_digest == digest,
+            )
+        )).scalar_one_or_none()
+        if refreshed is None:
+            raise KeyReused(KeyReused.LOST_RACE)
+        existing = refreshed
+
     if existing.request_fingerprint != fingerprint:
         raise KeyReused(KeyReused.FINGERPRINT)
 
@@ -646,6 +705,9 @@ async def acquire_lease(
                    IdempotencyRecord.lease_expires_at <= func.now()))
         .values(state=IN_PROGRESS,
                 lease_expires_at=func.now() + dt.timedelta(seconds=seconds),
+                # **ويُمدّ البقاءُ مع الاستيلاء**: جيلٌ يُعمل عليه الآن لا
+                # يُرتجَع من تحت عامله لأنّ ساعةً قديمةً انقضت.
+                expires_at=func.now() + TTL,
                 completed_at=None, response_status=None, response_body=None)
         .returning(IdempotencyRecord.lease_expires_at)
     )).first()
@@ -770,7 +832,10 @@ class LeaseGuard:
     lease: Lease | None = None
     answer: Any = None
     operation: str = ""
-    #: هُويّةٌ ثابتةٌ لهذا النطاق — `None` بلا مفتاح (الطور B-3).
+    #: هُويّةٌ ثابتةٌ **لهذا الجيل** — `None` بلا إجارةٍ مكتسَبة (B-3).
+    #:
+    #: ومرساتُها `Lease.record_id`: تبقى عبر الاستيلاء وانتهاء الإجارة،
+    #: وتتغيّر حين يُستعاد المفتاحُ بعد انقضاء بقائه.
     stable_id: uuid.UUID | None = None
     #: الإعادةُ **قيمةً** حين يطلب المسارُ ذلك: جسمٌ مخزونٌ يُعاد بناؤه.
     #:
@@ -787,53 +852,31 @@ class LeaseGuard:
 STABLE_NAMESPACE = uuid.UUID("6f1c9a52-0e4d-5b77-9c3a-2d8e41b0f6a7")
 
 
-def stable_object_id(*, tenant_id: uuid.UUID, actor_user_id: uuid.UUID,
-                     operation: str, key_digest: str) -> uuid.UUID:
-    """هُويّةٌ **تُشتقّ ولا تُخزَّن** — فيبلغها المُستولي كما بلغها الأوّل.
+def stable_object_id(record_id: uuid.UUID) -> uuid.UUID:
+    """هُويّةٌ ثابتةٌ **لجيلِ حجزٍ واحد** — مرساتُها صفُّ الإجارة.
 
-    ## لمَ لا `uuid4()`
+    ## ولمَ لا تُشتقّ من نطاق المفتاح
 
-    مسارُ الرفع كان يُولّد `uuid4()` بعد التجزئة، ومنه مفتاحُ التخزين.
-    فإعادةٌ بعد إخفاقٍ **غامض** تُولّد معرّفًا جديدًا ومفتاحًا جديدًا —
-    فيصير لنيّةٍ واحدةٍ كائنان في المخزن، أحدهما لا صفَّ له. وذاك ما
-    يمنعه هذا الطور.
+    كانت تُشتقّ من (مستأجر + فاعل + عمليّة + بصمةُ مفتاح). وذاك **دائمٌ
+    للمفتاح**، وهو يناقض عقدَ البقاء ٢٤ ساعة (`TTL`) — فيُفسد البيانات:
 
-    ## ولمَ اشتقاقٌ لا عمودٌ في المخطَّط
+        ١· رفعٌ بمفتاح K وبايتات A ينجح؛ فصفٌّ A وكائنٌ A قائمان.
+        ٢· ينقضي `expires_at` ويُنظَّف صفُّ الحجز.
+        ٣· يُعاد K لاحقًا ببايتات B والاسم نفسِه.
+        ٤· جيلٌ جديدٌ ببصمة B — **لكنّ الهُويّةَ المشتقّةَ هي القديمة**.
+        ٥· فتُكتب B على **مفتاح A**، ويُعاد استعمالُ صفِّ A.
+        ⇒ القاعدةُ تصف A والمخزنُ يحمل B.
 
-    المُستولي بعد انتهاء الإجارة يملك المدخلاتِ الأربعةَ نفسَها (هي نطاقُ
-    `uq_idempotency_scope` بعينه)، فيشتقّ الهُويّةَ نفسَها بلا قراءةٍ ولا
-    عمودٍ جديد. **فلا حاجةَ إلى هجرة 0038.**
+    ## والمرساةُ الصحيحة: `id` صفِّ الإجارة
 
-    ## والنطاقُ أربعةٌ لا أقلّ
+    المعرّفُ يبقى نفسَه للمُطالِب الأوّل، وعبر انتهاء الإجارة، وعبر
+    الاستيلاء، ولعامِلين متزامنين — **ويتغيّر حين يُستعاد المفتاحُ بعد
+    انقضاء بقائه**، لأنّ الاستعادةَ تحذف الصفَّ وتُدرج غيرَه. فالثباتُ
+    ثباتُ **جيل**، لا ثباتٌ أبديٌّ للمفتاح. ولا إزالةَ تكرارٍ أبديّة.
 
-    المستأجر، والفاعل، والعمليّة، و**بصمةُ** المفتاح. فلا يتصادم مستأجران
-    ولا فاعلان ولا مساران على مفتاحٍ واحد.
-
-    **ولا يدخل الخامُ هنا قطّ** — `key_digest` سبق أن مرّ بـ`sha256`،
-    فالهُويّةُ المشتقّةُ لا تُفشي المفتاح. ولا يُشتقّ من اسم ملفٍّ ولا من
-    تجزئةِ محتوًى ولا من معرّفٍ يرسله العميل: أوّلُها يتصادم، وآخرُها
-    يُمكّن عميلًا من انتحال هُويّةِ ملفِّ غيره.
+    **ولا عمودَ جديد**: `id` مُودَعٌ في المخطَّط 0037 أصلًا.
     """
-    seed = f"{tenant_id}|{actor_user_id}|{operation}|{key_digest}"
-    return uuid.uuid5(STABLE_NAMESPACE, seed)
-
-
-def stable_id_for(request, *, tenant_id: uuid.UUID,
-                  actor_user_id: uuid.UUID) -> uuid.UUID | None:
-    """الهُويّةُ الثابتةُ لهذا الطلب — **بلا قاعدةٍ ولا معاملة**.
-
-    دالّةٌ نقيّة: ترويسةٌ ونطاقٌ ثمّ اشتقاق. ولهذا ثمرةٌ عمليّة — المسارُ
-    الموقّع يبني مفتاحَه ويوقّعه **قبل** أن يفتح معاملةً أصلًا، فلا تمتدّ
-    معاملةٌ على نداءٍ يعدّه الماسحُ تخزينًا.
-
-    وتُعيد `None` بلا مفتاح، وترفع ٤٠٠ لمفتاحٍ مشوَّه — كسائر الطبقة.
-    """
-    key = validate_key(request.headers.get(HEADER))
-    if key is None:
-        return None
-    return stable_object_id(tenant_id=tenant_id, actor_user_id=actor_user_id,
-                            operation=_operation_of(request),
-                            key_digest=digest_key(key))
+    return uuid.uuid5(STABLE_NAMESPACE, f"idempotency-generation:{record_id}")
 
 
 def is_keyed(request) -> bool:
@@ -887,9 +930,6 @@ async def begin_leased_in(
     fingerprint = canonical_fingerprint(
         method=request.method, operation=operation, body=body,
         query=dict(request.query_params))
-    # **تُشتقّ قبل أيّ عملٍ خارجيّ**، ويشتقّها المُستولي كما اشتقّها الأوّل.
-    stable = stable_object_id(tenant_id=tenant_id, actor_user_id=actor_user_id,
-                              operation=operation, key_digest=digest_key(key))
 
     try:
         outcome = await acquire_lease(
@@ -904,22 +944,24 @@ async def begin_leased_in(
             request_id=request.headers.get("x-request-id"))
         from ..errors import athera_error_handler  # noqa: PLC0415
 
-        return LeaseGuard(operation=operation, stable_id=stable,
+        return LeaseGuard(operation=operation,
                           answer=await athera_error_handler(request, conflict))
 
     if isinstance(outcome, Replay):
         # **والإعادةُ قيمةً حين يطلبها المسار**: جوابٌ يحمل قدرةً عابرة
         # يُعاد بناؤه من المخزون الدائم، ولا يُعاد المخزونُ حرفيًّا.
         if replay_as_value:
-            return LeaseGuard(operation=operation, stable_id=stable, replay=outcome)
-        return LeaseGuard(operation=operation, stable_id=stable,
-                          answer=_replay_response(outcome))
+            return LeaseGuard(operation=operation, replay=outcome)
+        return LeaseGuard(operation=operation, answer=_replay_response(outcome))
     if isinstance(outcome, InProgress):
         from ..errors import athera_error_handler  # noqa: PLC0415
 
-        return LeaseGuard(operation=operation, stable_id=stable,
+        return LeaseGuard(operation=operation,
                           answer=await athera_error_handler(request, InProgressRefused()))
-    return LeaseGuard(lease=outcome, operation=operation, stable_id=stable)
+    # **والهُويّةُ من الإجارة وحدَها**: مرساتُها `record_id`، فلا تُعرَف قبل
+    # اكتسابها — ولا تُعرَف لجيلٍ غير هذا.
+    return LeaseGuard(lease=outcome, operation=operation,
+                      stable_id=stable_object_id(outcome.record_id))
 
 
 def _operation_of(request) -> str:

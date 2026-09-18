@@ -323,22 +323,26 @@ async def init_upload(
     # تُحسب الهُويّةُ بدوالَّ نقيّة، ثمّ تُفتح المعاملةُ وتُغلق، ثمّ
     # يُوقَّع. ولا رحلةَ شبكةٍ في التوقيع أصلًا — لكنّ الترتيبَ يبقى
     # صادقًا مع القاعدة لا مع ما نظنّه عن المُنفِّذ.
-    stable = idempotency.stable_id_for(
-        request, tenant_id=principal.tenant_id, actor_user_id=principal.user_id)
-    file_id = stable or uuid.uuid4()
-    key = storage.build_storage_key(principal.tenant_id, file_id, payload.filename)
     body = payload.model_dump(mode="json")
-
     maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+    file_id = uuid.uuid4()
+    key = storage.build_storage_key(principal.tenant_id, file_id, payload.filename)
+
     async with maker() as session:
         guard = idempotency.LeaseGuard()
-        if stable is not None:
+        if idempotency.is_keyed(request):
             guard = await idempotency.begin_leased_in(
                 session, request, tenant_id=principal.tenant_id,
                 actor_user_id=principal.user_id, body=body,
                 ttl=idempotency.LEASE_STORAGE, replay_as_value=True)
             if guard.answer is not None:
                 return guard.answer
+            if guard.stable_id is not None:
+                # **والهُويّةُ بعد اكتساب الجيل لا قبله**: مرساتُها صفُّ
+                # الإجارة، فلا تُعرَف إلّا بعد أن يُعرَف الجيل.
+                file_id = guard.stable_id
+                key = storage.build_storage_key(
+                    principal.tenant_id, file_id, payload.filename)
 
         if guard.replay is not None:
             # إعادةٌ: يُقرأ الدائمُ من المخزون، ويُوقَّع العابرُ لاحقًا.
