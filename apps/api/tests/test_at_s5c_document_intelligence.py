@@ -2775,7 +2775,10 @@ def test_the_chat_reads_only_the_file_the_researcher_pointed_at():
 
     source = inspect.getsource(ai.ask)
     assert "FactCandidate.file_id == record.id" in source
-    assert "File.tenant_id == principal.tenant_id" in source
+    # **والحدُّ صار أضيقَ لا أوسع** (RC-T1-H2-B4): كان انتقاءً بالمستأجرِ
+    # والمعرّف، فصار الحارسَ المشترك — مستأجرٌ **ومنحةُ فاعلٍ** على الملفّ.
+    assert "library.owned_file(" in source
+    assert "user_id=principal.user_id" in source and 'action="read"' in source
 
 
 def test_an_unprocessed_file_is_answered_truthfully():

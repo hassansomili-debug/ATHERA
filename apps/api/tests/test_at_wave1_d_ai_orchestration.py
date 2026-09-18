@@ -356,7 +356,13 @@ def test_the_router_still_holds_every_scientific_guard_it_had():
     for guard in ('candidate.status == "approved"',
                   'memory.verification_status == "verified"',
                   "FactCandidate.file_id == record.id",
-                  "File.tenant_id == principal.tenant_id",
+                  # **وحدُّ المستأجرِ صار أضيقَ لا أوسع** (RC-T1-H2-B4):
+                  # كان انتقاءً بالمستأجرِ والمعرّف، فصار الحارسَ المشترك
+                  # `library.owned_file` — يفحص المستأجرَ **ومنحةَ الفاعل**.
+                  # فزميلٌ بلا منحةٍ لم يعد يقرأ ما اعتمده صاحبُ الملفّ.
+                  "library.owned_file(",
+                  "user_id=principal.user_id",
+                  'action="read"',
                   "لم تُقرأ محتوياته بعد",
                   "معالجة المستند",
                   'classification = "C1"',
@@ -564,6 +570,7 @@ async def _seed_approved_document(tenant_id, user_id, *, statement):
     """ملفٌّ عولج، ومعرفةٌ اعتمدها الباحث وتحقّق منها — بلا إذن محادثة بعد."""
     from athera_api.db import tenant_session
     from athera_api.models.files import File
+    from athera_api.models.identity import ObjectGrant
     from athera_api.models.research import (
         DocumentChunk,
         ExtractionRun,
@@ -579,6 +586,14 @@ async def _seed_approved_document(tenant_id, user_id, *, statement):
                       status="stored", uploaded_by=user_id)
         session.add(record)
         await session.flush()
+
+        # **ومنحةُ المالك تُدسّ كما يفعل الرفعُ الحقيقيّ.** فمسارا الرفع
+        # كلاهما يُنشئان `ObjectGrant` مع صفِّ الملفّ في المعاملة نفسِها؛
+        # وصفٌّ يُدسّ بلا منحةٍ ليس حالًا يقع في المنتج. والمحادثةُ صارت
+        # تفحص المنحةَ كما يفعل الاستيراد (RC-T1-H2-B4).
+        session.add(ObjectGrant(
+            tenant_id=tenant_id, object_type="file", object_id=record.id,
+            user_id=user_id, grant_level="owner", granted_by=user_id))
 
         run = ExtractionRun(tenant_id=tenant_id, file_id=record.id, extractor="rules",
                             status="completed", started_at=now)
