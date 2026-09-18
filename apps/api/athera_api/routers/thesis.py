@@ -1149,23 +1149,47 @@ async def build_thread(
     def _maker():
         return tenant_session(tenant_id, actor_id)
 
-    # ── معاملةٌ قصيرة: الإذنُ على الملفّ والنسبُ — ثمّ تُغلق قبل أيّ نداء ──
-    async with _maker() as opening:
-        thesis = await _thesis_or_404(opening, principal, thesis_id, action="write")
+    async def _gates(session):
+        """بوّاباتُ المسار: الرسالةُ بحقِّ الكتابة، والفرصةُ تُنسَب، والمشروعُ قائم.
+
+        وتُنادى مرّتين: في التحضير، وفي معاملةِ الكتابة — فانتظارُ النموذجِ
+        غيرُ محدود، وحقُّ الكتابةِ قد يُسحَب خلاله.
+        """
+        thesis = await _thesis_or_404(session, principal, thesis_id, action="write")
         opportunity = await _opportunity_of_thesis(
-            opening, principal, thesis, opportunity_id)
-        project_id = opportunity.project_id or opportunity.converted_project_id
-        if project_id is None:
+            session, principal, thesis, opportunity_id)
+        resolved = opportunity.project_id or opportunity.converted_project_id
+        if resolved is None:
             # **ولا خيطَ قبل مشروع**: الخيطُ يُعلَّق بمشروعٍ قائم، وبناؤه
             # قبله يعني اختراعَ صاحبٍ له.
             raise AtheraError("thesis.paper_not_built_yet", status_code=409,
                               opportunity_id=str(opportunity_id))
-        file_id = thesis.file_id
+        return resolved, thesis.file_id
 
-        # ══ الحجزُ **بعد** التفويضِ والنسب (RC-T1-H2-B4) ══
+    # ── معاملةٌ قصيرة: البوّاباتُ ثمّ **التحضير** ثمّ الحجز — وتُغلق ──
+    async with _maker() as opening:
+        project_id, file_id = await _gates(opening)
+
+        # ══ التحضيرُ **قبل** تحكيمِ المفتاح (RC-T1-H2-B4) ══
         #
-        # فالرسالةُ تُفحص بحقِّ الكتابة، والفرصةُ تُنسَب إليها، والمشروعُ
-        # يُشترط قائمًا — كلُّها قبل الحجز. والإعادةُ ليست تجاوزًا لتفويض.
+        # وهذا هو مِلاكُ الأمر: الإذنُ الحاضرُ على الملفِّ وعلى التخطيط
+        # يُفحص، والأدلّةُ تُبنى وتُبصَم — كلُّه **قبل** أن يُعاد جوابٌ
+        # مخزون. فمن حمل مفتاحًا قديمًا لم يتجاوز إذنًا سُحب؛ ورفضُ الإذنِ
+        # الحاضرِ يغلب الإعادةَ، ولا يُعاد محتوًى وُلّد تحت إذنٍ زائل.
+        try:
+            prepared = await journey.prepare_thread(
+                opening, tenant_id=tenant_id, project_id=project_id,
+                file_id=file_id)
+        except journey.JourneyBlocked as blocked:
+            # حُجبت قبل الحجزِ أصلًا: **لا جيلَ يُغلَق لأنّ لا جيلَ بُدئ**،
+            # ولا جوابٌ مخزونٌ يُعاد — فالرفضُ الحاضرُ يغلب المفتاحَ القديم.
+            raise AtheraError("thesis.journey_blocked", status_code=422,
+                              reasons=",".join(blocked.reasons)) from blocked
+
+        # ══ والبصمةُ تضمّ بصمةَ الأدلّة ══
+        #
+        # فمفتاحٌ واحدٌ على أدلّةٍ تبدّلت صِدامٌ (`idempotency.key_reused`)
+        # لا إعادة: صفرُ نداءِ نموذج، ولا جوابٌ بائتٌ يُعاد.
         guard = await idempotency.begin_leased_in(
             opening, request,
             tenant_id=tenant_id, actor_user_id=actor_id,
@@ -1174,6 +1198,7 @@ async def build_thread(
                 "opportunity_id": str(opportunity_id),
                 "project_id": str(project_id),
                 "file_id": str(file_id) if file_id else None,
+                "evidence_fingerprint": prepared.evidence_fingerprint,
                 "locale": principal.locale,
             },
             ttl=idempotency.LEASE_MODEL)
@@ -1198,7 +1223,8 @@ async def build_thread(
     try:
         outcome = await journey.build_thread(
             _maker, tenant_id=tenant_id, actor_user_id=actor_id,
-            file_id=file_id, project_id=project_id,
+            file_id=file_id, project_id=project_id, prepared=prepared,
+            recheck=_gates,
             before_provider_call=(boundary if guard.lease is not None else None),
             finalizer=_settle)
     except journey.JourneyBlocked as blocked:

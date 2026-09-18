@@ -765,23 +765,109 @@ _THREAD_INSTRUCTION: Final = (
 )
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class PreparedThread:
+    """لقطةٌ محضَّرةٌ لبناءِ خيط — **قيمٌ عاديّةٌ وحدها، لا كائنُ ORM**.
+
+    فهي تعبر حدَّ المعاملة (RC-T1-H3): تُبنى في معاملةٍ قصيرةٍ تُغلق، ثمّ
+    يُنادى النموذجُ بلا معاملة، ثمّ تُفتح معاملةُ الكتابة. وكائنُ ORM لو
+    عبَر لصار مرتبطًا بجلسةٍ ميّتة.
+    """
+
+    #: إذنُ المعالجةِ الخارجيّةِ لهذا الملفِّ وحده (`ExternalProcessingGrant`).
+    grant: object
+    #: بصمةُ الأدلّةِ الحاضرة — **وهي مِلاكُ اللقطة**.
+    evidence_fingerprint: str
+    #: حِملُ النموذج: منظورُ الأدلّةِ مُسلسَلًا.
+    payload: str
+    #: معرّفاتُ الأدلّةِ المعروفة، يُرفض ما أشار إلى غيرها.
+    known: frozenset[str]
+    #: عددُ عقدِ الخيطِ القائمةِ الآن — صفرٌ يعني «يُبنى».
+    existing: int
+
+
+async def prepare_thread(session, *, tenant_id: uuid.UUID, project_id: uuid.UUID,
+                         file_id) -> PreparedThread:
+    """يقرأ الإذنَ والأدلّةَ ويحسب البصمة — **قراءةٌ محضةٌ في معاملةِ المُنادي**.
+
+    وتُنادى مرّتين لا مرّةً واحدة:
+
+    ‏(١) **قبل تحكيمِ المفتاح** — فالإذنُ الحاضرُ يُفحص قبل أن يُعاد جوابٌ
+        مخزون، وبصمةُ الأدلّةِ تدخل بصمةَ الطلب. فمن حمل مفتاحًا قديمًا
+        لم يتجاوز إذنًا سُحب، ولا أخذ جوابًا بُني على أدلّةٍ تبدّلت.
+
+    ‏(٢) **في معاملةِ الكتابة** — فتكون القيمةُ الراجعةُ لقطةً **حيّةً**
+        تُقارَن بالمحضَّرة. ولو قُورنت المحضَّرةُ بنفسِها لما بانَ تبدُّلٌ
+        قطّ: ذاك فحصٌ بلا مفحوص.
+
+    وترفع `JourneyBlocked` إن لم يكن إذنٌ، أو كان الإذنُ للقطةٍ أخرى.
+    """
+    import json
+
+    from sqlalchemy import func, select
+
+    from ...models.golden_thread import ThreadElement
+    from .. import consent
+    from ..planning import context as research_context
+
+    if not await consent_granted(session, tenant_id=tenant_id, file_id=file_id):
+        # **ولا نداءَ واحدًا بلا إذن.** يُرفع قبل أن يُبنى أيُّ حِمل.
+        raise JourneyBlocked((BLOCK_NO_CONSENT,))
+    grant = await consent.authorization_for(
+        session, tenant_id=tenant_id, file_id=file_id)
+    # **وحدُّ المصدر يُمرَّر**: أدلّةُ هذه الرسالة وحدها تصل النموذج.
+    evidence = await research_context.build(
+        session, tenant_id=tenant_id, project_id=project_id,
+        capability=consent.PLANNING_CAPABILITY, source_file_id=file_id)
+
+    # ── والبصمةُ تُفحص قبل النداء، لا بعده ──
+    #
+    # **إذنٌ أُعطي للقطةٍ لا يصلح لغيرها.** أُضيفت ذاكرةٌ موثقة أو تبدّل
+    # نصُّها، فصارت الأدلّةُ غيرَ التي رآها الباحثُ حين أذن. وإرسالُها
+    # تحت ذلك الإذن إرسالُ ما لم يره — ولو كان الإذنُ قائمًا شكلًا.
+    planning = await consent.planning_state(
+        session, tenant_id=tenant_id, project_id=project_id,
+        context_fingerprint=evidence.fingerprint)
+    if planning == consent.STALE:
+        raise JourneyBlocked((BLOCK_STALE_CONSENT,))
+
+    # ── وخيطٌ قائمٌ يُعاد استعمالُه: **لا نداءَ ثانٍ، ولا صفَّ مكرَّر** ──
+    existing = int((await session.execute(
+        select(func.count(ThreadElement.id))
+        .where(ThreadElement.tenant_id == tenant_id,
+               ThreadElement.project_id == project_id)
+    )).scalar_one())
+
+    return PreparedThread(
+        grant=grant,
+        evidence_fingerprint=evidence.fingerprint,
+        payload=json.dumps(
+            [dict(item.as_model_view(), id=str(item.memory_id))
+             for item in evidence.items],
+            ensure_ascii=False),
+        known=frozenset(str(item.memory_id) for item in evidence.items),
+        existing=existing,
+    )
+
+
 async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
                        file_id, project_id: uuid.UUID,
+                       prepared: PreparedThread,
+                       recheck=None,
                        before_provider_call=None,
-                       finalizer=None,
-                       evidence_fingerprint_expected: str | None = None) -> ThreadOutcome:
-    """يبني عقدَ الخيط من الأدلّة الموثقة — **بثلاث خطواتٍ لا تتداخل**.
+                       finalizer=None) -> ThreadOutcome:
+    """يبني عقدَ الخيط من لقطةٍ **محضَّرةٍ قبل التحكيم** — بخطوتين لا تتداخل.
 
-    ‏(١) معاملةٌ قصيرة تقرأ الإذنَ والأدلّة ثمّ **تُغلق**.
-    ‏(٢) النداءُ الخارجيّ **بلا أيّ معاملة مفتوحة** — ودرسُ تخاصم سلسلة
+    ‏(١) النداءُ الخارجيّ **بلا أيّ معاملة مفتوحة** — ودرسُ تخاصم سلسلة
         التدقيق هو السبب: معاملةٌ تمتدّ عبر نداءٍ شبكيّ تُعلّق الحزمةَ كلَّها.
-    ‏(٣) معاملةٌ قصيرة ترفض ما لا يُحلّ وتكتب ما بقي.
+    ‏(٢) معاملةٌ قصيرة تُعيد الفحصَ حيًّا، ترفض ما لا يُحلّ، وتكتب ما بقي.
 
-    **وسقوطُ النموذج لا يترك أثرًا نصفيًّا**: الخطوةُ الأولى قراءةٌ فقط،
-    والثالثةُ لا تُفتح أصلًا إن سقطت الثانية. فلا صفَّ يُكتب لمخطوطةٍ
-    نصفِ مبنيّة.
+    **والقراءةُ انتقلت إلى `prepare_thread`** ويُنادِيها المسارُ قبل حجزِ
+    المفتاح: فالإذنُ الحاضرُ يسبق إعادةَ أيّ جوابٍ مخزون، وبصمةُ الأدلّةِ
+    تدخل بصمةَ الطلب.
 
-    **والإذنُ لا يُمنح تلقائيًّا**: بلا إذنٍ لا يقع نداءٌ واحد.
+    **وسقوطُ النموذج لا يترك أثرًا نصفيًّا**: التحضيرُ قراءةٌ فقط، ومعاملةُ
+    الكتابةِ لا تُفتح أصلًا إن سقط النداء.
 
     ## ومُعلَّقان للطور B-4
 
@@ -790,108 +876,70 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
     محليًّا. و`finalizer` يُنادى **داخل معاملة الكتابة نفسِها**، فيُودَع
     إتمامُ الجيل مع العقد والتدقيق: كلُّها أو لا شيء.
 
-    و`evidence_fingerprint_expected` يُعاد فحصُه قبل الكتابة: بصمةُ دليلٍ
-    تغيّرت أثناء انتظار النموذج تعني لقطةً أخرى، فلا تُكتب عقدٌ بُنيت على
-    لقطةٍ لم تعد قائمة.
+    و`recheck` يُعاد به فحصُ التفويضِ الحيِّ (الرسالةُ والفرصةُ والنسب) في
+    معاملةِ الكتابة — يملكه المسارُ لأنّه صاحبُ تلك البوّابات.
     """
-    import json
-
-    from sqlalchemy import func, select
-
     from ...brain.orchestrator import Orchestrator
     from ...models.golden_thread import ThreadElement
     from ...schemas.thesis import ThreadDraft
-    from .. import audit, consent
-    from ..planning import context as research_context
+    from .. import audit
 
-    # ── (١) معاملةٌ قصيرة: الإذنُ والأدلّة، ثمّ تُغلق ──
-    async with session_maker() as session:
-        if not await consent_granted(session, tenant_id=tenant_id, file_id=file_id):
-            # **ولا نداءَ واحدًا بلا إذن.** يُرفع قبل أن يُبنى أيُّ حِمل.
-            raise JourneyBlocked((BLOCK_NO_CONSENT,))
-        grant = await consent.authorization_for(
-            session, tenant_id=tenant_id, file_id=file_id)
-        # **وحدُّ المصدر يُمرَّر**: أدلّةُ هذه الرسالة وحدها تصل النموذج.
-        evidence = await research_context.build(
-            session, tenant_id=tenant_id, project_id=project_id,
-            capability=consent.PLANNING_CAPABILITY, source_file_id=file_id)
-        fingerprint = evidence.fingerprint
-
-        # ── والبصمةُ تُفحص قبل النداء، لا بعده ──
-        #
-        # **إذنٌ أُعطي للقطةٍ لا يصلح لغيرها.** أُضيفت ذاكرةٌ موثقة أو تبدّل
-        # نصُّها، فصارت الأدلّةُ غيرَ التي رآها الباحثُ حين أذن. وإرسالُها
-        # تحت ذلك الإذن إرسالُ ما لم يره — ولو كان الإذنُ قائمًا شكلًا.
-        #
-        # ويقع الفحصُ **داخل هذه المعاملة القصيرة**، فالرفضُ يسبق النداء
-        # ولا يقع نداءٌ واحد على لقطةٍ بائتة.
-        planning = await consent.planning_state(
-            session, tenant_id=tenant_id, project_id=project_id,
-            context_fingerprint=fingerprint)
-        if planning == consent.STALE:
-            raise JourneyBlocked((BLOCK_STALE_CONSENT,))
-
-        # ── وخيطٌ قائمٌ يُعاد استعمالُه: **لا نداءَ ثانٍ، ولا صفَّ مكرَّر** ──
-        #
-        # كانت الدالّةُ تُدرج عقدًا جديدةً في كلِّ نداء، فإعادةُ الضغط على
-        # الزرّ تُضاعف عقدَ المشروع: خيطٌ واحدٌ في الشاشة وعقدتان في القاعدة
-        # لكلِّ فكرة. وهو عطبٌ صامت — لا خطأَ يُرفع، والعددُ وحده يكبر.
-        #
-        # والفحصُ يقع **بعد بوّابتي الإذن** فتبقى الحدودُ كما هي، و**قبل
-        # بناء الحِمل والنداء** فإعادةُ الاستعمال بلا كلفةِ نموذجٍ أصلًا.
-        existing = int((await session.execute(
-            select(func.count(ThreadElement.id))
-            .where(ThreadElement.tenant_id == tenant_id,
-                   ThreadElement.project_id == project_id)
-        )).scalar_one())
-        # **و`created` صفرٌ لأنّ صفرًا أُنشئ.** وعددُ العقد القائمة يُقرأ
-        # من `thread_ready` في حال الرحلة؛ وكتابتُه هنا تحت اسم «أُنشئ»
-        # دعوى عملٍ لم يقع — وهو ما يُحرَس منه في هذا الملفّ كلِّه.
-        if existing:
-            # **وخيطٌ قائمٌ يُتمّ جيلَه أيضًا**: صفرُ نداء، والجوابُ يُثبَّت
-            # فتُعيده الإعادةُ صادقًا (`reused=True`).
-            reused = ThreadOutcome(created=0, rejected=0, fingerprint=fingerprint,
-                                   agent_run_id=None, reused=True)
-            if finalizer is not None:
+    # ── خيطٌ قائمٌ من قبلُ: **صفرُ نداء**، والجيلُ يُتمّ مع ذلك ──
+    if prepared.existing:
+        # **و`created` صفرٌ لأنّ صفرًا أُنشئ.** وكتابةُ عددِ القائمِ تحت
+        # اسم «أُنشئ» دعوى عملٍ لم يقع — وهو ما يُحرَس منه هنا كلِّه.
+        reused = ThreadOutcome(created=0, rejected=0,
+                               fingerprint=prepared.evidence_fingerprint,
+                               agent_run_id=None, reused=True)
+        if finalizer is not None:
+            async with session_maker() as session:
                 await finalizer(session, reused)
-            return reused
+        return reused
 
-        known = frozenset(str(item.memory_id) for item in evidence.items)
-        payload = json.dumps(
-            [dict(item.as_model_view(), id=str(item.memory_id)) for item in evidence.items],
-            ensure_ascii=False)
-
-    # ── (٢) بلا معاملة: النداءُ الخارجيّ عبر البوّابة وحدها ──
+    # ── (١) بلا معاملة: النداءُ الخارجيّ عبر البوّابة وحدها ──
     draft, agent_run_id = await Orchestrator().run_structured_detached(
         session_maker, tenant_id=tenant_id, actor_user_id=actor_user_id,
         agent_key="golden_thread_agent", contract=ThreadDraft,
-        instruction=_THREAD_INSTRUCTION, payload=payload,
+        instruction=_THREAD_INSTRUCTION, payload=prepared.payload,
         # §6 — معرفةٌ بحثية غير منشورة: C2. والقدرةُ تحكم، والإذنُ مقروء.
-        input_classification="C2", output_locale="ar", grant=grant,
+        input_classification="C2", output_locale="ar", grant=prepared.grant,
         before_provider_call=before_provider_call,
     )
 
-    # ── (٣) معاملةٌ قصيرة: الرفضُ أوّلًا، ثمّ الكتابة ──
+    # ── (٢) معاملةٌ قصيرة: الفحصُ الحيُّ، ثمّ الرفضُ، ثمّ الكتابة ──
     kept, rejected = reject_unresolvable(
-        draft.elements, known, refs_of=lambda element: element.evidence_refs)
+        draft.elements, prepared.known, refs_of=lambda element: element.evidence_refs)
 
     async with session_maker() as session:
-        # ── وإعادةُ فحصِ اللقطةِ وعقدِ الخيط قبل الكتابة ──
-        if evidence_fingerprint_expected is not None \
-                and evidence_fingerprint_expected != fingerprint:
-            raise JourneyBlocked(["evidence_changed_during_model_wait"])
-        raced = int((await session.execute(
-            select(func.count(ThreadElement.id))
-            .where(ThreadElement.tenant_id == tenant_id,
-                   ThreadElement.project_id == project_id)
-        )).scalar_one())
-        if raced:
+        # ── والتفويضُ يُعاد فحصُه حيًّا قبل أيّ كتابة ──
+        #
+        # فبين التحضيرِ والكتابةِ انتظارُ نموذجٍ غيرُ محدود: قد سُحب حقُّ
+        # الكتابةِ على الرسالة، أو فُصلت الفرصةُ عن مشروعها.
+        if recheck is not None:
+            await recheck(session)
+
+        # ── واللقطةُ تُبنى **من القاعدة الآن** ثمّ تُقارَن بالمحضَّرة ──
+        #
+        # **ولا تُقارَن المحضَّرةُ بنفسِها.** كان الفحصُ يقابل القيمةَ
+        # المتوقَّعةَ بالمتغيّرِ المحسوبِ قبل النداء، وهما واحدٌ دائمًا —
+        # فمرَّ الفحصُ ولو تبدّلت الأدلّةُ كلُّها. و`prepare_thread` تُنادى
+        # هنا على جلسةٍ جديدة، فترفع أيضًا إن سُحب الإذنُ أثناء الانتظار.
+        live = await prepare_thread(session, tenant_id=tenant_id,
+                                    project_id=project_id, file_id=file_id)
+        if live.evidence_fingerprint != prepared.evidence_fingerprint:
+            # **ولا تُكتب عقدٌ بُنيت على لقطةٍ لم تعد قائمة.** والوسمُ
+            # الخارجيُّ يبقى: النموذجُ قد نفّذ فعلًا، وذاك حقٌّ يُقال.
+            raise JourneyBlocked(("evidence_changed_during_model_wait",))
+
+        if live.existing:
             # كاتبٌ شرعيٌّ آخرُ سبقنا: **لا تُضاعَف العقد**، ويُقال الحقّ.
-            reused = ThreadOutcome(created=0, rejected=0, fingerprint=fingerprint,
+            reused = ThreadOutcome(created=0, rejected=0,
+                                   fingerprint=prepared.evidence_fingerprint,
                                    agent_run_id=agent_run_id, reused=True)
             if finalizer is not None:
                 await finalizer(session, reused)
             return reused
+
         for ordinal, element in enumerate(kept, start=1):
             session.add(ThreadElement(
                 tenant_id=tenant_id, project_id=project_id,
@@ -904,7 +952,7 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
             object_type="research_project", object_id=project_id,
             actor_user_id=actor_user_id,
             state_after={"created": len(kept), "rejected": len(rejected),
-                         "context_fingerprint": fingerprint,
+                         "context_fingerprint": prepared.evidence_fingerprint,
                          "agent_run_id": str(agent_run_id)},
             # **والمرفوضُ يُعدّ ولا يُروى نصًّا**: عددُه معلومةٌ للتدقيق،
             # ومتنُه اختلاقٌ لا يُحفظ.
@@ -915,8 +963,11 @@ async def build_thread(session_maker, *, tenant_id: uuid.UUID, actor_user_id,
         # **والإتمامُ في معاملةِ الكتابة نفسِها**: عقدٌ وتدقيقٌ وإتمامٌ
         # معًا أو لا شيء. وعاملٌ بائتٌ يرفع هنا فتُرجَع المعاملةُ كلُّها.
         outcome = ThreadOutcome(created=len(kept), rejected=len(rejected),
-                                fingerprint=fingerprint, agent_run_id=agent_run_id)
+                                fingerprint=prepared.evidence_fingerprint,
+                                agent_run_id=agent_run_id)
         if finalizer is not None:
             await finalizer(session, outcome)
 
     return outcome
+
+

@@ -1725,3 +1725,436 @@ def test_36_every_generation_lifecycle_code_speaks_both_languages() -> None:
     for forbidden in ("failed", "did not run", "was not executed",
                       "retrying automatically"):
         assert forbidden not in unknown_en, forbidden
+
+
+# ═══════ ٧ · الرسالةُ والخيط: لقطةٌ علميّة، وإذنٌ حاضر، وفحصٌ حيّ ═══════
+#
+# **وثلاثةُ عيوبٍ كانت هنا، وكلُّها تُثبَت بتشغيلٍ لا بقراءةِ مصدر.**
+#
+# ١ بصمةُ الطلب لم تكن تضمّ بصمةَ الأدلّة، فمفتاحٌ واحدٌ يُعيد جوابًا
+#   بُني على لقطةٍ لم تعد قائمة.
+# ٢ `guard.answer` كان يُعاد قبل فحصِ الإذن الحاضر، فحاملُ مفتاحٍ قديم
+#   يتجاوز إذنًا سُحب.
+# ٣ الفحصُ الأخيرُ كان يقابل المتوقَّعَ بالمحسوبِ قبل النداء — وهما واحدٌ
+#   دائمًا. فحصٌ بلا مفحوص.
+
+
+async def _thread_ready(tid, uid, *, memories: int = 4):
+    """يُهيّئ رسالةً وفرصةً ومشروعًا وأدلّةً موثقةً وإذنَين حاضرَين.
+
+    والإذنُ التخطيطيُّ يُعقد على **بصمةِ اللقطةِ الحيّة** — كما يفعل
+    الباحثُ حين يرى أدلّتَه ثمّ يأذن.
+    """
+    from sqlalchemy import func, select
+
+    from athera_api.db import tenant_session
+    from athera_api.models.identity import ObjectGrant
+    from athera_api.models.portfolio import ResearchProject
+    from athera_api.models.research import ResearcherMemory
+    from athera_api.models.thesis import PublicationOpportunity, Thesis
+    from athera_api.services import consent
+    from tests.test_at_thesis_journey_build import _seed_thesis_and_opportunity
+
+    thesis_id, opportunity_id = await _seed_thesis_and_opportunity(tid, uid)
+
+    async with tenant_session(tid, uid) as session:
+        opportunity = (await session.execute(
+            select(PublicationOpportunity).where(
+                PublicationOpportunity.id == opportunity_id))).scalar_one()
+        project_id = opportunity.project_id or opportunity.converted_project_id
+        if project_id is None:
+            project = ResearchProject(tenant_id=tid,
+                                      working_title_ar="مشروعُ خيطٍ للفحص")
+            session.add(project)
+            await session.flush()
+            project_id = project.id
+            opportunity.project_id = project_id
+
+        thesis_row = (await session.execute(
+            select(Thesis).where(Thesis.id == thesis_id))).scalar_one()
+        file_id = thesis_row.file_id
+        assert file_id is not None, "تجهيزةُ الرسالة بلا ملفّ"
+        session.add(ObjectGrant(
+            tenant_id=tid, object_type="file", object_id=file_id,
+            user_id=uid, grant_level="owner", granted_by=uid))
+
+        for index in range(memories):
+            session.add(ResearcherMemory(
+                tenant_id=tid, memory_category="project_decision",
+                statement_ar=f"دليلٌ موثقٌ رقم {index}",
+                value={"field_key": "sample_size"},
+                source_type="upload", source_file_id=file_id,
+                source_locator=f"§1 ¶{index}",
+                source_quote=f"دليلٌ موثقٌ رقم {index}",
+                # «موثق» يحمل مُحقِّقَه وتاريخَه — القيد يرفض غير ذلك.
+                verification_status="verified",
+                verified_by=uid, verified_at=func.now(),
+            ))
+
+    async with tenant_session(tid, uid) as session:
+        await consent.record_decision(
+            session, tenant_id=tid, file_id=file_id, actor_user_id=uid,
+            granted=True, provider="anthropic", model="m")
+
+    await _grant_planning_on_live(tid, uid, project_id, file_id)
+    memory_ids = await _live_memory_ids(tid, uid, project_id, file_id)
+    return {"thesis_id": thesis_id, "opportunity_id": opportunity_id,
+            "project_id": project_id, "file_id": file_id,
+            "memory_ids": memory_ids,
+            "url": f"/api/v1/theses/{thesis_id}"
+                   f"/opportunities/{opportunity_id}/thread"}
+
+
+async def _live_snapshot(tid, uid, project_id, file_id):
+    """اللقطةُ الحيّةُ كما يبنيها المسارُ نفسُه — بصمةً وعناصر."""
+    from athera_api.db import tenant_session
+    from athera_api.services import consent
+    from athera_api.services.planning import context as research_context
+
+    async with tenant_session(tid, uid) as session:
+        return await research_context.build(
+            session, tenant_id=tid, project_id=project_id,
+            capability=consent.PLANNING_CAPABILITY, source_file_id=file_id)
+
+
+async def _live_memory_ids(tid, uid, project_id, file_id):
+    live = await _live_snapshot(tid, uid, project_id, file_id)
+    return [str(item.memory_id) for item in live.items]
+
+
+async def _grant_planning_on_live(tid, uid, project_id, file_id):
+    """يأذن للتخطيط على **البصمةِ الحيّةِ الآن** — ويعيدها."""
+    from athera_api.db import tenant_session
+    from athera_api.services import consent
+
+    live = await _live_snapshot(tid, uid, project_id, file_id)
+    async with tenant_session(tid, uid) as session:
+        await consent.record_planning_decision(
+            session, tenant_id=tid, project_id=project_id, actor_user_id=uid,
+            granted=True, context_fingerprint=live.fingerprint,
+            provider="anthropic", model="m", evidence_count=len(live.items))
+    return live.fingerprint
+
+
+async def _add_memory(tid, uid, file_id, statement: str):
+    """يُضيف دليلًا موثقًا — فتتبدّل بصمةُ اللقطة."""
+    from sqlalchemy import func
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import ResearcherMemory
+
+    async with tenant_session(tid, uid) as session:
+        session.add(ResearcherMemory(
+            tenant_id=tid, memory_category="project_decision",
+            statement_ar=statement, value={"field_key": "sample_size"},
+            source_type="upload", source_file_id=file_id,
+            source_locator="§9 ¶9", source_quote=statement,
+            verification_status="verified",
+            verified_by=uid, verified_at=func.now(),
+        ))
+
+
+def _thread_draft(memory_ids):
+    """حِملُ نموذجٍ يُنتج عقدةً واحدةً مُسنَدةً إلى دليلٍ معروف."""
+    return {"elements": [{"element_type": "problem",
+                          "label_ar": "عقدةٌ مُسنَدة",
+                          "evidence_refs": [memory_ids[0]]}]}
+
+
+@requires_db
+async def test_37_a_keyed_thread_build_calls_the_model_once_and_replays(
+    two_tenants, monkeypatch,
+):
+    """(أ) نجاحٌ ثمّ إعادة: نداءٌ واحد، عقدةٌ واحدة، تدقيقٌ واحد."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    ready = await _thread_ready(tid, uid)
+
+    provider = _Structured(_thread_draft(ready["memory_ids"]))
+    _activate(monkeypatch, provider)
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        first = await http.post(ready["url"], headers={"Idempotency-Key": key})
+        assert first.status_code == 200, f"{first.status_code}: {first.text[:250]}"
+        assert provider.calls == 1, f"نُودي النموذجُ {provider.calls} مرّةً"
+        assert first.json()["created"] == 1, first.text
+
+        elements = await _count(
+            "SELECT count(*) FROM thread_elements WHERE tenant_id = :t",
+            {"t": str(tid)})
+        audits = await _count(
+            "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+            "   AND action = 'thesis.thread_built'", {"t": str(tid)})
+
+        replay = await http.post(ready["url"], headers={"Idempotency-Key": key})
+
+    assert replay.status_code == 200, replay.text
+    assert replay.headers.get("Idempotency-Replayed") == "true"
+    assert replay.json() == first.json(), "الإعادةُ لم تُعِد الجوابَ نفسَه"
+    assert provider.calls == 1, f"الإعادةُ نادت النموذجَ ({provider.calls})"
+    assert await _count(
+        "SELECT count(*) FROM thread_elements WHERE tenant_id = :t",
+        {"t": str(tid)}) == elements, "الإعادةُ أدرجت عقدةً ثانية"
+    assert await _count(
+        "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+        "   AND action = 'thesis.thread_built'", {"t": str(tid)}) == audits, \
+        "الإعادةُ كتبت تدقيقًا ثانيًا"
+
+
+@requires_db
+async def test_38_a_thread_provider_timeout_is_ambiguous_and_never_recalled(
+    two_tenants, monkeypatch,
+):
+    """(ب) مهلةٌ بعد الحدّ: صفرُ عقد، ثمّ `external_result_unknown` بعد الانقضاء."""
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    ready = await _thread_ready(tid, uid)
+
+    calls = {"n": 0}
+
+    class _Timeout:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            raise TimeoutError("provider timed out mid-thread")
+
+    _activate(monkeypatch, _Timeout())
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        first = await http.post(ready["url"], headers={"Idempotency-Key": key})
+        assert first.status_code == 409, f"{first.status_code}: {first.text[:250]}"
+        assert first.json()["error"]["code"] == \
+            "idempotency.external_result_unknown", first.text
+        assert calls["n"] == 1
+
+        assert await _count(
+            "SELECT count(*) FROM thread_elements WHERE tenant_id = :t",
+            {"t": str(tid)}) == 0, "مهلةٌ غامضةٌ وكُتبت عقدة"
+
+        await _expire_lease(tid, key)
+        after = await http.post(ready["url"], headers={"Idempotency-Key": key})
+
+    assert after.status_code == 409, after.text
+    assert after.json()["error"]["code"] == \
+        "idempotency.external_result_unknown", after.text
+    assert calls["n"] == 1, f"نُودي النموذجُ {calls['n']} مرّةً لجيلٍ واحد"
+    assert await _count(
+        "SELECT count(*) FROM thread_elements WHERE tenant_id = :t",
+        {"t": str(tid)}) == 0
+    ambiguous = await _rows(
+        "SELECT count(*) FROM model_runs WHERE tenant_id = :t AND status = 'ambiguous'",
+        {"t": str(tid)})
+    assert ambiguous == [(1,)], f"سجلُّ النموذجِ لا يقول «ambiguous»: {ambiguous}"
+
+
+@requires_db
+async def test_39_changed_evidence_conflicts_instead_of_replaying(
+    two_tenants, monkeypatch,
+):
+    """(ج) تبدّلت الأدلّةُ قبل الإعادة: **لا جوابَ بائتٌ يُعاد، ولا نداءَ ثانٍ**.
+
+    ويُفحص الأمرُ على درجتَين:
+
+    ‏(١) بلا إذنٍ جديد — الإذنُ التخطيطيُّ صار للقطةٍ أخرى، فيُردّ
+        `ai_consent_stale` قبل التحكيم أصلًا.
+    ‏(٢) وبإذنٍ جديدٍ على اللقطة الجديدة — البصمةُ تبدّلت، فالمفتاحُ نفسُه
+        صِدامٌ (`idempotency.key_reused`) لا إعادة.
+    """
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    ready = await _thread_ready(tid, uid)
+
+    provider = _Structured(_thread_draft(ready["memory_ids"]))
+    _activate(monkeypatch, provider)
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        first = await http.post(ready["url"], headers={"Idempotency-Key": key})
+        assert first.status_code == 200, first.text
+        assert provider.calls == 1
+
+        # تبدّلت الأدلّةُ العلميّة — فاللقطةُ غيرُ التي أُذن لها وبُني عليها.
+        await _add_memory(tid, uid, ready["file_id"], "دليلٌ موثقٌ مستجدّ")
+
+        stale = await http.post(ready["url"], headers={"Idempotency-Key": key})
+        assert stale.status_code == 422, f"{stale.status_code}: {stale.text[:250]}"
+        assert "ai_consent_stale" in stale.text, stale.text
+        assert provider.calls == 1, "نُودي النموذجُ على لقطةٍ بائتة"
+
+        # ويأذن الباحثُ للّقطة الجديدة — فيبلغ الطلبُ التحكيم.
+        await _grant_planning_on_live(tid, uid, ready["project_id"],
+                                      ready["file_id"])
+        conflict = await http.post(ready["url"], headers={"Idempotency-Key": key})
+
+    assert conflict.status_code == 409, f"{conflict.status_code}: {conflict.text[:250]}"
+    assert conflict.json()["error"]["code"] == "idempotency.key_reused", conflict.text
+    assert conflict.headers.get("Idempotency-Replayed") != "true", \
+        "أُعيد جوابٌ بُني على أدلّةٍ لم تعد قائمة"
+    assert provider.calls == 1, f"نُودي النموذجُ {provider.calls} مرّةً"
+
+
+@requires_db
+async def test_40_evidence_changed_during_the_model_wait_is_refused(
+    two_tenants, monkeypatch,
+):
+    """(د) تبدّلت الأدلّةُ **أثناء انتظار النموذج**: لا تُكتب عقدةٌ واحدة.
+
+    وهذا هو الفحصُ الذي كان مستحيلًا: الفحصُ القديم يقابل القيمةَ
+    المتوقَّعةَ بالمحسوبةِ قبل النداء، وهما واحدٌ دائمًا. فاللقطةُ تُبنى
+    هنا **من القاعدة في معاملة الكتابة** ثمّ تُقارَن بالمحضَّرة.
+
+    ويُجدَّد الإذنُ التخطيطيُّ أثناء الانتظار عمدًا: فلو بقي بائتًا لرُدّ
+    الطلبُ ببوّابة الإذن، ولَما بلغ الفحصَ المقصود.
+    """
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    ready = await _thread_ready(tid, uid)
+
+    draft = _thread_draft(ready["memory_ids"])
+    calls = {"n": 0}
+
+    class _MutatesMidCall:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            from athera_api.providers.base import ModelResponse, ModelUsage
+
+            calls["n"] += 1
+            # تبدّلت الأدلّةُ بينما النموذجُ يعمل — ثمّ أُذن للّقطة الجديدة.
+            await _add_memory(tid, uid, ready["file_id"], "دليلٌ وُثّق أثناء الانتظار")
+            await _grant_planning_on_live(tid, uid, ready["project_id"],
+                                          ready["file_id"])
+            return ModelResponse(
+                content="", provider="fake", model="m",
+                usage=ModelUsage(input_tokens=1, output_tokens=1, cost_usd=0.0,
+                                 latency_ms=1),
+                structured=draft)
+
+    _activate(monkeypatch, _MutatesMidCall())
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        answer = await http.post(ready["url"], headers={"Idempotency-Key": key})
+
+    assert calls["n"] == 1, f"نُودي النموذجُ {calls['n']} مرّةً"
+    assert answer.status_code == 422, f"{answer.status_code}: {answer.text[:300]}"
+    assert "evidence_changed_during_model_wait" in answer.text, answer.text
+    assert await _count(
+        "SELECT count(*) FROM thread_elements WHERE tenant_id = :t",
+        {"t": str(tid)}) == 0, "كُتبت عقدةٌ على لقطةٍ لم تعد قائمة"
+    assert await _count(
+        "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+        "   AND action = 'thesis.thread_built'", {"t": str(tid)}) == 0, \
+        "كُتب تدقيقُ إتمامٍ لعملٍ رُفض"
+    state, status, _b, _f = await _record(tid, key)
+    assert state != "completed", f"صار الجيلُ مُكتمِلًا على عملٍ رُفض: {state}"
+    assert status is None, "خُزّن جوابٌ لعملٍ لم يقع"
+
+
+@requires_db
+async def test_41_revoked_consent_beats_an_old_key_instead_of_replaying(
+    two_tenants, monkeypatch,
+):
+    """(هـ) سُحب الإذن: **الرفضُ الحاضرُ يغلب المفتاحَ القديم**.
+
+    ولا يُعاد محتوًى وُلّد تحت إذنٍ زال — فحيازةُ مفتاحٍ ليست إذنًا.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services import consent
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    ready = await _thread_ready(tid, uid)
+
+    provider = _Structured(_thread_draft(ready["memory_ids"]))
+    _activate(monkeypatch, provider)
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        first = await http.post(ready["url"], headers={"Idempotency-Key": key})
+        assert first.status_code == 200, first.text
+        assert provider.calls == 1
+        body = first.json()
+
+        # يرجع الباحثُ عن إذنه.
+        async with tenant_session(tid, uid) as session:
+            await consent.record_decision(
+                session, tenant_id=tid, file_id=ready["file_id"],
+                actor_user_id=uid, granted=False, provider="anthropic", model="m")
+
+        after = await http.post(ready["url"], headers={"Idempotency-Key": key})
+
+    assert after.status_code == 422, f"{after.status_code}: {after.text[:250]}"
+    assert "ai_consent_required" in after.text, after.text
+    assert after.headers.get("Idempotency-Replayed") != "true", \
+        "أُعيد جوابٌ بعد سحبِ الإذن"
+    assert "created" not in after.text, "تسرّب محتوى الجيل القديم بعد سحبِ الإذن"
+    assert body["created"] == 1, "لم يقع الإنشاءُ الأوّلُ أصلًا، فالدعوى فارغة"
+    assert provider.calls == 1, "نُودي النموذجُ بعد سحبِ الإذن"
+
+
+@requires_db
+async def test_42_consent_revoked_during_the_model_wait_blocks_the_write(
+    two_tenants, monkeypatch,
+):
+    """وسُحب الإذنُ **أثناء الانتظار**: لا تُكتب عقدةٌ ولا يُتمّ الجيل.
+
+    فالفحصُ الأخيرُ ليس فحصَ بصمةٍ وحدَه: `prepare_thread` تُنادى حيّةً في
+    معاملةِ الكتابة، فترفع أيضًا إن زال الإذنُ بعد أن نُودي النموذج.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services import consent
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    ready = await _thread_ready(tid, uid)
+
+    draft = _thread_draft(ready["memory_ids"])
+    calls = {"n": 0}
+
+    class _RevokesMidCall:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            from athera_api.providers.base import ModelResponse, ModelUsage
+
+            calls["n"] += 1
+            async with tenant_session(tid, uid) as session:
+                await consent.record_decision(
+                    session, tenant_id=tid, file_id=ready["file_id"],
+                    actor_user_id=uid, granted=False, provider="anthropic",
+                    model="m")
+            return ModelResponse(
+                content="", provider="fake", model="m",
+                usage=ModelUsage(input_tokens=1, output_tokens=1, cost_usd=0.0,
+                                 latency_ms=1),
+                structured=draft)
+
+    _activate(monkeypatch, _RevokesMidCall())
+    key = uuid.uuid4().hex
+
+    async with _client(slot) as http:
+        answer = await http.post(ready["url"], headers={"Idempotency-Key": key})
+
+    assert calls["n"] == 1
+    assert answer.status_code == 422, f"{answer.status_code}: {answer.text[:300]}"
+    assert "ai_consent_required" in answer.text, answer.text
+    assert await _count(
+        "SELECT count(*) FROM thread_elements WHERE tenant_id = :t",
+        {"t": str(tid)}) == 0, "كُتبت عقدةٌ بعد سحبِ الإذن"
+    state, status, _b, _f = await _record(tid, key)
+    assert state != "completed", f"اكتمل الجيلُ بعد سحبِ الإذن: {state}"
+    assert status is None
