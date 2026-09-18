@@ -210,31 +210,6 @@ async def _record(tenant_id, key: str) -> tuple:
     return rows[0] if rows else ()
 
 
-async def _reopen_in_progress(tenant_id, key: str) -> None:
-    """يُعيد الجيلَ إلى «قائمٍ» بإجارةٍ حيّة — **كعاملٍ ما زال يعمل**.
-
-    فالتوأمُ الحيُّ لا يُصنع بطلبَين متوازيَين على عميلٍ واحد: ذاك يتسلسل.
-    فتُحاكى الحالُ في القاعدة نفسِها، ثمّ يُطلب بالمفتاح نفسِه.
-    """
-    from sqlalchemy import text
-
-    from athera_api.services.idempotency import digest_key
-
-    engine, factory = await _observer()
-    try:
-        async with factory() as session:
-            await session.execute(
-                text("UPDATE idempotency_records"
-                     "   SET state = 'in_progress', response_status = NULL,"
-                     "       response_body = NULL,"
-                     "       lease_expires_at = now() + interval '120 seconds'"
-                     " WHERE tenant_id = :t AND key_digest = :d"),
-                {"t": str(tenant_id), "d": digest_key(key)})
-            await session.commit()
-    finally:
-        await engine.dispose()
-
-
 async def _expire_lease(tenant_id, key: str) -> None:
     """تُنتهى الإجارةُ **بساعة القاعدة** — كموتِ عمليّةٍ تركت جيلَها."""
     from sqlalchemy import text
@@ -2707,27 +2682,65 @@ async def test_50_a_keyed_brain_ask_replays_without_a_second_call(
 async def test_51_a_live_brain_twin_gets_one_owner_and_one_call(
     two_tenants, monkeypatch,
 ):
-    """توأمان بالمفتاح نفسِه على إجارةٍ حيّة: **مالكٌ واحدٌ ونداءٌ واحد**."""
+    """توأمان **متزامنان حقًّا** بالمفتاح نفسِه: مالكٌ واحدٌ ونداءٌ واحد.
+
+    ولا تُزيَّف الإجارةُ الحيّةُ بكتابةٍ في القاعدة: المزوّدُ يُحبَس حتى
+    يصل التوأمُ فعلًا، فيكون الحجزُ قائمًا وقتَ وصولِه. وهما طلبان على
+    عميلَين يجريان معًا بـ`gather` — فالانتظارُ عند المزوّد يُفسح المجال.
+    """
+    import asyncio
+
     from tests.test_at_rc_t1_h3_ai_long_transactions import _client
 
     slot = two_tenants["a"]
-    calls: dict = {}
-    _activate(monkeypatch, _brain_answer(calls))
+    tid = slot["tenant_id"]
+    calls = {"n": 0}
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _Held:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            from athera_api.providers.base import ModelResponse, ModelUsage
+
+            calls["n"] += 1
+            entered.set()
+            await release.wait()
+            return ModelResponse(
+                content="", provider="fake", model="m", usage=ModelUsage(),
+                structured={"answer_ar": "جوابُ الأجنت",
+                            "answer_en": "the agent answer",
+                            "citations": [], "unsupported_claims": [],
+                            "evidence_gaps": []})
+
     _allow_c2(monkeypatch)
+    _activate(monkeypatch, _Held())
     key = uuid.uuid4().hex
 
-    async with _client(slot) as http:
-        first = await http.post(BRAIN_ASK, json=BRAIN_BODY,
-                                headers={"Idempotency-Key": key})
-        assert first.status_code == 200, first.text
-        # الإجارةُ حيّةٌ بعدُ؟ لا — اكتملت. فيُحيا الجيلُ ليُحاكى التوأم.
-        await _reopen_in_progress(slot["tenant_id"], key)
-        twin = await http.post(BRAIN_ASK, json=BRAIN_BODY,
-                               headers={"Idempotency-Key": key})
+    async def _first():
+        async with _client(slot) as http:
+            return await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                                   headers={"Idempotency-Key": key})
 
+    async def _twin():
+        # لا يُرسَل حتى يكون الأوّلُ **داخل** نداءِ المزوّد — أي والحجزُ قائم.
+        await asyncio.wait_for(entered.wait(), timeout=20)
+        async with _client(slot) as http:
+            answer = await http.post(BRAIN_ASK, json=BRAIN_BODY,
+                                     headers={"Idempotency-Key": key})
+        release.set()
+        return answer
+
+    first, twin = await asyncio.gather(_first(), _twin())
+
+    assert first.status_code == 200, f"{first.status_code}: {first.text[:250]}"
     assert twin.status_code == 409, f"{twin.status_code}: {twin.text[:250]}"
     assert twin.json()["error"]["code"] == "idempotency.in_progress", twin.text
     assert calls["n"] == 1, f"نُودي النموذجُ {calls['n']} مرّةً لجيلٍ واحد"
+    assert await _count(
+        "SELECT count(*) FROM agent_runs WHERE tenant_id = :t",
+        {"t": str(tid)}) == 1, "تشغيلتان لجيلٍ واحد"
 
 
 @requires_db
