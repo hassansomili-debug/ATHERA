@@ -196,6 +196,44 @@ async def _record(tenant_id, key: str) -> tuple:
     return rows[0] if rows else ()
 
 
+async def _generation(tenant_id, key: str) -> uuid.UUID:
+    """معرّفُ صفِّ الإجارة — **مرساةُ الجيل**، ومنه تُشتقّ هُويّةُ الملفّ."""
+    from athera_api.services.idempotency import digest_key
+
+    return await _scalar(
+        "SELECT id FROM idempotency_records WHERE tenant_id = :t AND key_digest = :d",
+        {"t": str(tenant_id), "d": digest_key(key)})
+
+
+def _derived(record_id) -> str:
+    from athera_api.services.idempotency import stable_object_id
+
+    return str(stable_object_id(uuid.UUID(str(record_id))))
+
+
+async def _retire_generation(tenant_id, key: str) -> None:
+    """يُقدِّم `expires_at` إلى الماضي — **بساعة القاعدة**.
+
+    ولا يحذف الصفَّ بيد: المقصودُ أن يمرّ الطلبُ التاليُ بمسار الاستعادة
+    الحقيقيّ في `acquire_lease`، لا أن يُحاكى غيابُ الصفّ.
+    """
+    from sqlalchemy import text
+
+    from athera_api.services.idempotency import digest_key
+
+    engine, factory = await _observer()
+    try:
+        async with factory() as session:
+            await session.execute(
+                text("UPDATE idempotency_records"
+                     "   SET expires_at = now() - interval '1 second'"
+                     " WHERE tenant_id = :t AND key_digest = :d"),
+                {"t": str(tenant_id), "d": digest_key(key)})
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
 async def _expire_lease(tenant_id, key: str) -> None:
     """تُنتهى الإجارةُ **بساعة القاعدة** لا بانتظارٍ حقيقيّ."""
     from sqlalchemy import text
@@ -277,28 +315,20 @@ async def test_03_the_keyed_file_id_is_derived_not_random(two_tenants, store):
     فلو عاد `uuid4()` لَاختلف المحسوبُ عن المُعاد، ولَما أمكن لمُستولٍ أن
     يبلغ الهدفَ نفسَه.
     """
-    from athera_api.services.idempotency import digest_key, stable_object_id
-
     slot = two_tenants["a"]
     key = _key()
     async with _client(slot) as http:
         answered = await http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key})
     assert answered.status_code == 201, answered.text
 
-    expected = stable_object_id(
-        tenant_id=slot["tenant_id"], actor_user_id=slot["user_id"],
-        operation="POST /api/v1/files/upload", key_digest=digest_key(key))
-    assert answered.json()["id"] == str(expected), "المعرّفُ ليس المشتقّ"
+    # **والمرساةُ صفُّ الإجارة**: الهُويّةُ مشتقّةٌ من `id` الجيل.
+    generation = await _generation(slot["tenant_id"], key)
+    assert answered.json()["id"] == _derived(generation), \
+        "المعرّفُ ليس المشتقَّ من جيل الإجارة"
 
-    # ونطاقان مختلفان لا يتصادمان.
-    other = stable_object_id(
-        tenant_id=slot["tenant_id"], actor_user_id=uuid.uuid4(),
-        operation="POST /api/v1/files/upload", key_digest=digest_key(key))
-    assert other != expected, "فاعلان أعطيا الهُويّةَ نفسَها"
-    across = stable_object_id(
-        tenant_id=slot["tenant_id"], actor_user_id=slot["user_id"],
-        operation="POST /api/v1/files", key_digest=digest_key(key))
-    assert across != expected, "عمليّتان أعطتا الهُويّةَ نفسَها"
+    # وجيلٌ آخرُ يُعطي هُويّةً أخرى — وهو أصلُ سلامة البقاء.
+    assert _derived(uuid.uuid4()) != _derived(generation), \
+        "جيلان أعطيا الهُويّةَ نفسَها"
 
 
 # ═════════ ٣ · الإعادة: صفرُ كتابةٍ ثانية ═════════
@@ -690,11 +720,11 @@ async def test_15_the_first_keyed_init_creates_one_pending_file(two_tenants, sto
     assert await _scalar("SELECT status FROM files WHERE id = :i",
                          {"i": file_id}) == "pending"
 
-    from athera_api.services.idempotency import digest_key, stable_object_id
-    expected = stable_object_id(
-        tenant_id=slot["tenant_id"], actor_user_id=slot["user_id"],
-        operation="POST /api/v1/files", key_digest=digest_key(key))
-    assert file_id == str(expected), "معرّفُ النيّة ليس المشتقّ"
+    generation = await _generation(slot["tenant_id"], key)
+    assert file_id == _derived(generation), "معرّفُ النيّة ليس المشتقَّ من جيله"
+    # **والمفتاحُ المُعاد هو مفتاحُ الصفّ بعينه** — لا يفترقان.
+    assert answered.json()["storage_key"] == await _scalar(
+        "SELECT storage_key FROM files WHERE id = :i", {"i": file_id})
 
 
 @requires_db
@@ -781,18 +811,18 @@ async def test_19_a_takeover_reuses_the_pending_row_it_finds(two_tenants, store)
     """
     from sqlalchemy import text
 
-    from athera_api.services.idempotency import digest_key, stable_object_id
+    from athera_api.services.idempotency import digest_key
 
     slot = two_tenants["a"]
     key = _key()
-    stable = stable_object_id(
-        tenant_id=slot["tenant_id"], actor_user_id=slot["user_id"],
-        operation="POST /api/v1/files", key_digest=digest_key(key))
 
-    # أوّلُ نداءٍ يُتمّ، ثمّ تُعاد حالُ الصفّ إلى ما قبل الإتمام.
+    # أوّلُ نداءٍ يُتمّ، ثمّ تُعاد حالُ الصفّ إلى ما قبل الإتمام —
+    # **والجيلُ هو هو**، فمعرّفُه لا يتغيّر، فالهدفُ لا يتغيّر.
     async with _client(slot) as http:
         first = await http.post(INIT, json=_init_body(), headers={HEADER: key})
     assert first.status_code == 201, first.text
+    generation = await _generation(slot["tenant_id"], key)
+    stable = uuid.UUID(_derived(generation))
     assert first.json()["file_id"] == str(stable)
 
     engine, factory = await _observer()
@@ -942,3 +972,267 @@ async def test_24_an_unkeyed_complete_is_unchanged(two_tenants, store):
     assert await _scalar(
         "SELECT count(*) FROM idempotency_records WHERE tenant_id = :t",
         {"t": str(slot["tenant_id"])}) == before
+
+
+# ═════════ ٩ · البقاءُ والجيل: لا مفتاحَ أبديّ ═════════
+#
+# **والعطبُ الذي أُغلق هنا مقيسٌ لا متخيَّل.** كانت الهُويّةُ تُشتقّ من
+# (مستأجر + فاعل + عمليّة + بصمةُ مفتاح) — وذاك **دائمٌ للمفتاح**، والبقاءُ
+# ٢٤ ساعةً فقط. فمفتاحٌ يُعاد بعد انقضاء بقائه ببايتاتٍ أخرى كان يُشتقّ
+# هُويّةَ الجيل القديم، فتُكتب البايتاتُ الجديدةُ على **مفتاح القديم**
+# ويُعاد استعمالُ صفِّه: فتصف القاعدةُ A والمخزنُ يحمل B.
+
+
+@requires_db
+async def test_25_a_retired_generation_gets_a_new_target_not_the_old_one(
+    two_tenants, store,
+):
+    """(أ) جيلٌ مُتَمٌّ انقضى بقاؤه ⇒ **جيلٌ جديدٌ وهدفٌ جديد**.
+
+    وبالاسم نفسِه وببايتاتٍ أخرى: فيُعزَل أثرُ **الجيل** عن أثر الاسم.
+    """
+    slot = two_tenants["a"]
+    key = _key()
+
+    async with _client(slot) as http:
+        one = await http.post(UPLOAD, **_upload_kwargs(DOC), headers={HEADER: key})
+    assert one.status_code == 201, one.text
+    old_id = one.json()["id"]
+    old_generation = await _generation(slot["tenant_id"], key)
+    old_key = await _scalar("SELECT storage_key FROM files WHERE id = :i",
+                            {"i": old_id})
+    assert store.objects[old_key][0] == DOC
+
+    # يُقدَّم `expires_at` فيمرّ الطلبُ التاليُ بمسار الاستعادة الحقيقيّ.
+    await _retire_generation(slot["tenant_id"], key)
+
+    async with _client(slot) as http:
+        two = await http.post(UPLOAD, **_upload_kwargs(OTHER), headers={HEADER: key})
+    assert two.status_code == 201, \
+        f"الاستعادةُ لم تُنفَّذ: {two.status_code} {two.text[:300]}"
+    new_id = two.json()["id"]
+    new_generation = await _generation(slot["tenant_id"], key)
+    new_key = await _scalar("SELECT storage_key FROM files WHERE id = :i",
+                            {"i": new_id})
+
+    assert new_generation != old_generation, "لم يُنشأ جيلٌ جديد"
+    assert new_id != old_id, "الهُويّةُ لم تتغيّر — فالمفتاحُ صار أبديًّا"
+    assert new_key != old_key, "مفتاحُ التخزين لم يتغيّر"
+
+    # ── القديمُ باقٍ صادقًا، ولم يُكتب فوقه ──
+    assert await _files(slot["tenant_id"], old_id) == 1, "مُحي صفُّ الجيل القديم"
+    assert store.objects[old_key][0] == DOC, \
+        "كُتبت البايتاتُ الجديدةُ على كائن الجيل القديم — وهذا إفسادُ بيانات"
+    assert store.objects[new_key][0] == OTHER, "الجيلُ الجديدُ لم يكتب طلبَه"
+    assert len(store.objects) == 2, "الجيلان لم يُفرَدا بكائنَيهما"
+    assert store.delete_calls == [], "حُذف كائنٌ في مسار الاستعادة"
+
+
+@requires_db
+async def test_26_the_same_payload_after_retirement_is_a_new_operation(
+    two_tenants, store,
+):
+    """(ب) الجسمُ نفسُه بعد انقضاء البقاء ⇒ **عمليّةٌ جديدة** لا إعادة.
+
+    فعقدُ البقاء ٢٤ ساعةً يقول ذلك، ولا إزالةَ تكرارٍ أبديّةً بالمفتاح.
+    """
+    slot = two_tenants["a"]
+    key = _key()
+    async with _client(slot) as http:
+        one = await http.post(UPLOAD, **_upload_kwargs(DOC), headers={HEADER: key})
+    assert one.status_code == 201, one.text
+    first_generation = await _generation(slot["tenant_id"], key)
+
+    await _retire_generation(slot["tenant_id"], key)
+
+    async with _client(slot) as http:
+        two = await http.post(UPLOAD, **_upload_kwargs(DOC), headers={HEADER: key})
+    assert two.status_code == 201, two.text
+    assert "Idempotency-Replayed" not in two.headers, \
+        "أُعيد جوابُ جيلٍ انقضى بقاؤه — وذاك مفتاحٌ أبديّ"
+    assert two.json()["id"] != one.json()["id"], "الهُويّةُ لم تتغيّر"
+    assert await _generation(slot["tenant_id"], key) != first_generation
+    assert len(store.objects) == 2, "الجيلُ الجديدُ لم يُفرَد بكائنه"
+    assert len(store.put_calls) == 2
+
+
+@requires_db
+async def test_27_a_retired_init_generation_matches_its_own_row(
+    two_tenants, store,
+):
+    """(ج) النيّةُ الموقّعة بعد الانقضاء: صفٌّ جديدٌ **ومفتاحُه هو المُعاد**.
+
+    ولا يُعاد مفتاحُ الجيل القديم مع صفٍّ جديد — ولا العكس.
+    """
+    slot = two_tenants["a"]
+    key = _key()
+    async with _client(slot) as http:
+        one = await http.post(INIT, json=_init_body(), headers={HEADER: key})
+    assert one.status_code == 201, one.text
+    old_fid, old_key = one.json()["file_id"], one.json()["storage_key"]
+    old_generation = await _generation(slot["tenant_id"], key)
+
+    await _retire_generation(slot["tenant_id"], key)
+
+    async with _client(slot) as http:
+        two = await http.post(INIT, json=_init_body(), headers={HEADER: key})
+    assert two.status_code == 201, two.text
+    assert "Idempotency-Replayed" not in two.headers, "أُعيد جيلٌ منقضٍ"
+    new_fid, new_key = two.json()["file_id"], two.json()["storage_key"]
+
+    assert await _generation(slot["tenant_id"], key) != old_generation
+    assert new_fid != old_fid, "هُويّةُ النيّة لم تتغيّر"
+    assert new_key != old_key, "مفتاحُ النيّة لم يتغيّر"
+    assert new_key == await _scalar(
+        "SELECT storage_key FROM files WHERE id = :i", {"i": new_fid}), \
+        "المفتاحُ المُعاد لا يطابق مفتاحَ صفّه — صفٌّ قديمٌ ورابطٌ جديد"
+    assert await _files(slot["tenant_id"], old_fid) == 1, "مُحي الصفُّ القديم"
+    assert await _files(slot["tenant_id"], new_fid) == 1
+    assert new_fid == _derived(await _generation(slot["tenant_id"], key))
+
+
+@requires_db
+async def test_28_an_ambiguous_in_progress_row_survives_generic_cleanup(
+    two_tenants, store,
+):
+    """(د) الغامضُ لا يُمحى بالتنظيف العامّ — **وهو مرساةُ المصالحة**.
+
+    ويُنادى `bounded_cleanup` الحقيقيُّ لا مُحاكاةٌ له.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services import idempotency as idem
+
+    slot = two_tenants["a"]
+    key = _key()
+    store.fail_with = TimeoutError("connection timed out mid-PUT")
+    async with _client(slot) as http:
+        fell = await http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key})
+    assert fell.status_code >= 500
+    generation = await _generation(slot["tenant_id"], key)
+    state, _s, _b, _f, _o = await _record(slot["tenant_id"], key)
+    assert state == "in_progress", state
+
+    # يُقدَّم البقاءُ إلى الماضي، ثمّ يُنادى التنظيفُ **الحقيقيّ**.
+    await _retire_generation(slot["tenant_id"], key)
+    async with tenant_session(slot["tenant_id"], slot["user_id"]) as session:
+        await idem.bounded_cleanup(session, tenant_id=slot["tenant_id"])
+
+    assert await _generation(slot["tenant_id"], key) == generation, \
+        "التنظيفُ العامُّ محا جيلًا غامضًا — فضاعت مرساةُ المصالحة"
+
+    # ── ثمّ استيلاءٌ على **الجيل نفسِه**: الهدفُ هو هو ──
+    store.fail_with = None
+    await _expire_lease(slot["tenant_id"], key)
+    async with _client(slot) as http:
+        took = await http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key})
+    assert took.status_code == 201, took.text
+    assert await _generation(slot["tenant_id"], key) == generation, \
+        "الاستيلاءُ أنشأ جيلًا جديدًا بدل أن يُصالح القائم"
+    assert took.json()["id"] == _derived(generation)
+    assert len(set(store.put_calls)) == 1, \
+        f"تغيّر الهدفُ بعد الاستيلاء: {set(store.put_calls)}"
+    assert len(store.objects) == 1, "كائنان لجيلٍ واحد"
+
+
+@requires_db
+async def test_29_two_concurrent_retries_of_a_retired_key_make_one_generation(
+    two_tenants, store,
+):
+    """(هـ) متسابقان على مفتاحٍ منقضٍ ⇒ **جيلٌ واحدٌ ومالكٌ واحد**.
+
+    **والتزامنُ حقيقيٌّ هنا، ومقيسٌ عند موضع التحكيم.** ومحاولتان عبر
+    المسار على مخزنٍ في الذاكرة تتسلسلان — تُتمّ الأولى قبل أن تبلغ الثانيةُ
+    الحجزَ أصلًا — فتصير «إعادةً» لا سباقًا. وقد قِيس ذلك: تحويرٌ يمنح
+    الخاسرَ إجارةً لم يُسقِط الفحصَ حتى نُقل التحكيمُ إلى موضعه.
+
+    فتُفتح جلستان مستقلّتان وتُنادى `acquire_lease` فيهما **متوازيتين** على
+    الصفّ المنقضي. والحَكَمُ PostgreSQL: القيدُ يردّ الثاني، ولا Redis ولا
+    قفلَ في العمليّة.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services import idempotency as idem
+
+    slot = two_tenants["a"]
+    key = _key()
+    async with _client(slot) as http:
+        one = await http.post(UPLOAD, **_upload_kwargs(DOC), headers={HEADER: key})
+    assert one.status_code == 201, one.text
+    old_generation = await _generation(slot["tenant_id"], key)
+    await _retire_generation(slot["tenant_id"], key)
+
+    operation = "POST /api/v1/files/upload"
+    fingerprint = "f" * 64
+
+    async def _claim():
+        async with tenant_session(slot["tenant_id"], slot["user_id"]) as session:
+            return await idem.acquire_lease(
+                session, tenant_id=slot["tenant_id"],
+                actor_user_id=slot["user_id"], operation=operation,
+                key=key, fingerprint=fingerprint,
+                ttl=idem.LEASE_STORAGE)
+
+    results = await asyncio.gather(_claim(), _claim(), return_exceptions=True)
+
+    leases = [r for r in results if isinstance(r, idem.Lease)]
+    assert len(leases) == 1, (
+        "عددُ المالكين "
+        f"{len(leases)} — ومالكان لجيلٍ واحدٍ عطبٌ: {results}")
+
+    rows = await _rows(
+        "SELECT id FROM idempotency_records WHERE tenant_id = :t"
+        "   AND key_digest = :d AND operation = :o",
+        {"t": str(slot["tenant_id"]),
+         "d": __import__("athera_api.services.idempotency",
+                         fromlist=["digest_key"]).digest_key(key),
+         "o": operation})
+    assert len(rows) == 1, f"جيلان لمفتاحٍ واحد: {rows}"
+    generation = rows[0][0]
+    assert generation != old_generation, "لم يُستعَد المفتاحُ المنقضي"
+    assert leases[0].record_id == generation, "المالكُ يحمل مرساةَ جيلٍ آخر"
+
+    # **وهدفٌ واحدٌ للجيل الواحد** — والهُويّةُ مشتقّةٌ منه لا من المفتاح.
+    assert _derived(generation) != one.json()["id"], \
+        "الجيلُ الجديدُ أعطى هُويّةَ الجيل القديم"
+
+
+@requires_db
+async def test_30_a_retired_completed_generation_also_frees_a_failed_one(
+    two_tenants, store,
+):
+    """وجيلٌ **مُخفِقٌ معلومٌ** انقضى بقاؤه يُستعاد كذلك — لا يُحتجَز المفتاح."""
+    from athera_api.services.literature import registry  # noqa: F401 — يُثبّت البيئة
+
+    slot = two_tenants["a"]
+    key = _key()
+    # إخفاقٌ معلومٌ قبل الخارج: يُشبِع الحادَّ؟ لا — بل تجزئةٌ تُرفض بالحجم.
+    # والأبسطُ: يُنفَّذ رفعٌ ثمّ يُوسَم الصفُّ `failed` بساعة القاعدة.
+    async with _client(slot) as http:
+        one = await http.post(UPLOAD, **_upload_kwargs(DOC), headers={HEADER: key})
+    assert one.status_code == 201, one.text
+    old_generation = await _generation(slot["tenant_id"], key)
+
+    from sqlalchemy import text
+
+    from athera_api.services.idempotency import digest_key
+
+    engine, factory = await _observer()
+    try:
+        async with factory() as session:
+            await session.execute(
+                text("UPDATE idempotency_records"
+                     "   SET state='failed', response_status=NULL,"
+                     "       response_body=NULL, lease_expires_at=NULL,"
+                     "       expires_at = now() - interval '1 second'"
+                     " WHERE tenant_id = :t AND key_digest = :d"),
+                {"t": str(slot["tenant_id"]), "d": digest_key(key)})
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+    async with _client(slot) as http:
+        two = await http.post(UPLOAD, **_upload_kwargs(OTHER), headers={HEADER: key})
+    assert two.status_code == 201, two.text
+    assert await _generation(slot["tenant_id"], key) != old_generation, \
+        "جيلٌ مُخفِقٌ منقضٍ لم يُستعَد"
+    assert two.json()["id"] != one.json()["id"]
+    assert len(store.objects) == 2
