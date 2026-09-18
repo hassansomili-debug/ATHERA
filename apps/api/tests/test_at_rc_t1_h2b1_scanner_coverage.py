@@ -150,10 +150,13 @@ def test_05_the_thesis_upload_holds_no_transaction_across_the_storage_write(scan
                 for item in n.items for c in ast.walk(item.context_expr)
                 if isinstance(c, ast.Call))
     ]
+    # **والاسمُ صار `store_uploaded_file`** (الطور B-3): خرج متنُ الرفع من
+    # المعالج المُزخرَف كي ينادَه الرفعُ الداخليُّ بلا طلبٍ ولا مفتاح —
+    # فرفعُ الرسالة خارج نطاق B-3. والدعوى هي هي: النداءُ خارج كلّ معاملة.
     uploads = [n.lineno for n in ast.walk(fn)
                if isinstance(n, ast.Call)
-               and getattr(n.func, "id", "") == "upload_file"]
-    assert uploads, "لم يُعد المعالجُ ينادي `upload_file`"
+               and getattr(n.func, "id", "") == "store_uploaded_file"]
+    assert uploads, "لم يُعد المعالجُ ينادي متنَ الرفع `store_uploaded_file`"
     for at in uploads:
         assert not any(b.lineno <= at <= (b.end_lineno or b.lineno) for b in owned), (
             "نداءُ التخزين داخل معاملةٍ مفتوحة — وهو عطبُ RC-T1-H3 بعينه")

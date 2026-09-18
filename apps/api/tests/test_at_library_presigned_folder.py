@@ -129,8 +129,11 @@ def test_the_folder_guard_is_one_definition_that_every_door_reads():
     """
     from athera_api.routers import files as router
 
+    # **ومتنُ الرفع `store_uploaded_file`** لا `upload_file` (الطور B-3):
+    # المعالجُ المُزخرَف صار تفويضًا، والفحصُ حيث المتن. والدعوى هي هي —
+    # أربعةُ أبوابٍ وفحصٌ واحد — ولا بابَ سقط من القائمة.
     for endpoint in (router.init_upload, router.complete_upload,
-                     router.upload_file, router.move_file):
+                     router.store_uploaded_file, router.move_file):
         assert "_writable_folder" in inspect.getsource(endpoint), (
             f"{endpoint.__name__} لا يمرّ بالفحص الموحَّد للوجهة")
 

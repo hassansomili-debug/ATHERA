@@ -639,12 +639,20 @@ async def test_17_cleanup_is_bounded_and_never_required_for_correctness(
 # ═════════════ ٨ · النطاق: ما لم يُحمَ بعد ═════════════
 
 
-def test_18_only_the_four_declared_routes_are_protected_in_phase_a() -> None:
-    """**والطور A أربعةٌ لا أكثر** — ولا مسارٌ خارجيٌّ يُحمى بعد.
+def test_18_only_db_atomic_routes_use_the_transactional_primitive() -> None:
+    """**والحجزُ في معاملة الطلب لمن لا انتظارَ خارجيًّا له** — لا أكثر.
 
-    فمساراتُ الانتظار الخارجيّ تحتاج حجزًا وإجارةً (الطور B)، ودمجُها هنا
+    فمساراتُ الانتظار الخارجيّ تحتاج إجارةً (`begin_leased`)، ودمجُها هنا
     يعني إمّا معاملةً عبر الشبكة — وذاك ينقض RC-T1-H3 — أو حجزًا مُودَعًا
     لا يُنهيه أحد.
+
+    **وأربعةُ الطور A صارت خمسة** بانضمام `files.complete_upload` في الطور
+    B-3: وهو ختمُ رفعٍ **ذرّيٌّ في القاعدة** لا يكتب إلى مخزنٍ ولا ينتظر
+    أحدًا، فالأداةُ الصحيحةُ له أداةُ الطور A بعينها. والقائمةُ تبقى
+    **مُحصاةً بالضبط**: كلُّ منضمٍّ جديدٍ يجب أن يُعلَن هنا.
+
+    وتبقى المساراتُ ذاتُ الانتظار الخارجيّ ممنوعةً من هذه الأداة — ومنها
+    رفعُ الملفّ ونيّةُ الرفع الموقّعة، وكلاهما على الإجارة لا على الحجز.
     """
     import ast
     import pathlib
@@ -654,8 +662,10 @@ def test_18_only_the_four_declared_routes_are_protected_in_phase_a() -> None:
         ("portfolio.py", "create_project"),
         ("analysis.py", "create_run"),
         ("publishing.py", "create_manuscript"),
+        # الطور B-3 — ختمٌ ذرّيٌّ في القاعدة، ولا كتابةَ تخزينٍ فيه.
+        ("files.py", "complete_upload"),
     }
-    forbidden = {"ai.py", "brain.py", "files.py", "profile.py", "thesis.py",
+    forbidden = {"ai.py", "brain.py", "profile.py", "thesis.py",
                  "literature.py", "manuscript_drafting.py", "planning.py"}
 
     found = set()
@@ -673,7 +683,15 @@ def test_18_only_the_four_declared_routes_are_protected_in_phase_a() -> None:
 
     assert found == expected, f"المحميّ اليوم: {sorted(found)}"
     assert not {f for f, _ in found} & forbidden, (
-        "مسارٌ من الطور B حُمي في الطور A")
+        "مسارُ انتظارٍ خارجيٍّ استعمل حجزَ معاملةِ الطلب")
+
+    # **ومسارا التخزين على الإجارة لا على الحجز** — وهذا يُقاس صراحةً:
+    # لو انتقل أحدُهما إلى `idempotency.begin` لَصار حجزُه في معاملةٍ
+    # تمتدّ على كتابة المخزن، وهو RC-T1-H3 بعينه.
+    assert ("files.py", "store_uploaded_file") not in found, \
+        "متنُ الرفع استعمل حجزَ معاملةِ الطلب بدل الإجارة"
+    assert ("files.py", "init_upload") not in found, \
+        "نيّةُ الرفع الموقّعة استعملت حجزَ معاملةِ الطلب بدل الإجارة"
 
 
 # ═════════════ ٩ · المساراتُ الأربعة، كلٌّ ببرهانه على HTTP ═════════════

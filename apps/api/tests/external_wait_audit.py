@@ -608,11 +608,28 @@ class _Audit:
                               if isinstance(d, ast.Call)
                               and isinstance(d.func, ast.Attribute)
                               and d.func.attr in {"get", "post", "put", "patch", "delete"}]
-                if not decorators:
+                # ══ ومتونُ المسارات تُفحص كما تُفحص المسارات ══
+                #
+                # **والمعالجُ قد لا يحمل متنَه.** حين نُقل متنُ الرفع إلى
+                # `store_uploaded_file` — دالّةٌ في وحدة موجِّهٍ بلا مُزخرِف —
+                # صار `put_stream` خارجَ جسم المعالج، فمعاملةٌ تُفتح **داخل
+                # المتن** لا يراها حارسٌ لا ينظر إلا إلى المُزخرَف. وقد قِيس
+                # ذلك: التحويرُ في المتن أعطى صفرَ مخالفين.
+                #
+                # فتُفحص الدالّةُ غيرُ المُزخرَفة أيضًا، وتُنسَب إلى اسمها.
+                # والمخالفةُ واحدةٌ في الحالين: انتظارٌ خارجَ العمليّة
+                # ومعاملةٌ حيّة — ولا يُغيّر من ذلك وجودُ مُزخرِفٍ من عدمه.
+                if not decorators and not fn.name.startswith("_"):
+                    route = f"(body of {fn.name})"
+                    method = "CALL"
+                elif decorators:
+                    first = decorators[0]
+                    route = (first.args[0].value
+                             if first.args and isinstance(first.args[0], ast.Constant)
+                             else "?")
+                    method = first.func.attr.upper()
+                else:
                     continue
-                first = decorators[0]
-                route = (first.args[0].value
-                         if first.args and isinstance(first.args[0], ast.Constant) else "?")
                 managed = [d.args[0].id for d in
                            [*fn.args.defaults,
                             *[k for k in fn.args.kw_defaults if k is not None]]
@@ -638,10 +655,33 @@ class _Audit:
                 for node in ast.walk(fn):
                     if not (isinstance(node, ast.Await) and isinstance(node.value, ast.Call)):
                         continue
-                    target = self._resolve(module, node.value.func, None, locals_)
-                    if not target:
+                    # ══ ووسيطُ المُنفِّذ يُقرأ هنا أيضًا ══
+                    #
+                    # **وكان يُقرأ في بناء الحواف ولا يُقرأ هنا.** فدالّةٌ
+                    # تُسلّم `put_stream` إلى `run_in_threadpool` **داخل
+                    # معاملةٍ في جسمها نفسِه** كانت تمرّ: `offenders` تحلّ
+                    # `run_in_threadpool` — وهو لا تعريفَ له — فتتخطّى.
+                    # وإنّما كان يُكشف حين **يناديها غيرُها**.
+                    #
+                    # وقد قِيس أنّ هذا عمًى **قديمٌ في main** لا أثرٌ لنقل
+                    # المتن: مُوضِعُ `put_stream` في `main` لُفّ بمعاملةٍ
+                    # فأعطى ماسحُ `main` صفرَ مخالفين.
+                    called = node.value.func
+                    name = (called.attr if isinstance(called, ast.Attribute)
+                            else called.id if isinstance(called, ast.Name) else None)
+                    targets: list[str] = []
+                    if name in EXECUTOR_HANDOFFS:
+                        for handed in node.value.args:
+                            if isinstance(handed, (ast.Attribute, ast.Name)):
+                                passed = self._resolve(module, handed, None, locals_)
+                                if passed:
+                                    targets.append(passed)
+                    direct = self._resolve(module, called, None, locals_)
+                    if direct:
+                        targets.append(direct)
+                    if not targets:
                         continue
-                    for cand in self._candidates(target):
+                    for cand in [c for t in targets for c in self._candidates(t)]:
                         if cand not in self.reach:
                             continue
                         inside = any(a <= node.lineno <= b for a, b in owned)
@@ -653,7 +693,7 @@ class _Audit:
                         seen.add((label, node.lineno))
                         found.append(Offender(
                             file=path.name, handler=fn.name,
-                            method=first.func.attr.upper(), route=route,
+                            method=method, route=route,
                             call=label, line=node.lineno, kind=self.reach[cand],
                             held_by="request dependency" if managed else "handler body",
                             chain=self.chain[cand]))

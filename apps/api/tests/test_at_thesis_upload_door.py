@@ -128,32 +128,45 @@ def test_the_call_site_matches_the_signature_it_calls():
 
     from athera_api.routers import document_intelligence, files
 
-    accepted = set(inspect.signature(files.upload_file).parameters)
+    # **والمُنادى صار متنًا لا نقطةَ نهاية** (الطور B-3): `upload_file`
+    # معالجٌ مُزخرَف يفوّض إلى `store_uploaded_file`، ورفعُ الرسالة ينادي
+    # المتنَ مباشرةً.
+    target = files.store_uploaded_file
+    accepted = set(inspect.signature(target).parameters)
     source = inspect.getsource(document_intelligence.upload_thesis)
-    call = source.split("upload_file(", 1)[1].split(")", 1)[0]
+    call = source.split("store_uploaded_file(", 1)[1].split(")", 1)[0]
     passed = {piece.split("=", 1)[0].strip()
               for piece in call.split(",") if "=" in piece}
 
     unknown = passed - accepted
     assert not unknown, (
-        f"نداءُ رفع الرسالة يمرّر ما لا تقبله `upload_file`: {sorted(unknown)}")
+        f"نداءُ رفع الرسالة يمرّر ما لا يقبله المتن: {sorted(unknown)}")
 
-    # **وما لم يُمرَّر يصل شاهدًا لا قيمة.**
+    # **والعطبُ الأصليُّ صار ممتنعًا بالبنية، ويُشترط بقاؤه كذلك.**
     #
     # قيمُ FastAPI الافتراضية (`Form(...)`، `Depends(...)`) شواهدُ يحلّها
-    # الإطار عند الطلب. ومن نادى النقطةَ كدالّةٍ عاديّة وترك وسيطًا لقيمته
-    # الافتراضية تسلّم كائنَ `Form` بدل `None` — فمرّ من `if not folder_id`
-    # وسقط في `uuid.UUID(...)`. وهو عطبٌ كان مختبئًا خلف الأوّل تمامًا.
+    # الإطارُ عند الطلب. ومن نادى نقطةَ نهايةٍ كدالّةٍ عاديّة وترك وسيطًا
+    # لقيمته الافتراضية تسلّم كائنَ `Form` بدل `None` — فمرّ من
+    # `if not folder_id` وسقط في `uuid.UUID(...)`. ومتنُ الرفع الآن بلا
+    # شاهدٍ واحد، فيُشترط ذلك صراحةً: عودةُ شاهدٍ إليه تُعيد الصنفَ كلَّه.
     sentinels = {
-        name for name, parameter
-        in inspect.signature(files.upload_file).parameters.items()
+        name for name, parameter in inspect.signature(target).parameters.items()
         if parameter.default is not inspect.Parameter.empty
         and type(parameter.default).__name__ in {"Form", "File", "Depends", "Query"}
     }
-    missed = sentinels - passed
+    assert not sentinels, (
+        "متنُ الرفع حمل شواهدَ FastAPI، فعاد نداؤه دالّةً خطرًا: "
+        f"{sorted(sentinels)}")
+
+    # **وكلُّ ما لا قيمةَ افتراضيّةَ له يُمرَّر صراحةً.**
+    required = {
+        name for name, parameter in inspect.signature(target).parameters.items()
+        if parameter.default is inspect.Parameter.empty
+        and parameter.kind is not inspect.Parameter.VAR_KEYWORD
+    }
+    missed = required - passed
     assert not missed, (
-        "وسائطُ نقطةِ نهايةٍ تُركت لشواهدها بدل أن تُمرَّر صراحةً: "
-        f"{sorted(missed)}")
+        f"وسائطُ لازمةٌ لم تُمرَّر في نداء رفع الرسالة: {sorted(missed)}")
 
 
 def test_the_signature_guard_would_notice_a_stale_argument():
