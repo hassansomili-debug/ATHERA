@@ -792,6 +792,17 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
               "letters, digits, hyphen or underscore. Nothing was executed.",
     },
     # ══ الطور B: الإجارةُ والسياج ══
+    # أثرٌ خارجيٌّ لا يُعرف: قد نفّذ النموذجُ وقد لا. ولا يُقال «أخفق»
+    # ولا «لم يُنفَّذ» ولا «نُعيد المحاولة» — الصدقُ أوّلًا.
+    "idempotency.external_result_unknown": {
+        "ar": "قد يكون الطلب السابق وصل إلى النموذج ونُفِّذ، ولا سبيل إلى "
+              "التأكّد. فلن يُعاد تنفيذه تلقائيًّا بالمفتاح نفسه؛ وإن أردت "
+              "تنفيذًا جديدًا فابدأه بمفتاح جديد.",
+        "en": "The previous request may have reached the model and run; we "
+              "cannot confirm either way. It will not be re-executed "
+              "automatically under the same key — start a new request with a "
+              "new key if you want a fresh execution.",
+    },
     "idempotency.in_progress": {
         "ar": "طلبٌ بالمفتاح نفسِه ما زال قيد التنفيذ. أعِد المحاولةَ بعد "
               "قليلٍ بالمفتاح نفسِه — ولم يُنفَّذ شيءٌ مرّتين.",
