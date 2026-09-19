@@ -53,9 +53,27 @@ def test_the_refresh_saves_both_rotated_tokens():
 
 
 def test_the_original_request_is_replayed_exactly_once():
-    """إعادةٌ واحدة — وإعادةٌ بلا حدّ حلقةٌ تقصف الخادم."""
+    """إعادةٌ واحدة — وإعادةٌ بلا حدّ حلقةٌ تقصف الخادم.
+
+    **والشاهدُ هو العَلَمُ لا قائمةُ الوسائط.** كان الفحصُ يطلب النصَّ
+    `requestWithRefresh<T>(path, options, true)` حرفًا بحرف، فوسيطٌ رابعٌ
+    يُضاف — ولو لم يمسّ الإعادةَ بشيء — يُحمِّره على شيفرةٍ صحيحة. ويُقرأ
+    الآن ما يحكم فعلًا: الإعادةُ تمرّر `true` في موضع `alreadyRetried`،
+    والدالّةُ تشترط نفيَه قبل أن تُجدّد. فحلقةٌ لا حدَّ لها تحتاج كسرَ
+    أحدِهما، وكلاهما مرصود.
+    """
     assert "alreadyRetried" in API_CLIENT
-    assert "requestWithRefresh<T>(path, options, true)" in API_CLIENT
+    # ١ — الوسيطُ الثالثُ في نداء الإعادة هو `true`، مهما تبعه.
+    replay = re.search(
+        r"requestWithRefresh<T>\(\s*path\s*,\s*options\s*,\s*(\w+)",
+        API_CLIENT[API_CLIENT.index("response.status === 401"):])
+    assert replay is not None, "لا نداءَ إعادةٍ بعد التجديد"
+    assert replay.group(1) == "true", (
+        f"الإعادةُ تمرّر `{replay.group(1)}` في موضع `alreadyRetried` — "
+        "وبغير `true` تصير الحلقةُ بلا حدّ")
+    # ٢ — والتجديدُ مشروطٌ بنفيه، فلا إعادةَ ثانية.
+    assert "!alreadyRetried" in API_CLIENT, \
+        "التجديدُ لا يشترط أنّ هذه أوّلُ محاولة"
 
 
 def test_token_issuing_paths_are_never_refreshed():

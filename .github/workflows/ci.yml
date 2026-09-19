@@ -334,6 +334,17 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
 
+      # ── سياسةُ مفتاح الإعادة: مصدرٌ يُقرأ، لا خادمٌ يُسأل (STAGE 6) ──
+      #
+      # ثلاثُ رقعاتٍ بلا خادمٍ ولا اعتماد، فتعمل في **كل** PR: جدولُ
+      # السياسة نفسُه، وبنيةُ مواضع النداء، و**المطابقةُ مع الخادم** —
+      # تُشتقّ قائمةُ المسارات المُفتَّحة من `apps/api` في كلّ تشغيلة،
+      # فمسارٌ يُفتَّح هناك ويُنسى هنا يُحمِّر البناء بدل أن يسكت.
+      - name: Idempotency policy mirrors the server (source-derived)
+        run: cd apps/web && npm run test:idem-policy
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://athera-api.fly.dev
+
       # ── ولا رحلةَ قبولٍ على الإنتاج من هنا ──
       #
       # **كانت هنا، وكانت تجعل المشغّلَ دائريًّا.**

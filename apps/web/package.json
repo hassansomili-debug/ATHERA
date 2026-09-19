@@ -28,7 +28,10 @@
     "test:rc0-fullstack": "playwright test tests/rc0-journey-fullstack.spec.ts",
     "test:library-multi-file": "playwright test tests/library-multi-file-upload.spec.ts",
     "test:collaboration": "playwright test tests/collaboration-route-domains.spec.ts tests/rc-t1c-collaboration-journey.spec.ts tests/team-access-state-commit-race.spec.ts --retries=0 --workers=1",
-    "test:team-ux": "playwright test tests/team-ux-clarity.spec.ts --retries=0 --workers=1"
+    "test:team-ux": "playwright test tests/team-ux-clarity.spec.ts --retries=0 --workers=1",
+    "test:idem-policy": "playwright test tests/idempotency-policy.spec.ts tests/idempotency-coverage.spec.ts tests/backend-keyed-routes.spec.ts --retries=0 --workers=1",
+    "test:idem-browser": "playwright test tests/idempotency-adoption.spec.ts tests/idempotency-upload.spec.ts tests/idempotency-model-routes.spec.ts --retries=0 --workers=1",
+    "test:idem-fullstack": "playwright test tests/idempotency-fullstack.spec.ts --retries=0 --workers=1"
   },
   "dependencies": {
     "next": "^16.0.0",
