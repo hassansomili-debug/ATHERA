@@ -363,6 +363,26 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
     # فكان الباحثُ يقرأ `planning.consent_required` حيث ينبغي أن يقرأ سببًا.
     # والقائمةُ مُشتقّةٌ من المصدر لا من ذاكرة: كلُّ رمزٍ يُرفع في مسار
     # التخطيط، ويحرسها فحصٌ يقرأ المصدرَ ويقارن (`test_at_h2c_d3_planning`).
+    # ══ لوحة الإدارة (المرحلة ٩) ══
+    #
+    # **ورمزٌ واحدٌ للحالين**: حسابٌ لا وجود له، وحسابٌ في مساحةٍ أخرى — فلا
+    # يصير هذا البابُ كاشفًا لحساباتٍ خارج المساحة الحاليّة.
+    "admin.user_not_found": {
+        "ar": "لا يوجد هذا المستخدم في مساحة العمل الحاليّة.",
+        "en": "This user is not in the current workspace.",
+    },
+    "admin.invalid_cursor": {
+        "ar": "مؤشّر الصفحة غير صالح. ابدأ من الصفحة الأولى.",
+        "en": "The page cursor is not valid. Start again from the first page.",
+    },
+    "admin.invalid_window": {
+        "ar": "المدّة غير مدعومة. اختر ٧ أو ٣٠ أو ٩٠ يومًا.",
+        "en": "Unsupported window. Choose 7, 30 or 90 days.",
+    },
+    "admin.invalid_view": {
+        "ar": "عرض العمليات غير مدعوم.",
+        "en": "Unsupported operations view.",
+    },
     "planning.consent_required": {
         "ar": "لم تأذن بعدُ باستعمال أدلّة هذا البحث في اقتراح أوراق — أو "
               "تغيّرت الأدلّةُ منذ أذنت. راجعها وامنح الإذن، ثمّ ولّد.",

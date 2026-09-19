@@ -1183,3 +1183,41 @@ h2.nav-label { line-height: 1.6; }
 .field-reveal,
 .field-reveal input { max-inline-size: 100%; }
 .reveal { min-inline-size: 0; }
+
+/* ═══════════════ لوحة الإدارة (المرحلة ٩) — على رموز التصميم القائمة ═══════════════
+ *
+ * لا نظامَ تصميمٍ ثانٍ: البطاقاتُ `.card` و`.grid` و`.metric-value` كما هي،
+ * وما يُضاف هنا جدولٌ كثيفٌ مقروء، وشريطُ أقسام، وأشرطةٌ بالـCSS بدل مكتبة
+ * رسومٍ لا تحتاجها هذه المرحلة. والخصائصُ منطقيّة (`inline`/`block`) فتنقلب
+ * مع العربيّة بلا قاعدةٍ ثانية.
+ */
+.admin-scope {
+  display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline;
+  padding: 10px 14px; margin-block: 0 14px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2); color: var(--fg); font-size: 13.5px;
+}
+.admin-subnav ul { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0 0 18px; }
+.admin-subnav a {
+  display: inline-block; padding: 7px 13px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border); background: var(--surface); color: var(--fg);
+  text-decoration: none; font-size: 13.5px;
+}
+.admin-subnav a[aria-current="page"] { background: var(--fg); color: var(--surface); border-color: var(--fg); }
+.admin-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-block: 0 14px; }
+.admin-filters label { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.admin-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.admin-table th, .admin-table td { padding: 9px 12px; text-align: start; border-block-end: 1px solid var(--border); vertical-align: top; }
+.admin-table th { font-weight: 600; color: var(--muted); background: var(--surface-2); white-space: nowrap; }
+.admin-table tbody tr:last-child td { border-block-end: none; }
+.admin-table td.num, .admin-table th.num { text-align: end; font-variant-numeric: tabular-nums; }
+.admin-bar { display: block; height: 8px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--fg) 14%, transparent); }
+.admin-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--fg); }
+.admin-section { margin-block: 22px; }
+.admin-section h2 { font-size: 16px; margin-block: 0 10px; }
+.admin-pager { display: flex; gap: 8px; margin-block: 12px; }
+.admin-error { display: grid; gap: 6px; justify-items: start; }
+.admin-dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.admin-dl dt { color: var(--muted); font-size: 12.5px; }
+.admin-dl dd { margin: 0; }

@@ -90,6 +90,14 @@ function groups(t: (key: string) => string): NavGroup[] {
       ],
     },
     {
+      // **لوحة الإدارة** (المرحلة ٩) — تظهر لأدوار الإدارة الأربعة وحدها،
+      // وتفتح بياناتِ مساحة العمل الحاليّة وحدها.
+      id: "admin",
+      label: null,
+      adminOnly: true,
+      items: [{ key: "nav.admin", label: t("nav.admin"), segment: "admin" }],
+    },
+    {
       id: "account",
       label: null,
       items: [

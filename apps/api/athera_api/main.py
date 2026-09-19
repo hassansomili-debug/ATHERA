@@ -17,6 +17,7 @@ from .config import get_settings
 from .errors import AtheraError, athera_error_handler
 from .i18n.catalog import all_translations, negotiate_locale, translate
 from .routers import analysis as analysis_router
+from .routers import admin as admin_router
 from .routers import ai as ai_router
 from .routers import audit as audit_router
 from .routers import auth as auth_router
@@ -154,6 +155,8 @@ app.include_router(health_router.router)
 
 app.include_router(auth_router.router)
 app.include_router(tenants_router.router)
+# لوحة الإدارة V1 (المرحلة ٩) — قراءةٌ وحدَها، ومستأجرٌ واحد.
+app.include_router(admin_router.router)
 app.include_router(files_router.router)
 app.include_router(audit_router.router)
 app.include_router(inbox_router.router)
