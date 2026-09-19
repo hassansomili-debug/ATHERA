@@ -2464,9 +2464,19 @@ def test_work_is_committed_before_it_is_scheduled():
             assert not inside, (
                 f"{fn.__name__}: جُدولت المهمّة داخل معاملةٍ مفتوحة — "
                 "فترى المهمّةُ قاعدةً بلا صفوفها")
-            # وقد أُودع شيءٌ قبلها: إيداعٌ صريح، أو خروجُ معاملةٍ تملك نفسَها.
-            settled = [c for c in commits if c < at] + [
-                b.end_lineno for b in blocks if (b.end_lineno or 0) < at]
+            # وقد أُودع شيءٌ قبلها: إيداعٌ صريح، أو خروجُ معاملةٍ تملك
+            # نفسَها، أو **عودةُ متنٍ يملك إيداعَه** (RC-T1-H2-B5).
+            #
+            # فرفعُ الرسالة صار جيلًا واحدًا يغطّي الطفرةَ كلَّها، وتقع
+            # كتابتُها كلُّها في معاملةِ `store_uploaded_file` القصيرة —
+            # وعقدُ ذلك المتن أنّه لا يعود حتى تُودَع (تحرسه حزمةُ B-3).
+            # فعودتُه قبل الجدولة إيداعٌ مثلُها.
+            bodies = [n.lineno for n in ast.walk(tree)
+                      if isinstance(n, ast.Call)
+                      and getattr(n.func, "id", "") == "store_uploaded_file"]
+            settled = ([c for c in commits if c < at]
+                       + [b.end_lineno for b in blocks if (b.end_lineno or 0) < at]
+                       + [b for b in bodies if b < at])
             assert settled, (
                 f"{fn.__name__}: جُدولت المهمة قبل الإيداع")
 

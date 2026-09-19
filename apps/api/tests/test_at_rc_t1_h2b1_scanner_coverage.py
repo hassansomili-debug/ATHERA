@@ -161,10 +161,25 @@ def test_05_the_thesis_upload_holds_no_transaction_across_the_storage_write(scan
         assert not any(b.lineno <= at <= (b.end_lineno or b.lineno) for b in owned), (
             "نداءُ التخزين داخل معاملةٍ مفتوحة — وهو عطبُ RC-T1-H3 بعينه")
 
-    # (ج) والرفعُ يسبق عملَ القاعدة، فلا يُنشأ سجلٌّ لملفٍّ لم يُحفظ.
-    assert owned, "لا معاملةً قصيرةً بعد الرفع — من يكتب سجلَّ الرسالة؟"
-    assert min(uploads) < min(b.lineno for b in owned), (
-        "عملُ القاعدة يسبق الرفع — فقد يُكتب سجلٌّ لملفٍّ لم يُحفظ")
+    # (ج) وعملُ القاعدة يقع **داخل معاملةِ المتنِ القصيرة** (RC-T1-H2-B5).
+    #
+    # **وصار أضيقَ لا أوسع.** كان المعالجُ يفتح معاملتَه بعد الرفع ليكتب
+    # سجلَّ الرسالة؛ فصار جيلٌ واحدٌ يغطّي الطفرةَ كلَّها، وتقع كتابتُها في
+    # معاملةِ الإنهاء نفسِها عبر `finalize_extra` — فالملفُّ والرسالةُ
+    # والمطالبةُ تُودَع معًا أو لا شيء. فالمعالجُ لم يعد يفتح معاملةً أصلًا،
+    # وذاك أقوى في منعِ RC-T1-H3 لا أضعف.
+    hooked = [
+        kw for n in ast.walk(fn) if isinstance(n, ast.Call)
+        and getattr(n.func, "id", "") == "store_uploaded_file"
+        for kw in n.keywords if kw.arg == "finalize_extra"
+    ]
+    assert hooked, (
+        "لا استكمالَ يُمرَّر إلى متن الرفع — فمن يكتب سجلَّ الرسالة، "
+        "وفي أيّ معاملة؟")
+    # وإن فتح المعالجُ معاملةً لأمرٍ آخر فلتكن **بعد** الرفع لا حوله.
+    for block in owned:
+        assert block.lineno > min(uploads), (
+            "عملُ القاعدة يسبق الرفع — فقد يُكتب سجلٌّ لملفٍّ لم يُحفظ")
 
 
 def test_06_the_thesis_upload_is_visible_but_not_an_offender(scan):

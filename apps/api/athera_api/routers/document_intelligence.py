@@ -9,14 +9,23 @@ import datetime as dt
 import logging
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File as FormFile, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File as FormFile,
+    Request,
+    UploadFile,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from ..brain.orchestrator import Orchestrator
-from ..db import tenant_session
+from ..db import tenant_session, tenant_session_maker
 from ..deps import Principal, get_principal, get_session
 from ..errors import AtheraError, NotFound
 from ..models.files import File
@@ -32,7 +41,15 @@ from ..schemas.document_intelligence import (
     ReviewResponse,
     SectionGroup,
 )
-from ..services import audit, consent, memory, parsing, rbac, storage
+from ..services import (
+    audit,
+    consent,
+    idempotency,
+    memory,
+    parsing,
+    rbac,
+    storage,
+)
 from ..services.document_intelligence import fields as catalogue
 from ..services.document_intelligence import pipeline, section_ledger
 from ..services.document_intelligence.contracts import STATUS_EXTRACTED, ExtractionBatch
@@ -44,7 +61,6 @@ from ..providers.gateway import (
 )
 from ..services.thesis import processing
 from ..transaction import TransactionalRoute
-from ..schemas.files import FileResponse
 from .files import store_uploaded_file
 
 logger = logging.getLogger("athera.document_intelligence")
@@ -375,97 +391,125 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID,
 @router.post("/upload", response_model=ExtractionStateResponse,
              status_code=status.HTTP_202_ACCEPTED)
 async def upload_thesis(
+    request: Request,
     background: BackgroundTasks,
     upload: UploadFile = FormFile(...),
     principal: Principal = Depends(get_principal),
-) -> ExtractionStateResponse:
+) -> ExtractionStateResponse | JSONResponse:
     """ارفع الرسالة — ولا تملأ نموذجًا يدويًا (§4).
 
-    **ولا مسار رفع ثانٍ:** يُعاد استعمال `files.upload_file` كما هو، ببثّه
-    المقطعي وتحققه من النوع وسجل ملكيته وتدقيقه. وما يُضاف هنا هو سجل
-    الرسالة وبدء القراءة لا نسخة أخرى من الرفع.
+    **ولا مسار رفع ثانٍ:** يُعاد استعمال متنِ الرفع كما هو، ببثّه المقطعي
+    وتحققه من النوع وسجل ملكيته وتدقيقه. وما يُضاف هنا هو سجل الرسالة وبدء
+    القراءة لا نسخة أخرى من الرفع.
 
-    والملف يُحفظ أولًا ثم يُنشأ السجل ثم تبدأ القراءة — وفشل القراءة لاحقًا
-    **لا يحذف الملف ولا السجل**: القراءة قابلة للإعادة، والرفع ليس كذلك.
+    ## وجيلٌ واحدٌ يغطّي الطفرةَ كلَّها (RC-T1-H2-B5)
+
+    **ولا يُتمّ الجيلُ بعد الملفِّ وحده.** لو أتمّه المتنُ الداخليُّ عند
+    إنشاء الصفّ لأعادت الإعادةُ «تمّ» على طفرةٍ نصفِ واقعة: ملفٌّ موجودٌ
+    بلا رسالةٍ ولا مطالبةِ معالجة. فالإتمامُ يقع بعد أن تكتمل الطفرةُ كلُّها
+    في **معاملةٍ واحدة**: الملفُّ والمنحةُ والإسنادُ والتدقيقُ، ثمّ الرسالةُ
+    ومطالبةُ الجيل، ثمّ الإتمام.
+
+    وبصمةُ الطلب تحمل نيّةَ «رسالة» لا «ملفٌّ في المكتبة»: فمفتاحٌ واحدٌ
+    ببايتاتٍ واحدةٍ لا يخلط البابَين.
+
+    **ولا معاملةَ تمتدّ على بثِّ التخزين** (RC-T1-H3): المتنُ يفتح معاملاتِه
+    قصيرةً حول الشبكة، لا حولها.
     """
-    # **ولا تُمرَّر جلسة.** `files.upload_file` صار يفتح جلسته بنفسه في
-    # `0cdb23a` — رفعُ كتابٍ واحد كان يُجمّد المنتج كلّه، فخرج الرفع من
-    # معاملة الطلب. وبقي هذا النداء يمرّر `session=` إلى دالّةٍ لم تعد
-    # تقبلها، فصار كلُّ رفع رسالةٍ `TypeError` ثمّ ٥٠٠.
-    # **وكلُّ وسيطٍ يُمرَّر صراحةً — ولا يُترك لقيمته الافتراضية.**
-    #
-    # `upload_file` نقطةُ نهايةٍ في FastAPI، وقيمُها الافتراضية شواهدُ
-    # (`Form(...)`) لا قيمٌ حقيقية. فحين تُنادى كدالّةٍ عاديّة يصل
-    # `folder_id` كائنَ `Form` لا `None`، فيمرّ من `if not folder_id`
-    # ويسقط في `uuid.UUID(...)`:
-    #
-    #     AttributeError: 'Form' object has no attribute 'replace'
-    #
-    # وهو عطبٌ ثانٍ كان مختبئًا خلف الأوّل: `session=` كانت تُسقط النداء
-    # قبل أن يبلغ هذا الموضع.
-    # ══ الرفعُ أوّلًا، وبلا معاملةٍ مفتوحةٍ البتّة (RC-T1-H3) ══
-    #
-    # **ولا `Depends(get_session)` على هذا المعالج.** التبعيّةُ تفتح معاملةَ
-    # الطلب **قبل** أن يعمل المتن، ويملكها `TransactionalRoute` إلى ما بعده.
-    # فكانت معاملةُ قاعدةٍ تُمسَك عبر بثِّ الملفّ إلى التخزين مقطعًا مقطعًا
-    # — إلى مئات الميغابايت — وهو بعينه ما يمنعه RC-T1-H3.
-    #
-    # وقد وقع هذا العطبُ مرّةً من قبل وعُولج في `files.upload_file` نفسِه
-    # (`0cdb23a`: «رفعُ كتابٍ واحد كان يُجمّد المنتج»)، فخرج الرفعُ من
-    # معاملة الطلب هناك — **وبقي المتّصلُ به يفتحها من فوقه**. فالعلاجُ
-    # يكتمل عند المُنادي: لا معاملةَ حتى يعود التخزين.
-    #
-    # ولم يُكشف الأمرُ حتى وُسّعت تغطيةُ الماسح في H2-B1: عملياتُ مخزن
-    # الكائنات لم تكن منافذَ مُعلَنة، وتسليمُ الطريقة إلى `run_in_threadpool`
-    # لم يكن حافةً — فكان المسارُ غيرَ مرئيٍّ للحارس.
-    #
-    # **و`request=None` عمدًا**: رفعُ الرسالة خارج نطاق الطور B-3 (موعدُه
-    # B-5)، فيسلك متنُ الرفع مسلكَه القديم حرفيًّا — معرّفٌ عشوائيّ، ولا
-    # حجزَ، وحذفُ الكائن عند سقوط القاعدة كما كان.
-    stored = await store_uploaded_file(
-        request=None, upload=upload, classification="C2",
-        folder_id=None, principal=principal)
-    assert isinstance(stored, FileResponse)  # noqa: S101 — بلا مفتاحٍ لا إعادة
+    claimed: dict[str, processing.ProcessingClaim | None] = {"claim": None}
 
-    # ══ ثمّ معاملةٌ قصيرةٌ تملك نفسَها ══
-    #
-    # و`tenant_session` تُودِع عند خروجٍ سليم (`owns_commit=True`)، فيبقى
-    # الترتيبُ الذي كان: **الحفظُ قبل الجدولة**. ومهامُّ `BackgroundTasks`
-    # تعمل بعد إرسال الجواب وقبل فكِّ التبعيّات، فلو بقي الإيداعُ للطلب
-    # لَرأت المهمّةُ قاعدةً بلا ملفٍّ ولا سجلّ رسالة وانسحبت صامتةً — وهو
-    # ما وقع في الإنتاج حرفيًّا: `file … not visible to tenant …`. وليس
-    # عيبَ عزلٍ ولا صلاحيّة: الصفُّ لم يكن قد وُجد بعد.
-    #
-    # وسياقُ المستأجر والفاعل هو هو: `tenant_session` تضبط `app.tenant_id`
-    # و`app.actor_id` محلّيًّا بالمعاملة كما تفعل التبعيّة.
-    async with tenant_session(principal.tenant_id, principal.user_id) as session:
+    async def _register(session, record):
+        """يُتمّ الطفرةَ: رسالةٌ ومطالبةُ جيلٍ وتدقيق — **في معاملة الملفّ**."""
         thesis, created = await pipeline.ensure_thesis_for_file(
-            session, tenant_id=principal.tenant_id, file_id=stored.id,
-        )
+            session, tenant_id=principal.tenant_id, file_id=record.id)
         # حالُ الرسالة تُحجز للمعالجة قبل الجدولة (ترحيل 0027) — فلا تبقى
         # `uploaded` بينما مهمّةٌ تعمل عليها، ولا تُجدوَل تشغيلتان معًا.
-        claim = await _claim(session, principal, thesis.id)
+        try:
+            claimed["claim"] = await processing.claim_generation(
+                session, tenant_id=principal.tenant_id, thesis_id=thesis.id)
+        except processing.ProcessingConflict:
+            # رفعٌ مُعادٌ على رسالةٍ تعمل الآن: لا تُجدوَل ثانية.
+            claimed["claim"] = None
         await audit.record(
             session, tenant_id=principal.tenant_id,
             action="thesis.auto_registered" if created else "thesis.upload_reused",
             object_type="thesis", object_id=thesis.id, actor_user_id=principal.user_id,
-            state_after={"file_id": str(stored.id), "created": created},
-            reason="processing record created by upload; title and degree stay NULL until extracted",
+            state_after={"file_id": str(record.id), "created": created},
+            reason="processing record created by upload; title and degree stay NULL "
+                   "until extracted",
             request_id=principal.request_id,
         )
-        thesis_id = thesis.id
-    # ← أُودعت المعاملةُ هنا، فترى المهمّةُ الملفَّ والسجلَّ معًا.
+        return ExtractionStateResponse(
+            thesis_id=thesis.id, file_id=record.id, status=processing.QUEUED,
+            chunks=0, candidates=0,
+            message=_t(principal.locale, "تم رفع الرسالة · في انتظار الدور",
+                       "Thesis uploaded · queued for reading"),
+        )
 
-    background.add_task(_process, principal.tenant_id, principal.user_id,
-                        claim, principal.locale)
+    # **نيّةُ الطلبِ في بصمته**: رفعُ رسالةٍ غيرُ رفعِ ملفٍّ في المكتبة،
+    # فمفتاحٌ واحدٌ ببايتاتٍ واحدةٍ لا يخلط البابَين.
+    stored = await store_uploaded_file(
+        request=request, upload=upload, classification="C2",
+        folder_id=None, principal=principal,
+        fingerprint_extra={"intent": "thesis.upload", "locale": principal.locale},
+        finalize_extra=_register,
+        ttl=idempotency.LEASE_STORAGE,
+    )
+
+    if isinstance(stored, JSONResponse):
+        # ══ إعادةٌ مخزونة — **ولا تُعاد قبل فحصِ الحقِّ الحاضرِ والاستئناف** ══
+        return await _replayed_upload(request, stored, principal, background)
+
+    # ← أُودعت المعاملةُ هنا، فترى المهمّةُ الملفَّ والسجلَّ معًا.
+    if claimed["claim"] is not None:
+        background.add_task(_process, principal.tenant_id, principal.user_id,
+                            claimed["claim"], principal.locale)
     # **و«جارٍ قراءة الملف» لم تكن قد وقعت بعد.** المهمّة لم تبدأ حين تُرسَل
     # هذه الاستجابة؛ والحال الصادقة `queued`، وتصير `parsing` حين تصير.
-    return ExtractionStateResponse(
-        thesis_id=thesis_id, file_id=stored.id, status=processing.QUEUED,
-        chunks=0, candidates=0,
-        message=_t(principal.locale, "تم رفع الرسالة · في انتظار الدور",
-                   "Thesis uploaded · queued for reading"),
-    )
+    return stored
+
+
+async def _replayed_upload(request, stored, principal, background):
+    """إعادةُ رفعٍ مخزونة — **والحقُّ الحاضرُ يُفحص قبل أن يُعاد شيء**.
+
+    وثلاثةُ أشياء تقع هنا، بترتيبها:
+
+    ‏١ **التفويضُ الحاضر**: حيازةُ مفتاحٍ قديمٍ ليست حقَّ وصول. فإن سُحب
+      الوصولُ عن الملفّ رُدّ الطلبُ ولم يُكشف جوابٌ قديم.
+    ‏٢ **حالُ الجيل**: فجوابٌ مخزونٌ يقول «في انتظار الدور» لا يُثبت أنّ
+      المهمّةَ عملت — `BackgroundTasks` ليست طابورًا دائمًا. فإن ضاعت
+      الجدولةُ وصارت المحاولةُ مهجورةً، تُستعاد **بالجيل نفسِه** ويُجدوَل
+      عاملٌ واحد.
+    ‏٣ ثمّ يُعاد الجوابُ الأصليُّ كما كان.
+    """
+    import json as _json  # noqa: PLC0415
+
+    body = _json.loads(bytes(stored.body).decode("utf-8"))
+    file_id = body.get("file_id")
+    thesis_id = body.get("thesis_id")
+    if not file_id or not thesis_id:
+        return stored
+
+    maker = tenant_session_maker(principal.tenant_id, principal.user_id)
+    claim = None
+    async with maker() as session:
+        # ① الحقُّ الحاضرُ على الملفّ — وإلّا فلا إعادةَ ولا استئناف.
+        await rbac.require_object_action(
+            session, principal.tenant_id, principal.user_id, "file",
+            uuid.UUID(file_id), "read")
+        # ② محاولةٌ مهجورةٌ تُستعاد بجيلها، وحيّةٌ لا تُمَسّ.
+        if await processing.is_stale(session, tenant_id=principal.tenant_id,
+                                     thesis_id=uuid.UUID(thesis_id)):
+            try:
+                claim = await processing.claim_generation(
+                    session, tenant_id=principal.tenant_id,
+                    thesis_id=uuid.UUID(thesis_id))
+            except processing.ProcessingConflict:
+                claim = None
+    if claim is not None:
+        background.add_task(_process, principal.tenant_id, principal.user_id,
+                            claim, principal.locale)
+    return stored
 
 
 @router.post("/process-file/{file_id}", response_model=ExtractionStateResponse,
