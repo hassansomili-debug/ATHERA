@@ -20,12 +20,18 @@ from typing import Final
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...errors import AtheraError, NotFound
 from ...models.files import File
 from ...models.research import DocumentChunk, ExtractionRun, FactCandidate
 from ...models.thesis import Thesis
 from ..extraction.base import quote_is_grounded
 from ..parsing import NoTextLayer, UnsupportedDocument, parse
 from ..thesis import processing
+from ..thesis.processing import (  # noqa: F401 — يُعاد تصديرُه للمُنادين
+    PROCESSING_NAMESPACE,
+    run_id_for,
+)
+from . import section_ledger
 from .contracts import STATUS_EXTRACTED, STATUS_NOT_FOUND, ExtractionBatch
 from .deterministic import extract as deterministic_extract
 from .fields import MODEL_FIELDS, Section, memory_category_for
@@ -193,12 +199,19 @@ async def prepare(
     run_id: uuid.UUID | None = None,
     external_allowed: bool = True,
     consent_state: str = "granted",
+    holder: processing.ClaimHolder | None = None,
 ) -> Prepared:
     """كل ما لا يحتاج شبكة — في معاملة واحدة قصيرة تُودَع فورًا.
 
     التفكيك، والمقاطع بمواضعها، والاستخراج الحتمي. وبعدها تُغلق المعاملة
     فلا يبقى اتصالٌ مفتوح أثناء انتظار المزوّد.
     """
+    # **والتشغيلةُ تُستعاد بمعرّفها الثابت، ولا تُخلَق ثانيةً** (H2-B5).
+    #
+    # فمعرّفٌ عشوائيٌّ عند كلّ بداية يعني أنّ استئنافَ محاولةٍ مهجورةٍ يفتح
+    # تشغيلةً ثانيةً للعمل الواحد: عددان في القاعدة، ومرشّحاتٌ تُنسب إلى
+    # غير التي بدأتها. و`run_id_for` يعطي الهُويّةَ نفسَها ما دامت المحاولةُ
+    # هي هي — فالإدراجُ محاولةٌ، والموجودُ يُعاد استعمالُه.
     run = None
     if run_id is not None:
         run = (
@@ -207,6 +220,7 @@ async def prepare(
         ).scalar_one_or_none()
     if run is None:
         run = ExtractionRun(
+            id=run_id,
             tenant_id=tenant_id, file_id=file_record.id, extractor="document_intelligence",
             status=Status.PARSING.value, chunks_parsed=0, candidates_proposed=0,
             candidates_rejected_unquoted=0, started_at=dt.datetime.now(dt.UTC),
@@ -217,7 +231,8 @@ async def prepare(
     # **حالُ الرسالة تُثبَّت مع كل انتقالٍ حقيقي** (ترحيل 0027). وهي عمودٌ
     # على `theses` لا اشتقاقٌ من `extraction_runs`: حالُ التشغيلة تصف
     # تشغيلة، وإعادةُ القراءة تُنشئ صفًّا جديدًا فتقفز الحال إلى الوراء.
-    await processing.mark(session, tenant_id=tenant_id, file_id=file_record.id,
+    await (holder or processing.ClaimHolder()).advance(
+                          session, tenant_id=tenant_id, file_id=file_record.id,
                           state=processing.PARSING)
 
     # ── التفكيك ──
@@ -230,7 +245,7 @@ async def prepare(
         run.status = Status.PARSE_FAILED.value
         run.error = str(exc)[:500]
         run.finished_at = dt.datetime.now(dt.UTC)
-        await processing.mark(
+        await (holder or processing.ClaimHolder()).advance(
             session, tenant_id=tenant_id, file_id=file_record.id,
             state=processing.TEXT_LAYER_MISSING, failure_code="text_layer_missing",
             failure_detail=str(exc)[:500], text_layer=processing.TEXT_LAYER_ABSENT)
@@ -240,7 +255,7 @@ async def prepare(
         run.status = Status.PARSE_FAILED.value
         run.error = str(exc)[:500]
         run.finished_at = dt.datetime.now(dt.UTC)
-        await processing.mark(
+        await (holder or processing.ClaimHolder()).advance(
             session, tenant_id=tenant_id, file_id=file_record.id,
             state=processing.FAILED, failure_code="unsupported_document",
             failure_detail=f"{type(exc).__name__}: {exc}"[:500])
@@ -250,15 +265,37 @@ async def prepare(
     run.chunks_parsed = len(rows)
     run.status = Status.EXTRACTING.value if external_allowed else Status.PARSED.value
     # قُرئ نصٌّ فعلًا — فتُعلَن الطبقة موجودة. و«لم تُفحص» ليست «موجودة».
-    await processing.mark(session, tenant_id=tenant_id, file_id=file_record.id,
+    await (holder or processing.ClaimHolder()).advance(
+                          session, tenant_id=tenant_id, file_id=file_record.id,
                           state=processing.EXTRACTING,
                           text_layer=processing.TEXT_LAYER_PRESENT)
     views = _views(rows)
     excluded = excluded_report(views)
 
     # ── الحتمي أولًا ──
+    #
+    # **ولا يُدرَج مرّتين في التشغيلةِ الواحدة** (H2-B5). فاستئنافُ محاولةٍ
+    # بعد سقوطٍ يُعيد تحضيرَها، والاستخراجُ الحتميُّ حتميٌّ فعلًا — يُنتج
+    # القيمَ نفسَها — فيتضاعف المرشّحُ على الشاشة ويُطلب من الباحثِ أن
+    # يقرّر في الأمر مرّتين.
+    #
+    # والهُويّةُ العمليّةُ للمرشّحِ الحتميّ: تشغيلتُه وحقلُه وموضعُه. وتُقرأ
+    # الموجودةُ أوّلًا ثمّ يُدرَج الغائبُ وحده — **ولا يُمَسّ قرارُ إنسانٍ**:
+    # ما قرّره الباحثُ يبقى كما هو، ولا يُحذف ولا يُكتب فوقه.
+    existing_marks = {
+        (row[0], row[1])
+        for row in (await session.execute(
+            select(FactCandidate.field_key, FactCandidate.locator)
+            .where(FactCandidate.tenant_id == tenant_id,
+                   FactCandidate.extraction_run_id == run.id)
+        )).all()
+    }
+
     candidates = 0
     for value in deterministic_extract(views, filename=file_record.original_filename):
+        if (value.field_key, value.locator) in existing_marks:
+            continue
+        existing_marks.add((value.field_key, value.locator))
         session.add(FactCandidate(
             tenant_id=tenant_id, extraction_run_id=run.id, file_id=file_record.id,
             chunk_id=uuid.UUID(value.chunk_id) if value.chunk_id else rows[0].id,
@@ -285,7 +322,7 @@ async def prepare(
         # **ورفضُ الإرسال ليس فشلًا، ولا هو انتظار.** من قرّر ألّا يُرسل
         # رسالته انتهى الخطُّ عنده بمرشّحاتٍ محلّية يراجعها؛ ومن لم يقرّر
         # بعدُ ينتظر قراره. وحالان لا واحدة.
-        await processing.mark(
+        await (holder or processing.ClaimHolder()).advance(
             session, tenant_id=tenant_id, file_id=file_record.id,
             state=(processing.READY_FOR_REVIEW if consent_state == "declined"
                    else processing.AWAITING_CONSENT))
@@ -387,22 +424,30 @@ async def absorb(
 
 async def finalize(
     session: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID,
-    failed: list[str],
+    failed: list[str], holder: processing.ClaimHolder | None = None,
+    settle_state: str = processing.READY_FOR_REVIEW,
+    failure_code: str | None = None, failure_detail: str | None = None,
 ) -> ExtractionRun:
     """إغلاق التشغيلة — معاملة قصيرة أخيرة."""
     run = (
         await session.execute(select(ExtractionRun).where(
             ExtractionRun.id == run_id, ExtractionRun.tenant_id == tenant_id))
     ).scalar_one()
-    run.status = Status.AWAITING_REVIEW.value
+    run.status = (Status.EXTRACTION_FAILED.value if failure_code
+                  else Status.AWAITING_REVIEW.value)
     run.finished_at = dt.datetime.now(dt.UTC)
-    await processing.mark(session, tenant_id=tenant_id, file_id=run.file_id,
-                          state=processing.READY_FOR_REVIEW)
+    await (holder or processing.ClaimHolder()).advance(
+        session, tenant_id=tenant_id, file_id=run.file_id, state=settle_state,
+        failure_code=failure_code, failure_detail=failure_detail)
     if failed:
         # فشل قسم لا يُسقط ما نجح: الأقسام الأخرى تبقى، ويُبلَّغ عن الفاشل
         # باسمه (§29). فرسالةٌ استُخرج منها ستة أقسام من سبعة أنفع من لا شيء.
         run.error = ("partial: " + "; ".join(failed))[:500]
     return run
+
+
+class _SectionAmbiguous(Exception):
+    """عُبِر حدُّ المزوّدِ ثمّ انقطع — **ولا يُقال أخفق ولا لم يُنفَّذ**."""
 
 
 async def run_extraction(
@@ -417,6 +462,14 @@ async def run_extraction(
     run_id: uuid.UUID | None = None,
     external_allowed: bool = True,
     consent_state: str = "granted",
+    claim: processing.ProcessingClaim | None = None,
+    holder: processing.ClaimHolder | None = None,
+    subject_id: uuid.UUID | None = None,
+    ledger_maker=None,
+    checksum_sha256: str | None = None,
+    provider_name: str = "unknown",
+    model_name: str | None = None,
+    capability: str | None = None,
 ) -> PipelineResult:
     """التشغيلة كاملة — **ولا معاملة مفتوحة أثناء أي نداء خارجي**.
 
@@ -432,6 +485,19 @@ async def run_extraction(
     و`session_maker` دالةٌ تُنشئ جلسةً جديدة عند كل نداء — لا جلسةٌ تُمرَّر:
     الجلسة الممرَّرة تعني معاملةً حيّة، وهي ما نتجنّب.
     """
+    # **جلسةُ السِّجلِّ الداخليِّ تحمل سياقَ الفاعلِ التقنيِّ الثابت.**
+    # `idempotency_records` وحدها محكومةٌ بالفاعل في هذا الخطّ؛ وما عداها
+    # بالمستأجر. فإن لم يُمرَّر شيءٌ بقي السلوكُ كما كان حرفيًّا.
+    ledger_maker = ledger_maker or session_maker
+    subject_id = subject_id if subject_id is not None else actor_user_id
+    # ══ حاملٌ **واحدٌ** للعاملِ الواحد (RC-T1-H2-B5) ══
+    #
+    # **ولا يُنشأ هنا حاملٌ ثانٍ.** فالسياجُ يتقدّم مع كلِّ انتقال؛ ولو كان
+    # للخطِّ حاملُه ولصاحبِه حاملٌ آخرُ لبقي الخارجيُّ يحمل أوّلَ سياجٍ
+    # كُتب — فيُخطئ في الاتجاهين: يظنّ نفسَه بائتًا وهو الحاضر، أو يكتب
+    # بسياجٍ لم يعد له. فيُمرَّر الحاملُ من المُنادي ويُشارَك.
+    holder = holder if holder is not None else processing.ClaimHolder(claim)
+
     async with session_maker() as session:
         record = (
             await session.execute(select(File).where(
@@ -441,6 +507,7 @@ async def run_extraction(
             session, tenant_id=tenant_id, actor_user_id=actor_user_id,
             file_record=record, data=data, run_id=run_id,
             external_allowed=external_allowed, consent_state=consent_state,
+            holder=holder,
         )
 
     if prepared.status is Status.PARSE_FAILED:
@@ -450,12 +517,74 @@ async def run_extraction(
         return PipelineResult(prepared.run_id, prepared.status, prepared.chunks,
                               prepared.candidates, prepared.excluded, [], None, ())
 
-    # ── الأقسام: نداءٌ بلا معاملة، ثم حفظٌ في معاملة قصيرة ──
+    # ── الأقسام: لكلٍّ جيلُ تنفيذٍ خاصٌّ به (RC-T1-H2-B5) ──
+    #
+    # الشكل لكلِّ قسم:
+    #
+    #   تحضيرٌ محلّيّ → بوّابةُ الجيل → تفويضُ المزوّد → **وسمُ العبور يُودَع**
+    #   → نداءُ المزوّد → معاملةٌ واحدةٌ تحفظ المرشّحاتِ وتُثبّت تمامَ القسم.
+    #
+    # والوسمُ يُودَع في معاملةٍ تُغلق **قبل** النداء، فسقوطُ العمليّةِ أثناء
+    # الانتظار يترك أثرًا يقول «قد نُفِّذ ولا نعلم» — فلا يُعاد النداءُ تحت
+    # الجيل نفسِه.
     plans = plan_sections(prepared.views)
     failed: list[str] = []
     candidates = prepared.candidates
     attempted: set[str] = set()
+    unresolved: list[str] = []
+
+    # **والسِّجلُّ يخصّ جيلَ معالجة.** فبلا مطالبةٍ لا جيلَ يُفنَّد، ويبقى
+    # المسلكُ القديمُ حرفيًّا — وهو ما تسلكه فحوصُ الوحدةِ للخطِّ نفسِه.
+    ledgered = claim is not None
+
     for plan in plans:
+        if not ledgered:
+            try:
+                result = await model_call(
+                    question=plan.prompt,
+                    schema=ExtractionBatch.model_json_schema(),
+                    classification="C2",
+                    locale=locale,
+                )
+                batch = ExtractionBatch.model_validate(result)
+            except Exception as exc:  # noqa: BLE001 — قسم يسقط ولا يُسقط غيره
+                failed.append(f"{plan.section.value}:{type(exc).__name__}")
+                continue
+            async with session_maker() as session:
+                accepted, _rejected, missing = await absorb(
+                    session, tenant_id=tenant_id, run_id=prepared.run_id,
+                    file_id=prepared.file_id, plan=plan, batch=batch,
+                )
+            candidates += accepted
+            attempted |= missing
+            continue
+
+        fingerprint = section_ledger.section_fingerprint(
+            run_id=prepared.run_id, section=plan.section.value,
+            checksum_sha256=checksum_sha256, prompt=plan.prompt,
+            chunks=section_ledger.chunk_identities(plan.chunks),
+            field_keys=plan.field_keys, locale=locale,
+            provider=provider_name, model=model_name, capability=capability)
+
+        async with ledger_maker() as session:
+            gate = await section_ledger.open_section(
+                session, tenant_id=tenant_id, subject_id=subject_id,
+                run_id=prepared.run_id, section=plan.section.value,
+                fingerprint=fingerprint)
+
+        if gate.outcome == "completed":
+            # تمّ من قبلُ وأُودعت مرشّحاتُه: **صفرُ نداءٍ وصفرُ إدراج**.
+            continue
+        if gate.outcome == "unknown":
+            # عُبِر الحدُّ ولم يُعرف الأثر: لا يُنادى المزوّدُ ثانيةً تحت
+            # هذا الجيل. ومحاولةٌ جديدةٌ مقصودةٌ هي البابُ الوحيد.
+            unresolved.append(plan.section.value)
+            continue
+        if gate.lease is None:
+            # قائمٌ لعاملٍ آخر، أو تعارضُ معنًى علميّ — ولا نداءَ في الحالين.
+            unresolved.append(plan.section.value)
+            continue
+
         try:
             # **لا جلسة هنا.** ولو بقيت معاملة مفتوحة لعاد العطب نفسه.
             result = await model_call(
@@ -464,24 +593,60 @@ async def run_extraction(
                 # §7 — محتوى بحثي غير منشور: C2، والبوابة تحكم الإرسال.
                 classification="C2",
                 locale=locale,
+                section=plan.section.value,
+                lease=gate.lease,
             )
             batch = ExtractionBatch.model_validate(result)
+        except _SectionAmbiguous:
+            # عُبِر الحدُّ ثمّ انقطع: أثرٌ لا يُعرف، ولا يُسمّى إخفاقَ مزوّد.
+            unresolved.append(plan.section.value)
+            continue
         except Exception as exc:  # noqa: BLE001 — قسم يسقط ولا يُسقط غيره
             failed.append(f"{plan.section.value}:{type(exc).__name__}")
+            async with ledger_maker() as session:
+                await section_ledger.fail_section_pre_external(
+                    session, gate.lease, reason=f"pre_external:{type(exc).__name__}")
             continue
 
-        async with session_maker() as session:
-            accepted, _rejected, missing = await absorb(
+        # ══ معاملةٌ واحدة: السياجُ، والمرشّحاتُ، وتمامُ القسم ══
+        #
+        # **ولا يُثبَّت «تمّ» قبل أن تدوم المرشّحات.** لو سبقها لرأى
+        # الاستئنافُ قسمًا تامًّا بلا أثرٍ فتخطّاه، فضاع عملٌ دُفع ثمنُه.
+        async with ledger_maker() as session:
+            await holder.hold(session, tenant_id=tenant_id)
+            accepted, rejected, missing = await absorb(
                 session, tenant_id=tenant_id, run_id=prepared.run_id,
                 file_id=prepared.file_id, plan=plan, batch=batch,
             )
+            await section_ledger.settle_section(
+                session, gate.lease, accepted=accepted, rejected=rejected)
         candidates += accepted
         attempted |= missing
 
     async with session_maker() as session:
-        run = await finalize(session, tenant_id=tenant_id,
-                             run_id=prepared.run_id, failed=failed)
+        run = await finalize(
+            session, tenant_id=tenant_id, run_id=prepared.run_id,
+            failed=failed + [f"{name}:external_result_unknown"
+                             for name in unresolved],
+            holder=holder,
+            # **ولا تُرفع الحالُ إلى «جاهزة» وقسمٌ لا يُعرف أثرُه** — وتُكتب
+            # في العبارة نفسِها، فلا لحظةَ تقول غيرَ الحقّ.
+            settle_state=(processing.FAILED if unresolved
+                          else processing.READY_FOR_REVIEW),
+            failure_code=("extraction_failed" if unresolved else None),
+            failure_detail=("extraction could not be completed: the external "
+                            "result for one or more sections is unknown"
+                            if unresolved else None))
         status = Status(run.status)
+
+    # ══ ولا يُقال «اكتمل» وقسمٌ لا يُعرف أثرُه (RC-T1-H2-B5) ══
+    #
+    # فقسمٌ عُبِر حدُّه ثمّ انقطع قد يكون نُفِّذ وقد لا — ولا سبيلَ إلى
+    # الجزم. ورفعُ الحال إلى «جاهزة لمراجعتك» يقول للباحث إنّ القراءةَ تمّت،
+    # وهي لم تتمّ. فتُقال الحقيقةُ بمفرداتِ الحالِ القائمة، ويبقى له أن
+    # يبدأ محاولةً جديدةً مقصودة.
+    if unresolved:
+        status = Status.EXTRACTION_FAILED
 
     # ── التنقيب التلقائيّ — بعد أن يُحفظ الاستخراج، لا معه ──
     #
@@ -496,7 +661,10 @@ async def run_extraction(
             file_id=prepared.file_id)
 
     return PipelineResult(prepared.run_id, status, prepared.chunks, candidates,
-                          prepared.excluded, failed, None, tuple(sorted(attempted)))
+                          prepared.excluded,
+                          failed + [f"{name}:external_result_unknown"
+                                    for name in unresolved],
+                          None, tuple(sorted(attempted)))
 
 
 async def _mine_after_extraction(
@@ -580,17 +748,41 @@ async def ensure_thesis_for_file(
 ) -> tuple[Thesis, bool]:
     """سجل الرسالة — يُنشأ مرة واحدة لكل ملف (§4، §5).
 
-    **والتكرار يُمنع بالبحث لا بقيد جديد:** `theses.file_id` قائم، فالاستعلام
-    عنه قبل الإنشاء يجعل إعادة المحاولة آمنة بلا ترحيل إضافي.
-
     ويُنشأ بلا عنوان ولا درجة: `NULL` تعني «لم يُستخرَج بعد» — واسم الملف
     عنوانًا أو درجةً مخمَّنة اختلاقٌ يمنعه §11.
+
+    ## والتكرارُ يُمنع بالتسلسلِ في القاعدة، لا بالبحثِ وحده (RC-T1-H2-B5)
+
+    **وكان التعليقُ يدّعي أنّ البحثَ قبل الإنشاء يكفي.** لا يكفي: طلبان
+    متزامنان على الملفّ نفسِه يقرآن «لا شيء» معًا فيُدرجان صفَّين، و
+    `theses.file_id` **بلا قيدِ تفرّد** — فُحص ذلك في القاعدة الحيّة. فرسالتان
+    لملفٍّ واحد: بطاقتان في الشاشة، وحالان تتقدّمان على التوازي، ومرشّحاتٌ
+    تنقسم بينهما.
+
+    فيُقفَل صفُّ **الملفّ** أوّلًا (`SELECT … FOR UPDATE`). والملفُّ هو
+    المرساةُ الصحيحة: هو المفتاحُ الذي نتفرّد عليه، وهو قائمٌ قبل الرسالة.
+    فالثاني ينتظر الأوّلَ ثمّ يقرأ ما أودعه — فيجد رسالةً ويعيدها.
     """
+    # **والقفلُ على صفٍّ قائمٍ لا على الرسالةِ المنشودة.** قفلُ صفٍّ غيرِ
+    # موجودٍ لا يمنع إدراجَ غيره؛ وقفلُ الملفِّ يُسلسِل كلَّ من يقصده.
+    anchored = (await session.execute(
+        select(File.id).where(File.id == file_id, File.tenant_id == tenant_id)
+        .with_for_update()
+    )).scalar_one_or_none()
+    if anchored is None:
+        raise NotFound("file.not_found")
+
     existing = (
-        await session.execute(select(Thesis).where(Thesis.file_id == file_id))
-    ).scalar_one_or_none()
-    if existing is not None:
-        return existing, False
+        await session.execute(select(Thesis).where(Thesis.file_id == file_id)
+                              .order_by(Thesis.created_at.asc()))
+    ).scalars().all()
+    if len(existing) > 1:
+        # **ولا تُخمَّن الصحيحةُ من بين مكرَّرتَين تاريخيّتَين.** ثالثةٌ لا
+        # تُصنع، والطلبُ يُردّ بحقيقته ليُعالَج بيدٍ واعية.
+        raise AtheraError("thesis.duplicate_for_file", status_code=409,
+                          file_id=str(file_id), count=len(existing))
+    if existing:
+        return existing[0], False
 
     thesis = Thesis(tenant_id=tenant_id, file_id=file_id, title_ar=None, degree=None)
     session.add(thesis)

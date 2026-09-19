@@ -642,6 +642,9 @@ async def store_uploaded_file(
     classification: str,
     folder_id: str | None,
     principal: Principal,
+    fingerprint_extra: dict | None = None,
+    finalize_extra=None,
+    ttl=None,
 ) -> FileResponse | JSONResponse:
     """متنُ الرفع — و`request=None` تعني **المسلكَ القديم حرفيًّا**.
 
@@ -727,8 +730,12 @@ async def store_uploaded_file(
                     "folder_id": str(target_folder) if target_folder else None,
                     "size_bytes": size,
                     "checksum_sha256": checksum,
+                    # **وزياداتُ المُنادي جزءٌ من معنى الطلب** (H2-B5):
+                    # رفعُ رسالةٍ ليس رفعَ ملفٍّ في المكتبة ولو تطابقت
+                    # البايتات — فالمفتاحُ الواحد لا يخلط النيّتَين.
+                    **(fingerprint_extra or {}),
                 },
-                ttl=idempotency.LEASE_STORAGE)
+                ttl=ttl or idempotency.LEASE_STORAGE)
         if guard.answer is not None:
             # إعادةٌ أو «قائمٌ لغيرك» أو تعارض — **وصفرُ كتابةٍ في المخزن**.
             return guard.answer
@@ -793,6 +800,15 @@ async def store_uploaded_file(
             )).scalar_one_or_none()
             if existing is not None:
                 record = existing
+                # **واستكمالُ المُنادي يقع هنا أيضًا** (H2-B5): صفُّ الملفّ
+                # قد يكون أُودع ثمّ سقط الإنهاءُ قبل بقيّة الطفرة، فيُتمّها
+                # الاستيلاءُ التالي في المعاملة نفسِها.
+                if finalize_extra is not None:
+                    answer = await finalize_extra(session, record)
+                    await idempotency.settle_leased(
+                        session, guard, status=status.HTTP_202_ACCEPTED,
+                        body=jsonable_encoder(answer))
+                    return answer
                 await idempotency.settle_leased(
                     session, guard, status=status.HTTP_201_CREATED,
                     body=jsonable_encoder(
@@ -843,13 +859,24 @@ async def store_uploaded_file(
                 request_id=principal.request_id,
                 ip_address=principal.ip_address,
             )
-            answer = FileResponse.model_validate(record, from_attributes=True)
-            # **الإنهاءُ في المعاملة نفسِها**: الصفُّ والمنحةُ والإسنادُ
-            # والتدقيقُ والإتمامُ معًا أو لا شيء. وعاملٌ بائتٌ يرفع
-            # `LeaseSuperseded` هنا فتُرجَع المعاملةُ كلُّها.
-            await idempotency.settle_leased(
-                session, guard, status=status.HTTP_201_CREATED,
-                body=jsonable_encoder(answer))
+            # ══ واستكمالُ المُنادي في المعاملة نفسِها (RC-T1-H2-B5) ══
+            #
+            # فرفعُ الرسالة طفرةٌ واحدةٌ في معناها: ملفٌّ **ورسالةٌ ومطالبةُ
+            # جيل**. ولو أُتمّ الجيلُ بعد الملفِّ وحده لأعادت الإعادةُ
+            # «تمّ» على طفرةٍ نصفِ واقعة — ملفٌّ بلا رسالةٍ ولا معالجة.
+            if finalize_extra is not None:
+                answer = await finalize_extra(session, record)
+                await idempotency.settle_leased(
+                    session, guard, status=status.HTTP_202_ACCEPTED,
+                    body=jsonable_encoder(answer))
+            else:
+                answer = FileResponse.model_validate(record, from_attributes=True)
+                # **الإنهاءُ في المعاملة نفسِها**: الصفُّ والمنحةُ والإسنادُ
+                # والتدقيقُ والإتمامُ معًا أو لا شيء. وعاملٌ بائتٌ يرفع
+                # `LeaseSuperseded` هنا فتُرجَع المعاملةُ كلُّها.
+                await idempotency.settle_leased(
+                    session, guard, status=status.HTTP_201_CREATED,
+                    body=jsonable_encoder(answer))
     except Exception:
         # ══ ولمَ لا يُحذف الكائنُ المُمفتَح (RC-T1-H2-B3) ══
         #

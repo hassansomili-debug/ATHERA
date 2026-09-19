@@ -33,7 +33,9 @@ import datetime as dt
 import uuid
 from typing import Final
 
-from sqlalchemy import select, text, update
+from dataclasses import dataclass
+
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.thesis import Thesis
@@ -515,3 +517,411 @@ async def settle_after_legacy_parse(
         {"settled": READY_FOR_REVIEW, "now": _now(), "present": TEXT_LAYER_PRESENT,
          "thesis_id": thesis_id, "tenant_id": tenant_id},
     )
+
+# ═════════════════ ٦. جيلُ المعالجة وسياجُه (RC-T1-H2-B5) ═════════════════
+#
+# **العطبُ الذي يُغلق هنا عطبُ استئنافٍ لا عطبُ تزامن.** `claim_for_processing`
+# يمنع بدايتَين متزامنتَين — وذاك صحيح — لكنّه يرفض كلَّ حالٍ جاريةٍ **إلى
+# الأبد**. ومهامُّ `BackgroundTasks` تعيش داخل عملية الـAPI: إعادةُ نشرٍ أو
+# سقوطُ آلةٍ أثناء العمل تترك الصفَّ عند `queued` أو `parsing` أو `extracting`
+# ولا يستأنفه أحد، ولا يقبل النظامُ طلبًا جديدًا عليه. فالرسالةُ تعلق أبدًا
+# والشاشةُ تقول «جارٍ» ولا شيء يجري — وهو الكذبُ بالانتظار في أسوأ صوره.
+#
+# **ولا طابورَ دائمٍ في هذه المنظومة، ولا يُخترع لأجل هذا الطور.** فالاستئنافُ
+# **صريحٌ ومنسَّقٌ بالقاعدة**: طلبٌ مأذونٌ لاحق يستطيع أن يستعيد محاولةً
+# مهجورة، والعاملُ القديمُ يُسيَّج فلا يكتب بعد أن استُعيدت منه.
+
+
+#: عتبةُ الهجران — **مشتقّةٌ من زمنِ العملِ نفسِه لا رقمٌ يُختار**.
+#:
+#: أسوأُ تشغيلةٍ مشروعة: جلبُ الملفّ من التخزين (`LEASE_STORAGE`) ثمّ سبعةُ
+#: أقسامٍ كلٌّ منها نداءُ نموذجٍ محدودٌ بـ`LEASE_MODEL` — وهي المهلةُ التي
+#: يشترط الطور B-4 أن تفوق مهلةَ المزوّد نفسِه. فما دون ذلك ما زال يعمل
+#: احتمالًا، وما فوقه بهامشٍ لم يعد أحدٌ يعمل عليه.
+#:
+#: وتُحسَب من الثوابت لا تُكتب رقمًا، فلا تنفصل عنها إن تغيّرت.
+def _stale_after() -> dt.timedelta:
+    # **ويُقرأ عددُ الأقسامِ من حقولِ النموذجِ نفسِها** لا من خطِّ الأنابيب:
+    # `fields` وحدةٌ ورقيّةٌ لا تستورد شيئًا، وخطُّ الأنابيب يستورد هذه —
+    # فاستيرادُه هنا حلقةٌ مغلقة. وهو المصدرُ عينُه الذي يبني منه
+    # `plan_sections` أقسامَه: قسمٌ بلا حقولِ نموذجٍ لا يُنادى له نموذج.
+    from ..document_intelligence.fields import MODEL_FIELDS  # noqa: PLC0415
+    from ..idempotency import LEASE_MODEL, LEASE_STORAGE  # noqa: PLC0415
+
+    sections = len({field.section for field in MODEL_FIELDS})
+    budget = LEASE_STORAGE + sections * LEASE_MODEL
+    # وهامشٌ يسيرٌ فوقه: عاملٌ بلغ آخرَ قسمٍ في آخرِ ثانيةٍ ليس مهجورًا.
+    return budget + dt.timedelta(seconds=180)
+
+
+STALE_AFTER: Final[dt.timedelta] = _stale_after()
+
+
+#: فضاءُ أسماءٍ ثابتٌ لهُويّةِ تشغيلةِ المعالجة (RC-T1-H2-B5).
+#:
+#: **ولا يُشتقُّ من معرّفِ طلبٍ ولا من مفتاحٍ خامٍّ ولا من زمنٍ ولا من الفاعلِ
+#: المستعيد.** هُويّةُ التشغيلة يجب أن تتطابق حين يستأنف عاملٌ آخرُ المحاولةَ
+#: نفسَها، وأن تختلف حين يقرّر الباحثُ إعادةً جديدة — فالمحاولةُ وحدها هي
+#: التي تفرّق.
+PROCESSING_NAMESPACE: Final = uuid.UUID("3d5f1c84-9a27-5e6b-8f41-b2c7d0e93a56")
+
+
+def run_id_for(tenant_id: uuid.UUID, file_id: uuid.UUID, attempt: int) -> uuid.UUID:
+    """هُويّةُ تشغيلةِ الاستخراجِ لمحاولةٍ واحدة — **ثابتةٌ عبر الاستئناف**.
+
+    فالتشغيلةُ كانت تُنشأ بمعرّفٍ عشوائيٍّ قبل كلّ عمل، فاستئنافُ محاولةٍ
+    مهجورةٍ يخلق تشغيلةً ثانيةً للعمل نفسِه: عددان في القاعدة لعملٍ واحد،
+    ومرشّحاتٌ تُنسب إلى تشغيلةٍ غير التي بدأتها.
+
+    والمحاولةُ الجديدةُ المقصودةُ تعطي معرّفًا آخرَ — وهو المطلوب: جيلُ
+    استخراجٍ جديدٌ لا استئنافٌ لقديم.
+    """
+    return uuid.uuid5(PROCESSING_NAMESPACE,
+                      f"thesis-processing:{tenant_id}:{file_id}:{attempt}")
+
+
+class ProcessingSuperseded(Exception):
+    """كُتب بعد أن فُقد السياج — **وتُرجَع معاملتُه كلُّها**.
+
+    ولا تُعرَض للمستعمل: هي إشارةٌ داخليّةٌ بين العاملِ والقاعدة. فعاملٌ
+    قديمٌ عاد من انتظارٍ طويلٍ بعد أن استُعيدت محاولتُه يرفعها ويخرج صامتًا،
+    ولا يكتب حرفًا فوق عملِ من استلم بعده.
+    """
+
+    def __init__(self, thesis_id: uuid.UUID, attempt: int) -> None:
+        self.thesis_id = thesis_id
+        self.attempt = attempt
+        super().__init__(f"processing claim superseded: {thesis_id} attempt={attempt}")
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessingClaim:
+    """ملكيّةُ جيلِ معالجةٍ واحد — **قيمٌ عاديّةٌ تعبر حدَّ المعاملة**.
+
+    و`attempt` هو رقمُ الجيل المنطقيّ: محاولةٌ جديدةٌ مقصودةٌ تزيده، واستعادةُ
+    محاولةٍ مهجورة **تُبقيه كما هو**. فالاستخراجُ المنطقيُّ واحدٌ ما دام
+    الرقمُ واحدًا، ويصير غيرَه حين يقرّر الباحثُ إعادةً جديدة.
+
+    و`fence` هو `processing_state_changed_at` وقتَ الاكتساب — بساعةِ القاعدة.
+    وكلُّ انتقالٍ مُسيَّجٍ يكتب طابعًا جديدًا، فيتقدّم السياجُ مع العمل: هو
+    النبضُ نفسُه، لا مؤقّتٌ يعمل على حدة. والعاملُ القديمُ يحمل طابعًا قديمًا
+    فلا يُصيب صفًّا بعد الاستعادة.
+    """
+
+    thesis_id: uuid.UUID
+    file_id: uuid.UUID
+    attempt: int
+    fence: dt.datetime
+    #: هل جاء هذا الاكتسابُ استعادةً لمحاولةٍ مهجورةٍ لا بدايةً جديدة؟
+    recovered: bool = False
+
+    def with_fence(self, fence: dt.datetime) -> ProcessingClaim:
+        return ProcessingClaim(self.thesis_id, self.file_id, self.attempt,
+                               fence, self.recovered)
+
+
+async def _read_generation(
+    session: AsyncSession, *, tenant_id: uuid.UUID, thesis_id: uuid.UUID,
+    lock: bool = False,
+) -> tuple[str, int, dt.datetime | None, uuid.UUID | None] | None:
+    """الحالُ والجيلُ والسياجُ — ويُقفَل الصفُّ عند الحاجة."""
+    statement = (
+        select(Thesis.processing_state, Thesis.processing_attempts,
+               Thesis.processing_state_changed_at, Thesis.file_id)
+        .where(Thesis.id == thesis_id, Thesis.tenant_id == tenant_id)
+    )
+    if lock:
+        # **قفلُ الصفِّ هو التسلسل.** يمنع استعادةً تقع بين فحصِ السياج
+        # والكتابةِ تحته، فلا نافذةَ بين القرار والأثر.
+        statement = statement.with_for_update()
+    row = (await session.execute(statement)).first()
+    return None if row is None else (row[0], row[1], row[2], row[3])
+
+
+async def is_stale(
+    session: AsyncSession, *, tenant_id: uuid.UUID, thesis_id: uuid.UUID,
+) -> bool:
+    """أمهجورةٌ هذه المحاولةُ الجارية؟ — **بساعة القاعدة وحدها**.
+
+    ولا يُكتب شيءٌ هنا: تُنادى من مساراتِ القراءة أيضًا، وتغييرُ حالٍ في
+    طلبِ `GET` ليجمُل العرضُ كذبٌ من نوعٍ آخر.
+    """
+    row = await _read_generation(session, tenant_id=tenant_id, thesis_id=thesis_id)
+    if row is None or row[0] not in IN_FLIGHT:
+        return False
+    stale = (await session.execute(
+        select(
+            (Thesis.processing_state_changed_at.is_(None))
+            | (Thesis.processing_state_changed_at <= func.now() - STALE_AFTER)
+        ).where(Thesis.id == thesis_id, Thesis.tenant_id == tenant_id)
+    )).scalar_one_or_none()
+    return bool(stale)
+
+
+
+async def within_ledger_horizon(
+    session: AsyncSession, *, tenant_id: uuid.UUID, file_id: uuid.UUID, attempt: int,
+) -> bool:
+    """أما زال سِجلُّ تنفيذِ أقسامِ هذه المحاولةِ قادرًا على إثباتِ ما تمّ؟
+
+    ومرساةُ العمر `ExtractionRun.started_at` للمحاولة نفسِها — لا
+    `processing_state_changed_at`، فذاك يتجدّد مع كلِّ استعادةٍ فيُخفي العمرَ
+    الحقيقيَّ إلى الأبد.
+
+    ويُقارَن **بساعة القاعدة**، وبهامشِ أمانٍ دون البقاء الكامل: محاولةٌ
+    تُستعاد قُبيل الانقضاء قد تعمل ساعةً ثمّ تجد سجلَّها قد زال تحتها.
+    """
+    from ..idempotency import TTL  # noqa: PLC0415
+
+    run_id = run_id_for(tenant_id, file_id, attempt)
+    # لا تشغيلةَ بعد؟ فلا سِجلَّ أقسامٍ يُخشى انقضاؤه — والاستعادةُ آمنة.
+    horizon = TTL - STALE_AFTER
+    # **و`make_interval` لا نصٌّ يُحوَّل**: asyncpg لا يربط نصًّا بنوع
+    # `interval`، فيسقط النداءُ في وقت التشغيل لا في الفحص الساكن.
+    safe = (await session.execute(
+        text("SELECT started_at > now() - make_interval(secs => :horizon) "
+             "  FROM extraction_runs WHERE id = :run_id AND tenant_id = :tenant_id"),
+        {"horizon": int(horizon.total_seconds()),
+         "run_id": str(run_id), "tenant_id": str(tenant_id)},
+    )).scalar_one_or_none()
+    return True if safe is None else bool(safe)
+
+
+async def recover_generation(
+    session: AsyncSession, *, tenant_id: uuid.UUID, thesis_id: uuid.UUID,
+) -> ProcessingClaim | None:
+    """**استعادةٌ وحدَها — ولا تبدأ جيلًا جديدًا بحال**.
+
+    ولهذا موضعان لا ثالثَ لهما: إعادةُ طلبٍ مُمفتَحٍ مخزون، ومنحُ إذنٍ
+    مكرَّرٌ على إذنٍ قائم. وكلاهما **ليس طلبَ معالجةٍ جديدة**: الأوّلُ يقول
+    «أعِد جوابي»، والثاني يقول «إذني كما هو». فلو جاز لهما أن يبدآ جيلًا
+    لصار تكرارُ طلبٍ شبكيٍّ سببًا في تنفيذِ نموذجٍ مدفوعٍ لم يطلبه أحد.
+
+    وتُعيد مطالبةً **فقط** حين تقع استعادةٌ آمنةٌ للجيل نفسِه. وفيما عدا
+    ذلك `None`، ولا كتابةَ ولا جدولة:
+
+    ‏• حالٌ جاريةٌ حيّة ⇒ عاملٌ يعمل، فلا شيء.
+    ‏• حالٌ طرفيّة ⇒ لا عملَ معلَّقًا، ولا يُخترع طلبٌ لم يُطلب.
+    ‏• مهجورةٌ تجاوزت أفقَ سِجلِّها ⇒ **لا تُستعاد ولا يُزاد رقمُها**؛
+      فالباحثُ يبدأ جيلًا جديدًا بفعلٍ صريحٍ إن أراد، وبطاقتُه تعرضه.
+    """
+    try:
+        return await claim_generation(
+            session, tenant_id=tenant_id, thesis_id=thesis_id,
+            allow_new_generation=False)
+    except ProcessingConflict:
+        return None
+
+
+async def claim_generation(
+    session: AsyncSession, *, tenant_id: uuid.UUID, thesis_id: uuid.UUID,
+    allow_new_generation: bool = True,
+) -> ProcessingClaim:
+    """يكتسب جيلَ معالجةٍ — **بدايةً جديدةً أو استعادةً لمهجورة**.
+
+    و`allow_new_generation=False` يقصرها على الاستعادة وحدَها: فلا رقمَ
+    يزيد، ولا جيلَ يُخلَق. وذاك عقدُ `recover_generation` — ومن نادى بها
+    فقد قال صراحةً إنّ طلبَه ليس طلبَ معالجةٍ جديدة.
+
+    والقرارُ ثلاثيّ، ويقع كلُّه تحت قفلِ الصفّ فلا نافذةَ بين القراءة والكتابة:
+
+    ‏١ **حالٌ جاريةٌ حيّة** ⇒ `thesis.processing_in_flight`. عاملٌ يعمل الآن،
+      ولا تُجدوَل عليه ثانية.
+    ‏٢ **حالٌ جاريةٌ مهجورة** ⇒ استعادةٌ بالجيل **نفسِه**: الرقمُ لا يزيد،
+      والسياجُ وحده يُجدَّد بساعة القاعدة. فالاستخراجُ المنطقيُّ هو هو،
+      والعاملُ القديمُ — إن عاد — يحمل سياجًا بائتًا فلا يكتب.
+    ‏٣ **حالٌ طرفيّةٌ يجوز إعادتُها** ⇒ محاولةٌ جديدةٌ مقصودة: الرقمُ يزيد،
+      فيصير جيلُ استخراجٍ آخر يحقُّ له أن ينادي النموذجَ من جديد.
+    """
+    row = await _read_generation(session, tenant_id=tenant_id,
+                                 thesis_id=thesis_id, lock=True)
+    if row is None:
+        raise ProcessingConflict("thesis.not_found", state=None)
+    state, attempt, _changed, file_id = row
+    if file_id is None:
+        raise ProcessingConflict("thesis.no_file", state=state)
+    if state == TEXT_LAYER_MISSING:
+        raise ProcessingConflict("thesis.retry_needs_ocr", state=state)
+
+    if state in IN_FLIGHT:
+        stale = await is_stale(session, tenant_id=tenant_id, thesis_id=thesis_id)
+        if not stale:
+            raise ProcessingConflict("thesis.processing_in_flight", state=state)
+        if not await within_ledger_horizon(
+                session, tenant_id=tenant_id, file_id=file_id, attempt=attempt):
+            # ══ أفقُ السِّجلّ: بعده لا تُستعاد المحاولةُ نفسُها (H2-B5) ══
+            #
+            # فسِجلُّ تنفيذِ الأقسام له بقاءٌ منطقيٌّ (٢٤ ساعة، الترحيل 0037).
+            # ومحاولةٌ تُستعاد بعد انقضائه تجد مفاتيحَ أقسامها **كأنّها
+            # جديدة** — فيُنادى المزوّدُ من جديدٍ على أقسامٍ ربّما نُفِّذت.
+            # وذاك بعينه ما يمنعه الطور B-4.
+            #
+            # فلا تُستعاد تلك المحاولةُ تلقائيًّا: تُغلَق بصدقٍ، ويبدأ
+            # **جيلٌ جديدٌ مقصود** — رقمٌ جديد، وتشغيلةٌ جديدة، ومفاتيحُ
+            # أقسامٍ جديدة. فالنداءُ حينئذٍ مأذونٌ لا أعمى.
+            #
+            # **وفي وضع الاستعادةِ لا يقع ذلك البتّة.** فإعادةُ طلبٍ مخزونٍ
+            # أو منحٌ مكرَّرٌ ليسا قرارَ باحثٍ ببدء قراءةٍ جديدة؛ ولو زادا
+            # الرقمَ هنا لصار مجرّدُ تكرارِ طلبٍ شبكيٍّ يُنفّذ نموذجًا مدفوعًا.
+            if not allow_new_generation:
+                raise ProcessingConflict("thesis.recovery_horizon_exceeded",
+                                         state=state)
+            claimed = (await session.execute(
+                update(Thesis)
+                .where(Thesis.id == thesis_id, Thesis.tenant_id == tenant_id,
+                       Thesis.processing_attempts == attempt,
+                       Thesis.processing_state.in_(IN_FLIGHT))
+                .values(processing_state=QUEUED,
+                        processing_state_changed_at=func.now(),
+                        processing_attempts=Thesis.processing_attempts + 1,
+                        failure_code=None, failure_detail=None)
+                .returning(Thesis.processing_attempts,
+                           Thesis.processing_state_changed_at)
+                .execution_options(synchronize_session=False)
+            )).first()
+            if claimed is None:  # pragma: no cover — القفلُ يمنعها
+                raise ProcessingConflict("thesis.processing_in_flight", state=state)
+            return ProcessingClaim(thesis_id, file_id, claimed[0], claimed[1])
+        # ── استعادةٌ: الجيلُ نفسُه، وسياجٌ جديدٌ بساعة القاعدة ──
+        fence = (await session.execute(
+            update(Thesis)
+            .where(Thesis.id == thesis_id, Thesis.tenant_id == tenant_id,
+                   Thesis.processing_attempts == attempt,
+                   Thesis.processing_state.in_(IN_FLIGHT))
+            .values(processing_state=QUEUED, processing_state_changed_at=func.now(),
+                    failure_code=None, failure_detail=None)
+            .returning(Thesis.processing_state_changed_at)
+            .execution_options(synchronize_session=False)
+        )).scalar_one_or_none()
+        if fence is None:  # pragma: no cover — القفلُ يمنعها
+            raise ProcessingConflict("thesis.processing_in_flight", state=state)
+        return ProcessingClaim(thesis_id, file_id, attempt, fence, recovered=True)
+
+    if state not in RETRYABLE:
+        raise ProcessingConflict("thesis.processing_in_flight", state=state)
+
+    # **ولا جيلَ جديدًا لمن لم يطلبه.** الحالُ طرفيّةٌ تقبل الإعادة — لكنّ
+    # المُنادي في وضع الاستعادةِ لم يطلب إعادة، بل قال «أعِد جوابي» أو
+    # «إذني كما هو». فلا يُخترع له طلبٌ لم يصدر عنه.
+    if not allow_new_generation:
+        raise ProcessingConflict("thesis.nothing_to_recover", state=state)
+
+    # ── محاولةٌ جديدةٌ مقصودة: الرقمُ يزيد ──
+    claimed = (await session.execute(
+        update(Thesis)
+        .where(Thesis.id == thesis_id, Thesis.tenant_id == tenant_id,
+               Thesis.processing_state.in_(RETRYABLE))
+        .values(processing_state=QUEUED, processing_state_changed_at=func.now(),
+                processing_attempts=Thesis.processing_attempts + 1,
+                failure_code=None, failure_detail=None)
+        .returning(Thesis.processing_attempts, Thesis.processing_state_changed_at)
+        .execution_options(synchronize_session=False)
+    )).first()
+    if claimed is None:  # pragma: no cover — القفلُ يمنعها
+        raise ProcessingConflict("thesis.processing_in_flight", state=state)
+    return ProcessingClaim(thesis_id, file_id, claimed[0], claimed[1])
+
+
+async def hold(session: AsyncSession, claim: ProcessingClaim, *,
+               tenant_id: uuid.UUID) -> None:
+    """يُثبت أنّ السياجَ ما زال لنا — **ويقفل الصفَّ حتى الإيداع**.
+
+    تُنادى في رأسِ كلِّ معاملةٍ يكتب فيها العاملُ شيئًا. والقفلُ يبقى إلى
+    نهاية المعاملة، فاستعادةٌ متزامنةٌ تنتظر ثمّ ترى ما أودعناه — ولا تقع
+    بين فحصِنا وكتابتِنا.
+    """
+    row = await _read_generation(session, tenant_id=tenant_id,
+                                 thesis_id=claim.thesis_id, lock=True)
+    if row is None:
+        raise ProcessingSuperseded(claim.thesis_id, claim.attempt)
+    _state, attempt, changed, _file_id = row
+    if attempt != claim.attempt or changed != claim.fence:
+        raise ProcessingSuperseded(claim.thesis_id, claim.attempt)
+
+
+async def advance(
+    session: AsyncSession, claim: ProcessingClaim, *, tenant_id: uuid.UUID,
+    state: str, failure_code: str | None = None, failure_detail: str | None = None,
+    text_layer: str | None = None,
+) -> ProcessingClaim:
+    """ينقل الحالَ **تحت السياج**، ويعيد المطالبةَ بسياجها الجديد.
+
+    وهذا هو النبض: كلُّ انتقالٍ حقيقيٍّ يُجدّد الطابع، فلا مؤقّتَ يعمل على
+    حدة ولا نبضٌ يكذب على عملٍ متوقّف. ومن فقد سياجَه يرفع `ProcessingSuperseded`
+    فتُرجَع معاملتُه كلُّها.
+    """
+    if state not in PROCESSING_STATES:
+        raise ValueError(f"unknown processing state: {state}")
+    if state in FAILURE_STATES and failure_code is None:
+        raise ValueError(f"state {state} must carry a failure code")
+    if state not in FAILURE_STATES and failure_code is not None:
+        raise ValueError(f"state {state} must not carry a failure code")
+    if failure_code is not None and failure_code not in FAILURE_CODES:
+        raise ValueError(f"unknown failure code: {failure_code}")
+
+    values: dict[str, object] = {
+        "processing_state": state,
+        "processing_state_changed_at": func.now(),
+        "failure_code": failure_code,
+        "failure_detail": (failure_detail or None) if failure_code else None,
+    }
+    if text_layer is not None:
+        if text_layer not in TEXT_LAYER_STATES:
+            raise ValueError(f"unknown text layer state: {text_layer}")
+        values["text_layer_state"] = text_layer
+
+    fence = (await session.execute(
+        update(Thesis)
+        .where(Thesis.id == claim.thesis_id, Thesis.tenant_id == tenant_id,
+               Thesis.processing_attempts == claim.attempt,
+               Thesis.processing_state_changed_at == claim.fence)
+        .values(**values)
+        .returning(Thesis.processing_state_changed_at)
+        .execution_options(synchronize_session=False)
+    )).scalar_one_or_none()
+    if fence is None:
+        raise ProcessingSuperseded(claim.thesis_id, claim.attempt)
+    return claim.with_fence(fence)
+
+
+async def start_worker(
+    session: AsyncSession, claim: ProcessingClaim, *, tenant_id: uuid.UUID,
+) -> ProcessingClaim | None:
+    """أوّلُ فعلٍ للعامل — **ولا يُصدَّق الرمزُ الممرَّرُ إليه بلا فحص**.
+
+    فمهمّتان جُدولتا سهوًا بالمطالبة نفسِها: واحدةٌ تُحوّل السياجَ وتعمل،
+    والأخرى تجد سياجًا تبدّل فتعود بلا أثر — صفرُ نداءٍ وصفرُ مرشّحٍ وصفرُ
+    تدقيق. والقاعدةُ هي الحَكَم، لا قفلٌ في الذاكرة ولا قاموسٌ في العملية.
+    """
+    try:
+        return await advance(session, claim, tenant_id=tenant_id, state=PARSING)
+    except ProcessingSuperseded:
+        return None
+
+
+@dataclass(slots=True)
+class ClaimHolder:
+    """حاملُ مطالبةٍ يتقدّم سياجُها مع العمل — **ويُمرَّر حيث تُكتب الحال**.
+
+    والمطالبةُ قيمةٌ مجمّدة، وكلُّ انتقالٍ يُنتج سياجًا جديدًا. فلو مُرِّرت
+    قيمةً خامًّا عبر طبقات الخطّ لضاع التقدّمُ بين الطبقات: يكتب الطورُ
+    الأوّلُ طابعًا جديدًا، ويبقى من بعده يحمل القديمَ فيُردّ بائتًا — **وهو
+    يعمل بحقّ**. فالحاملُ يحفظ الأحدثَ ويُمرَّر بمرجعه.
+
+    و`None` تعني «بلا جيل»: نصوصٌ وفحوصُ وحدةٍ تنادي الخطَّ مباشرةً، فيبقى
+    سلوكُها القديمُ حرفيًّا بلا سياجٍ يُفرض عليها.
+    """
+
+    claim: ProcessingClaim | None = None
+
+    async def advance(self, session: AsyncSession, *, tenant_id: uuid.UUID,
+                      file_id: uuid.UUID | None = None, **values) -> None:
+        """ينقل الحالَ تحت السياج، أو بلا سياجٍ إن لم يكن جيل."""
+        if self.claim is None:
+            await mark(session, tenant_id=tenant_id, file_id=file_id, **values)
+            return
+        self.claim = await advance(session, self.claim, tenant_id=tenant_id, **values)
+
+    async def hold(self, session: AsyncSession, *, tenant_id: uuid.UUID) -> None:
+        if self.claim is not None:
+            await hold(session, self.claim, tenant_id=tenant_id)
