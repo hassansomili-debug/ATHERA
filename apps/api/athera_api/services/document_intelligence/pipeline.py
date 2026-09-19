@@ -199,6 +199,7 @@ async def prepare(
     run_id: uuid.UUID | None = None,
     external_allowed: bool = True,
     consent_state: str = "granted",
+    holder: processing.ClaimHolder | None = None,
 ) -> Prepared:
     """كل ما لا يحتاج شبكة — في معاملة واحدة قصيرة تُودَع فورًا.
 
@@ -230,7 +231,8 @@ async def prepare(
     # **حالُ الرسالة تُثبَّت مع كل انتقالٍ حقيقي** (ترحيل 0027). وهي عمودٌ
     # على `theses` لا اشتقاقٌ من `extraction_runs`: حالُ التشغيلة تصف
     # تشغيلة، وإعادةُ القراءة تُنشئ صفًّا جديدًا فتقفز الحال إلى الوراء.
-    await processing.mark(session, tenant_id=tenant_id, file_id=file_record.id,
+    await (holder or processing.ClaimHolder()).advance(
+                          session, tenant_id=tenant_id, file_id=file_record.id,
                           state=processing.PARSING)
 
     # ── التفكيك ──
@@ -243,7 +245,7 @@ async def prepare(
         run.status = Status.PARSE_FAILED.value
         run.error = str(exc)[:500]
         run.finished_at = dt.datetime.now(dt.UTC)
-        await processing.mark(
+        await (holder or processing.ClaimHolder()).advance(
             session, tenant_id=tenant_id, file_id=file_record.id,
             state=processing.TEXT_LAYER_MISSING, failure_code="text_layer_missing",
             failure_detail=str(exc)[:500], text_layer=processing.TEXT_LAYER_ABSENT)
@@ -253,7 +255,7 @@ async def prepare(
         run.status = Status.PARSE_FAILED.value
         run.error = str(exc)[:500]
         run.finished_at = dt.datetime.now(dt.UTC)
-        await processing.mark(
+        await (holder or processing.ClaimHolder()).advance(
             session, tenant_id=tenant_id, file_id=file_record.id,
             state=processing.FAILED, failure_code="unsupported_document",
             failure_detail=f"{type(exc).__name__}: {exc}"[:500])
@@ -263,7 +265,8 @@ async def prepare(
     run.chunks_parsed = len(rows)
     run.status = Status.EXTRACTING.value if external_allowed else Status.PARSED.value
     # قُرئ نصٌّ فعلًا — فتُعلَن الطبقة موجودة. و«لم تُفحص» ليست «موجودة».
-    await processing.mark(session, tenant_id=tenant_id, file_id=file_record.id,
+    await (holder or processing.ClaimHolder()).advance(
+                          session, tenant_id=tenant_id, file_id=file_record.id,
                           state=processing.EXTRACTING,
                           text_layer=processing.TEXT_LAYER_PRESENT)
     views = _views(rows)
@@ -319,7 +322,7 @@ async def prepare(
         # **ورفضُ الإرسال ليس فشلًا، ولا هو انتظار.** من قرّر ألّا يُرسل
         # رسالته انتهى الخطُّ عنده بمرشّحاتٍ محلّية يراجعها؛ ومن لم يقرّر
         # بعدُ ينتظر قراره. وحالان لا واحدة.
-        await processing.mark(
+        await (holder or processing.ClaimHolder()).advance(
             session, tenant_id=tenant_id, file_id=file_record.id,
             state=(processing.READY_FOR_REVIEW if consent_state == "declined"
                    else processing.AWAITING_CONSENT))
@@ -421,17 +424,21 @@ async def absorb(
 
 async def finalize(
     session: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID,
-    failed: list[str],
+    failed: list[str], holder: processing.ClaimHolder | None = None,
+    settle_state: str = processing.READY_FOR_REVIEW,
+    failure_code: str | None = None, failure_detail: str | None = None,
 ) -> ExtractionRun:
     """إغلاق التشغيلة — معاملة قصيرة أخيرة."""
     run = (
         await session.execute(select(ExtractionRun).where(
             ExtractionRun.id == run_id, ExtractionRun.tenant_id == tenant_id))
     ).scalar_one()
-    run.status = Status.AWAITING_REVIEW.value
+    run.status = (Status.EXTRACTION_FAILED.value if failure_code
+                  else Status.AWAITING_REVIEW.value)
     run.finished_at = dt.datetime.now(dt.UTC)
-    await processing.mark(session, tenant_id=tenant_id, file_id=run.file_id,
-                          state=processing.READY_FOR_REVIEW)
+    await (holder or processing.ClaimHolder()).advance(
+        session, tenant_id=tenant_id, file_id=run.file_id, state=settle_state,
+        failure_code=failure_code, failure_detail=failure_detail)
     if failed:
         # فشل قسم لا يُسقط ما نجح: الأقسام الأخرى تبقى، ويُبلَّغ عن الفاشل
         # باسمه (§29). فرسالةٌ استُخرج منها ستة أقسام من سبعة أنفع من لا شيء.
@@ -482,6 +489,9 @@ async def run_extraction(
     # بالمستأجر. فإن لم يُمرَّر شيءٌ بقي السلوكُ كما كان حرفيًّا.
     ledger_maker = ledger_maker or session_maker
     subject_id = subject_id if subject_id is not None else actor_user_id
+    # **والسياجُ يتقدّم مع العمل**: كلُّ انتقالٍ يكتب طابعًا جديدًا، فيُحمَل
+    # الأحدثُ لا الأوّل — وإلّا رُدّ العاملُ بائتًا وهو يعمل بحقّ.
+    holder = processing.ClaimHolder(claim)
 
     async with session_maker() as session:
         record = (
@@ -492,6 +502,7 @@ async def run_extraction(
             session, tenant_id=tenant_id, actor_user_id=actor_user_id,
             file_record=record, data=data, run_id=run_id,
             external_allowed=external_allowed, consent_state=consent_state,
+            holder=holder,
         )
 
     if prepared.status is Status.PARSE_FAILED:
@@ -597,8 +608,7 @@ async def run_extraction(
         # **ولا يُثبَّت «تمّ» قبل أن تدوم المرشّحات.** لو سبقها لرأى
         # الاستئنافُ قسمًا تامًّا بلا أثرٍ فتخطّاه، فضاع عملٌ دُفع ثمنُه.
         async with ledger_maker() as session:
-            if claim is not None:
-                await processing.hold(session, claim, tenant_id=tenant_id)
+            await holder.hold(session, tenant_id=tenant_id)
             accepted, rejected, missing = await absorb(
                 session, tenant_id=tenant_id, run_id=prepared.run_id,
                 file_id=prepared.file_id, plan=plan, batch=batch,
@@ -609,10 +619,19 @@ async def run_extraction(
         attempted |= missing
 
     async with session_maker() as session:
-        run = await finalize(session, tenant_id=tenant_id,
-                             run_id=prepared.run_id,
-                             failed=failed + [f"{name}:external_result_unknown"
-                                              for name in unresolved])
+        run = await finalize(
+            session, tenant_id=tenant_id, run_id=prepared.run_id,
+            failed=failed + [f"{name}:external_result_unknown"
+                             for name in unresolved],
+            holder=holder,
+            # **ولا تُرفع الحالُ إلى «جاهزة» وقسمٌ لا يُعرف أثرُه** — وتُكتب
+            # في العبارة نفسِها، فلا لحظةَ تقول غيرَ الحقّ.
+            settle_state=(processing.FAILED if unresolved
+                          else processing.READY_FOR_REVIEW),
+            failure_code=("extraction_failed" if unresolved else None),
+            failure_detail=("extraction could not be completed: the external "
+                            "result for one or more sections is unknown"
+                            if unresolved else None))
         status = Status(run.status)
 
     # ══ ولا يُقال «اكتمل» وقسمٌ لا يُعرف أثرُه (RC-T1-H2-B5) ══

@@ -1,0 +1,621 @@
+"""RC-T1-H2-B5 — **استئنافُ معالجةِ الرسالة، وسياجُ عاملِها**.
+
+## العطب
+
+مهامُّ `BackgroundTasks` تعيش داخل عملية الـAPI. فإعادةُ نشرٍ أو سقوطُ آلةٍ
+أثناء العمل تترك الصفَّ عند `queued` أو `parsing` أو `extracting`، ولا
+يستأنفه أحد — و`claim_for_processing` كان يرفض كلَّ حالٍ جاريةٍ **إلى الأبد**.
+فالرسالةُ تعلق، والبطاقةُ تقول «جارٍ» ولا شيء يجري.
+
+## والدعوى المأذونة — وحدَها
+
+    مهمّةٌ ضاعت أو انقطعت يمكن استئنافُها بطلبٍ مأذونٍ لاحق، بلا تكرارِ
+    الاستخراجِ المنطقيّ، وبلا أن يكتب عاملٌ بائتٌ بعد الاستعادة، وبلا نداءٍ
+    أعمى لمزوّدٍ غيرِ مُثبَتِ المنعة داخل جيلِ المعالجةِ نفسِه.
+
+ويجوز أيضًا أن يُقال:
+
+    إعادةُ معالجةٍ مقصودةٌ جديدةٌ جيلٌ آخر، ويجوز فيها نداءُ النموذجِ مجدّدًا.
+
+**ولا يُدَّعى**: تنفيذٌ مرّةً واحدةً بالضبط، ولا طابورٌ دائم، ولا استئنافٌ
+تلقائيٌّ بعد سقوط العمليّة، ولا أنّ `BackgroundTasks` تنجو من موتِ العمليّة.
+"""
+from __future__ import annotations
+
+import io
+import uuid
+
+import pytest
+
+from tests.conftest import requires_db
+
+pytestmark = pytest.mark.asyncio
+
+UPLOAD = "/api/v1/theses/upload"
+
+#: مستندٌ يُفكَّك فعلًا: فقراتٌ أطولُ من الحدّ الأدنى للمقطع.
+DOCUMENT = (
+    "مشكلة الدراسة: قياس أثر التعلّم المدمج في التحصيل الدراسيّ لدى طلبة "
+    "المرحلة الثانوية في المدارس الحكومية.\n\n"
+    "المنهج: تصميمٌ شبه تجريبيّ على مجموعتين متكافئتين، واستبانةٌ موزّعةٌ "
+    "على عيّنةٍ عشوائيةٍ من المعلّمين.\n\n"
+    "النتائج: فرقٌ دالٌّ إحصائيًّا لصالح المجموعة التجريبيّة في الاختبار "
+    "البعديّ، وحُلّلت البيانات باستخدام SPSS.\n"
+).encode("utf-8")
+
+
+async def _rows(sql: str, params: dict | None = None):
+    """قراءةٌ من **اتصالٍ مستقلٍّ** — فالعزلُ يحجب عن جلسةٍ بلا سياق."""
+    from sqlalchemy import text
+
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _observer
+
+    engine, factory = await _observer()
+    try:
+        async with factory() as session:
+            return [tuple(r) for r in
+                    (await session.execute(text(sql), params or {})).all()]
+    finally:
+        await engine.dispose()
+
+
+async def _count(sql: str, params: dict | None = None) -> int:
+    return int((await _rows(sql, params))[0][0])
+
+
+def _client(slot):
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _client as make
+
+    return make(slot)
+
+
+async def _upload(slot, *, key: str | None = None, data: bytes = DOCUMENT,
+                  name: str = "thesis.txt"):
+    """يرفع رسالةً عبر المسار الحقيقيّ — بمفتاحٍ أو بلا."""
+    headers = {"Idempotency-Key": key} if key else {}
+    async with _client(slot) as http:
+        return await http.post(
+            UPLOAD, files={"upload": (name, io.BytesIO(data), "text/plain")},
+            headers=headers)
+
+
+async def _thesis_row(tenant_id, thesis_id):
+    rows = await _rows(
+        "SELECT processing_state, processing_attempts, processing_state_changed_at,"
+        "       file_id, failure_code, failure_detail"
+        "  FROM theses WHERE id = :t AND tenant_id = :ten",
+        {"t": str(thesis_id), "ten": str(tenant_id)})
+    return rows[0] if rows else None
+
+
+async def _make_stale(tenant_id, thesis_id, *, seconds: int | None = None) -> None:
+    """يُقدّم الطابعَ إلى الوراء **بساعة القاعدة** — كعاملٍ مات منذ ساعة."""
+    from sqlalchemy import text
+
+    from athera_api.services.thesis import processing
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _observer
+
+    back = seconds or int(processing.STALE_AFTER.total_seconds()) + 60
+    engine, factory = await _observer()
+    try:
+        async with factory() as session:
+            await session.execute(
+                text("UPDATE theses SET processing_state_changed_at ="
+                     "        now() - make_interval(secs => :back)"
+                     " WHERE id = :t AND tenant_id = :ten"),
+                {"back": back, "t": str(thesis_id), "ten": str(tenant_id)})
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+def _memory_storage(monkeypatch):
+    from athera_api.services import storage
+
+    monkeypatch.setattr(storage.get_settings(), "storage_provider", "memory",
+                        raising=False)
+    storage.reset_store_cache()
+
+
+@pytest.fixture(autouse=True)
+def _storage(monkeypatch):
+    _memory_storage(monkeypatch)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_background(monkeypatch):
+    """**لا مهمّةَ تعمل من تلقائها في هذه الحزمة.**
+
+    فالمقصودُ هنا حالُ الجيلِ وسياجُه، لا ما يفعله العامل. فتُلتقَط الجدولةُ
+    ولا تُنفَّذ — ثمّ يُنادى العاملُ صراحةً حيث يُقصَد ذلك.
+    """
+    from fastapi import BackgroundTasks
+
+    scheduled: list[tuple] = []
+
+    def _add(self, func, *args, **kwargs):
+        scheduled.append((func, args, kwargs))
+
+    monkeypatch.setattr(BackgroundTasks, "add_task", _add)
+    yield scheduled
+
+
+# ═════════════════ ١ · الجيلُ: بدايةٌ، واستعادةٌ، وحدُّ الهجران ═════════════════
+
+
+@requires_db
+async def test_01_a_keyed_upload_creates_exactly_one_of_everything(
+    two_tenants, _no_background,
+):
+    """(أ) رفعٌ مُمفتَح: كائنٌ واحد، وملفٌّ واحد، ومنحةٌ واحدة، ورسالةٌ واحدة."""
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    key = uuid.uuid4().hex
+
+    answer = await _upload(slot, key=key)
+    assert answer.status_code == 202, f"{answer.status_code}: {answer.text[:250]}"
+    body = answer.json()
+    thesis_id, file_id = body["thesis_id"], body["file_id"]
+
+    assert await _count("SELECT count(*) FROM files WHERE tenant_id = :t",
+                        {"t": str(tid)}) == 1
+    assert await _count(
+        "SELECT count(*) FROM object_grants WHERE tenant_id = :t"
+        "   AND object_type = 'file' AND object_id = :f",
+        {"t": str(tid), "f": file_id}) == 1
+    assert await _count("SELECT count(*) FROM theses WHERE tenant_id = :t",
+                        {"t": str(tid)}) == 1
+
+    state, attempts, changed, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+    assert state == "queued", state
+    assert attempts == 1, f"عددُ المحاولات {attempts}"
+    assert changed is not None, "لا طابعَ للجيل — فلا سياج"
+    assert len(_no_background) == 1, "لم يُجدوَل عاملٌ واحد"
+
+
+@requires_db
+async def test_02_the_same_key_and_bytes_adds_nothing(two_tenants, _no_background):
+    """(ب) إعادةٌ بالمفتاح والبايتات نفسِها: صفرُ ملفٍّ وصفرُ رسالةٍ وصفرُ محاولة."""
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    key = uuid.uuid4().hex
+
+    first = await _upload(slot, key=key)
+    assert first.status_code == 202, first.text
+    thesis_id = first.json()["thesis_id"]
+    _s, attempts, _c, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+
+    again = await _upload(slot, key=key)
+    assert again.status_code == 202, f"{again.status_code}: {again.text[:250]}"
+    assert again.json() == first.json(), "الإعادةُ ليست الجوابَ الأصل"
+
+    assert await _count("SELECT count(*) FROM files WHERE tenant_id = :t",
+                        {"t": str(tid)}) == 1, "ملفٌّ ثانٍ"
+    assert await _count("SELECT count(*) FROM theses WHERE tenant_id = :t",
+                        {"t": str(tid)}) == 1, "رسالةٌ ثانية"
+    _s2, attempts2, _c2, _f2, _fc2, _fd2 = await _thesis_row(tid, thesis_id)
+    assert attempts2 == attempts, "الإعادةُ بدأت محاولةً جديدة"
+
+
+@requires_db
+async def test_03_the_same_key_with_other_bytes_conflicts(two_tenants, _no_background):
+    """(ج) المفتاحُ نفسُه ببايتاتٍ أخرى: صِدامٌ، وصفرُ طفرةٍ ثانية."""
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    key = uuid.uuid4().hex
+
+    first = await _upload(slot, key=key)
+    assert first.status_code == 202, first.text
+
+    other = await _upload(slot, key=key, data=DOCUMENT + "\n\nفقرةٌ مستجدّةٌ كافية الطول للفحص.\n".encode("utf-8"))
+    assert other.status_code == 409, f"{other.status_code}: {other.text[:250]}"
+    assert other.json()["error"]["code"] == "idempotency.key_reused", other.text
+
+    assert await _count("SELECT count(*) FROM files WHERE tenant_id = :t",
+                        {"t": str(tid)}) == 1, "كُتب ملفٌّ ثانٍ على صِدام"
+    assert await _count("SELECT count(*) FROM theses WHERE tenant_id = :t",
+                        {"t": str(tid)}) == 1, "كُتبت رسالةٌ ثانيةٌ على صِدام"
+
+
+@requires_db
+async def test_04_a_lost_dispatch_becomes_stale_and_is_recovered(
+    two_tenants, _no_background,
+):
+    """(هـ) أُودع العملُ ولم تُطلَق المهمّة: تُهجَر، ثمّ تُستعاد **بجيلها**."""
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import processing
+
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    thesis_id = uuid.UUID(answer.json()["thesis_id"])
+
+    # المهمّةُ لم تعمل قطّ — والحالُ `queued`.
+    async with tenant_session(tid, slot["user_id"]) as session:
+        assert not await processing.is_stale(
+            session, tenant_id=tid, thesis_id=thesis_id), "هُجرت قبل أوانها"
+
+    await _make_stale(tid, thesis_id)
+
+    async with tenant_session(tid, slot["user_id"]) as session:
+        assert await processing.is_stale(session, tenant_id=tid, thesis_id=thesis_id)
+        before = (await _thesis_row(tid, thesis_id))[1]
+        claim = await processing.claim_generation(
+            session, tenant_id=tid, thesis_id=thesis_id)
+
+    assert claim.recovered is True, "لم تُعَدّ استعادةً"
+    assert claim.attempt == before, "الاستعادةُ زادت رقمَ المحاولة"
+    state, attempts, changed, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+    assert attempts == before, f"المحاولةُ صارت {attempts}"
+    assert claim.fence == changed, "السياجُ لا يطابق الطابعَ المُودَع"
+
+
+@requires_db
+async def test_05_a_live_attempt_is_never_recovered(two_tenants, _no_background):
+    """محاولةٌ حيّة: `thesis.processing_in_flight` — ولا تُستعاد."""
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import processing
+
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    thesis_id = uuid.UUID(answer.json()["thesis_id"])
+
+    async with tenant_session(tid, slot["user_id"]) as session:
+        with pytest.raises(processing.ProcessingConflict) as conflict:
+            await processing.claim_generation(
+                session, tenant_id=tid, thesis_id=thesis_id)
+    assert conflict.value.code == "thesis.processing_in_flight"
+
+
+@requires_db
+async def test_06_a_duplicate_background_task_does_no_work(
+    two_tenants, _no_background, monkeypatch,
+):
+    """(٩) مهمّتان بالمطالبة نفسِها: واحدةٌ تفوز، والأخرى **صفرُ أثر**."""
+    from athera_api.routers import document_intelligence as di
+    from athera_api.services.thesis import processing
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    thesis_id = uuid.UUID(answer.json()["thesis_id"])
+    claim = _no_background[0][1][2]
+    assert isinstance(claim, processing.ProcessingClaim)
+
+    calls = {"n": 0}
+
+    class _Never:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            raise AssertionError("نُودي النموذجُ لعاملٍ خاسر")
+
+    from tests.test_at_rc_t1_h2b4_model_ambiguity import _activate
+    _activate(monkeypatch, _Never())
+
+    # الأوّلُ يعمل ويُحوّل السياج.
+    await di._process(tid, uid, claim, "ar")
+    runs_after_first = await _count(
+        "SELECT count(*) FROM extraction_runs WHERE tenant_id = :t", {"t": str(tid)})
+    candidates_after_first = await _count(
+        "SELECT count(*) FROM fact_candidates WHERE tenant_id = :t", {"t": str(tid)})
+    audits_after_first = await _count(
+        "SELECT count(*) FROM audit_events WHERE tenant_id = :t", {"t": str(tid)})
+
+    # والثاني يحمل السياجَ القديم نفسَه — فيعود بلا أثر.
+    await di._process(tid, uid, claim, "ar")
+
+    assert await _count(
+        "SELECT count(*) FROM extraction_runs WHERE tenant_id = :t",
+        {"t": str(tid)}) == runs_after_first, "العاملُ الخاسرُ أنشأ تشغيلة"
+    assert await _count(
+        "SELECT count(*) FROM fact_candidates WHERE tenant_id = :t",
+        {"t": str(tid)}) == candidates_after_first, "الخاسرُ أدرج مرشّحات"
+    assert await _count(
+        "SELECT count(*) FROM audit_events WHERE tenant_id = :t",
+        {"t": str(tid)}) == audits_after_first, "الخاسرُ كتب تدقيقًا"
+
+
+@requires_db
+async def test_07_a_stale_worker_cannot_write_after_takeover(
+    two_tenants, _no_background,
+):
+    """(١٣) عاملٌ قديمٌ عاد بعد الاستعادة: **صفرُ كتابةٍ، وصفرُ حالٍ مكتوبة**."""
+    from athera_api.db import tenant_session
+    from athera_api.services.thesis import processing
+
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    thesis_id = uuid.UUID(answer.json()["thesis_id"])
+    old_claim = _no_background[0][1][2]
+
+    await _make_stale(tid, thesis_id)
+    async with tenant_session(tid, slot["user_id"]) as session:
+        new_claim = await processing.claim_generation(
+            session, tenant_id=tid, thesis_id=thesis_id)
+    assert new_claim.fence != old_claim.fence, "السياجُ لم يتبدّل بالاستعادة"
+
+    # والقديمُ يحاول أن يكتب — بالسياج البائت.
+    async with tenant_session(tid, slot["user_id"]) as session:
+        with pytest.raises(processing.ProcessingSuperseded):
+            await processing.hold(session, old_claim, tenant_id=tid)
+    async with tenant_session(tid, slot["user_id"]) as session:
+        with pytest.raises(processing.ProcessingSuperseded):
+            await processing.advance(session, old_claim, tenant_id=tid,
+                                     state=processing.EXTRACTING)
+
+    state, _a, changed, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+    assert changed == new_claim.fence, "كتب البائتُ فوق سياجِ من استلم"
+    assert state == processing.QUEUED, f"الحالُ تبدّلت بيدِ بائت: {state}"
+
+
+@requires_db
+async def test_08_concurrent_thesis_creation_yields_exactly_one(two_tenants):
+    """(٦) طلبان متزامنان على ملفٍّ واحد: **رسالةٌ واحدةٌ**، ولا ٥٠٠."""
+    import asyncio
+
+    from athera_api.db import tenant_session
+    from athera_api.services.document_intelligence import pipeline
+    from tests.test_at_rc_t1_h3b_remaining_external_waits import _make_file
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    file_id = await _make_file(slot)
+
+    async def _create():
+        async with tenant_session(tid, uid) as session:
+            thesis, created = await pipeline.ensure_thesis_for_file(
+                session, tenant_id=tid, file_id=file_id)
+            return thesis.id, created
+
+    first, second = await asyncio.gather(_create(), _create())
+    assert first[0] == second[0], "معرّفان مختلفان لملفٍّ واحد"
+    assert [first[1], second[1]].count(True) == 1, "أُنشئت رسالتان"
+    assert await _count(
+        "SELECT count(*) FROM theses WHERE file_id = :f", {"f": str(file_id)}) == 1
+
+
+# ═════════════════ ٢ · الأقسام: جيلُ تنفيذٍ لكلِّ قسمٍ على حدة ═════════════════
+
+
+def _grant(slot, file_id):
+    """إذنُ المعالجةِ الخارجيّة — فبدونه لا يُنادى نموذج."""
+    from athera_api.db import tenant_session
+    from athera_api.services import consent
+
+    async def _run():
+        async with tenant_session(slot["tenant_id"], slot["user_id"]) as session:
+            await consent.record_decision(
+                session, tenant_id=slot["tenant_id"], file_id=file_id,
+                actor_user_id=slot["user_id"], granted=True,
+                provider="anthropic", model="m")
+    return _run()
+
+
+def _batch():
+    """حِملُ استخراجٍ صالحٌ بلا وقائع — فالمقصودُ عددُ النداءات لا محتواها."""
+    return {"facts": []}
+
+
+async def _ready_thesis(slot):
+    """رسالةٌ مرفوعةٌ مأذونٌ لها، ومطالبةُ جيلها."""
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    body = answer.json()
+    await _grant(slot, uuid.UUID(body["file_id"]))
+    return uuid.UUID(body["thesis_id"]), uuid.UUID(body["file_id"])
+
+
+class _DiesAfter:
+    """مزوّدٌ ينجح مرّاتٍ ثمّ **تموت العمليّة** — لا يُخفق، بل يُقتَل.
+
+    و`CancelledError` ليست `Exception`، فلا يلتقطها مسارُ الفشل: تخرج من
+    العاملِ كما تخرج عند قتلِ العمليّة، وتُترك الحالُ **جارية** لا طرفيّة.
+    وهذا هو ما يُحاكَى: إعادةُ نشرٍ أثناء العمل.
+    """
+
+    name = "fake"
+
+    def __init__(self, succeed: int) -> None:
+        self.succeed = succeed
+        self.calls = 0
+
+    async def generate_structured(self, request):
+        import asyncio
+
+        from athera_api.providers.base import ModelResponse, ModelUsage
+
+        self.calls += 1
+        if self.calls > self.succeed:
+            raise asyncio.CancelledError("process died")
+        return ModelResponse(
+            content="", provider="fake", model="m",
+            usage=ModelUsage(input_tokens=1, output_tokens=1, cost_usd=0.0,
+                             latency_ms=1),
+            structured=_batch())
+
+    async def embed(self, texts, *, model=None):  # pragma: no cover
+        return [[0.0] * 4 for _ in texts]
+
+    async def stream(self, request):  # pragma: no cover
+        yield ""
+
+
+async def _ledger_rows(tid):
+    return await _rows(
+        "SELECT state, response_status FROM idempotency_records"
+        "  WHERE tenant_id = :t AND operation = 'INTERNAL thesis.document.section'"
+        "  ORDER BY created_at", {"t": str(tid)})
+
+
+@requires_db
+async def test_09_a_completed_section_is_never_called_again(
+    two_tenants, _no_background, monkeypatch,
+):
+    """(١٥) قسمٌ تمّ ثمّ ماتت العمليّة: الاستئنافُ **لا ينادِيه ثانيةً**.
+
+    ولا يُدرج مرشّحاتِه مرّتين — فـ«تمّ» أُودعت مع الأثر لا قبله.
+    """
+    import asyncio
+
+    from athera_api.config import get_settings
+    from athera_api.db import tenant_session
+    from athera_api.routers import document_intelligence as di
+    from athera_api.services.thesis import processing
+    from tests.test_at_rc_t1_h2b4_model_ambiguity import _activate
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    thesis_id, _file_id = await _ready_thesis(slot)
+    claim = _no_background[0][1][2]
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C2", raising=False)
+
+    dying = _DiesAfter(succeed=1)
+    _activate(monkeypatch, dying)
+    with pytest.raises(asyncio.CancelledError):
+        await di._process(tid, uid, claim, "ar")
+
+    ledger = await _ledger_rows(tid)
+    completed = [r for r in ledger if r[0] == "completed"]
+    assert len(completed) == 1, f"لم يُثبَّت قسمٌ واحدٌ تامًّا: {ledger}"
+    candidates = await _count(
+        "SELECT count(*) FROM fact_candidates WHERE tenant_id = :t", {"t": str(tid)})
+
+    state, _a, _c, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+    assert state in processing.IN_FLIGHT, f"ماتت العمليّةُ فصارت الحالُ {state}"
+
+    # تُهجَر ثمّ تُستعاد **بالجيل نفسِه**.
+    await _make_stale(tid, thesis_id)
+    async with tenant_session(tid, uid) as session:
+        again = await processing.claim_generation(
+            session, tenant_id=tid, thesis_id=thesis_id)
+    assert again.recovered is True, "لم تُعَدّ استعادةً"
+    assert again.attempt == claim.attempt, "الاستعادةُ غيّرت الجيل"
+
+    resumed = _DiesAfter(succeed=99)
+    _activate(monkeypatch, resumed)
+    await di._process(tid, uid, again, "ar")
+
+    # **والدعوى دقيقة**: المستأنِفُ نادى الأقسامَ التي لا جيلَ لها وحدها.
+    # فلكلِّ قسمٍ مخطَّطٍ صفٌّ في السِّجلّ بعد أن يمرّ عليه عاملٌ — فالفرقُ
+    # بين ما كان وما صار هو عددُ ما نُودي، لا أكثر ولا أقلّ.
+    after = await _ledger_rows(tid)
+    assert resumed.calls == len(after) - len(ledger), (
+        f"نُودي {resumed.calls} قسمًا، والجديدُ منها {len(after) - len(ledger)} — "
+        "أي أُعيد نداءُ قسمٍ له جيلٌ سابق")
+    assert len([r for r in after if r[0] == "completed"]) > len(completed)
+    assert await _count(
+        "SELECT count(*) FROM fact_candidates WHERE tenant_id = :t",
+        {"t": str(tid)}) >= candidates, "نقصت المرشّحاتُ بالاستئناف"
+    assert await _count(
+        "SELECT count(*) FROM extraction_runs WHERE tenant_id = :t",
+        {"t": str(tid)}) == 1, "أُنشئت تشغيلةٌ ثانيةٌ للمحاولة نفسِها"
+
+
+@requires_db
+async def test_10_an_external_attempted_section_is_never_recalled(
+    two_tenants, _no_background, monkeypatch,
+):
+    """(١٧/١٩) وُسم العبورُ ثمّ ماتت العمليّة: **صفرُ نداءٍ ثانٍ لذلك القسم**."""
+    import asyncio
+
+    from athera_api.config import get_settings
+    from athera_api.db import tenant_session
+    from athera_api.routers import document_intelligence as di
+    from athera_api.services.idempotency import EXTERNAL_MARKER
+    from athera_api.services.thesis import processing
+    from tests.test_at_rc_t1_h2b4_model_ambiguity import _activate
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    thesis_id, _file_id = await _ready_thesis(slot)
+    claim = _no_background[0][1][2]
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C2", raising=False)
+
+    # أوّلُ نداءٍ يُقتَل **بعد** أن وُسم عبورُ حدِّه.
+    dying = _DiesAfter(succeed=0)
+    _activate(monkeypatch, dying)
+    with pytest.raises(asyncio.CancelledError):
+        await di._process(tid, uid, claim, "ar")
+    assert dying.calls == 1, dying.calls
+
+    marked = await _rows(
+        "SELECT response_body FROM idempotency_records WHERE tenant_id = :t"
+        "   AND operation = 'INTERNAL thesis.document.section'", {"t": str(tid)})
+    assert any(isinstance(r[0], dict) and EXTERNAL_MARKER in r[0] for r in marked), \
+        f"لم يُدوَّن عبورُ الحدّ: {marked}"
+
+    await _make_stale(tid, thesis_id)
+    async with tenant_session(tid, uid) as session:
+        again = await processing.claim_generation(
+            session, tenant_id=tid, thesis_id=thesis_id)
+    assert again.attempt == claim.attempt, "صار جيلًا جديدًا بلا قرارِ باحث"
+
+    resumed = _DiesAfter(succeed=99)
+    _activate(monkeypatch, resumed)
+    await di._process(tid, uid, again, "ar")
+
+    # **والقسمُ الموسومُ لم يُنادَ ثانيةً**، والبقيّةُ جاز لها مرّةً واحدة.
+    after = await _ledger_rows(tid)
+    assert resumed.calls == len(after) - len(marked), (
+        f"نُودي {resumed.calls} قسمًا، والجديدُ منها {len(after) - len(marked)} — "
+        "أي أُعيد نداءُ القسمِ الموسوم")
+    still_unknown = [r for r in after if r[0] == "in_progress"]
+    assert still_unknown, "زال الوسمُ عن القسم المجهول"
+
+    state, _a, _c, _f, failure_code, failure_detail = await _thesis_row(tid, thesis_id)
+    assert state == processing.FAILED, f"ادُّعي اكتمالٌ وقسمٌ مجهولُ الأثر: {state}"
+    assert failure_code == "extraction_failed", failure_code
+    assert "unknown" in (failure_detail or "").lower(), failure_detail
+    for lie in ("provider failed", "did not run", "was not executed"):
+        assert lie not in (failure_detail or "").lower(), failure_detail
+
+
+@requires_db
+async def test_11_a_new_deliberate_attempt_may_call_the_model_again(
+    two_tenants, _no_background, monkeypatch,
+):
+    """(٢٠) إعادةٌ مقصودةٌ بعد غموض: جيلٌ جديد، وتشغيلةٌ جديدة، ونداءٌ مأذون."""
+    from athera_api.config import get_settings
+    from athera_api.db import tenant_session
+    from athera_api.routers import document_intelligence as di
+    from athera_api.services.document_intelligence import pipeline
+    from athera_api.services.thesis import processing
+    from tests.test_at_rc_t1_h2b4_model_ambiguity import _activate
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    thesis_id, file_id = await _ready_thesis(slot)
+    claim = _no_background[0][1][2]
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C2", raising=False)
+
+    calls = {"n": 0}
+
+    class _Timeout:
+        name = "fake"
+
+        async def generate_structured(self, request):
+            calls["n"] += 1
+            raise TimeoutError("provider timed out")
+
+    _activate(monkeypatch, _Timeout())
+    await di._process(tid, uid, claim, "ar")
+    ambiguous_calls = calls["n"]
+
+    # والباحثُ يقرّر إعادةً جديدة — والحالُ طرفيّةٌ تقبلها.
+    async with tenant_session(tid, uid) as session:
+        fresh = await processing.claim_generation(
+            session, tenant_id=tid, thesis_id=thesis_id)
+    assert fresh.recovered is False, "عُدَّت استعادةً وهي إعادةٌ مقصودة"
+    assert fresh.attempt == claim.attempt + 1, "رقمُ المحاولةِ لم يزد"
+    assert pipeline.run_id_for(tid, file_id, fresh.attempt) != \
+        pipeline.run_id_for(tid, file_id, claim.attempt), "التشغيلةُ لم تتغيّر"
+
+    await di._process(tid, uid, fresh, "ar")
+    assert calls["n"] > ambiguous_calls, "الجيلُ الجديدُ لم يُؤذَن له بالنداء"

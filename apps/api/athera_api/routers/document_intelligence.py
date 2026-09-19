@@ -327,7 +327,6 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID,
         # وما استُبعد يُسجَّل عددًا لا نصًّا: «حُجبت ثلاثة مقاطع لوجود معرّفات
         # شخصية» معلومةٌ للباحث وللتدقيق، ومحتواها ليس كذلك.
         async with session_maker() as session:
-            await processing.hold(session, claim, tenant_id=tenant_id)
             await audit.record(
                 session, tenant_id=tenant_id, action="thesis.extraction_completed",
                 object_type="file", object_id=file_id, actor_user_id=actor_id,
@@ -347,14 +346,6 @@ async def _process(tenant_id: uuid.UUID, actor_id: uuid.UUID,
                 reason="document read and structured proposals recorded; "
                        "nothing verified yet",
             )
-            # ── وقسمٌ لا يُعرف أثرُه يمنع دعوى الاكتمال ──
-            if result.status is Status.EXTRACTION_FAILED:
-                await processing.advance(
-                    session, claim, tenant_id=tenant_id, state=processing.FAILED,
-                    failure_code="extraction_failed",
-                    # **ولا يُقال إنّ المزوّدَ أخفق ولا إنّه لم يُنفّذ.**
-                    failure_detail="extraction could not be completed: the external "
-                                   "result for one or more sections is unknown")
     except processing.ProcessingSuperseded:
         # استُعيدت المحاولةُ منّا أثناء العمل: **لا نكتب حرفًا فوق من استلم**.
         logger.info("document_intelligence: superseded mid-flight, thesis %s attempt %s",

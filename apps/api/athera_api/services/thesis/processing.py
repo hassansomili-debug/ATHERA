@@ -676,10 +676,12 @@ async def within_ledger_horizon(
     run_id = run_id_for(tenant_id, file_id, attempt)
     # لا تشغيلةَ بعد؟ فلا سِجلَّ أقسامٍ يُخشى انقضاؤه — والاستعادةُ آمنة.
     horizon = TTL - STALE_AFTER
+    # **و`make_interval` لا نصٌّ يُحوَّل**: asyncpg لا يربط نصًّا بنوع
+    # `interval`، فيسقط النداءُ في وقت التشغيل لا في الفحص الساكن.
     safe = (await session.execute(
-        text("SELECT started_at > now() - CAST(:horizon AS interval) "
+        text("SELECT started_at > now() - make_interval(secs => :horizon) "
              "  FROM extraction_runs WHERE id = :run_id AND tenant_id = :tenant_id"),
-        {"horizon": f"{int(horizon.total_seconds())} seconds",
+        {"horizon": int(horizon.total_seconds()),
          "run_id": str(run_id), "tenant_id": str(tenant_id)},
     )).scalar_one_or_none()
     return True if safe is None else bool(safe)
@@ -851,3 +853,31 @@ async def start_worker(
         return await advance(session, claim, tenant_id=tenant_id, state=PARSING)
     except ProcessingSuperseded:
         return None
+
+
+@dataclass(slots=True)
+class ClaimHolder:
+    """حاملُ مطالبةٍ يتقدّم سياجُها مع العمل — **ويُمرَّر حيث تُكتب الحال**.
+
+    والمطالبةُ قيمةٌ مجمّدة، وكلُّ انتقالٍ يُنتج سياجًا جديدًا. فلو مُرِّرت
+    قيمةً خامًّا عبر طبقات الخطّ لضاع التقدّمُ بين الطبقات: يكتب الطورُ
+    الأوّلُ طابعًا جديدًا، ويبقى من بعده يحمل القديمَ فيُردّ بائتًا — **وهو
+    يعمل بحقّ**. فالحاملُ يحفظ الأحدثَ ويُمرَّر بمرجعه.
+
+    و`None` تعني «بلا جيل»: نصوصٌ وفحوصُ وحدةٍ تنادي الخطَّ مباشرةً، فيبقى
+    سلوكُها القديمُ حرفيًّا بلا سياجٍ يُفرض عليها.
+    """
+
+    claim: ProcessingClaim | None = None
+
+    async def advance(self, session: AsyncSession, *, tenant_id: uuid.UUID,
+                      file_id: uuid.UUID | None = None, **values) -> None:
+        """ينقل الحالَ تحت السياج، أو بلا سياجٍ إن لم يكن جيل."""
+        if self.claim is None:
+            await mark(session, tenant_id=tenant_id, file_id=file_id, **values)
+            return
+        self.claim = await advance(session, self.claim, tenant_id=tenant_id, **values)
+
+    async def hold(self, session: AsyncSession, *, tenant_id: uuid.UUID) -> None:
+        if self.claim is not None:
+            await hold(session, self.claim, tenant_id=tenant_id)

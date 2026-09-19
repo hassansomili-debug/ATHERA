@@ -1358,14 +1358,16 @@ def _stale_expression(state_column, changed_column):
     واحد. والعتبةُ من `processing.STALE_AFTER` المشتقّةِ من زمنِ العملِ
     نفسِه، فلا رقمَ يُكتب هنا ولا ينفصل عنها.
     """
-    from sqlalchemy import Interval, and_, cast, func, literal, or_  # noqa: PLC0415
+    from sqlalchemy import and_, func, or_  # noqa: PLC0415
 
+    # **و`make_interval` بعددٍ لا نصٌّ يُحوَّل**: ربطُ نصٍّ بنوع `interval`
+    # يسقط في asyncpg وقتَ التشغيل، ولا يراه فحصٌ ساكن.
     return and_(
         state_column.in_(processing.IN_FLIGHT),
         or_(changed_column.is_(None),
-            changed_column <= func.now() - cast(
-                literal(f"{int(processing.STALE_AFTER.total_seconds())} seconds"),
-                Interval)),
+            changed_column <= func.now() - func.make_interval(
+                0, 0, 0, 0, 0, 0,
+                int(processing.STALE_AFTER.total_seconds()))),
     )
 
 
