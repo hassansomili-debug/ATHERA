@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useAdminAccess } from "@/lib/admin";
+
 /**
  * روابط التنقّل — **وواحدٌ منها نشط، لا أكثر**.
  *
@@ -39,6 +41,14 @@ export interface NavGroup {
   /** عنوان مجموعة دلالية — و`null` لما لا يحتاج عنوانًا. */
   label: string | null;
   items: NavItem[];
+  /**
+   * **للمديرين وحدهم** (المرحلة ٩) — ظهورٌ لا إذن.
+   *
+   * إخفاءُ الرابط ليس حمايةً: مساراتُ `/api/v1/admin` يحرسها الخادم، ومن
+   * يكتب العنوانَ بيده يلقى ٤٠٣ لا بيانات. والظهورُ هنا يتبع ادّعاءَ الأدوار
+   * في رمز الجلسة، وهو نفسُه ما يحكم به الخادم.
+   */
+  adminOnly?: boolean;
 }
 
 /** أول مقطع بعد اللغة: `/ar/portfolio/123` ← `portfolio`، و`/ar` ← `""`. */
@@ -68,11 +78,14 @@ export function NavLinks({
   label: string;
 }) {
   const pathname = usePathname() ?? `/${locale}`;
-  const active = activeKey(groups, segmentOf(pathname, locale));
+  // **يُعاد النظرُ مع كلّ انتقال** — فالجلسةُ قد تتجدّد أو تنتهي بين صفحتين.
+  const isAdmin = useAdminAccess();
+  const visible = groups.filter((group) => !group.adminOnly || isAdmin);
+  const active = activeKey(visible, segmentOf(pathname, locale));
 
   return (
     <nav aria-label={label}>
-      {groups.map((group) => (
+      {visible.map((group) => (
         <div className="nav-group" key={group.id}>
           {group.label ? (
             <h2 className="nav-label" id={`nav-${group.id}`}>

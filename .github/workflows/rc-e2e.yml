@@ -221,6 +221,18 @@ jobs:
         env:
           PUBRIVA_WEB_SERVER: external
 
+      # ── لوحة الإدارة V1 (المرحلة ٩)، على المكدّس نفسِه ──
+      #
+      # **موضعُها هنا لا في `ci.yml`.** المديرُ يُسجَّل من الواجهة، ويُمنح دورًا
+      # إداريًّا وعاملَ TOTP مؤكَّدًا في القاعدة الحيّة، ثمّ يدخل **برمز TOTP
+      # حقيقيّ** — فسياسةُ MFA للأدوار الإداريّة سارية هنا كما في الإنتاج.
+      # والعزلُ بين مساحتين حقيقيّتين، والحمولاتُ البحثيّةُ المزروعة لا تظهر.
+      - name: Admin console V1 (real browser · real API · real MFA · two workspaces)
+        run: cd apps/web && npm run test:admin-console
+        env:
+          PUBRIVA_WEB_SERVER: external
+          PUBRIVA_API_PYTHON: python
+
       # ── والتعاونُ البحثيُّ عبر ثلاث مؤسسات، على المكدّس نفسِه ──
       #
       # **موضعُها هنا لا في `ci.yml`.** الرحلةُ تُسجّل ثلاثةَ حساباتٍ في

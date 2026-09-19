@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { use, useCallback, useState } from "react";
 
 import { AtheraApiError, apiFetch } from "@/lib/api";
@@ -86,6 +87,9 @@ export default function AuditPage({ params }: { params: Promise<{ locale: string
       <h1>{t("audit.title")}</h1>
       <p style={{ color: "var(--muted)", marginBlockStart: 0 }}>{t("audit.subtitle")}</p>
       <p className="provenance-note">{t("audit.appendOnlyNote")}</p>
+      {/* **وطريقٌ إلى لوحة الإدارة** (المرحلة ٩): السجلُّ قسمٌ منها لا شاشةٌ معزولة،
+          ولا يُكرَّر فيها — فالرابطُ هنا وهناك. */}
+      <p><Link href={`/${locale}/admin`} data-testid="audit-back-to-admin">{t("admin.title")}</Link></p>
       {error ? <p className="error">{error}</p> : null}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockEnd: 12 }}>
