@@ -451,6 +451,9 @@ async def upload_thesis(
     if isinstance(stored, JSONResponse):
         # ══ إعادةٌ مخزونة — **ولا تُعاد قبل فحصِ الحقِّ الحاضرِ والاستئناف** ══
         return await _replayed_upload(request, stored, principal, background)
+    # والاستكمالُ هو الذي بنى الجواب، فهو من صنفه — والتأكيدُ يُضيّق النوعَ
+    # لا أكثر: متنُ الرفع يعيد ما يبنيه استكمالُ المُنادي حين يُمرَّر.
+    assert isinstance(stored, ExtractionStateResponse)  # noqa: S101
 
     # ← أُودعت المعاملةُ هنا، فترى المهمّةُ الملفَّ والسجلَّ معًا.
     if claimed["claim"] is not None:

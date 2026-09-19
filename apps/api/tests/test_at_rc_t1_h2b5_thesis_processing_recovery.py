@@ -279,8 +279,7 @@ async def test_06_a_duplicate_background_task_does_no_work(
 
     slot = two_tenants["a"]
     tid, uid = slot["tenant_id"], slot["user_id"]
-    answer = await _upload(slot, key=uuid.uuid4().hex)
-    thesis_id = uuid.UUID(answer.json()["thesis_id"])
+    await _upload(slot, key=uuid.uuid4().hex)
     claim = _no_background[0][1][2]
     assert isinstance(claim, processing.ProcessingClaim)
 
@@ -804,15 +803,17 @@ async def test_16_recovery_past_the_ledger_horizon_starts_a_new_generation(
             started_at=__import__("datetime").datetime.now(
                 __import__("datetime").UTC)))
 
+    # **واسمٌ آخرُ عمدًا**: `session` يخصّ نطاقَ `tenant_session` الذي أُغلق،
+    # وإعادةُ استعماله تُخفي عمرَ الجلسة — وهو ما يرصده حارسُ دورة الحياة.
     engine, factory = await _observer()
     try:
-        async with factory() as session:
-            await session.execute(
+        async with factory() as observer:
+            await observer.execute(
                 text("UPDATE extraction_runs SET started_at ="
                      "        now() - make_interval(secs => :back)"
                      " WHERE id = :r"),
                 {"back": int(TTL.total_seconds()) + 3600, "r": str(run_id)})
-            await session.commit()
+            await observer.commit()
     finally:
         await engine.dispose()
 
