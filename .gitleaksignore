@@ -1,0 +1,6 @@
+# بلاغان كاذبان من قاعدة `generic-api-key` — مُثبَّتان ببصمتهما في الالتزام نفسِه لا بنمط.
+# كلاهما في فحص المرحلة ٩ عند `acec612`: ثابتٌ اسمه `RESEARCH_SECRET` يحمل نصًّا بحثيًّا
+# مزروعًا لفحص الخصوصيّة، واسمُ وكيلٍ في تجهيزة (السطر ١٢٩). لا مفتاحَ ولا سرّ. وقد أُعيدت
+# تسميتهما بعد ذلك، فلا يُبلَّغ عنهما في أيّ التزامٍ لاحق.
+acec612d70a92e86fa75b4c6f5a26c8ed51bcd5d:apps/api/tests/test_at_stage9_admin_console.py:generic-api-key:39
+acec612d70a92e86fa75b4c6f5a26c8ed51bcd5d:apps/api/tests/test_at_stage9_admin_console.py:generic-api-key:129

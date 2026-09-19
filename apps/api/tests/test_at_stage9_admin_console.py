@@ -36,7 +36,7 @@ ENDPOINTS = ("/api/v1/admin/overview", "/api/v1/admin/users", "/api/v1/admin/pro
              "/api/v1/admin/usage", "/api/v1/admin/operations")
 
 #: نصٌّ بحثيٌّ يُزرع في كلّ حمولةٍ وخطأ — ولا يجوز أن يظهر في جوابٍ إداريّ.
-RESEARCH_SECRET = "BAYESIAN-HIPPOCAMPUS-COHORT-7731"
+RESEARCH_TEXT = "BAYESIAN-HIPPOCAMPUS-COHORT-7731"
 
 
 # ═════════════════════════════ التجهيز ═════════════════════════════
@@ -113,7 +113,7 @@ async def _file(tenant_id, owner_id, *, size=1000, trashed=False) -> uuid.UUID:
 
     async with tenant_session(tenant_id, owner_id) as session:
         row = File(tenant_id=tenant_id, storage_key=f"t/{uuid.uuid4()}",
-                   original_filename=f"{RESEARCH_SECRET}.pdf", content_type="application/pdf",
+                   original_filename=f"{RESEARCH_TEXT}.pdf", content_type="application/pdf",
                    size_bytes=size, classification="C2", is_untrusted_content=True,
                    status="stored", uploaded_by=owner_id,
                    trashed_at=dt.datetime.now(dt.UTC) if trashed else None,
@@ -130,12 +130,12 @@ async def _runs(tenant_id, requester, specs: list[dict], *, days_ago: int = 0) -
 
     stamp = dt.datetime.now(dt.UTC) - dt.timedelta(days=days_ago)
     async with tenant_session(tenant_id, requester) as session:
-        agent = AgentRun(tenant_id=tenant_id, agent_key="stage9.fixture", status="failed",
+        agent = AgentRun(tenant_id=tenant_id, agent_key="fixture", status="failed",
                          started_at=stamp, finished_at=stamp, requested_by=requester,
                          trace_id=uuid.uuid4(),
-                         input_summary={"text": RESEARCH_SECRET},
-                         output_summary={"text": RESEARCH_SECRET},
-                         error=f"boom {RESEARCH_SECRET}", created_at=stamp)
+                         input_summary={"text": RESEARCH_TEXT},
+                         output_summary={"text": RESEARCH_TEXT},
+                         error=f"boom {RESEARCH_TEXT}", created_at=stamp)
         session.add(agent)
         await session.flush()
         for spec in specs:
@@ -145,13 +145,13 @@ async def _runs(tenant_id, requester, specs: list[dict], *, days_ago: int = 0) -
                 input_tokens=spec["input"], output_tokens=spec["output"],
                 cost_usd=spec.get("cost"), latency_ms=spec.get("latency"),
                 status=spec.get("status", "ok"),
-                error=f"model said {RESEARCH_SECRET}" if spec.get("status") == "error" else None,
+                error=f"model said {RESEARCH_TEXT}" if spec.get("status") == "error" else None,
                 created_at=stamp))
         session.add(ToolRun(tenant_id=tenant_id, agent_run_id=agent.id, tool_key="search",
                             status="error", duration_ms=12, tool_kind="read",
-                            request_payload={"q": RESEARCH_SECRET},
-                            response_payload={"hits": [RESEARCH_SECRET]},
-                            error=f"tool {RESEARCH_SECRET}", created_at=stamp))
+                            request_payload={"q": RESEARCH_TEXT},
+                            response_payload={"hits": [RESEARCH_TEXT]},
+                            error=f"tool {RESEARCH_TEXT}", created_at=stamp))
 
 
 async def _get(slot, url, **kw):
@@ -530,7 +530,7 @@ async def _thesis(tenant_id, owner_id, *, state="failed", code="parse_failed") -
     async with tenant_session(tenant_id, owner_id) as session:
         row = Thesis(tenant_id=tenant_id, title_ar="رسالةٌ للفحص", file_id=file_id,
                      processing_state=state, failure_code=code,
-                     failure_detail=f"detail {RESEARCH_SECRET}" if code else None,
+                     failure_detail=f"detail {RESEARCH_TEXT}" if code else None,
                      text_layer_state="present" if state != "text_layer_missing" else "absent",
                      processing_state_changed_at=dt.datetime.now(dt.UTC))
         session.add(row)
@@ -575,7 +575,7 @@ async def test_20_no_research_payload_reaches_any_admin_response(two_tenants):
             "/api/v1/admin/operations?view=all", "/api/v1/admin/usage?window=90d"]
     for url in urls:
         body = (await _get(a, url)).text
-        assert RESEARCH_SECRET not in body, f"نصٌّ بحثيٌّ في {url}"
+        assert RESEARCH_TEXT not in body, f"نصٌّ بحثيٌّ في {url}"
         for field in ("request_payload", "response_payload", "input_summary",
                       "password_hash", "failure_detail"):
             assert field not in body, f"{field} في {url}"
