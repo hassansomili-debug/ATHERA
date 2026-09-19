@@ -62,6 +62,21 @@ test-api: ## اختبارات القبول | acceptance tests AT-S0-*
 test-arch: ## اختبارات معمارية | architecture boundary tests (§38.6.8)
 	cd apps/api && lint-imports && pytest -v tests/test_at_s0_08_09_boundaries.py
 
+rc-t1-h2: ## حزمةُ إغلاق RC-T1-H2 | the focused H2 closure set
+	@cd apps/api && pytest -q \
+	  tests/test_at_rc_t1_h2a_idempotency.py \
+	  tests/test_at_rc_t1_h2b1_lease.py \
+	  tests/test_at_rc_t1_h2b1_scanner_coverage.py \
+	  tests/test_at_rc_t1_h2b2_external_read_flows.py \
+	  tests/test_at_rc_t1_h2b3_file_storage.py \
+	  tests/test_at_rc_t1_h2b4_model_ambiguity.py \
+	  tests/test_at_rc_t1_h2b5_thesis_processing_recovery.py \
+	  tests/test_at_stage6_web_key_reaches_provider_once.py \
+	  tests/test_at_rc_t1_h2_closure_contract.py
+	@echo "هذا سطحُ الـAPI وحدَه. والبقيّةُ بوّابتان منفصلتان (RC-T1-H2-closure.md):"
+	@echo "  cd apps/web && npm run test:rc-t1-h2       # 42 — السياسةُ والمتصفّح"
+	@echo "  cd apps/web && npm run test:idem-fullstack # 5  — يحتاج API وقاعدةً حيّين"
+
 lint: ## فحص | lint & type-check
 	cd apps/api && ruff check . && mypy athera_api
 	cd apps/web && pnpm lint && pnpm typecheck
@@ -73,4 +88,4 @@ verify-audit: ## التحقق من سلسلة التدقيق | verify audit hash
 	cd apps/api && python -m athera_api.services.audit_verify
 
 .PHONY: help dev down migrate migrate-down test test-api test-arch test-offline \
-	verify-constraints migrate-roundtrip lint openapi verify-audit
+	verify-constraints migrate-roundtrip lint openapi verify-audit rc-t1-h2

@@ -21,8 +21,8 @@ Automatic crash recovery                                 : NOT CLAIMED
 BackgroundTasks surviving process death                  : NOT CLAIMED — it does not
 Exactly-once processing                                  : NOT CLAIMED
 Exactly-once model execution                             : NOT CLAIMED
-RC-T1-H2 globally                                        : NOT CLOSED
-Web Idempotency-Key adoption                             : OPEN — later work
+RC-T1-H2 globally                                        : CLOSED — RC-T1-H2-closure.md
+Web Idempotency-Key adoption                             : CLOSED — Stage 6
 ```
 
 **والدعوى المأذونة حرفيًّا:**
