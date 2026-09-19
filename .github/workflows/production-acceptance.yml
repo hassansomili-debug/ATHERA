@@ -183,10 +183,15 @@ jobs:
       #
       # **ولمَ هنا، ولمَ أوّلًا.**
       #
-      # رحلةُ المتصفّح تُثبت أنّ المنتجَ لم ينكسر، **ولا تمسّ H2-A بحرف**:
-      # الوِبُّ لا يُرسل `Idempotency-Key` بعد، وذاك بندٌ مفتوحٌ مُعلَن. فبقي
-      # أنّ بنيةَ تحمُّلِ الإعادة تُنشر ولا يُجرَّب منها شيءٌ على الإنتاج —
-      # وحارسُ المخطَّط في `production-release.yml` لا يفحص جدولَها أصلًا.
+      # رحلةُ المتصفّح تُثبت أنّ المنتجَ لم ينكسر، **ولا تفحص طبقةَ التكرار
+      # بحرف**: رحلتُها رحلةُ منتجٍ لا رحلةُ مفاتيح. والوِبُّ صار يُرسل
+      # `Idempotency-Key` على مساراته المحميّة منذ المرحلة ٦، غير أنّ إرسالَه
+      # شيءٌ وإثباتَ أثرِه على الإنتاج شيءٌ آخر — وحارسُ المخطَّط في
+      # `production-release.yml` لا يفحص جدولَها أصلًا.
+      #
+      # **وحدُّ هذا المشغّل يبقى حدَّه**: لا يثبت إلّا السطوحَ التي ينفّذها،
+      # ولا يُشتقّ منه إغلاقُ RC-T1-H2 ولا العكس. والإغلاقُ الهندسيُّ مدوَّنٌ
+      # عند جيلِ مستودعٍ بعينه في `docs/maintenance/RC-T1-H2-closure.md`.
       #
       # فيُطرق البابُ بطلبٍ حقيقيّ، **وقبل رحلةِ المتصفّح**: لو سقط البرهانُ
       # لَما صحّ أن تُقال «القبولُ أخضر» بأيّ درجة. وهو شرطٌ لا خطوةٌ
@@ -318,9 +323,16 @@ jobs:
             echo "response, and the durable record is readable by its own actor"
             echo "through the tenant+actor row policy."
             echo ""
-            echo "**What it does NOT prove:** the other three H2-A routes in"
-            echo "production, H2-B, Web key adoption, exactly-once external"
-            echo "effects, or outbox guarantees. RC-T1-H2 is **not** closed."
+            echo "**What it does NOT prove:** the other keyed routes in"
+            echo "production, H2-B1..B5 behaviour in production, Web key"
+            echo "adoption in production, exactly-once external effects, or"
+            echo "outbox guarantees."
+            echo ""
+            echo "RC-T1-H2 is closed as an **engineering package at a verified"
+            echo "repository generation** (docs/maintenance/RC-T1-H2-closure.md)."
+            echo "That closure is not asserted by this workflow, and this"
+            echo "workflow does not certify that production runs that"
+            echo "generation. Neither statement implies the other."
             echo ""
             echo "This does **not** declare PRODUCTION GREEN."
             echo "That remains the owner's own golden journey (runbook §9)."

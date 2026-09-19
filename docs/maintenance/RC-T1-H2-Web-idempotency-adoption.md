@@ -30,7 +30,7 @@ A durable browser queue                                : NOT CLAIMED — none ex
 Exactly-once model execution                           : NOT CLAIMED
 Exactly-once storage writes                            : NOT CLAIMED
 Cross-tab or cross-device intent sharing               : NOT CLAIMED — tab-scoped
-RC-T1-H2 globally                                      : NOT CLOSED
+RC-T1-H2 globally                                      : CLOSED — RC-T1-H2-closure.md
 ```
 
 **والدعوى المأذونة حرفيًّا:**
