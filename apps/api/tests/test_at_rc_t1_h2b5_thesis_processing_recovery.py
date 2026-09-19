@@ -1023,3 +1023,118 @@ def test_22_no_transaction_spans_an_external_wait() -> None:
 
     offenders = list(audit().offenders())
     assert offenders == [], f"معاملةٌ تمتدّ على انتظارٍ خارجيّ: {offenders}"
+
+
+def test_23_the_worker_converts_its_claim_before_anything_else() -> None:
+    """**ولا يُصدَّق الرمزُ الممرَّرُ بلا فحص** — وأوّلُ فعلٍ هو التحويل.
+
+    والسياجُ على كلِّ كتابةٍ يمنع الخاسرَ أن يكتب، وذاك صحيح. لكنّ العقدَ
+    أضيقُ من ذلك: **أوّلُ فعلٍ في القاعدة** تحويلُ المطالبة. فبدونه يمضي
+    الخاسرُ في قراءةٍ وجلبٍ من التخزين وتفكيكٍ قبل أن يُردّ — عملٌ مدفوعٌ
+    لا أثرَ له، وقد يكون نداءً خارجيًّا.
+
+    فيُقاس بالبنية: `start_worker` تُنادى، وقبل أيّ نداءٍ للخطّ أو للتخزين،
+    والانسحابُ عند `None` صريح.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from athera_api.routers import document_intelligence as router_module
+
+    source = textwrap.dedent(inspect.getsource(router_module._process))
+    tree = ast.parse(source)
+
+    starts = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call)
+              and ast.unparse(n.func).endswith("start_worker")]
+    assert starts, "العاملُ لا يُحوّل مطالبتَه أصلًا"
+
+    LATER = ("run_extraction", "get_store", "run_in_threadpool", "_model_reader",
+             "authorization_for")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = ast.unparse(node.func)
+        if any(name.endswith(later) for later in LATER):
+            assert node.lineno > min(starts), (
+                f"`{name}` يقع قبل تحويلِ المطالبة — فالخاسرُ يعمل قبل أن يُردّ")
+
+    # والانسحابُ صريحٌ عند الخسارة، لا مجرّدُ اتّكالٍ على السياج.
+    assert "if started is None" in source, "لا انسحابَ صريحٌ للعاملِ الخاسر"
+
+
+@requires_db
+async def test_24_a_section_is_not_settled_unless_its_candidates_are_durable(
+    two_tenants, _no_background, monkeypatch,
+):
+    """**«تمّ» تُودَع مع الأثر أو لا تُودَع** — وهذا شرطُ الصحّةِ كلِّه.
+
+    فلو سبقت «تمّ» حفظَ المرشّحات لرأى الاستئنافُ قسمًا تامًّا **بلا أثر**،
+    فيتخطّاه — فيضيع عملٌ دُفع ثمنُه، بصمت. فيُكسر الحفظُ عمدًا، ويُشترط
+    ألّا يبقى للقسم إثباتُ تمام.
+    """
+    from athera_api.config import get_settings
+    from athera_api.routers import document_intelligence as di
+    from athera_api.services.document_intelligence import pipeline
+    from tests.test_at_rc_t1_h2b4_model_ambiguity import _Structured, _activate
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    await _ready_thesis(slot)
+    claim = _no_background[0][1][2]
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C2", raising=False)
+    _activate(monkeypatch, _Structured(_batch()))
+
+    async def _broken_absorb(*args, **kwargs):
+        raise RuntimeError("candidate write failed")
+
+    monkeypatch.setattr(pipeline, "absorb", _broken_absorb)
+    await di._process(tid, uid, claim, "ar")
+
+    settled = [r for r in await _ledger_rows(tid) if r[0] == "completed"]
+    assert settled == [], (
+        "أُثبت تمامُ قسمٍ ومرشّحاتُه لم تُودَع — فاستئنافٌ سيتخطّاه ويضيع عملُه")
+
+
+@requires_db
+async def test_25_the_same_section_with_other_science_conflicts(two_tenants):
+    """بصمةُ القسمِ معنًى علميّ — فمُدخلٌ آخرُ تحت الجيل نفسِه **صِدام**.
+
+    ولولا الملفُّ والمطالبةُ في البصمة لصار الجيلُ يقبل أيَّ مُدخلٍ ويُعيد
+    عليه «تمّ» — أي إثباتُ تمامٍ لعملٍ لم يقع على هذه الأدلّة.
+    """
+    from athera_api.db import tenant_session
+    from athera_api.services.document_intelligence import section_ledger
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    run_id = uuid.uuid4()
+
+    def _fp(prompt: str, checksum: str):
+        return section_ledger.section_fingerprint(
+            run_id=run_id, section="problem", checksum_sha256=checksum,
+            prompt=prompt, chunks=(("c1", "h1"),), field_keys=("x",),
+            locale="ar", provider="openai", model="m", capability="cap")
+
+    async with tenant_session(tid, uid) as session:
+        gate = await section_ledger.open_section(
+            session, tenant_id=tid, subject_id=uid, run_id=run_id,
+            section="problem", fingerprint=_fp("prompt-one", "a" * 64))
+        assert gate.outcome == "granted", gate.outcome
+        await section_ledger.settle_section(session, gate.lease,
+                                            accepted=1, rejected=0)
+
+    async with tenant_session(tid, uid) as session:
+        same = await section_ledger.open_section(
+            session, tenant_id=tid, subject_id=uid, run_id=run_id,
+            section="problem", fingerprint=_fp("prompt-one", "a" * 64))
+    assert same.outcome == "completed", f"لم يُعرَف القسمُ التامّ: {same.outcome}"
+
+    async with tenant_session(tid, uid) as session:
+        other = await section_ledger.open_section(
+            session, tenant_id=tid, subject_id=uid, run_id=run_id,
+            section="problem", fingerprint=_fp("prompt-two", "b" * 64))
+    assert other.outcome == "conflict", (
+        f"مُدخلٌ علميٌّ آخرُ قُبل تحت الجيل نفسِه: {other.outcome}")
+    assert not other.may_call_provider, "أُذن بنداءِ مزوّدٍ على صِدام"

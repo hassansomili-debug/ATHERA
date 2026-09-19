@@ -157,10 +157,19 @@ async def open_section(
     ‏• **`in_progress`** — عاملٌ آخرُ يحمل الجيلَ وإجارتُه حيّة.
     ‏• **`conflict`** — المفتاحُ نفسُه بمعنًى علميٍّ آخر: لا يُنادى المزوّد.
     """
-    outcome = await acquire_lease(
-        session, tenant_id=tenant_id, actor_user_id=subject_id,
-        operation=OPERATION, key=section_key(run_id, section),
-        fingerprint=fingerprint)
+    # **والصِّدامُ قرارٌ لا انفجار.** `acquire_lease` ترفع `KeyReused` حين
+    # يأتي المفتاحُ نفسُه بمعنًى آخر — وهو هنا حالٌ متوقّعةٌ تُعالَج: قسمٌ
+    # بلغه مُدخلٌ علميٌّ غيرُ الذي بُدئ عليه. فيُردّ بلا نداءِ مزوّد، ولا
+    # يُترك يخرج استثناءً فيسقط في مسارِ إخفاقٍ لا إجارةَ له فيُعطب.
+    from ..idempotency import KeyReused  # noqa: PLC0415
+
+    try:
+        outcome = await acquire_lease(
+            session, tenant_id=tenant_id, actor_user_id=subject_id,
+            operation=OPERATION, key=section_key(run_id, section),
+            fingerprint=fingerprint)
+    except KeyReused:
+        return SectionGate("conflict")
     if isinstance(outcome, Lease):
         return SectionGate("granted", outcome)
     if isinstance(outcome, Replay):
