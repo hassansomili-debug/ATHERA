@@ -187,10 +187,8 @@ test.describe("Stage 6 — model routes carry one key across a retry", () => {
     await generate().click();
     await expect.poll(() => gen.keys.length, { timeout: 30_000 }).toBe(1);
 
-    // **وإعادةُ التحميلِ لا تُضيع النيّة.** الشاشةُ لا تُبقي زرَّ التوليد
-    // بعد فشلٍ (دَينٌ سابقٌ لهذه المرحلة)، فيعود الباحثُ إليها — والسجلُّ
-    // في `sessionStorage` يعبر التحميلَ الجديد بمفتاحِه هو.
-    await page.reload();
+    // **والزرُّ باقٍ بعد الإخفاق** (المرحلة ٨): كان يختفي فيلتفّ هذا الفحصُ
+    // بإعادة تحميل الصفحة. والإعادةُ الآن من الشاشة نفسِها، بالمفتاح نفسِه.
     await open();
     await generate().click();
     await expect.poll(() => gen.keys.length, { timeout: 30_000 }).toBe(2);

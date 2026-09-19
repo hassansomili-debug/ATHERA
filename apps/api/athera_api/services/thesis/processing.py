@@ -345,10 +345,6 @@ class ProcessingConflict(Exception):
         super().__init__(code)
 
 
-def _now() -> dt.datetime:
-    return dt.datetime.now(dt.UTC)
-
-
 async def mark(
     session: AsyncSession,
     *,
@@ -388,7 +384,9 @@ async def mark(
 
     values: dict[str, object] = {
         "processing_state": state,
-        "processing_state_changed_at": _now(),
+        # **بساعة القاعدة** (Stage 8 · D3): هذا العمودُ سياجُ B5 وساعةُ
+        # حكمِ البيات، والخوادمُ عدّةٌ بساعاتٍ تتفارق — والحَكَمُ واحد.
+        "processing_state_changed_at": func.now(),
         # النجاح يمحو سببَ فشلٍ سابق: صفٌّ يقول «جاهزة» ويحمل رمز سقوطٍ
         # قديم يُقرأ متناقضًا، والقيد يرفضه أصلًا.
         "failure_code": failure_code,
@@ -416,45 +414,13 @@ async def mark(
     return (await session.execute(statement)).rowcount
 
 
-async def claim_for_processing(
-    session: AsyncSession, *, tenant_id: uuid.UUID, thesis_id: uuid.UUID,
-) -> str:
-    """يحجز الرسالة للمعالجة — **أو يقول لماذا لا**.
-
-    **والحجز شرطٌ في عبارة الكتابة نفسها، لا فحصٌ قبلها.** فحصٌ ثمّ كتابةٌ
-    نافذتان: طلبان متزامنان يقرآن «ساقطة» معًا فيجدولان تشغيلتين على الملفّ
-    نفسه، فتتضاعف المرشّحات ويُحاسب الباحث على ضغطةٍ مكرّرة. و
-    `UPDATE … WHERE processing_state IN (…)` يجعل القاعدة هي الحَكَم: الأوّل
-    يصيب صفًّا، والثاني يصيب صفرًا فيُردّ.
-
-    يعيد الحال السابقة عند النجاح، ويرفع `ProcessingConflict` عند الرفض.
-    """
-    current = (
-        await session.execute(
-            select(Thesis.processing_state)
-            .where(Thesis.id == thesis_id, Thesis.tenant_id == tenant_id)
-        )
-    ).scalar_one_or_none()
-    if current is None:
-        raise ProcessingConflict("thesis.not_found", state=None)
-    if current == TEXT_LAYER_MISSING:
-        raise ProcessingConflict("thesis.retry_needs_ocr", state=current)
-    if current in IN_FLIGHT:
-        raise ProcessingConflict("thesis.processing_in_flight", state=current)
-
-    claimed = await session.execute(
-        update(Thesis)
-        .where(Thesis.id == thesis_id, Thesis.tenant_id == tenant_id,
-               Thesis.processing_state.in_(RETRYABLE))
-        .values(processing_state=QUEUED, processing_state_changed_at=_now(),
-                processing_attempts=Thesis.processing_attempts + 1,
-                failure_code=None, failure_detail=None)
-        .execution_options(synchronize_session=False)
-    )
-    if claimed.rowcount != 1:
-        # سبقنا إليها طلبٌ آخر بين القراءة والكتابة — والقاعدة حسمت.
-        raise ProcessingConflict("thesis.processing_in_flight", state=current)
-    return current
+# ══ `claim_for_processing` — أُحيلت إلى التقاعد (Stage 8 · D3) ══
+#
+# **ولا مُناديَ لها في التشغيل.** حلّت محلَّها `claim_generation` في B5، وبقيت
+# تُنادى من الفحوص وحدَها — وتكتب السياجَ بساعة العمليّة. فحُذفت، ونُقل ما
+# كانت فحوصُها تحرسه (رفضُ الحيّ، ورفضُ الممسوح ضوئيًّا) إلى `claim_generation`
+# نفسِها. **وعبارتُها كما أصدرها v88 باقيةٌ في فحص النشر المتدرّج** — تلك
+# بيّنةُ توافقٍ تاريخيّةٌ تُعاد حرفيًّا على القاعدة، لا استدعاءٌ لهذه الدالّة.
 
 
 #: الحالاتُ التي يجوز للمسار القديم أن يرفعها إلى «جاهزة لمراجعتك».
@@ -508,13 +474,15 @@ async def settle_after_legacy_parse(
             f"  processing_state = CASE WHEN processing_state IN ({advances}) "
             f"                          THEN :settled ELSE processing_state END, "
             f"  processing_state_changed_at = CASE WHEN processing_state IN ({advances}) "
-            f"                          THEN :now ELSE processing_state_changed_at END, "
+            f"                          THEN now() ELSE processing_state_changed_at END, "
             f"  failure_code = NULL, "
             f"  failure_detail = NULL, "
             f"  text_layer_state = :present "
             f"WHERE id = :thesis_id AND tenant_id = :tenant_id"
         ),
-        {"settled": READY_FOR_REVIEW, "now": _now(), "present": TEXT_LAYER_PRESENT,
+        # و`now()` في العبارة نفسِها — كانت `:now` معاملًا يحمل ساعةَ العمليّة
+        # وتبدو في النصّ كأنّها ساعةُ القاعدة (Stage 8 · D3).
+        {"settled": READY_FOR_REVIEW, "present": TEXT_LAYER_PRESENT,
          "thesis_id": thesis_id, "tenant_id": tenant_id},
     )
 

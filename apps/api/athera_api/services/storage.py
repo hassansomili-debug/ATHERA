@@ -133,6 +133,15 @@ class ObjectStore(abc.ABC):
     def delete(self, key: str) -> None: ...
 
     @abc.abstractmethod
+    def list_prefix(self, prefix: str, *, limit: int) -> list[str]:
+        """مفاتيحُ تحت بادئةٍ **بعينها**، محدودةُ العدد (H2-C).
+
+        **وليست مسحًا للحاوية.** تُنادى ببادئةِ ملفٍّ واحدٍ تامّة
+        (`stable_file_prefix`) من مُصالِحِ الصيانة وحدَه، ولا مسارَ HTTP
+        يبلغها. والحدُّ إلزاميٌّ لا اختياريّ: ما لا حدَّ له لا يُستدعى هنا.
+        """
+
+    @abc.abstractmethod
     def presign_get(self, key: str, *, expires_in: int) -> str: ...
 
     @abc.abstractmethod
@@ -202,6 +211,14 @@ class S3ObjectStore(ObjectStore):
     def delete(self, key: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=key)
 
+    def list_prefix(self, prefix: str, *, limit: int) -> list[str]:
+        # **صفحةٌ واحدة، وحدُّها من المُنادي.** لا تتبّعَ لرمز الاستمرار:
+        # بادئةُ ملفٍّ واحدٍ تحمل كائنًا واحدًا، وما زاد عن الحدّ يُقال
+        # للمُصالِح فيُحجِم — ولا يُستكمل مسحٌ لم يُطلب.
+        page = self._client.list_objects_v2(
+            Bucket=self._bucket, Prefix=prefix, MaxKeys=max(1, limit))
+        return [item["Key"] for item in page.get("Contents", [])]
+
     def presign_get(self, key: str, *, expires_in: int) -> str:
         return self._client.generate_presigned_url(
             "get_object", Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=expires_in
@@ -243,6 +260,9 @@ class MemoryObjectStore(ObjectStore):
     def delete(self, key: str) -> None:
         self._objects.pop(key, None)
 
+    def list_prefix(self, prefix: str, *, limit: int) -> list[str]:
+        return sorted(k for k in self._objects if k.startswith(prefix))[:max(1, limit)]
+
     def presign_get(self, key: str, *, expires_in: int) -> str:
         return f"memory://{key}?expires_in={expires_in}"
 
@@ -264,6 +284,7 @@ class UnconfiguredStore(ObjectStore):
     def get(self, key: str) -> bytes: raise StorageNotConfigured()
     def get_stream(self, key: str) -> Iterator[bytes]: raise StorageNotConfigured()
     def delete(self, key: str) -> None: raise StorageNotConfigured()
+    def list_prefix(self, prefix: str, *, limit: int) -> list[str]: raise StorageNotConfigured()
     def presign_get(self, key: str, *, expires_in: int) -> str: raise StorageNotConfigured()
     def presign_put(self, key: str, content_type: str, *, expires_in: int) -> str: raise StorageNotConfigured()
 
@@ -346,6 +367,19 @@ def build_storage_key(
     if user_id is not None:
         return f"tenants/{tenant_id}/users/{user_id}/files/{file_id}/{safe}"
     return f"tenants/{tenant_id}/files/{file_id}/{safe}"
+
+
+def stable_file_prefix(
+    tenant_id: uuid.UUID, user_id: uuid.UUID, file_id: uuid.UUID,
+) -> str:
+    """البادئةُ **التامّة** لكائناتِ ملفٍّ واحد — بشرطتها الختاميّة.
+
+    وهي الشكلُ الذي يبنيه `build_storage_key` للرفع المُمفتَح بعينه
+    (`user_id` مُمرَّر). **والشرطةُ الختاميّة هي الحدّ**: بدونها تطابق
+    `files/<id>` كلَّ معرّفٍ يبدأ بالنصّ نفسِه — والمعرّفاتُ ثابتةُ الطول
+    فلا يقع ذلك، لكنّ الحدَّ يُكتب ولا يُستنتج من طولِ نصّ.
+    """
+    return f"tenants/{tenant_id}/users/{user_id}/files/{file_id}/"
 
 
 def kind_for(content_type: str) -> str:

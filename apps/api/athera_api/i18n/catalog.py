@@ -357,6 +357,43 @@ CATALOG: Final[dict[str, dict[str, str]]] = {
         "en": "The evidence changed since this request began — review the "
               "current evidence, then generate again.",
     },
+    # ══ رموزُ التخطيط الباقية (Stage 8 · D3) ══
+    #
+    # **وكانت تُرفع بلا نصّ.** و`translate()` تُعيد الرمزَ نفسَه حين يغيب،
+    # فكان الباحثُ يقرأ `planning.consent_required` حيث ينبغي أن يقرأ سببًا.
+    # والقائمةُ مُشتقّةٌ من المصدر لا من ذاكرة: كلُّ رمزٍ يُرفع في مسار
+    # التخطيط، ويحرسها فحصٌ يقرأ المصدرَ ويقارن (`test_at_h2c_d3_planning`).
+    "planning.consent_required": {
+        "ar": "لم تأذن بعدُ باستعمال أدلّة هذا البحث في اقتراح أوراق — أو "
+              "تغيّرت الأدلّةُ منذ أذنت. راجعها وامنح الإذن، ثمّ ولّد.",
+        "en": "You have not yet allowed this project's evidence to be used for "
+              "paper suggestions — or the evidence changed since you did. "
+              "Review it and grant permission, then generate.",
+    },
+    "planning.insufficient_evidence": {
+        "ar": "لا تكفي الأدلّةُ المعتمَدة بعدُ لاقتراح أوراق. اعتمد مزيدًا من "
+              "المعلومات من مستنداتك، ثمّ عُد.",
+        "en": "There is not yet enough approved evidence to suggest papers. "
+              "Approve more facts from your documents, then come back.",
+    },
+    "planning.opportunity_not_found": {
+        "ar": "لم يُعثر على فرصة النشر هذه في هذا البحث.",
+        "en": "This publication opportunity was not found in this project.",
+    },
+    "planning.outline_not_found": {
+        "ar": "لم يُبنَ هيكلٌ لهذه الفرصة بعد.",
+        "en": "No outline has been built for this opportunity yet.",
+    },
+    "planning.selection_required": {
+        "ar": "اختر هذه الفرصة أوّلًا — الخيطُ والهيكلُ يُبنيان للفرصة المختارة وحدها.",
+        "en": "Select this opportunity first — the thread and outline are built "
+              "only for the selected opportunity.",
+    },
+    "planning.thread_required": {
+        "ar": "ابنِ الخيطَ العلميّ لهذه الفرصة أوّلًا، ثمّ يُبنى الهيكل.",
+        "en": "Build the scientific thread for this opportunity first, then the "
+              "outline can be built.",
+    },
     "synthesis.project_not_found": {
         "ar": "لم يُعثر على هذا البحث.",
         "en": "This project was not found.",

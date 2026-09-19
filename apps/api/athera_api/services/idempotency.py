@@ -520,8 +520,9 @@ async def begin(
 
 # ═══════════════ الطور B — الحجزُ والإجارةُ والسياج ═══════════════
 #
-# **وهذه أساساتٌ لا توصيل.** لا مسارَ في التطبيق ينادي شيئًا منها في هذا
-# الطور؛ تُبنى وتُبرهَن ثمّ تُوصَل في طورٍ لاحق.
+# **وقد وُصلت كلُّها** (B2…B5): بُنيت في B1 أساساتٍ بلا توصيل، ثمّ وُصلت
+# طورًا طورًا. والجملةُ القديمةُ هنا — «لا مسارَ ينادي شيئًا منها» —
+# صارت تاريخًا، فحُذفت كي لا يقرأها قارئٌ حالًا راهنة.
 #
 # ## ولمَ إجارةٌ أصلًا
 #
@@ -731,11 +732,22 @@ async def acquire_lease(
     # والشرطُ في عبارة الكتابة نفسِها: `lease_expires_at <= now()`. فمتسابقان
     # على إجارةٍ منتهية يصيب أحدُهما صفًّا والآخرُ صفرًا — بلا قفلٍ ولا
     # Redis ولا تحكيمٍ في الذاكرة.
+    #
+    # ══ ولا استيلاءَ على جيلٍ تحت حجزِ الصيانة (H2-C) ══
+    #
+    # **ولو انقضت إجارتُه.** مُصالِحٌ حيٌّ متوقّفٌ بعد فحصِه الأخير وقبل
+    # حذفه قد يستيقظ فيحذف — والمستولي كان سيكتب إلى **المفتاح نفسِه** (الهُويّةُ
+    # من معرّف الصفّ)، فيبقى صفُّ `File` يشير إلى كائنٍ محذوف. فالحجزُ مغلقٌ
+    # على العملاء إغلاقًا لا يفتحه الوقت؛ ولا يستأنفه إلّا مُصالِحٌ آخر.
+    #
+    # والشرطُ **في عبارة الكتابة** لا في فحصٍ قبلها: حجزٌ يُثبَّت بين القراءة
+    # والكتابة يجعل هذه العبارةَ تصيب صفرًا، فيُقال «قائمٌ لغيرك» أدناه.
     seconds = ttl.total_seconds()
     taken = (await session.execute(
         update(IdempotencyRecord)
         .where(IdempotencyRecord.id == existing.id,
                IdempotencyRecord.state.in_((IN_PROGRESS, FAILED)),
+               ~storage_held(),
                or_(IdempotencyRecord.lease_expires_at.is_(None),
                    IdempotencyRecord.lease_expires_at <= func.now()))
         .values(state=IN_PROGRESS,
@@ -912,6 +924,19 @@ class LeaseGuard:
 #: مفتاحُ الوسم — حضورُه في `response_body` مع `in_progress` هو الدعوى.
 EXTERNAL_MARKER = "__athera_external_attempt__"
 
+#: **حجزُ صيانةِ التخزين** (H2-C) — وسمٌ مستقلٌّ عن وسم المزوّد.
+#:
+#: يعني: «مُصالِحٌ يملك هذا الجيلَ القديم؛ ولا يستولي عليه عميلٌ عاديٌّ حتى
+#: تُحسَم المصالحةُ صراحةً». ويُكتب في `response_body` بحالِ `in_progress`
+#: و`response_status` فارغ — كوسم B4 تمامًا، فلا يُعاد جوابًا أبدًا.
+STORAGE_RECONCILE_MARKER = "__athera_storage_reconcile__"
+
+
+def storage_held():
+    """تعبيرُ SQL: أيحمل الصفُّ حجزَ صيانةِ التخزين؟ (`NULL` ⇒ لا)."""
+    return func.coalesce(
+        IdempotencyRecord.response_body.has_key(STORAGE_RECONCILE_MARKER), False)
+
 #: رمزٌ صادقٌ لأثرٍ لا يُعرف — لا «أخفق» ولا «لم يُنفَّذ».
 EXTERNAL_UNKNOWN_CODE = "idempotency.external_result_unknown"
 
@@ -1085,6 +1110,17 @@ async def begin_leased_in(
 
         return LeaseGuard(operation=operation,
                           answer=await athera_error_handler(request, InProgressRefused()))
+    # ══ والتنظيفُ المحدودُ هنا أيضًا (H2-C) ══
+    #
+    # **وكان الطورُ A وحدَه يبلغه.** `begin` تنظّف على ظهر كلِّ جيلٍ جديد،
+    # وهذه لم تكن تنظّف قطّ — فالمساراتُ المُجارةُ كلُّها (B2…B5) تُراكم
+    # صفوفَها المنتهية بلا حدّ. والموضعُ هو موضعُ الطور A نفسُه: **جيلٌ
+    # جديدٌ فاز بإجارته**، لا إعادةٌ ولا رفض.
+    #
+    # وهو في المعاملة القصيرة **قبل** الانتظار الخارجيّ (RC-T1-H3): عبارةٌ
+    # واحدةٌ محدودةٌ بمئة صفّ، ولا شبكةَ فيها. ولا يمسّ `in_progress` —
+    # فمرساةُ المصالحة تبقى — ولا يتعدّى فاعلَ الطلب (RLS).
+    await bounded_cleanup(session, tenant_id=tenant_id)
     # **والهُويّةُ من الإجارة وحدَها**: مرساتُها `record_id`، فلا تُعرَف قبل
     # اكتسابها — ولا تُعرَف لجيلٍ غير هذا.
     return LeaseGuard(lease=outcome, operation=operation,

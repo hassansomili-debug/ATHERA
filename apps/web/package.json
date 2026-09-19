@@ -30,7 +30,7 @@
     "test:collaboration": "playwright test tests/collaboration-route-domains.spec.ts tests/rc-t1c-collaboration-journey.spec.ts tests/team-access-state-commit-race.spec.ts --retries=0 --workers=1",
     "test:team-ux": "playwright test tests/team-ux-clarity.spec.ts --retries=0 --workers=1",
     "test:idem-policy": "playwright test tests/idempotency-policy.spec.ts tests/idempotency-coverage.spec.ts tests/backend-keyed-routes.spec.ts --retries=0 --workers=1",
-    "test:idem-browser": "playwright test tests/idempotency-adoption.spec.ts tests/idempotency-upload.spec.ts tests/idempotency-expiry.spec.ts tests/idempotency-model-routes.spec.ts --retries=0 --workers=1",
+    "test:idem-browser": "playwright test tests/idempotency-adoption.spec.ts tests/idempotency-upload.spec.ts tests/idempotency-expiry.spec.ts tests/idempotency-model-routes.spec.ts tests/stage8-planning-retry.spec.ts --retries=0 --workers=1",
     "test:idem-fullstack": "playwright test tests/idempotency-fullstack.spec.ts --retries=0 --workers=1",
     "test:rc-t1-h2": "playwright test tests/idempotency-policy.spec.ts tests/idempotency-coverage.spec.ts tests/backend-keyed-routes.spec.ts tests/idempotency-adoption.spec.ts tests/idempotency-upload.spec.ts tests/idempotency-expiry.spec.ts tests/idempotency-model-routes.spec.ts --retries=0 --workers=1"
   },

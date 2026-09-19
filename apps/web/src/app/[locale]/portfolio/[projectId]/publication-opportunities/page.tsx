@@ -2,7 +2,9 @@
 
 import { use, useCallback, useState } from "react";
 
-import { AtheraApiError, apiFetch } from "@/lib/api";
+import {
+  AtheraApiError, apiFetch, releaseProtectedIntentForExplicitRestart,
+} from "@/lib/api";
 import { DEFAULT_LOCALE, getMessages, isLocale, translator } from "@/lib/i18n";
 import { useDeferredLoad, type Commit } from "@/lib/useDeferredLoad";
 
@@ -111,7 +113,43 @@ type Phase =
   | "consent"
   | "ready"
   | "generating"
+  // **إخفاقُ التوليد ليس إخفاقَ التحميل** (المرحلة ٨): السياقُ معروفٌ والإذنُ
+  // قائم، فيبقى بابُ التوليد مفتوحًا بزرِّ إعادة. وكان الاثنان حالًا واحدة
+  // (`failed`) فيختفي الزرّ، ولا سبيلَ إلى إعادةٍ إلّا بإعادة تحميل الصفحة.
+  | "generationFailed"
+  // **لا تكرارَ يُصلحه** (المرحلة ٨): أثرٌ لا يُعرف أو نيّةٌ شاخت — الإعادةُ
+  // بالمفتاح نفسِه تلقى الجوابَ نفسَه أبدًا. فالخروجُ قرارٌ صريحٌ بتوليدٍ جديد.
+  | "generationUnknown"
+  // والبيئةُ نفسُها تمنع (لا عشوائيّةَ معمّاة): لا زرَّ يَعِد بما لا يملك.
+  | "generationBlocked"
   | "failed";
+
+/**
+ * رموزٌ تغيّر **الشاشة** لا الطلبَ وحده — فتُعاد قراءةُ الحال من الخادم.
+ *
+ * إذنٌ صار بائتًا أو أدلّةٌ لم تعد تكفي: زرُّ إعادةٍ هنا يَعِد ويُردّ. فتعود
+ * الصفحةُ إلى شاشة الإذن أو شاشة النقص كما يقرّرها الخادم، ويبقى الخطأُ معروضًا.
+ */
+/**
+ * رموزٌ **لا تُصلحها الإعادةُ بالمفتاح نفسِه** — والنيّةُ المعلَّقةُ تبقى.
+ *
+ * `external_result_unknown`: المحاولةُ ربّما نُفّذت، ولن تُعاد عمياء — وعقدُ
+ * B4 يقول إنّ التنفيذَ الجديدَ يحتاج مفتاحًا جديدًا. و`intent_expired`: نيّةٌ
+ * شاخت ولا بديلَ تلقائيّ. ففي الحالتين زرُّ «أعد المحاولة» كان يدور إلى الأبد.
+ */
+const NEEDS_EXPLICIT_RESTART = new Set([
+  "idempotency.external_result_unknown",
+  "idempotency.intent_expired",
+]);
+
+/** والبيئةُ تمنع — لا زرَّ توليدٍ يُصلح متصفّحًا بلا عشوائيّةٍ معمّاة. */
+const ENVIRONMENT_BLOCKED = new Set(["idempotency.entropy_unavailable"]);
+
+const SCREEN_CHANGING = new Set([
+  "planning.consent_required",
+  "planning.insufficient_evidence",
+  "planning.context_changed",
+]);
 
 export default function PublicationOpportunitiesPage({
   params,
@@ -195,10 +233,36 @@ export default function PublicationOpportunitiesPage({
       // عطبُ معالجة — لا يُعرض «لا فرص»: الفرق بينهما هو الفرق بين نظامٍ
       // معطوب وبحثٍ لا يحتمل ورقة.
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("publicationPlanning.providerFailed"));
-      setPhase("failed");
+      const code = err instanceof AtheraApiError ? err.payload.code : null;
+      if (code && SCREEN_CHANGING.has(code)) {
+        await refresh();
+      } else if (code && NEEDS_EXPLICIT_RESTART.has(code)) {
+        // **ولا يُحرَّر شيءٌ هنا.** النيّةُ باقيةٌ حتى يقرّر الباحثُ صراحةً.
+        setPhase("generationUnknown");
+      } else if (code && ENVIRONMENT_BLOCKED.has(code)) {
+        setPhase("generationBlocked");
+      } else {
+        // **والنيّةُ المعلَّقةُ باقيةٌ في السجلّ** (المرحلة ٦): الإعادةُ بالزرّ
+        // نفسِه تحمل المفتاحَ نفسَه — فلا توليدٌ ثانٍ لطلبٍ قد يكون وقع.
+        setPhase("generationFailed");
+      }
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * «ابدأ توليدًا جديدًا» — **قرارُ الباحث، لا تدويرٌ تلقائيّ**.
+   *
+   * يُحرّر النيّةَ القديمةَ بالمساعد المركزيّ (بالبصمة نفسِها التي يحسبها
+   * `apiFetch`)، ثمّ يولّد — فيسكّ `apiFetch` مفتاحًا جديدًا بنفسه.
+   */
+  async function startNewGeneration() {
+    if (busy) return;
+    await releaseProtectedIntentForExplicitRestart(
+      `/api/v1/projects/${projectId}/publication-opportunities`, { method: "POST" },
+    );
+    await generate();
   }
 
   async function decide(opportunity: Opportunity, decision: "select" | "exclude") {
@@ -240,6 +304,9 @@ export default function PublicationOpportunitiesPage({
   async function buildOutline() {
     if (!selected || busy) return;
     setBusy(true);
+    // **وإعادةٌ ناجحةٌ لا تُبقي خطأَ ما قبلها** — الهيكلُ صار مُمفتَحًا (المرحلة ٨)
+    // وزرُّه هو زرُّ الإعادة، فجملةُ الإخفاق القديمة تكذب بعد النجاح.
+    setError(null);
     try {
       setOutline(await apiFetch<OutlineView>(
         `/api/v1/projects/${projectId}/publication-opportunities/${selected.id}/outline`,
@@ -337,23 +404,46 @@ export default function PublicationOpportunitiesPage({
       ) : null}
 
       {/* ── البناء والفرص ── */}
-      {(phase === "ready" || phase === "generating") && context ? (
+      {(phase === "ready" || phase === "generating" || phase === "generationFailed"
+        || phase === "generationUnknown" || phase === "generationBlocked")
+        && context ? (
         <section style={{ display: "grid", gap: 14 }}>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <button type="button" className="primary-action" disabled={busy}
-                    onClick={() => void generate()}>
-              {list?.opportunities.length
-                ? t("publicationPlanning.regenerate")
-                : t("publicationPlanning.generate")}
-            </button>
+            {/* **ثلاثةُ أفعالٍ لا فعلٌ واحد**: إعادةٌ بالنيّة نفسِها، أو توليدٌ جديدٌ
+                بقرارٍ صريح، أو لا شيءَ حين تمنع البيئة. وزرٌّ واحدٌ للثلاثة
+                كان يَعِد في اثنين منها بما لا يقع. */}
+            {phase === "generationUnknown" ? (
+              <button type="button" className="primary-action" disabled={busy}
+                      data-testid="planning-new-generation"
+                      onClick={() => void startNewGeneration()}>
+                {t("publicationPlanning.startNewGeneration")}
+              </button>
+            ) : phase === "generationBlocked" ? null : (
+              <button type="button" className="primary-action" disabled={busy}
+                      data-testid="planning-generate"
+                      onClick={() => void generate()}>
+                {phase === "generationFailed"
+                  ? t("publicationPlanning.retryGenerate")
+                  : list?.opportunities.length
+                    ? t("publicationPlanning.regenerate")
+                    : t("publicationPlanning.generate")}
+              </button>
+            )}
             <span className="metric-label">
               {t("publicationPlanning.consentGranted")} · {context.provider} ·{" "}
               {t("publicationPlanning.verifiedFacts")}: {context.evidence_count}
             </span>
           </div>
-          <p className="provenance-note" style={{ margin: 0 }}>
-            {t("publicationPlanning.regenerateHint")}
-          </p>
+          {phase === "generationUnknown" ? (
+            <p className="provenance-note" style={{ margin: 0 }}
+               data-testid="planning-unknown-note">
+              {t("publicationPlanning.unknownOutcomeNote")}
+            </p>
+          ) : (
+            <p className="provenance-note" style={{ margin: 0 }}>
+              {t("publicationPlanning.regenerateHint")}
+            </p>
+          )}
           {phase === "generating" ? (
             <p className="metric-label" aria-live="polite">
               {t("publicationPlanning.generating")}

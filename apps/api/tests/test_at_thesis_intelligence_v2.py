@@ -761,14 +761,17 @@ async def test_two_concurrent_requests_produce_one_claim_not_two_runs(two_tenant
     tid, uid = a["tenant_id"], a["user_id"]
     thesis_id, _ = await _seed_thesis(tid, uid)
 
+    # **على الأوّليّة الحيّة** (Stage 8): `claim_for_processing` أُحيلت إلى
+    # التقاعد بلا مُنادٍ في التشغيل، والضمانُ نفسُه يُطلب من `claim_generation`
+    # التي تنادها المساراتُ فعلًا.
     async with tenant_session(tid, uid) as session:
-        previous = await processing.claim_for_processing(
+        first = await processing.claim_generation(
             session, tenant_id=tid, thesis_id=thesis_id)
-    assert previous == processing.UPLOADED
+    assert first.attempt == 1 and not first.recovered
 
     async with tenant_session(tid, uid) as session:
         with pytest.raises(processing.ProcessingConflict) as clash:
-            await processing.claim_for_processing(
+            await processing.claim_generation(
                 session, tenant_id=tid, thesis_id=thesis_id)
     assert clash.value.code == "thesis.processing_in_flight"
 
@@ -796,7 +799,7 @@ async def test_a_scanned_document_refuses_a_retry_by_name(two_tenants):
                               text_layer=processing.TEXT_LAYER_ABSENT)
     async with tenant_session(tid, uid) as session:
         with pytest.raises(processing.ProcessingConflict) as refused:
-            await processing.claim_for_processing(
+            await processing.claim_generation(
                 session, tenant_id=tid, thesis_id=thesis_id)
     assert refused.value.code == "thesis.retry_needs_ocr"
 
