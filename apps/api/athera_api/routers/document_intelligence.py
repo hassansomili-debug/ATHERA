@@ -21,6 +21,7 @@ from fastapi import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -515,11 +516,12 @@ async def _replayed_upload(request, stored, principal, background):
 @router.post("/process-file/{file_id}", response_model=ExtractionStateResponse,
              status_code=status.HTTP_202_ACCEPTED)
 async def process_stored_file(
+    request: Request,
     file_id: uuid.UUID,
     background: BackgroundTasks,
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
-) -> ExtractionStateResponse:
+) -> ExtractionStateResponse | JSONResponse:
     """اقرأ ملفًا **مرفوعًا سلفًا** — ولا ترفعه ثانية.
 
     **الحلقة الناقصة في المنتج.** الرفع من المكتبة يُنتج ملفًا في التخزين
@@ -551,6 +553,32 @@ async def process_stored_file(
         raise AtheraError("document.unsupported_type", status_code=422,
                           content_type=record.content_type)
 
+    # ══ الحجزُ **بعد** التفويض — وبصمتُه هُويّةُ المصدرِ لا حالُه ══
+    #
+    # **ولا تدخل `processing_state` البصمة**: هي متغيّرةٌ بطبعها، فطلبان
+    # متطابقان في معناهما يصيران مختلفَين لمجرّد تقدّمِ العمل.
+    guard = idempotency.LeaseGuard()
+    if idempotency.is_keyed(request):
+        guard = await idempotency.begin_leased_in(
+            session, request,
+            tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+            body={
+                "file_id": str(record.id),
+                "checksum_sha256": record.checksum_sha256,
+                "content_type": record.content_type,
+                "intent": "thesis.process_file",
+                "locale": principal.locale,
+            },
+            ttl=idempotency.LEASE_MODEL)
+    if guard.answer is not None:
+        # ══ إعادةٌ — **ولا تُخفي مهمّةً ضاعت** ══
+        #
+        # فالتفويضُ فُحص أعلاه، والجوابُ المخزونُ لا يُثبت أنّ العاملَ عمل.
+        # فإن كانت المحاولةُ مهجورةً استُعيدت بجيلها وجُدوِل عاملٌ واحد.
+        return await _recover_then_replay(
+            session, principal, background, file_id=record.id,
+            answer=guard.answer)
+
     thesis, created = await pipeline.ensure_thesis_for_file(
         session, tenant_id=principal.tenant_id, file_id=record.id)
     claim = await _claim(session, principal, thesis.id)
@@ -558,20 +586,55 @@ async def process_stored_file(
         session, tenant_id=principal.tenant_id,
         action="document.processing_requested",
         object_type="file", object_id=record.id, actor_user_id=principal.user_id,
-        state_after={"thesis_id": str(thesis.id), "record_created": created},
+        state_after={"thesis_id": str(thesis.id), "record_created": created,
+                     "processing_attempt": claim.attempt,
+                     "recovered": claim.recovered},
         reason="processing an already-stored file; no re-upload, no duplicate file row",
         request_id=principal.request_id,
     )
-    await session.commit()
-
-    background.add_task(_process, principal.tenant_id, principal.user_id,
-                        claim, principal.locale)
-    return ExtractionStateResponse(
+    answer = ExtractionStateResponse(
         thesis_id=thesis.id, file_id=record.id, status=processing.QUEUED,
         chunks=0, candidates=0,
         message=_t(principal.locale, "في انتظار الدور لقراءة المستند",
                    "Queued for reading"),
     )
+    # **والإتمامُ في المعاملة نفسِها**: الرسالةُ والمطالبةُ والتدقيقُ والجيلُ
+    # معًا أو لا شيء.
+    await idempotency.settle_leased(
+        session, guard, status=status.HTTP_202_ACCEPTED,
+        body=jsonable_encoder(answer))
+    await session.commit()
+
+    background.add_task(_process, principal.tenant_id, principal.user_id,
+                        claim, principal.locale)
+    return answer
+
+
+async def _recover_then_replay(session, principal, background, *, file_id, answer):
+    """يُعيد جوابًا مخزونًا — **بعد أن يستأنفَ ما ضاع، إن ضاع**.
+
+    فطبقاتٌ ثلاثٌ لا تُخلط: مفتاحُ HTTP يمنع طفرةَ طلبٍ مكرّرة، ومحاولةُ
+    المعالجةِ تعيش بعد الجواب، وسِجلُّ الأقسام يمنع نداءً مدفوعًا مكرّرًا.
+    فجوابُ ٢٠٢ مخزونٌ لا يقول شيئًا عن الثانية.
+    """
+    thesis_id = (await session.execute(
+        select(Thesis.id).where(Thesis.file_id == file_id,
+                                Thesis.tenant_id == principal.tenant_id))
+    ).scalar_one_or_none()
+    if thesis_id is None:
+        return answer
+    if not await processing.is_stale(session, tenant_id=principal.tenant_id,
+                                     thesis_id=thesis_id):
+        return answer
+    try:
+        claim = await processing.claim_generation(
+            session, tenant_id=principal.tenant_id, thesis_id=thesis_id)
+    except processing.ProcessingConflict:
+        return answer
+    await session.commit()
+    background.add_task(_process, principal.tenant_id, principal.user_id,
+                        claim, principal.locale)
+    return answer
 
 
 @router.get("/files/{file_id}/chat-consent")
@@ -1078,11 +1141,12 @@ async def decide(
 @router.post("/{thesis_id}/reprocess", response_model=ExtractionStateResponse,
              status_code=status.HTTP_202_ACCEPTED)
 async def reprocess(
+    request: Request,
     thesis_id: uuid.UUID,
     background: BackgroundTasks,
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
-) -> ExtractionStateResponse:
+) -> ExtractionStateResponse | JSONResponse:
     """إعادة القراءة — **بلا مساس بما اعتمده الإنسان** (§28).
 
     التشغيلة الجديدة تكتب صفوفًا جديدة ولا تعدّل صفًّا محسومًا. فإن خالف
@@ -1104,6 +1168,32 @@ async def reprocess(
     thesis = await _guard(session, principal, thesis_id)
     if thesis.file_id is None:
         raise AtheraError("thesis.no_file", status_code=422)
+    # ══ الحجزُ **بعد** التفويض ══
+    #
+    # وبصمتُه هُويّةُ المصدر والنيّة — **ولا حالُ المعالجةِ المتغيّرة**.
+    guard = idempotency.LeaseGuard()
+    if idempotency.is_keyed(request):
+        source = (await session.execute(
+            select(File.checksum_sha256).where(File.id == thesis.file_id,
+                                               File.tenant_id == principal.tenant_id))
+        ).scalar_one_or_none()
+        guard = await idempotency.begin_leased_in(
+            session, request,
+            tenant_id=principal.tenant_id, actor_user_id=principal.user_id,
+            body={
+                "thesis_id": str(thesis.id),
+                "file_id": str(thesis.file_id),
+                "checksum_sha256": source,
+                "intent": "thesis.reprocess",
+                "locale": principal.locale,
+            },
+            ttl=idempotency.LEASE_MODEL)
+    if guard.answer is not None:
+        # **وإعادةُ الطلبِ لا تبدأ محاولةً ثانية** — ولا تُخفي مهمّةً ضاعت.
+        return await _recover_then_replay(
+            session, principal, background, file_id=thesis.file_id,
+            answer=guard.answer)
+
     claim = await _claim(session, principal, thesis.id)
     previous = "recovered" if claim.recovered else "new_attempt"
 
@@ -1124,11 +1214,7 @@ async def reprocess(
         reason="reprocessing appends candidates; no human decision is ever overwritten",
         request_id=principal.request_id,
     )
-    # نفس القاعدة: ما تقرؤه المهمة يجب أن يكون مُودَعًا قبل جدولتها.
-    await session.commit()
-    background.add_task(_process, principal.tenant_id, principal.user_id,
-                        claim, principal.locale)
-    return ExtractionStateResponse(
+    answer = ExtractionStateResponse(
         thesis_id=thesis_id, file_id=thesis.file_id, status=processing.QUEUED,
         chunks=0, candidates=0,
         message=_t(
@@ -1137,3 +1223,11 @@ async def reprocess(
             f"Queued for reprocessing · {sum(preserved.values())} decisions preserved",
         ),
     )
+    await idempotency.settle_leased(
+        session, guard, status=status.HTTP_202_ACCEPTED,
+        body=jsonable_encoder(answer))
+    # نفس القاعدة: ما تقرؤه المهمة يجب أن يكون مُودَعًا قبل جدولتها.
+    await session.commit()
+    background.add_task(_process, principal.tenant_id, principal.user_id,
+                        claim, principal.locale)
+    return answer
