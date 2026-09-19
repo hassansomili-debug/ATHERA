@@ -664,9 +664,17 @@ def test_18_only_db_atomic_routes_use_the_transactional_primitive() -> None:
         ("publishing.py", "create_manuscript"),
         # الطور B-3 — ختمٌ ذرّيٌّ في القاعدة، ولا كتابةَ تخزينٍ فيه.
         ("files.py", "complete_upload"),
+        # المرحلة ٨ (H2-C) — هيكلُ الورقة: بناءٌ حتميٌّ من السياق والفرصة، بلا
+        # مزوّدٍ ولا تخزين. فهو ذرّيٌّ في القاعدة، وأداتُه أداةُ الطور A بعينها.
+        ("planning.py", "build_outline"),
     }
     forbidden = {"ai.py", "brain.py", "profile.py", "thesis.py",
-                 "literature.py", "manuscript_drafting.py", "planning.py"}
+                 "literature.py", "manuscript_drafting.py"}
+    # **و`planning.py` تحمل الصنفين** منذ المرحلة ٨: توليدُ الفرص (نداءُ نموذج،
+    # على الإجارة) وبناءُ الهيكل (ذرّيّ). فالمنعُ فيها **بالمعالج لا بالملفّ** —
+    # أدقُّ حيث يهمّ: معالجا التوليد لا يلمسان حجزَ معاملة الطلب أبدًا.
+    forbidden_handlers = {("planning.py", "generate_opportunities"),
+                          ("planning.py", "generate_opportunities_body")}
 
     found = set()
     routers = pathlib.Path(__file__).resolve().parents[1] / "athera_api" / "routers"
@@ -684,6 +692,8 @@ def test_18_only_db_atomic_routes_use_the_transactional_primitive() -> None:
     assert found == expected, f"المحميّ اليوم: {sorted(found)}"
     assert not {f for f, _ in found} & forbidden, (
         "مسارُ انتظارٍ خارجيٍّ استعمل حجزَ معاملةِ الطلب")
+    assert not found & forbidden_handlers, (
+        "توليدُ الفرص — وفيه نداءُ نموذج — استعمل حجزَ معاملةِ الطلب")
 
     # **ومسارا التخزين على الإجارة لا على الحجز** — وهذا يُقاس صراحةً:
     # لو انتقل أحدُهما إلى `idempotency.begin` لَصار حجزُه في معاملةٍ

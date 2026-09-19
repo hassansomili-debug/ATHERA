@@ -1226,6 +1226,7 @@
     "question": "Research question",
     "regenerate": "Rebuild",
     "regenerateHint": "Rebuilding adds new proposals; it never erases a decision you made.",
+    "retryGenerate": "Retry generation",
     "sectionPurpose": "Purpose",
     "select": "Select this opportunity",
     "selectionRequired": "Select an opportunity first to build its thread and outline.",

@@ -95,13 +95,17 @@ function literalPath(raw: string): string | null {
 test.describe("Stage 6 — web idempotency adoption guard", () => {
   test("the protected-route policy matches the backend families", () => {
     const patterns = protectedPatterns();
-    expect(patterns.length).toBe(20);
+    // **والعددُ الدقيقُ لا يُكتب هنا** — كان `20` ثمّ صار الهيكلُ مُمفتَحًا في
+    // المرحلة ٨. فالمساواةُ يملكها اشتقاقُ الخادم في `backend-keyed-routes`
+    // (في الاتجاهين)، وهذا أرضيّةٌ لا تنخفض دون خطِّ المرحلة ٦ وحدَها.
+    expect(patterns.length).toBeGreaterThanOrEqual(20);
     const must = [
       "/api/v1/workspace/projects", "/api/v1/portfolio/projects",
       "/api/v1/analysis/runs", "/api/v1/manuscripts",
       "/api/v1/sources/search", "/api/v1/references/search",
       "/api/v1/sources/import", "/api/v1/sources/abc/verify",
       "/api/v1/files", "/api/v1/files/upload", "/api/v1/files/abc/complete",
+      "/api/v1/projects/abc/publication-opportunities/def/outline",
       "/api/v1/ai/ask", "/api/v1/brain/ask",
       "/api/v1/manuscripts/m1/sections/method/draft",
       "/api/v1/projects/p1/publication-opportunities",

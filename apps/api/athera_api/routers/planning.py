@@ -606,16 +606,32 @@ async def read_thread(
 @router.post("/{project_id}/publication-opportunities/{opportunity_id}/outline",
              response_model=OutlineView)
 async def build_outline(
+    request: Request,
     project_id: uuid.UUID,
     opportunity_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_project_session),
-) -> OutlineView:
+) -> OutlineView | JSONResponse:
     """هيكل الورقة — **بعد الاختيار والخيط والتدقيق** (§27).
 
     وهيكلٌ لا نثر: غرضٌ وأسئلة وأدلة متاحة وناقصة وحدود ادّعاء. وكتابة
     الورقة مرحلةٌ أخرى لا تبدأ هنا.
+
+    ## وتحمُّلُ الإعادة (H2-C) — طفرةٌ ذرّيّةٌ في القاعدة
+
+    **وكان كلُّ نداءٍ يُنشئ صفَّ هيكلٍ جديدًا.** ردٌّ ضاع ثمّ إعادة ⇒ هيكلان
+    للفرصة نفسِها، والقراءةُ تعرض أحدثَهما فيبدو الأوّلُ كأنّه لم يقع —
+    وهو قائمٌ في القاعدة، ومعه حدثُ تدقيقٍ ثانٍ.
+
+    ولا مزوّدَ هنا ولا تخزين: البناءُ حتميٌّ من السياق والفرصة. فالطورُ A
+    يكفي — الحجزُ والصفُّ والتدقيقُ والجوابُ المخزون **في معاملةٍ واحدة** —
+    ولا إجارةَ لأنّ لا انتظارَ خارجيًّا يُحتاج السياجُ عبره.
+
+    **والنيّةُ الجديدةُ المقصودةُ تُنشئ هيكلًا جديدًا** — مفتاحٌ جديدٌ بعد
+    نجاحٍ حُسم. فالهيكلُ لا يصير واحدًا إلى الأبد؛ الذي يُمنع هو ازدواجُ
+    **النيّة الواحدة**. وبلا ترويسةٍ يسلك المسارُ مسلكَه القديم حرفيًّا.
     """
+    # **التفويضُ أوّلًا** — فلا يُعاد جوابٌ مخزونٌ لمن سُحبت صلاحيّتُه.
     await _project(session, principal, project_id, permission=EDIT)
     opportunity = await _selected(session, principal, project_id, opportunity_id)
     context = await _build_context(session, principal, project_id)
@@ -624,6 +640,26 @@ async def build_outline(
                              session=session)
     if not view.elements:
         raise AtheraError("planning.thread_required", status_code=409)
+
+    # ══ الحجزُ بعد التفويض وبعد بناء المعنى ══
+    #
+    # وبصمتُه ما يُبنى منه الهيكلُ فعلًا: المشروعُ والفرصةُ وتوليدُها ونوعُها
+    # **وبصمةُ السياق**. فمفتاحٌ أُعيد بعد تغيّر السياق يُردّ تعارضًا ولا
+    # يُعيد هيكلًا بُني على سياقٍ آخر. والمستأجرُ **النافذ** لا مستأجرُ
+    # الرمز (جسرُ التعاون): سياسةُ الصفّ تشترطه.
+    guard = await idempotency.begin(
+        request, session, tenant_id=project_tenant(session, principal),
+        actor_user_id=principal.user_id,
+        body={
+            "project_id": str(project_id),
+            "opportunity_id": str(opportunity_id),
+            "generation_run_id": str(opportunity.generation_run_id),
+            "paper_kind": opportunity.paper_kind,
+            "context_fingerprint": context.fingerprint,
+            "locale": principal.locale,
+        })
+    if guard.answer is not None:
+        return guard.answer
 
     sections = outline.build(context, opportunity)
     row = ManuscriptOutline(
@@ -644,7 +680,7 @@ async def build_outline(
         reason="structural outline generated; no manuscript prose",
         request_id=principal.request_id,
     )
-    return OutlineView(
+    answer = OutlineView(
         id=row.id, opportunity_id=opportunity_id, article_type=row.article_type,
         sections=sections, status=row.status,
         note=_t(principal.locale,
@@ -652,6 +688,10 @@ async def build_outline(
                 "A structure, not prose — comparison with prior studies is pending "
                 "literature search."),
     )
+    # **والجوابُ يُثبَّت في معاملة الطفرة نفسِها** — الهيكلُ والتدقيقُ والإتمامُ
+    # معًا أو لا شيء. ولا مفتاحٌ مُكتمِلٌ على طفرةٍ رجعت.
+    await guard.finish(session, status=200, body=jsonable_encoder(answer))
+    return answer
 
 
 @router.get("/{project_id}/publication-opportunities/{opportunity_id}/outline",

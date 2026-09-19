@@ -111,7 +111,23 @@ type Phase =
   | "consent"
   | "ready"
   | "generating"
+  // **إخفاقُ التوليد ليس إخفاقَ التحميل** (المرحلة ٨): السياقُ معروفٌ والإذنُ
+  // قائم، فيبقى بابُ التوليد مفتوحًا بزرِّ إعادة. وكان الاثنان حالًا واحدة
+  // (`failed`) فيختفي الزرّ، ولا سبيلَ إلى إعادةٍ إلّا بإعادة تحميل الصفحة.
+  | "generationFailed"
   | "failed";
+
+/**
+ * رموزٌ تغيّر **الشاشة** لا الطلبَ وحده — فتُعاد قراءةُ الحال من الخادم.
+ *
+ * إذنٌ صار بائتًا أو أدلّةٌ لم تعد تكفي: زرُّ إعادةٍ هنا يَعِد ويُردّ. فتعود
+ * الصفحةُ إلى شاشة الإذن أو شاشة النقص كما يقرّرها الخادم، ويبقى الخطأُ معروضًا.
+ */
+const SCREEN_CHANGING = new Set([
+  "planning.consent_required",
+  "planning.insufficient_evidence",
+  "planning.context_changed",
+]);
 
 export default function PublicationOpportunitiesPage({
   params,
@@ -195,7 +211,13 @@ export default function PublicationOpportunitiesPage({
       // عطبُ معالجة — لا يُعرض «لا فرص»: الفرق بينهما هو الفرق بين نظامٍ
       // معطوب وبحثٍ لا يحتمل ورقة.
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("publicationPlanning.providerFailed"));
-      setPhase("failed");
+      if (err instanceof AtheraApiError && SCREEN_CHANGING.has(err.payload.code)) {
+        await refresh();
+      } else {
+        // **والنيّةُ المعلَّقةُ باقيةٌ في السجلّ** (المرحلة ٦): الإعادةُ بالزرّ
+        // نفسِه تحمل المفتاحَ نفسَه — فلا توليدٌ ثانٍ لطلبٍ قد يكون وقع.
+        setPhase("generationFailed");
+      }
     } finally {
       setBusy(false);
     }
@@ -240,6 +262,9 @@ export default function PublicationOpportunitiesPage({
   async function buildOutline() {
     if (!selected || busy) return;
     setBusy(true);
+    // **وإعادةٌ ناجحةٌ لا تُبقي خطأَ ما قبلها** — الهيكلُ صار مُمفتَحًا (المرحلة ٨)
+    // وزرُّه هو زرُّ الإعادة، فجملةُ الإخفاق القديمة تكذب بعد النجاح.
+    setError(null);
     try {
       setOutline(await apiFetch<OutlineView>(
         `/api/v1/projects/${projectId}/publication-opportunities/${selected.id}/outline`,
@@ -337,14 +362,18 @@ export default function PublicationOpportunitiesPage({
       ) : null}
 
       {/* ── البناء والفرص ── */}
-      {(phase === "ready" || phase === "generating") && context ? (
+      {(phase === "ready" || phase === "generating" || phase === "generationFailed")
+        && context ? (
         <section style={{ display: "grid", gap: 14 }}>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <button type="button" className="primary-action" disabled={busy}
+                    data-testid="planning-generate"
                     onClick={() => void generate()}>
-              {list?.opportunities.length
-                ? t("publicationPlanning.regenerate")
-                : t("publicationPlanning.generate")}
+              {phase === "generationFailed"
+                ? t("publicationPlanning.retryGenerate")
+                : list?.opportunities.length
+                  ? t("publicationPlanning.regenerate")
+                  : t("publicationPlanning.generate")}
             </button>
             <span className="metric-label">
               {t("publicationPlanning.consentGranted")} · {context.provider} ·{" "}

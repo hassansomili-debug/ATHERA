@@ -77,7 +77,7 @@ def _actions(state: str, *, has_file: bool = True, sections: int = 0,
 def test_a_thesis_being_processed_offers_no_action_that_the_server_would_refuse(state):
     """**حالٌ يجري فيها عملٌ الآن لا فعل عليها.**
 
-    و`claim_for_processing` تردّ `thesis.processing_in_flight` بـ409 على
+    و`claim_generation` تردّ `thesis.processing_in_flight` بـ409 على
     أيّ طلبِ معالجةٍ في هذه الحالات. فزرٌّ معروضٌ هنا زرٌّ يَعِد ويُردّ.
     """
     actions = _actions(state)
