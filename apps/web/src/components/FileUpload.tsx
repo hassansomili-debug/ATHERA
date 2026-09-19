@@ -171,6 +171,11 @@ export function FileUpload({
       const stored = await uploadWithProgress<StoredFile>(
         "/api/v1/files/upload", body, {
           locale,
+          // **هُويّةُ العنصرِ هي هُويّةُ النيّة** (Stage 6): ملفّان مختلفان
+          // قد يتّفقان في الاسم والحجم والنوع، فلا يُميَّزان بها. و`retry`
+          // يُبقي المعرّفَ نفسَه — فإعادةُ محاولةِ ملفٍّ تحمل مفتاحَه هو،
+          // ونجاحُ ملفٍّ لا يُحرّر مفتاحَ غيره.
+          intentId: item.id,
           onProgress: (progress) => patch(item.id, {
             loaded: progress.loaded, total: progress.total || item.file.size,
           }),

@@ -240,7 +240,12 @@ async function requestWithRefresh<T>(
   alreadyRetried: boolean,
   intent?: IntentTicket,
 ): Promise<T> {
-  const { locale, token, intentId: _intentId, idempotencyKey: _key, ...init } = options;
+  // **ولا يُسرَّب وسيطُ نيّةٍ إلى `fetch`.** `intentId`/`idempotencyKey`
+  // شأنُ هذه الطبقة، و`RequestInit` لا يعرفهما — فيُنزَعان هنا.
+  const { locale, token, ...rest } = options;
+  const init: RequestInit = { ...rest };
+  delete (init as Record<string, unknown>).intentId;
+  delete (init as Record<string, unknown>).idempotencyKey;
 
   // يُعلَن الخلل قبل الطلب: محاولة الاتصال بـlocalhost من نطاق منشور تُحجب
   // في المتصفح برسالة CSP غامضة، فيبدو العطب في الخادم لا في الإعداد.

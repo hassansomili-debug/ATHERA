@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { fileIntentId } from "@/lib/idempotency";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { type Locale, type Messages, translator } from "@/lib/i18n";
 import { usePosture } from "@/lib/posture";
@@ -130,7 +131,9 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
       // عبر عميل الـAPI: حارس الإعداد وتوحيد الأخطاء ومعالجة انتهاء الجلسة
       // كلها فيه، وكان الالتفاف عليه لأجل ترويسة `FormData` وحدها.
       const started = await apiFetch<ExtractionState>("/api/v1/theses/upload", {
-        method: "POST", locale, body,
+        // **هُويّةُ النيّةِ هي كائنُ الملفِّ المختار** (Stage 6): اختيارٌ
+        // جديدٌ نيّةٌ جديدة، وإعادةُ محاولةٍ على الاختيار نفسِه تحمل مفتاحَه.
+        method: "POST", locale, body, intentId: fileIntentId(selected),
       });
       setState(started);
       setPhase(started.status);

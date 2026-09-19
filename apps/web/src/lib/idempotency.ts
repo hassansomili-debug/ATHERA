@@ -299,3 +299,23 @@ export function shouldRetainIntent(status: number, code?: string | null): boolea
   if (code && RETRYABLE_CODES.has(code)) return true;
   return RETRYABLE_STATUS.has(status);
 }
+
+/**
+ * هُويّةُ نيّةٍ ثابتةٌ لكلِّ **كائنِ ملفٍّ مختار** — لا لاسمه ولا لحجمه.
+ *
+ * فاسمُ الملفِّ وحجمُه ونوعُه لا تميّزه: ملفّان مختلفان قد يتّفقان فيها
+ * الثلاثةَ. وكائنُ `File` نفسُه هو الهُويّة: اختيارٌ جديدٌ يُنتج كائنًا
+ * جديدًا فيأخذ مفتاحًا جديدًا، وإعادةُ محاولةٍ على الاختيار نفسِه تُبقيه.
+ *
+ * و`WeakMap` تمنع تسرّبَ الذاكرة: يزول القيدُ مع زوال الكائن، ولا يُقرأ
+ * محتوى الملفّ ولا يُجزَّأ — الخادمُ صاحبُ البصمةِ على البايتات.
+ */
+const fileIntents = new WeakMap<object, string>();
+
+export function fileIntentId(file: object): string {
+  const found = fileIntents.get(file);
+  if (found) return found;
+  const id = newIdempotencyKey();
+  fileIntents.set(file, id);
+  return id;
+}

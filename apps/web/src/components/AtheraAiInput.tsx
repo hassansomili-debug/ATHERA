@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { fileIntentId } from "@/lib/idempotency";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { AiAnswerCard, type AiAnswer } from "./AiAnswer";
 import { type Locale, type Messages, translator } from "@/lib/i18n";
@@ -110,7 +111,9 @@ export function AtheraAiInput({
       form.append("upload", file);
       form.append("classification", "C2");
       const stored = await apiFetch<{ id: string; original_filename: string }>(
-        "/api/v1/files/upload", { method: "POST", locale, body: form },
+        // هُويّةُ النيّةِ كائنُ الملفِّ المرفق — لا اسمُه (Stage 6).
+        "/api/v1/files/upload",
+        { method: "POST", locale, body: form, intentId: fileIntentId(file) },
       );
       setAttached({ id: stored.id, name: stored.original_filename });
     } catch (err) {
