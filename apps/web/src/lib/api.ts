@@ -7,6 +7,8 @@
  */
 import type { Locale } from "./i18n";
 import {
+  IdempotencyEntropyUnavailable,
+  IdempotencyIntentExpired,
   intentFingerprint,
   isProtectedRequest,
   keyForIntent,
@@ -206,8 +208,61 @@ export async function apiFetch<T>(
     body: bodyFingerprintMaterial(options.body),
     intentId: options.intentId,
   });
-  const key = options.idempotencyKey ?? keyForIntent(fingerprint);
+  // **وقد يُغلَق البابُ هنا** — نيّةٌ معلَّقةٌ شاخت، أو لا عشوائيّةَ
+  // معمّاة. وفي الحالين **لا طلبَ يخرج**: الخطأُ يُرفع قبل الشبكة.
+  let key: string;
+  try {
+    key = options.idempotencyKey ?? keyForIntent(fingerprint);
+  } catch (cause) {
+    throw intentRefusal(cause, options.locale);
+  }
   return requestWithRefresh<T>(path, options, false, { key, fingerprint });
+}
+
+/**
+ * يترجم رفضَ سياسةِ النيّة إلى خطأِ العميل المعتاد — **بلا مخطّطٍ موازٍ**.
+ *
+ * فالشاشاتُ كلُّها تعرض `AtheraApiError` وتقرأ `localized(locale)`؛ ونوعٌ
+ * ثالثٌ يعني شاشةً تسقط أو تقول «تعذّر» بلا سبب. والحالُ ليست ٥٠٠ ولا ٤٠٠:
+ * لا جوابَ من خادمٍ أصلًا، فالحالةُ صفرٌ كما في انقطاع النقل.
+ */
+export function intentRefusal(cause: unknown, locale: Locale): unknown {
+  if (cause instanceof IdempotencyIntentExpired) {
+    return new AtheraApiError(0, {
+      code: cause.code,
+      locale,
+      message: "محاولةٌ سابقةٌ لهذه العمليّة لم يُعرف مصيرُها.",
+      messages: {
+        ar:
+          "محاولةٌ سابقةٌ لهذه العمليّة لم يُعرف مصيرُها، وقد مضى عليها وقتٌ "
+          + "طويل. ولن تُعاد تلقائيًّا: قد تكون تمّت عند الخادم، وإعادتُها "
+          + "الآن قد تُكرّرها. افتح تبويبةً جديدة أو راجع نتيجةَ العمليّة "
+          + "قبل أن تبدأ من جديد.",
+        en:
+          "An earlier attempt at this operation was never confirmed, and too "
+          + "much time has passed. It will not be retried automatically: it may "
+          + "have completed on the server, and repeating it now could duplicate "
+          + "it. Open a new tab, or check the outcome before starting again.",
+      },
+    });
+  }
+  if (cause instanceof IdempotencyEntropyUnavailable) {
+    return new AtheraApiError(0, {
+      code: cause.code,
+      locale,
+      message: "هذا المتصفّح لا يوفّر عشوائيّةً معمّاة.",
+      messages: {
+        ar:
+          "هذا المتصفّح لا يوفّر عشوائيّةً معمّاة، ولا تُرسَل عمليّةٌ محميّة "
+          + "بلا مفتاحٍ سليم. حدِّث المتصفّح أو افتح الموقع عبر HTTPS.",
+        en:
+          "This browser exposes no cryptographic randomness, and a protected "
+          + "operation is never sent without a sound key. Update the browser, "
+          + "or open the site over HTTPS.",
+      },
+    });
+  }
+  return cause;
 }
 
 /**

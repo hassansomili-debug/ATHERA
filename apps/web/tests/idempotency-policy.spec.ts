@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  intentFingerprint, isProtectedRequest, newIdempotencyKey, shouldRetainIntent,
+  IdempotencyEntropyUnavailable, IdempotencyIntentExpired,
+  intentFingerprint, isProtectedRequest, keyForIntent, newIdempotencyKey,
+  resolveIntent, shouldRetainIntent,
 } from "../src/lib/idempotency";
 
 /**
@@ -17,6 +19,51 @@ import {
  */
 
 const KEY = /^[A-Za-z0-9_-]{16,128}$/;
+const HOUR = 60 * 60 * 1000;
+const NAMESPACE = "pubriva.idempotency.v1";
+
+interface StoredIntent { key: string; fingerprint: string; createdAt: number }
+
+/**
+ * مخزنُ جلسةٍ حقيقيٌّ في العقدة — **ليُقرأ من حيث تُكتب النيّة**.
+ *
+ * الوحدةُ تقرأ `globalThis.sessionStorage` عند كلّ نداء لا عند الاستيراد،
+ * فيكفي أن يوجد هنا. وبدونه تكتب الوحدةُ في ذاكرتها الخاصّة، ولا يبلغها
+ * الفحصُ ليُشيخ نيّةً — فيصير الفحصُ يقيس شيئًا آخر.
+ */
+class SessionShim implements Storage {
+  private data = new Map<string, string>();
+  get length() { return this.data.size; }
+  clear() { this.data.clear(); }
+  getItem(k: string) { return this.data.get(k) ?? null; }
+  key(i: number) { return [...this.data.keys()][i] ?? null; }
+  removeItem(k: string) { this.data.delete(k); }
+  setItem(k: string, v: string) { this.data.set(k, v); }
+}
+
+if (!globalThis.sessionStorage) {
+  Object.defineProperty(globalThis, "sessionStorage", {
+    value: new SessionShim(), configurable: true,
+  });
+}
+
+function registry(): Record<string, StoredIntent> {
+  const raw = globalThis.sessionStorage.getItem(NAMESPACE);
+  return raw ? (JSON.parse(raw) as Record<string, StoredIntent>) : {};
+}
+
+function stored(fingerprint: string): StoredIntent | undefined {
+  return registry()[fingerprint];
+}
+
+/** يُشيخ نيّةً بإرجاع ساعةِ ميلادها — لا بانتظارٍ ثلاثٍ وعشرين ساعة. */
+function age(fingerprint: string, by: number): void {
+  const all = registry();
+  const row = all[fingerprint];
+  expect(row, "لا نيّةَ لتُشاخ").toBeTruthy();
+  row.createdAt = Date.now() - by;
+  globalThis.sessionStorage.setItem(NAMESPACE, JSON.stringify(all));
+}
 
 test.describe("Stage 6 — the policy answers exactly as specified", () => {
   test("only mutating, non-auth, listed routes are protected", () => {
@@ -100,6 +147,64 @@ test.describe("Stage 6 — the policy answers exactly as specified", () => {
     expect(shouldRetainIntent(409, "idempotency.key_reused")).toBe(false);
     // ورمزٌ يُبقي النيّةَ لا يُنقذ حالةً قاطعة إن لم يُرسَل.
     expect(shouldRetainIntent(422, "ingestion.unsupported_document")).toBe(false);
+  });
+
+  test("a pending intent past the safe horizon refuses to mint a replacement",
+    () => {
+      const fingerprint = `horizon-${Date.now()}`;
+      const first = keyForIntent(fingerprint);
+      expect(first).toMatch(KEY);
+      // النيّةُ نفسُها داخل الأفق: المفتاحُ هو هو.
+      expect(keyForIntent(fingerprint)).toBe(first);
+
+      // **تُشاخ النيّةُ** إلى ما بعد الأفق الآمن وقبل انقضاء الخادم.
+      age(fingerprint, 23.5 * HOUR);
+      expect(() => keyForIntent(fingerprint)).toThrow(IdempotencyIntentExpired);
+      // والصفُّ لم يُمسّ: لا مفتاحَ بديلٌ كُتب مكانه.
+      expect(stored(fingerprint)?.key, "المفتاحُ المعلَّقُ استُبدل").toBe(first);
+
+      // وبعد انقضاء الخادمِ أيضًا — لا فرقَ: الجهلُ بما وقع هو الجهلُ نفسُه.
+      age(fingerprint, 30 * HOUR);
+      expect(() => keyForIntent(fingerprint)).toThrow(IdempotencyIntentExpired);
+      expect(stored(fingerprint)?.key).toBe(first);
+
+      // **ونيّةٌ أخرى ليست محبوسةً بحبسِ جارتها.**
+      const other = `horizon-other-${Date.now()}`;
+      expect(keyForIntent(other)).toMatch(KEY);
+      expect(keyForIntent(other)).not.toBe(first);
+
+      resolveIntent(fingerprint);
+      resolveIntent(other);
+      // وبعد حسمٍ صريحٍ يُفتح الباب — فالإغلاقُ على المجهول لا على الأبد.
+      expect(keyForIntent(fingerprint)).not.toBe(first);
+      resolveIntent(fingerprint);
+    });
+
+  test("no cryptographic randomness means no key at all", () => {
+    const real = globalThis.crypto;
+    try {
+      // **ولا هبوطَ إلى `Math.random`**: يُرفع الخطأ، ولا يُسكّ شيء.
+      Object.defineProperty(globalThis, "crypto", {
+        value: undefined, configurable: true,
+      });
+      expect(() => newIdempotencyKey()).toThrow(IdempotencyEntropyUnavailable);
+
+      // و`getRandomValues` وحدَها تكفي — الهبوطُ المسموحُ واحد.
+      Object.defineProperty(globalThis, "crypto", {
+        value: { getRandomValues: real.getRandomValues.bind(real) },
+        configurable: true,
+      });
+      expect(newIdempotencyKey()).toMatch(KEY);
+    } finally {
+      Object.defineProperty(globalThis, "crypto", { value: real, configurable: true });
+    }
+  });
+
+  test("the source mints no key from Math.random", () => {
+    const src = readFileSync(join(process.cwd(), "src", "lib", "idempotency.ts"), "utf-8");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    expect(code, "عشوائيّةٌ غيرُ معمّاةٍ في مولّد المفاتيح")
+      .not.toMatch(/Math\s*\.\s*random/);
   });
 
   test("the upload transport never settles an intent it cannot judge", () => {

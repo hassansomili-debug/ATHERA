@@ -13,7 +13,9 @@
  * يُعاد بناؤه: 401 يعيد المحاولة عبر `apiFetch` الذي يملك التجديد الواحد
  * في الطيران، فتُفقد نسبةُ تلك المحاولة وحدها ولا تُفقد الجلسة.
  */
-import { AtheraApiError, apiFetch, isApiMisconfigured, type ApiError } from "./api";
+import {
+  AtheraApiError, apiFetch, intentRefusal, isApiMisconfigured, type ApiError,
+} from "./api";
 import type { Locale } from "./i18n";
 import {
   intentFingerprint,
@@ -75,6 +77,8 @@ export function uploadWithProgress<T>(
   const ticket = protectedRoute
     ? intentFingerprint({ method: "POST", path, body: "__form_data__", intentId })
         .then((fingerprint) => ({ fingerprint, key: keyForIntent(fingerprint) }))
+        // ولا يُفتح `XMLHttpRequest` أصلًا إن رُفضت النيّة — الرفضُ قبل النقل.
+        .catch((cause) => { throw intentRefusal(cause, locale); })
     : Promise.resolve(null);
 
   return ticket.then((intent) => new Promise<T>((resolve, reject) => {

@@ -121,10 +121,23 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
     return () => window.clearTimeout(id);
   }, [state, poll]);
 
+  /**
+   * **الملفُّ المختارُ يبقى ما دامت نيّتُه معلَّقة** (Stage 6).
+   *
+   * وكان يُفقَد عند أوّل عطب: `event.target.value = ""` يُفرغ الحقل، فلا
+   * سبيلَ للباحث إلا أن يفتح المنتقي من جديد — والمنتقي يصنع كائن `File`
+   * **آخر**، و`fileIntentId` يراه نيّةً أخرى، فيخرج مفتاحٌ ثانٍ لرفعةٍ
+   * واحدة. فرسالةٌ وصلت ثمّ ضاع ردُّها تصير رسالتَين.
+   *
+   * فيُحتفظ بالكائن نفسِه، وتُعاد المحاولةُ عليه هو.
+   */
+  const [pending, setPending] = useState<File | null>(null);
+
   async function send(selected: File) {
     setPhase("uploading");
     setError(null);
     setState(null);
+    setPending(selected);
     try {
       const body = new FormData();
       body.append("upload", selected);
@@ -137,6 +150,8 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
       });
       setState(started);
       setPhase(started.status);
+      // نجاحٌ يحسم النيّة — فلا إعادةَ معروضةٌ على عملٍ تمّ.
+      setPending(null);
     } catch (err) {
       setPhase("idle");
       setError(err instanceof AtheraApiError ? err.localized(locale) : t("upload.failed"));
@@ -275,7 +290,22 @@ export function ThesisIntake({ locale, messages }: { locale: Locale; messages: M
         </div>
       ) : null}
 
-      {error ? <p className="error">{error}</p> : null}
+      {error ? (
+        <div style={{ display: "grid", gap: 6, justifyItems: "start" }}>
+          <p className="error" style={{ margin: 0 }}>{error}</p>
+          {/* **الإعادةُ على الملفِّ نفسِه، لا على منتقٍ يُعيد بناءه.** */}
+          {pending ? (
+            <button
+              type="button"
+              data-testid="thesis-upload-retry"
+              disabled={phase === "uploading"}
+              onClick={() => { if (pending) void send(pending); }}
+            >
+              {t("theses.retryUploadCta")}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

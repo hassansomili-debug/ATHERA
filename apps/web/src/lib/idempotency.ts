@@ -31,17 +31,53 @@ const KEY_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 /** مِلكُ PUBRIVA وحدَها في `sessionStorage` — ولا تصادمَ مع غيرها. */
 const NAMESPACE = "pubriva.idempotency.v1";
 
-/**
- * بقاءُ جيلِ الخادم أربعٌ وعشرون ساعة (الترحيل 0037).
- *
- * **ولا يُعاد استعمالُ مفتاحٍ بعدها.** فالصفُّ قد زال، فيصير المفتاحُ
- * القديمُ في نظر الخادم مفتاحًا جديدًا — ويُنفَّذ العملُ من جديدٍ بلا أن
- * يدري أحد. فتُسقَط النيّةُ المعلَّقةُ عند هذا الحدّ صراحةً، ويُقال ذلك.
- */
+/** بقاءُ جيلِ الخادم أربعٌ وعشرون ساعة (الترحيل 0037). */
 const SERVER_RETENTION_MS = 24 * 60 * 60 * 1000;
 
-/** هامشُ أمانٍ دون البقاء: نيّةٌ تُرسَل قُبيل الانقضاء قد تُحسَم بعده. */
+/**
+ * الأفقُ الآمنُ للعميل — وهامشُ ساعةٍ دون بقاءِ الخادم.
+ *
+ * **وانقضاءُ الأفق ليس إذنًا بمفتاحٍ جديد.** كان السكُّ يقع هنا تلقائيًّا،
+ * وهو أسوأُ ما في الباب: بين الثالثةِ والعشرين والرابعةِ والعشرين يكون
+ * جيلُ K1 حيًّا في الخادم بينما يسكّ المتصفّحُ K2 — فيصيران توليدَين،
+ * ويُنفَّذ العملُ مرّتين وقد كُتب مرّة.
+ *
+ * والمتصفّحُ **لا يعرف** أنفّذ الطلبُ الأوّلُ أم لا. فالنيّةُ المعلَّقةُ
+ * الشائخةُ تُغلَق: لا مفتاحَ بديل، ولا طلبَ يخرج، ويُقال السببُ باسمه.
+ * وتركُها معلَّقةً كما هي مقصود — تخلّيًا صريحًا عنها يحتاج فعلًا صريحًا،
+ * لا دورانَ مفتاحٍ ضمنيًّا.
+ */
 const REUSE_WINDOW_MS = SERVER_RETENTION_MS - 60 * 60 * 1000;
+
+/**
+ * نيّةٌ معلَّقةٌ تجاوزت الأفقَ الآمن — ولا يُسكّ لها بديل.
+ *
+ * تُرفع **قبل** أيِّ طلب، فلا طفرةَ تخرج في هذه الحال.
+ */
+export class IdempotencyIntentExpired extends Error {
+  readonly code = "idempotency.intent_expired";
+
+  constructor(readonly fingerprint: string, readonly ageMs: number) {
+    super(`a pending idempotent intent is older than the safe horizon (${ageMs}ms)`);
+    this.name = "IdempotencyIntentExpired";
+  }
+}
+
+/**
+ * لا عشوائيّةَ معمّاةٍ في هذا المتصفّح — فلا مفتاح، ولا طلب.
+ *
+ * **و`Math.random` ليست بديلًا.** المفتاحُ عقدٌ مُعتِمٌ بين عميلٍ وخادم،
+ * وتصادمُه يعني أن تُعاد إجابةُ باحثٍ إلى آخر. فالهبوطُ الصامتُ بالعشوائيّة
+ * يُبدّل عطبًا ظاهرًا بعطبٍ لا يُرى.
+ */
+export class IdempotencyEntropyUnavailable extends Error {
+  readonly code = "idempotency.entropy_unavailable";
+
+  constructor() {
+    super("no cryptographic randomness is available for an idempotency key");
+    this.name = "IdempotencyEntropyUnavailable";
+  }
+}
 
 export interface PendingIntent {
   /** المفتاحُ المعتِم — **لا يُشتقّ من جسمٍ ولا مستخدمٍ ولا زمن**. */
@@ -135,10 +171,13 @@ export const AUTH_ROUTE_PATTERNS = AUTH_ROUTES;
 export function newIdempotencyKey(): string {
   const c = globalThis.crypto;
   if (c?.randomUUID) return c.randomUUID().replaceAll("-", "");
-  const bytes = new Uint8Array(16);
-  if (c?.getRandomValues) c.getRandomValues(bytes);
-  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  if (c?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    c.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  // **ولا هبوطَ إلى `Math.random`** — يُغلَق الباب، ولا يُخفَّض العقد.
+  throw new IdempotencyEntropyUnavailable();
 }
 
 export function isValidKey(key: string): boolean {
@@ -210,8 +249,13 @@ export async function intentFingerprint(input: {
 const memory = new Map<string, PendingIntent>();
 
 function readAll(): Record<string, PendingIntent> {
+  // **والقراءةُ من حيث تقع الكتابة.** بلا `sessionStorage` تُكتب النيّاتُ
+  // في الذاكرة، وكانت القراءةُ تردّ `{}` فلا يُعاد مفتاحٌ قطّ — سجلٌّ
+  // يكتب ولا يُقرأ ليس سجلًّا.
   try {
-    const raw = globalThis.sessionStorage?.getItem(NAMESPACE);
+    const store = globalThis.sessionStorage;
+    if (!store) return Object.fromEntries(memory);
+    const raw = store.getItem(NAMESPACE);
     return raw ? (JSON.parse(raw) as Record<string, PendingIntent>) : {};
   } catch {
     return Object.fromEntries(memory);
@@ -241,8 +285,13 @@ function writeAll(all: Record<string, PendingIntent>): void {
 export function keyForIntent(fingerprint: string): string {
   const all = readAll();
   const found = all[fingerprint];
-  if (found && Date.now() - found.createdAt < REUSE_WINDOW_MS && isValidKey(found.key)) {
-    return found.key;
+  if (found && isValidKey(found.key)) {
+    const age = Date.now() - found.createdAt;
+    // داخل الأفق: نيّةٌ واحدةٌ بمفتاحٍ واحد.
+    if (age < REUSE_WINDOW_MS) return found.key;
+    // **وخارجه يُغلَق الباب.** الصفُّ يبقى كما هو: لا يُمحى ولا يُستبدل،
+    // فما زلنا لا نعرف ما فعله الخادمُ بـ`found.key`.
+    throw new IdempotencyIntentExpired(fingerprint, age);
   }
   const key = newIdempotencyKey();
   all[fingerprint] = { key, fingerprint, createdAt: Date.now() };
