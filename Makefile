@@ -73,7 +73,9 @@ rc-t1-h2: ## حزمةُ إغلاق RC-T1-H2 | the focused H2 closure set
 	  tests/test_at_rc_t1_h2b5_thesis_processing_recovery.py \
 	  tests/test_at_stage6_web_key_reaches_provider_once.py \
 	  tests/test_at_rc_t1_h2_closure_contract.py
-	@echo "— وسطحُ المتصفّح: cd apps/web && npm run test:rc-t1-h2"
+	@echo "هذا سطحُ الـAPI وحدَه. والبقيّةُ بوّابتان منفصلتان (RC-T1-H2-closure.md):"
+	@echo "  cd apps/web && npm run test:rc-t1-h2       # 42 — السياسةُ والمتصفّح"
+	@echo "  cd apps/web && npm run test:idem-fullstack # 5  — يحتاج API وقاعدةً حيّين"
 
 lint: ## فحص | lint & type-check
 	cd apps/api && ruff check . && mypy athera_api
@@ -86,4 +88,4 @@ verify-audit: ## التحقق من سلسلة التدقيق | verify audit hash
 	cd apps/api && python -m athera_api.services.audit_verify
 
 .PHONY: help dev down migrate migrate-down test test-api test-arch test-offline \
-	verify-constraints migrate-roundtrip lint openapi verify-audit
+	verify-constraints migrate-roundtrip lint openapi verify-audit rc-t1-h2
