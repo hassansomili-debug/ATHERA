@@ -57,7 +57,8 @@ def _client(slot, *, roles=("system_admin",), mfa=True, locale="ar"):
 
 
 async def _member(tenant_id, *, roles=("researcher",), name="عضو", email=None,
-                  active=True, last_login_days_ago: int | None = None) -> dict:
+                  active=True, last_login_days_ago: int | None = None,
+                  since: dt.datetime | None = None) -> dict:
     """حسابٌ بعضويّةٍ لكلّ دور — **والحسابُ في جلسةٍ بلا مستأجر، والعضويّةُ في سياقه**."""
     from sqlalchemy import select
 
@@ -79,7 +80,10 @@ async def _member(tenant_id, *, roles=("researcher",), name="عضو", email=None
         for key in roles:
             role_id = (await scoped.execute(select(Role.id).where(
                 Role.tenant_id == tenant_id, Role.key == key))).scalar_one()
-            scoped.add(Membership(tenant_id=tenant_id, user_id=user_id, role_id=role_id))
+            member = Membership(tenant_id=tenant_id, user_id=user_id, role_id=role_id)
+            if since is not None:
+                member.created_at = since
+            scoped.add(member)
     return {"tenant_id": tenant_id, "user_id": user_id, "email": email}
 
 
@@ -426,8 +430,11 @@ async def test_14_the_global_users_table_cannot_be_reached_from_another_tenant(t
 @requires_db
 async def test_15_pagination_is_bounded_stable_and_opaque(two_tenants):
     a = two_tenants["a"]
+    # **تعادلٌ مقصود**: ثلاثون عضويّةً بالطابع نفسِه، وحدُّ الصفحة داخلَه. فمؤشّرٌ
+    # على الطابع وحدَه (بلا المعرّف) يُسقط ما بقي من التعادل أو يكرّره.
+    tie = dt.datetime.now(dt.UTC) - dt.timedelta(days=1)
     for i in range(30):
-        await _member(a["tenant_id"], name=f"عضو {i:02d}")
+        await _member(a["tenant_id"], name=f"عضو {i:02d}", since=tie)
     first = (await _get(a, "/api/v1/admin/users?limit=20")).json()
     assert len(first["items"]) == 20 and first["next_cursor"]
     assert "SELECT" not in first["next_cursor"].upper()
@@ -483,16 +490,33 @@ async def test_17_projects_are_tenant_scoped_with_real_filters(two_tenants):
     # ومستأجرٌ آخر لا يُستهدف ولو طُلب بالاسم أو بمعرّف مالكه.
     cross = (await _get(a, f"/api/v1/admin/projects?owner_id={b['user_id']}")).json()
     assert cross["items"] == []
+    # **ومالكٌ ليس عضوًا هنا لا اسمَ له**: أنشأه حسابٌ من B (سجلُّ A يحمل معرّفه).
+    # فالمعرّفُ من بيانات A، والاسمُ من الجدول العامّ — ولا يُقرأ إلّا عبر عضويّة.
+    stranger = await _project(a["tenant_id"], b["user_id"], title="أنشأه غريب")
+    rows = (await _get(a, "/api/v1/admin/projects")).json()["items"]
+    row = next(p for p in rows if p["project_id"] == str(stranger))
+    assert row["owner_user_id"] == str(b["user_id"]) and row["owner_name"] is None
+    assert b["email"] not in json.dumps(rows)
 
 
 @requires_db
 async def test_18_a_tenant_id_in_the_query_changes_nothing(two_tenants):
     a, b = two_tenants["a"], two_tenants["b"]
     await _project(b["tenant_id"], b["user_id"], title="لا يُرى")
+    ours = await _project(a["tenant_id"], a["user_id"], title="يُرى")
     for url in ENDPOINTS:
         injected = await _get(a, f"{url}?tenant_id={b['tenant_id']}")
         assert injected.status_code == 200
         assert str(b["tenant_id"]) not in injected.text, f"{url}: مستأجرٌ من الطلب"
+    # **ولا يصير المستأجرُ المحقونُ سلطةً صامتة**: RLS وحدَها تُخفي بياناتِ B —
+    # فمسارٌ يأخذ `tid` من الطلب يُجيب فارغًا لا مسرّبًا. فيُشترط أنّ بياناتِ A باقية.
+    projects = (await _get(a, f"/api/v1/admin/projects?tenant_id={b['tenant_id']}")).json()
+    assert [p["project_id"] for p in projects["items"]] == [str(ours)]
+    overview = (await _get(a, f"/api/v1/admin/overview?tenant_id={b['tenant_id']}")).json()
+    assert overview["scope"]["tenant_id"] == str(a["tenant_id"])
+    assert overview["projects"]["total"] == 1
+    users = (await _get(a, f"/api/v1/admin/users?tenant_id={b['tenant_id']}")).json()
+    assert [u["user_id"] for u in users["items"]] == [str(a["user_id"])]
 
 
 # ═════════════════════════════ ٦ · العمليات والخصوصيّة ═════════════════════════════
@@ -521,7 +545,13 @@ async def test_19_operations_show_failures_as_metadata_only(two_tenants):
         {"input": 1, "output": 1, "status": "error"},
         {"input": 1, "output": 1, "status": "ambiguous"},
         {"input": 1, "output": 1, "status": "ok"}])
+    # وتشغيلٌ خارج النافذة (١٢٠ يومًا) — لا يبلغه ولا «الكلّ».
+    await _runs(a["tenant_id"], a["user_id"], [{"input": 1, "output": 1, "status": "error"}],
+                days_ago=120)
     thesis = await _thesis(a["tenant_id"], a["user_id"])
+    everything = (await _get(a, "/api/v1/admin/operations?view=all")).json()
+    assert len(everything["agent_runs"]) == 1, "«الكلّ» تجاوز نافذةَ التسعين يومًا"
+    assert len(everything["model_runs"]) == 3 and len(everything["tool_runs"]) == 1
     ops = (await _get(a, "/api/v1/admin/operations")).json()
     assert ops["view"] == "failed" and ops["limit"] == 50
     assert {m["status"] for m in ops["model_runs"]} == {"error", "ambiguous"}

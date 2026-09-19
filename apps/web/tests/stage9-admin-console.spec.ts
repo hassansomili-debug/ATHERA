@@ -202,6 +202,8 @@ test.describe("Stage 9 — the admin console on the real stack", () => {
       await expect(page.getByTestId("usage-output-tokens")).toHaveText("٩٠");
       // والأرقامُ عربيّةٌ في الصفحة العربيّة — ٠٫١٦ لا 0.16، بلا تقريبٍ يُذهب السنتات.
       await expect(page.getByTestId("cost-value")).toContainText("٠٫١٦");
+      // **ظاهرٌ لا موجودٌ فحسب**: رقمُ تكلفةٍ بلا تغطيته يوهم أنّه كلُّ التكلفة.
+      await expect(page.getByTestId("cost-coverage")).toBeVisible();
       await expect(page.getByTestId("cost-coverage")).toContainText("٢ من ٣");
       await expect(page.getByTestId("usage-by-provider")).toBeVisible();
     });
