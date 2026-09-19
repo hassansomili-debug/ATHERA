@@ -19,30 +19,39 @@
 
 ## العقد — ثلاثُ خطوات، ولا معاملةَ عبر الشبكة (RC-T1-H3)
 
-  ١ **السياج** (قاعدةٌ وحدها): يُستولى على الإجارة بشرطٍ في عبارة الكتابة —
-    `in_progress`، وعمليّةٌ من أسرةِ كتابةِ التخزين، وإجارةٌ منقضيةٌ منذ
-    `grace` على الأقلّ بساعة القاعدة — ويُمدّ أجلُها ساعةً للصيانة. وفي
-    المعاملة نفسِها يُتحقّق من غياب كلِّ صفٍّ يشير إلى الملفّ؛ فإن وُجد
-    رجعت المعاملةُ **والسياجُ معها**. ومن لحظة الإيداع: كلُّ إنهاءٍ بسياجٍ
-    قديمٍ يرجع كاملًا (صفُّ `File` معه)، وكلُّ عميلٍ يُردّ «قائمٌ لغيرك».
-  ٢ **المخزن** (بلا معاملة): تُسرد البادئةُ **التامّة** لهذا الملفّ بحدّ،
-    ويُحذف ما تحتها. **وقبل كلِّ حذف** معاملةٌ قصيرةٌ تسأل: أما زال السياجُ
-    سياجَنا، وأما زال في الأجل هامشٌ لا يقلّ عن نصف ساعة؟
-  ٣ **الإنهاء** (قاعدةٌ وحدها، مُسيَّج): يُعاد التحقّقُ من غياب الصفوف،
-    ثمّ يُسجَّل الجيلُ `failed` بـ`fail_leased` نفسِها — إخفاقٌ **معلوم**
-    الآن: لا كائنَ ولا ملفّ. والتنظيفُ العامُّ يُزيله بعد انقضائه.
+  ١ **السياجُ والحجز** (قاعدةٌ وحدها): عبارةُ كتابةٍ واحدةٌ تستولي على الإجارة
+    وتُثبّت **حجزَ الصيانة** (`STORAGE_RECONCILE_MARKER`) — بشرطٍ فيها: جيلٌ
+    `in_progress` من أسرة كتابة التخزين، بلا وسمِ مزوّد، وإجارتُه منقضيةٌ منذ
+    `grace` (أو حجزٌ سابقٌ انقضى أجلُه). ثمّ يُتحقّق من غياب كلِّ صفٍّ يشير إلى
+    الملفّ في المعاملة نفسِها؛ فإن وُجد رجعت المعاملةُ **والحجزُ معها**.
+  ٢ **المخزن** (بلا معاملة): تُسرد البادئةُ **التامّة** بحدّ، ويُحذف ما تحتها؛
+    وقبل كلِّ حذفٍ سؤالٌ قصيرٌ للسياج.
+  ٣ **التقاعد** (قاعدةٌ وحدها، مُسيَّج): تحقّقٌ أخير، ثمّ يُكتب الجيلُ `failed`
+    **ومنتهيًا** (`expires_at = now()`). فالإعادةُ التاليةُ لا تستولي عليه بل
+    تستعيده — **صفٌّ جديد، ومعرّفُ ملفٍّ جديد، وبادئةٌ جديدة**.
 
-**والمرساةُ تبقى حتى يُثبَت المخزنُ نظيفًا.** سقوطُ السرد أو الحذف أو
-العمليّةِ بين الخطوتين يترك الجيلَ `in_progress` بسياج الصيانة؛ فإذا انقضى
-أعاده التشغيلُ التالي من أوّله — والتكرارُ آمن.
+## لمَ لا ينتج «صفٌّ قائم + كائنُه محذوف» — بلا افتراضِ زمن
 
-## الافتراضُ الوحيدُ الباقي — ويُقال
+  • **الحجزُ يغلق الجيلَ على العملاء** إغلاقًا لا يفتحه انقضاءُ الأجل
+    (`acquire_lease` تستثني الصفَّ المحجوز في عبارة الاستيلاء نفسِها). فمُصالِحٌ
+    توقّف بعد فحصِه الأخير لا يجد مستوليًا كتب إلى مفتاحه حين يستيقظ.
+  • **والعاملُ البائت** يرجع إنهاؤه كلُّه: سياجُه لم يعد السياج.
+  • **وبعد التقاعد** لا يكتب أحدٌ إلى البادئة القديمة أبدًا: الإعادةُ التاليةُ
+    جيلٌ جديدٌ ببادئةٍ جديدة. فحذفٌ متأخّرٌ من مُصالِحٍ عتيقٍ يقع على البادئة
+    القديمة وحدَها — ولا يبلغ الملفَّ الجديد.
 
-حذفٌ صدر في المخزن يقع خلال نصف ساعة. فإن توقّفت العمليّةُ أطولَ من ذلك
-بين الفحص والحذف، انقضى أجلُها، واستولى عميلٌ فأعاد الكتابة — ثمّ وقع
-الحذفُ المتأخّر. وهو افتراضُ الإجارات كلِّها (H2-B1) بهامشٍ أوسعَ بألف
-مرّة من زمنِ حذفٍ واحد. والمخزنُ لا يفحص سياجًا، ولا شرطَ حذفٍ مضمونٌ في
-كلّ مزوّدٍ متوافقٍ مع S3 — فلا يُدَّعى ما لا يُملك.
+## والثمنُ — ويُقال
+
+**مُصالِحٌ سقط يترك الجيلَ محجوزًا**، والنيّةُ القديمةُ عالقةٌ (`409
+idempotency.in_progress`) حتى يُتمّ مُصالِحٌ آخرُ ما بدأه — فهو وحدَه يستأنف
+حجزًا انقضى أجلُه. **والإخفاقُ الآمنُ أولى من فسادِ المخزن.**
+
+و`DELETE_MARGIN` ليس حجّةَ الأمان بل **تحسينٌ للحيويّة**: مُصالِحٌ يعرف أنّ
+أجلَه يوشك أن ينقضي يتوقّف قبل الحذف بدل أن يحذف ثمّ يجد نفسه منافَسًا.
+
+والتسرّبُ — لا الفساد — ممكنٌ في حالٍ واحدة: عاملٌ **قبل** الصيانة ما زال داخل
+`PUT` بعد أن انقضت إجارتُه بساعة، فيُنزل كائنَه بعد التقاعد تحت البادئة
+القديمة. لا صفَّ يشير إليه؛ هو كائنٌ متروكٌ لا صفٌّ يشير إلى عدم.
 
 ## الحدود
 
@@ -66,13 +75,19 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from ..models.files import File
-from ..models.idempotency import IN_PROGRESS, IdempotencyRecord
+from ..models.idempotency import FAILED, IN_PROGRESS, IdempotencyRecord
 from ..models.thesis import Thesis
 from . import audit, storage
-from .idempotency import EXTERNAL_MARKER, Lease, fail_leased, stable_object_id
+from .idempotency import (
+    EXTERNAL_MARKER,
+    STORAGE_RECONCILE_MARKER,
+    Lease,
+    stable_object_id,
+    storage_held,
+)
 
 #: أسرةُ كتابةِ التخزين — المساراتُ التي تكتب الكائنَ **قبل** إنهاء القاعدة.
 #:
@@ -111,6 +126,29 @@ class Outcome:
     detail: str = ""
 
 
+def _no_provider_marker():
+    # ولا وسمَ عبورِ مزوّد — لا نموذجَ يدخل هذا الباب.
+    return or_(IdempotencyRecord.response_body.is_(None),
+               ~IdempotencyRecord.response_body.has_key(EXTERNAL_MARKER))
+
+
+def _eligible(grace: dt.timedelta):
+    """أهليّةُ الصيانة — **حالان لا حالٌ واحدة**.
+
+      • جيلٌ مهجورٌ **بلا حجز**: إجارتُه منقضيةٌ منذ `grace` على الأقلّ.
+      • جيلٌ **تحت حجزٍ** انقضى أجلُه: مُصالِحٌ سابقٌ سقط. فيستأنفه مُصالِحٌ
+        آخرُ فورًا — **ولا يستأنفه عميلٌ أبدًا** (انظر `acquire_lease`).
+    """
+    held = storage_held()
+    return and_(
+        IdempotencyRecord.state == IN_PROGRESS,
+        IdempotencyRecord.operation.in_(STORAGE_WRITE_OPERATIONS),
+        IdempotencyRecord.response_status.is_(None),
+        or_(and_(~held, IdempotencyRecord.lease_expires_at <= func.now() - grace),
+            and_(held, IdempotencyRecord.lease_expires_at <= func.now())),
+    )
+
+
 def _digest(key: str) -> str:
     # المفتاحُ يحمل اسمَ الملفّ — واسمُ الملفّ قد يكون بحثًا. فبصمةٌ لا اسم.
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
@@ -137,10 +175,7 @@ async def find_candidates(
     async with maker() as session:
         rows = (await session.execute(
             select(IdempotencyRecord.id, IdempotencyRecord.operation)
-            .where(IdempotencyRecord.state == IN_PROGRESS,
-                   IdempotencyRecord.operation.in_(STORAGE_WRITE_OPERATIONS),
-                   IdempotencyRecord.response_status.is_(None),
-                   IdempotencyRecord.lease_expires_at <= func.now() - grace)
+            .where(_eligible(grace), _no_provider_marker())
             .order_by(IdempotencyRecord.lease_expires_at)
             .limit(max(1, limit))
         )).all()
@@ -154,17 +189,14 @@ async def _fence(maker, *, record_id: uuid.UUID, tenant_id: uuid.UUID,
     file_id = stable_object_id(record_id)
     prefix = storage.stable_file_prefix(tenant_id, actor_id, file_id)
     async with maker() as session:
+        # **والحجزُ يُثبَّت مع السياج في العبارة نفسِها.** ومن لحظة إيداعه لا
+        # يستولي على الجيل عميلٌ — ولو انقضى هذا الأجلُ وهذا المُصالِحُ متوقّف.
         taken = (await session.execute(
             update(IdempotencyRecord)
-            .where(IdempotencyRecord.id == record_id,
-                   IdempotencyRecord.state == IN_PROGRESS,
-                   IdempotencyRecord.operation.in_(STORAGE_WRITE_OPERATIONS),
-                   IdempotencyRecord.response_status.is_(None),
-                   # ولا وسمَ عبورِ مزوّد — لا نموذجَ يدخل هذا الباب.
-                   or_(IdempotencyRecord.response_body.is_(None),
-                       ~IdempotencyRecord.response_body.has_key(EXTERNAL_MARKER)),
-                   IdempotencyRecord.lease_expires_at <= func.now() - grace)
-            .values(lease_expires_at=func.now() + MAINTENANCE_LEASE)
+            .where(IdempotencyRecord.id == record_id, _eligible(grace),
+                   _no_provider_marker())
+            .values(lease_expires_at=func.now() + MAINTENANCE_LEASE,
+                    response_body={STORAGE_RECONCILE_MARKER: {"hold": "operator"}})
             .returning(IdempotencyRecord.lease_expires_at, IdempotencyRecord.operation)
         )).first()
         if taken is None:
@@ -172,7 +204,7 @@ async def _fence(maker, *, record_id: uuid.UUID, tenant_id: uuid.UUID,
         # **والتحقّقُ بعد السياج لا قبله**: قبله نافذةٌ يُودِع فيها عاملٌ
         # بائتٌ صفَّه؛ وبعده لا إنهاءَ بسياجٍ قديم يمكن أن يُودَع.
         if await _domain_rows(session, file_id=file_id, prefix=prefix):
-            await session.rollback()     # والسياجُ يرجع معها — لا حبسَ لمفتاحٍ سليم.
+            await session.rollback()     # والسياجُ والحجزُ يرجعان معها — لا حبسَ لمفتاحٍ سليم.
             return None, "skipped_domain_row"
     return Lease(record_id=record_id, operation=taken[1], fence=taken[0]), "fenced"
 
@@ -264,7 +296,25 @@ async def _reconcile_one(
             # لا يقع إن صحّ السياج — ويُقال بصوتٍ عالٍ إن وقع، ولا يُطوى الجيل.
             outcome.status, outcome.detail = "invariant_violation", ",".join(rows)
             return outcome
-        if await fail_leased(session, lease, reason=REASON) is not None:
+        # ══ **ويُتقاعَد الجيلُ لا يُفشَل وحسب** ══
+        #
+        # `failed` وحدَها تُبقي الصفَّ نفسَه: فإعادةُ العميل تستولي عليه
+        # فتكتب إلى **البادئة القديمة** — والمُصالِحُ الأقدمُ المتوقّفُ قد
+        # يستيقظ فيحذف فيها. فيُكتب `expires_at = now()` أيضًا: والإعادةُ
+        # التاليةُ تستعيد المنتهيَ (`acquire_lease`) فتُدرج صفًّا جديدًا —
+        # معرّفٌ جديد ⇒ ملفٌّ جديد ⇒ بادئةٌ جديدة. **والمفتاحُ الخامُ قد يبقى
+        # هو هو؛ وجيلُ الخادم جديد**، لأنّ الصيانةَ أنهت القديمَ يقينًا.
+        retired = await session.execute(
+            update(IdempotencyRecord)
+            .where(IdempotencyRecord.id == lease.record_id,
+                   IdempotencyRecord.state == IN_PROGRESS,
+                   IdempotencyRecord.lease_expires_at == lease.fence,
+                   storage_held())
+            .values(state=FAILED, completed_at=func.now(), lease_expires_at=None,
+                    response_status=None,
+                    response_body={"failure": REASON},
+                    expires_at=func.now()))
+        if (getattr(retired, "rowcount", 0) or 0) != 1:
             outcome.status = "contended"
             return outcome
         await audit.record(

@@ -58,6 +58,8 @@ class ReconcileStore(CountingStore):
         self.pause_after_put: threading.Event | None = None
         self.paused: threading.Event | None = None
         self.on_list = None
+        self.pause_delete: threading.Event | None = None
+        self.delete_paused: threading.Event | None = None
 
     def put_stream(self, key: str, fileobj, content_type: str) -> None:
         super().put_stream(key, fileobj, content_type)
@@ -78,6 +80,12 @@ class ReconcileStore(CountingStore):
     def delete(self, key: str) -> None:
         if self.delete_fail is not None:
             raise self.delete_fail
+        if self.pause_delete is not None:
+            # **بعد** فحص السياج الأخير و**قبل** الحذف — والحبسُ للنداء الأوّل وحده.
+            gate, self.pause_delete = self.pause_delete, None
+            if self.delete_paused is not None:
+                self.delete_paused.set()
+            gate.wait(timeout=60)
         super().delete(key)
 
 
@@ -392,14 +400,18 @@ async def test_12_a_reconciled_orphan_then_a_rerun_and_a_retry_stay_consistent(
     assert await _reconcile(slot, store) == [], "تشغيلةٌ ثانيةٌ وجدت ما تفعله"
     assert await _audits(slot["tenant_id"], "storage.orphan_reconciled", file_id) == 1
 
-    # **والإعادةُ بعد المصالحة**: يستولي العميلُ على الجيل الفاشل نفسِه
-    # (المعرّفُ ثابت) فيكتب ويُنهي — ملفٌّ وكائنٌ معًا.
+    # **والإعادةُ بعد المصالحة جيلٌ جديد** — لا استيلاءٌ على القديم. وكان هذا
+    # الفحصُ يطلب العكسَ (المعرّفَ القديم)، وذاك هو بابُ الفساد: مُصالِحٌ
+    # عتيقٌ متوقّفٌ قد يحذف في البادئة القديمة بعدُ.
     async with _client(slot) as http:
         retried = await http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key})
     assert retried.status_code == 201, retried.text
-    assert retried.json()["id"] == file_id
+    assert retried.json()["id"] != file_id, "الإعادةُ عادت إلى البادئة القديمة"
+    new_record = str(await _generation(slot["tenant_id"], key))
+    assert new_record != record_id
     assert len(store.objects) == 1
-    assert await _files(slot["tenant_id"], file_id) == 1
+    assert await _files(slot["tenant_id"], retried.json()["id"]) == 1
+    assert await _files(slot["tenant_id"], file_id) == 0
 
 
 # ═════════ ٥ · البائتُ بعد الصيانة — المقياسُ الذي لا يُساوَم عليه ═════════
@@ -588,3 +600,180 @@ async def test_20_the_theses_upload_family_is_reconciled_too(
     outcomes = await _reconcile(slot, store)
     assert [o.status for o in outcomes] == ["reconciled"], outcomes
     assert store.objects == {}
+
+
+# ═════════ ٧ · حجزُ الصيانة — السباقُ الذي لم يكن يُقاس ═════════
+
+
+async def _body(record_id: str):
+    rows = await _rows("SELECT response_body FROM idempotency_records WHERE id = :i",
+                       {"i": record_id})
+    return rows[0][0] if rows else None
+
+
+def _held(body) -> bool:
+    from athera_api.services.idempotency import STORAGE_RECONCILE_MARKER
+
+    return isinstance(body, dict) and STORAGE_RECONCILE_MARKER in body
+
+
+@requires_db
+async def test_21_a_paused_reconciler_cannot_delete_a_new_owners_object(
+    two_tenants, store, monkeypatch,
+):
+    """**المُصالِحُ البائت** — الحالُ التي لم يقسها `test_13`.
+
+    ١ مُصالِحٌ A يأخذ السياجَ F1 ويمرّ بفحصه الأخير، ثمّ يتوقّف **قبل** الحذف.
+    ٢ ينقضي F1؛ والعميلُ يعيد بالمفتاح نفسِه ⇒ **لا استيلاء** (الحجز).
+    ٣ مُصالِحٌ B يستأنف الحجزَ المنقضي، ويُصالح، ويُقاعِد الجيل.
+    ٤ العميلُ يعيد ثانيةً ⇒ **جيلٌ جديدٌ وبادئةٌ جديدة**.
+    ٥ يستيقظ A فيُنفذ حذفَه المقرَّر ⇒ يصيب البادئةَ القديمةَ وحدَها.
+
+    **وعلى الرأس `80e538f` يفسد هذا السباقُ فعلًا** — قِيس: إعادةُ العميل في (٢)
+    تُجاب ٢٠١ على معرّف الملفّ القديم نفسِه، ثمّ يحذف A كائنَه: صفٌّ قائمٌ
+    يشير إلى عدم.
+    """
+    slot = two_tenants["a"]
+    key, g1 = await _abandon(slot, store, monkeypatch)
+    old_file = _derived(g1)
+    old_prefix = _prefix(slot, g1)
+    old_key = next(iter(store.objects))
+    assert old_key.startswith(old_prefix)
+    puts_before = len(store.put_calls)
+
+    store.pause_delete = threading.Event()
+    store.delete_paused = threading.Event()
+    gate = store.pause_delete
+    reconciler_a = asyncio.create_task(_reconcile(slot, store))
+    try:
+        deadline = asyncio.get_running_loop().time() + 30
+        while not store.delete_paused.is_set():
+            assert asyncio.get_running_loop().time() < deadline, "لم يبلغ A الحذف"
+            await asyncio.sleep(0.01)
+        assert _held(await _body(g1)), "A لم يُثبّت حجزَ الصيانة"
+
+        # ══ ينقضي F1 — والعميلُ لا يستولي ══
+        await _sql("UPDATE idempotency_records SET lease_expires_at = now() - interval '1 second'"
+                   " WHERE id = :i", {"i": g1})
+        async with _client(slot) as http:
+            refused = await http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key})
+        assert refused.status_code == 409, f"استولى العميلُ على جيلٍ محجوز: {refused.text[:200]}"
+        assert refused.json()["error"]["code"] == "idempotency.in_progress", refused.text
+        assert len(store.put_calls) == puts_before, "كتب العميلُ إلى البادئة القديمة"
+        assert await _files(slot["tenant_id"], old_file) == 0
+
+        # ══ B يستأنف الحجزَ المنقضي، ويُصالح، ويُقاعد ══
+        b = await _reconcile(slot, store)
+        assert [o.status for o in b] == ["reconciled"], b
+        assert old_key not in store.objects
+
+        # ══ الإعادةُ الآن جيلٌ جديد ══
+        async with _client(slot) as http:
+            fresh = await http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key})
+        assert fresh.status_code == 201, fresh.text
+        g2 = str(await _generation(slot["tenant_id"], key))
+        new_file = fresh.json()["id"]
+        new_prefix = _prefix(slot, g2)
+        assert g2 != g1, "الإعادةُ بعد المصالحة استولت على الجيل القديم"
+        assert new_file != old_file and new_file == _derived(g2)
+        assert new_prefix != old_prefix
+        new_key = next(k for k in store.objects if k.startswith(new_prefix))
+    finally:
+        gate.set()
+        a = await reconciler_a
+
+    # ══ A استيقظ ونفّذ حذفَه — والملفُّ الجديدُ سليم ══
+    assert [o.status for o in a] == ["contended"], a
+    assert new_key in store.objects, "حذف المُصالِحُ البائتُ كائنَ المالك الجديد"
+    assert await _files(slot["tenant_id"], new_file) == 1
+    assert await _files(slot["tenant_id"], old_file) == 0
+
+
+@requires_db
+async def test_22_a_crashed_maintenance_hold_blocks_ordinary_takeover(
+    two_tenants, store, monkeypatch,
+):
+    """مُصالِحٌ سقط بعد الحجز ⇒ النيّةُ عالقة — **والإخفاقُ الآمنُ أولى من الفساد**."""
+    slot = two_tenants["a"]
+    key, g1 = await _abandon(slot, store, monkeypatch)
+    store.list_fail = ConnectionError("died after the hold")
+    assert [o.status for o in await _reconcile(slot, store)] == ["list_failed"]
+    assert _held(await _body(g1))
+
+    # الأجلُ ينقضي بعيدًا — ولا يفتح الوقتُ ما أغلقه الحجز.
+    await _sql("UPDATE idempotency_records SET lease_expires_at = now() - interval '1 day'"
+               " WHERE id = :i", {"i": g1})
+    async with _client(slot) as http:
+        refused = await http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key})
+    assert refused.status_code == 409 and \
+        refused.json()["error"]["code"] == "idempotency.in_progress", refused.text
+    assert _held(await _body(g1)), "العميلُ محا الحجز"
+    assert (await _state(g1))[0] == "in_progress"
+
+
+@requires_db
+async def test_23_an_expired_hold_is_resumed_by_the_operator_only(
+    two_tenants, store, monkeypatch,
+):
+    slot = two_tenants["a"]
+    _key_, g1 = await _abandon(slot, store, monkeypatch)
+    store.list_fail = ConnectionError("died after the hold")
+    await _reconcile(slot, store)
+    store.list_fail = None
+    # أجلُ الصيانة انقضى للتوّ — أقلُّ بكثيرٍ من مهلة الهجر.
+    await _sql("UPDATE idempotency_records SET lease_expires_at = now() - interval '1 second'"
+               " WHERE id = :i", {"i": g1})
+    resumed = await _reconcile(slot, store)
+    assert [o.status for o in resumed] == ["reconciled"], resumed
+    assert store.objects == {}
+
+
+@requires_db
+async def test_24_generic_cleanup_never_removes_a_maintenance_hold(
+    two_tenants, store, monkeypatch,
+):
+    slot = two_tenants["a"]
+    _key_, g1 = await _abandon(slot, store, monkeypatch)
+    store.list_fail = ConnectionError("died after the hold")
+    await _reconcile(slot, store)
+    await _sql("UPDATE idempotency_records SET expires_at = now() - interval '2 days',"
+               " lease_expires_at = now() - interval '2 days' WHERE id = :i", {"i": g1})
+    await _fresh_leased_generation(slot)
+    assert await _state(g1) is not None, "التنظيفُ العامُّ محا حجزَ صيانة"
+    assert _held(await _body(g1))
+
+
+@requires_db
+async def test_25_a_dry_run_installs_no_hold(two_tenants, store, monkeypatch):
+    slot = two_tenants["a"]
+    _key_, g1 = await _abandon(slot, store, monkeypatch)
+    before = (await _state(g1), await _body(g1))
+    assert [o.status for o in await _reconcile(slot, store, apply=False)] == ["would_reconcile"]
+    assert (await _state(g1), await _body(g1)) == before
+    assert not _held(await _body(g1))
+
+
+@requires_db
+async def test_26_storage_and_provider_markers_are_never_confused(
+    two_tenants, store, monkeypatch,
+):
+    """حجزُ التخزين ⇒ «قائمٌ لغيرك» لا «أثرٌ لا يُعرف»؛ ووسمُ المزوّد ⇒ لا مصالحة."""
+    slot = two_tenants["a"]
+    key, g1 = await _abandon(slot, store, monkeypatch)
+    store.list_fail = ConnectionError("hold only")
+    await _reconcile(slot, store)
+    await _sql("UPDATE idempotency_records SET lease_expires_at = now() - interval '1 day'"
+               " WHERE id = :i", {"i": g1})
+    async with _client(slot) as http:
+        answer = await http.post(UPLOAD, **_upload_kwargs(), headers={HEADER: key})
+    assert answer.json()["error"]["code"] == "idempotency.in_progress", \
+        f"حجزُ التخزين قُرئ وسمَ مزوّد: {answer.text[:200]}"
+
+    # جيلٌ آخرُ في أسرة التخزين يحمل وسمَ مزوّد — لا يُصالَح أبدًا.
+    store.list_fail = None
+    _k2, g2 = await _abandon(slot, store, monkeypatch)
+    await _sql("UPDATE idempotency_records SET response_body ="
+               " '{\"__athera_external_attempt__\": {\"provider\": \"x\"}}'::jsonb"
+               " WHERE id = :i", {"i": g2})
+    outcomes = await _reconcile(slot, store, apply=False)
+    assert g2 not in [o.record_id for o in outcomes], "صُولح جيلٌ يحمل وسمَ مزوّد"
