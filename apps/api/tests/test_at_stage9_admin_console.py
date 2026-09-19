@@ -589,7 +589,7 @@ async def test_21_list_endpoints_issue_a_constant_number_of_statements(two_tenan
     """**لا N+1**: عددُ العبارات لا يكبر بعدد الصفوف."""
     from sqlalchemy import event
 
-    from athera_api.db import engine
+    from athera_api import db as dbmod
 
     a = two_tenants["a"]
 
@@ -599,11 +599,11 @@ async def test_21_list_endpoints_issue_a_constant_number_of_statements(two_tenan
         def _tick(*_a, **_k):
             seen["n"] += 1
 
-        event.listen(engine.sync_engine, "before_cursor_execute", _tick)
+        event.listen(dbmod.engine.sync_engine, "before_cursor_execute", _tick)
         try:
             ok = await _get(a, url)
         finally:
-            event.remove(engine.sync_engine, "before_cursor_execute", _tick)
+            event.remove(dbmod.engine.sync_engine, "before_cursor_execute", _tick)
         assert ok.status_code == 200, ok.text
         return seen["n"]
 

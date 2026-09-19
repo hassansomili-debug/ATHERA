@@ -26,7 +26,9 @@ export default function AdminUserDetailPage({
   const t = translator(getMessages(locale));
   const { state, reload } = useAdminResource<AdminUserDetail>(
     locale, `/api/v1/admin/users/${encodeURIComponent(userId)}`);
-  const d = state.status === "ready" ? state.data : null;
+  // «لا يوجد» لا يُقال إلّا بعد أن يُجيب الخادم — وقبلَه `ResourceGate` تقول «جارٍ».
+  const answered = state.status === "ready";
+  const d = answered ? state.data : null;
   const n = (v: number) => formatCount(locale, v);
 
   return (

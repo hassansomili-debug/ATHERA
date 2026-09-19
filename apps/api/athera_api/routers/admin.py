@@ -21,8 +21,10 @@ from ..deps import Principal, get_session, require_roles
 from ..schemas import admin as S
 from ..services import admin_console as console
 from ..services import rbac
+from ..transaction import TransactionalRoute
 
-router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+# `TransactionalRoute` كسائر الموجّهات (RC-T1-H1): حدُّ المعاملة قبل الجواب — ولو قراءة.
+router = APIRouter(prefix="/api/v1/admin", tags=["admin"], route_class=TransactionalRoute)
 
 #: **الحارسُ القانونيّ الوحيد** — والأدوارُ من مصدرها في `rbac`.
 admin_guard = require_roles(*sorted(rbac.ADMIN_ROLE_KEYS))

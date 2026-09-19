@@ -43,7 +43,9 @@ export default function AdminProjectsPage({ params }: { params: Promise<{ locale
   if (query.cursor) qs.set("cursor", query.cursor);
   const path = ownerReady ? `/api/v1/admin/projects${qs.size ? `?${qs.toString()}` : ""}` : null;
   const { state, reload } = useAdminResource<Page<AdminProjectRow>>(locale, path);
-  const page = state.status === "ready" ? state.data : null;
+  // «لا يوجد» لا يُقال إلّا بعد أن يُجيب الخادم — وقبلَه `ResourceGate` تقول «جارٍ».
+  const answered = state.status === "ready";
+  const page = answered ? state.data : null;
   const lifeLabel = (key: string) =>
     key ? t(`admin.lifecycle${key[0].toUpperCase()}${key.slice(1)}`) : t("admin.lifecycleLive");
 

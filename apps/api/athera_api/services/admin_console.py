@@ -35,7 +35,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, case, exists, func, or_, select, tuple_
+from sqlalchemy import and_, case, exists, false, func, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AtheraError, NotFound
@@ -133,6 +133,11 @@ def _owner_expr():
         .correlate(ResearchProject).scalar_subquery()
     )
     return func.coalesce(profile_user, first_creator)
+
+
+def _counts(rows: Any) -> dict[uuid.UUID, int]:
+    """صفوفُ `(معرّف، عدد)` من عبارةٍ مجمَّعة — قاموسًا."""
+    return {r[0]: int(r[1]) for r in rows}
 
 
 def _lifecycle_expr():
@@ -307,23 +312,24 @@ def _member_aggregate(tid: uuid.UUID):
 
 
 async def _user_row_counts(session: AsyncSession, tid: uuid.UUID, ids: list[uuid.UUID]
-                           ) -> tuple[dict, dict, dict]:
+                           ) -> tuple[dict[uuid.UUID, int], dict[uuid.UUID, int],
+                                      dict[uuid.UUID, int]]:
     """ثلاثُ عباراتٍ **للصفحة كلّها** — لا عبارةٌ لكلّ صفّ."""
     if not ids:
         return {}, {}, {}
     owner = _owner_expr()
-    projects = dict((await session.execute(
+    projects = _counts((await session.execute(
         select(owner, func.count(ResearchProject.id))
         .where(ResearchProject.tenant_id == tid, ResearchProject.deleted_at.is_(None),
                owner.in_(ids))
         .group_by(owner)
     )).all())
-    files = dict((await session.execute(
+    files = _counts((await session.execute(
         select(File.uploaded_by, func.count(File.id))
         .where(File.tenant_id == tid, File.trashed_at.is_(None), File.uploaded_by.in_(ids))
         .group_by(File.uploaded_by)
     )).all())
-    runs = dict((await session.execute(
+    runs = _counts((await session.execute(
         select(AgentRun.requested_by, func.count(ModelRun.id))
         .join(AgentRun, AgentRun.id == ModelRun.agent_run_id)
         .where(ModelRun.tenant_id == tid, AgentRun.tenant_id == tid,
@@ -358,7 +364,7 @@ async def list_users(session: AsyncSession, *, tid: uuid.UUID, locale: str,
         query = query.where(User.is_active.is_(active))
     after = decode_cursor(cursor)
     if after is not None:
-        query = query.where(tuple_(agg.c.since, User.id) < tuple_(after[0], after[1]))
+        query = query.where(tuple_(agg.c.since, User.id) < tuple_(literal(after[0]), literal(after[1])))
     rows = (await session.execute(
         query.order_by(agg.c.since.desc(), User.id.desc()).limit(size + 1))).all()
 
@@ -482,28 +488,28 @@ async def list_projects(session: AsyncSession, *, tid: uuid.UUID, locale: str,
     after = decode_cursor(cursor)
     if after is not None:
         query = query.where(tuple_(ResearchProject.created_at, ResearchProject.id)
-                            < tuple_(after[0], after[1]))
+                            < tuple_(literal(after[0]), literal(after[1])))
     rows = (await session.execute(
         query.order_by(ResearchProject.created_at.desc(), ResearchProject.id.desc())
         .limit(size + 1))).all()
     page, more = rows[:size], len(rows) > size
     ids = [r[0] for r in page]
 
-    collaborators: dict = {}
-    files: dict = {}
-    manuscripts: dict = {}
+    collaborators: dict[uuid.UUID, int] = {}
+    files: dict[uuid.UUID, int] = {}
+    manuscripts: dict[uuid.UUID, int] = {}
     if ids:
-        collaborators = dict((await session.execute(
+        collaborators = _counts((await session.execute(
             select(ProjectMember.project_id, func.count(ProjectMember.id))
             .where(ProjectMember.tenant_id == tid, ProjectMember.project_id.in_(ids),
                    ProjectMember.removed_at.is_(None))
             .group_by(ProjectMember.project_id))).all())
-        files = dict((await session.execute(
+        files = _counts((await session.execute(
             select(ProjectFile.project_id, func.count(ProjectFile.id))
             .where(ProjectFile.tenant_id == tid, ProjectFile.project_id.in_(ids),
                    ProjectFile.state == "active")
             .group_by(ProjectFile.project_id))).all())
-        manuscripts = dict((await session.execute(
+        manuscripts = _counts((await session.execute(
             select(Manuscript.project_id, func.count(Manuscript.id))
             .where(Manuscript.tenant_id == tid, Manuscript.project_id.in_(ids))
             .group_by(Manuscript.project_id))).all())
@@ -629,7 +635,7 @@ async def operations(session: AsyncSession, *, tid: uuid.UUID, locale: str, view
     elif view == "in_progress":
         agent_q = agent_q.where(AgentRun.status == "running")
         model_q = model_q.where(ModelRun.status == MODEL_AMBIGUOUS)
-        tool_q = tool_q.where(False)
+        tool_q = tool_q.where(false())
         thesis_q = thesis_q.where(Thesis.processing_state.in_(processing.IN_FLIGHT))
 
     agents = (await session.execute(

@@ -22,7 +22,9 @@ export default function AdminOperationsPage({ params }: { params: Promise<{ loca
   const t = translator(getMessages(locale));
   const [view, setView] = useState<(typeof VIEWS)[number]>("failed");
   const { state, reload } = useAdminResource<AdminOperations>(locale, `/api/v1/admin/operations?view=${view}`);
-  const ops = state.status === "ready" ? state.data : null;
+  // «لا يوجد» لا يُقال إلّا بعد أن يُجيب الخادم — وقبلَه `ResourceGate` تقول «جارٍ».
+  const answered = state.status === "ready";
+  const ops = answered ? state.data : null;
   const viewLabel = { failed: t("admin.viewFailed"), in_progress: t("admin.viewInProgress"), all: t("admin.viewAll") };
   const err = (present: boolean) => (present ? t("admin.errorRecorded") : t("admin.noError"));
 

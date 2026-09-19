@@ -34,7 +34,9 @@ export default function AdminUsersPage({ params }: { params: Promise<{ locale: s
   if (query.cursor) params_.set("cursor", query.cursor);
   const path = `/api/v1/admin/users${params_.size ? `?${params_.toString()}` : ""}`;
   const { state, reload } = useAdminResource<Page<AdminUserRow>>(locale, path);
-  const page = state.status === "ready" ? state.data : null;
+  // «لا يوجد» لا يُقال إلّا بعد أن يُجيب الخادم — وقبلَه `ResourceGate` تقول «جارٍ».
+  const answered = state.status === "ready";
+  const page = answered ? state.data : null;
 
   return (
     <AdminShell locale={locale} active="users">
