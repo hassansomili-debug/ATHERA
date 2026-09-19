@@ -687,10 +687,41 @@ async def within_ledger_horizon(
     return True if safe is None else bool(safe)
 
 
+async def recover_generation(
+    session: AsyncSession, *, tenant_id: uuid.UUID, thesis_id: uuid.UUID,
+) -> ProcessingClaim | None:
+    """**استعادةٌ وحدَها — ولا تبدأ جيلًا جديدًا بحال**.
+
+    ولهذا موضعان لا ثالثَ لهما: إعادةُ طلبٍ مُمفتَحٍ مخزون، ومنحُ إذنٍ
+    مكرَّرٌ على إذنٍ قائم. وكلاهما **ليس طلبَ معالجةٍ جديدة**: الأوّلُ يقول
+    «أعِد جوابي»، والثاني يقول «إذني كما هو». فلو جاز لهما أن يبدآ جيلًا
+    لصار تكرارُ طلبٍ شبكيٍّ سببًا في تنفيذِ نموذجٍ مدفوعٍ لم يطلبه أحد.
+
+    وتُعيد مطالبةً **فقط** حين تقع استعادةٌ آمنةٌ للجيل نفسِه. وفيما عدا
+    ذلك `None`، ولا كتابةَ ولا جدولة:
+
+    ‏• حالٌ جاريةٌ حيّة ⇒ عاملٌ يعمل، فلا شيء.
+    ‏• حالٌ طرفيّة ⇒ لا عملَ معلَّقًا، ولا يُخترع طلبٌ لم يُطلب.
+    ‏• مهجورةٌ تجاوزت أفقَ سِجلِّها ⇒ **لا تُستعاد ولا يُزاد رقمُها**؛
+      فالباحثُ يبدأ جيلًا جديدًا بفعلٍ صريحٍ إن أراد، وبطاقتُه تعرضه.
+    """
+    try:
+        return await claim_generation(
+            session, tenant_id=tenant_id, thesis_id=thesis_id,
+            allow_new_generation=False)
+    except ProcessingConflict:
+        return None
+
+
 async def claim_generation(
     session: AsyncSession, *, tenant_id: uuid.UUID, thesis_id: uuid.UUID,
+    allow_new_generation: bool = True,
 ) -> ProcessingClaim:
     """يكتسب جيلَ معالجةٍ — **بدايةً جديدةً أو استعادةً لمهجورة**.
+
+    و`allow_new_generation=False` يقصرها على الاستعادة وحدَها: فلا رقمَ
+    يزيد، ولا جيلَ يُخلَق. وذاك عقدُ `recover_generation` — ومن نادى بها
+    فقد قال صراحةً إنّ طلبَه ليس طلبَ معالجةٍ جديدة.
 
     والقرارُ ثلاثيّ، ويقع كلُّه تحت قفلِ الصفّ فلا نافذةَ بين القراءة والكتابة:
 
@@ -728,6 +759,13 @@ async def claim_generation(
             # فلا تُستعاد تلك المحاولةُ تلقائيًّا: تُغلَق بصدقٍ، ويبدأ
             # **جيلٌ جديدٌ مقصود** — رقمٌ جديد، وتشغيلةٌ جديدة، ومفاتيحُ
             # أقسامٍ جديدة. فالنداءُ حينئذٍ مأذونٌ لا أعمى.
+            #
+            # **وفي وضع الاستعادةِ لا يقع ذلك البتّة.** فإعادةُ طلبٍ مخزونٍ
+            # أو منحٌ مكرَّرٌ ليسا قرارَ باحثٍ ببدء قراءةٍ جديدة؛ ولو زادا
+            # الرقمَ هنا لصار مجرّدُ تكرارِ طلبٍ شبكيٍّ يُنفّذ نموذجًا مدفوعًا.
+            if not allow_new_generation:
+                raise ProcessingConflict("thesis.recovery_horizon_exceeded",
+                                         state=state)
             claimed = (await session.execute(
                 update(Thesis)
                 .where(Thesis.id == thesis_id, Thesis.tenant_id == tenant_id,
@@ -761,6 +799,12 @@ async def claim_generation(
 
     if state not in RETRYABLE:
         raise ProcessingConflict("thesis.processing_in_flight", state=state)
+
+    # **ولا جيلَ جديدًا لمن لم يطلبه.** الحالُ طرفيّةٌ تقبل الإعادة — لكنّ
+    # المُنادي في وضع الاستعادةِ لم يطلب إعادة، بل قال «أعِد جوابي» أو
+    # «إذني كما هو». فلا يُخترع له طلبٌ لم يصدر عنه.
+    if not allow_new_generation:
+        raise ProcessingConflict("thesis.nothing_to_recover", state=state)
 
     # ── محاولةٌ جديدةٌ مقصودة: الرقمُ يزيد ──
     claimed = (await session.execute(

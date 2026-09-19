@@ -463,6 +463,7 @@ async def run_extraction(
     external_allowed: bool = True,
     consent_state: str = "granted",
     claim: processing.ProcessingClaim | None = None,
+    holder: processing.ClaimHolder | None = None,
     subject_id: uuid.UUID | None = None,
     ledger_maker=None,
     checksum_sha256: str | None = None,
@@ -489,9 +490,13 @@ async def run_extraction(
     # بالمستأجر. فإن لم يُمرَّر شيءٌ بقي السلوكُ كما كان حرفيًّا.
     ledger_maker = ledger_maker or session_maker
     subject_id = subject_id if subject_id is not None else actor_user_id
-    # **والسياجُ يتقدّم مع العمل**: كلُّ انتقالٍ يكتب طابعًا جديدًا، فيُحمَل
-    # الأحدثُ لا الأوّل — وإلّا رُدّ العاملُ بائتًا وهو يعمل بحقّ.
-    holder = processing.ClaimHolder(claim)
+    # ══ حاملٌ **واحدٌ** للعاملِ الواحد (RC-T1-H2-B5) ══
+    #
+    # **ولا يُنشأ هنا حاملٌ ثانٍ.** فالسياجُ يتقدّم مع كلِّ انتقال؛ ولو كان
+    # للخطِّ حاملُه ولصاحبِه حاملٌ آخرُ لبقي الخارجيُّ يحمل أوّلَ سياجٍ
+    # كُتب — فيُخطئ في الاتجاهين: يظنّ نفسَه بائتًا وهو الحاضر، أو يكتب
+    # بسياجٍ لم يعد له. فيُمرَّر الحاملُ من المُنادي ويُشارَك.
+    holder = holder if holder is not None else processing.ClaimHolder(claim)
 
     async with session_maker() as session:
         record = (

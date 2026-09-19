@@ -1139,3 +1139,441 @@ async def test_25_the_same_section_with_other_science_conflicts(two_tenants):
     assert other.outcome == "conflict", (
         f"مُدخلٌ علميٌّ آخرُ قُبل تحت الجيل نفسِه: {other.outcome}")
     assert not other.may_call_provider, "أُذن بنداءِ مزوّدٍ على صِدام"
+
+
+# ═════ ٥ · المنحُ المكرَّر ليس إعادةَ معالجة (BLOCKER 1) ═════
+
+
+async def _reach(tid, thesis_id, state: str, *, failure_code: str | None = None):
+    """يضع الرسالةَ في حالٍ بعينها — كما تنتهي إليها تشغيلةٌ حقيقيّة."""
+    from sqlalchemy import text
+
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _observer
+
+    engine, factory = await _observer()
+    try:
+        async with factory() as observer:
+            await observer.execute(
+                text("UPDATE theses SET processing_state = :s,"
+                     "       failure_code = :c, failure_detail = :d,"
+                     "       processing_state_changed_at = now()"
+                     " WHERE id = :t AND tenant_id = :ten"),
+                {"s": state, "c": failure_code,
+                 "d": "e" if failure_code else None,
+                 "t": str(thesis_id), "ten": str(tid)})
+            await observer.commit()
+    finally:
+        await engine.dispose()
+
+
+async def _grant_again(slot, thesis_id):
+    async with _client(slot) as http:
+        return await http.post(f"/api/v1/theses/{thesis_id}/consent",
+                               json={"decision": "grant"})
+
+
+@requires_db
+async def test_26_a_repeated_grant_after_completion_starts_nothing(
+    two_tenants, _no_background,
+):
+    """منحٌ مكرَّرٌ بعد `ready_for_review`: **لا محاولةَ ولا عامل**.
+
+    و`ready_for_review` من `RETRYABLE` — فنداءٌ غيرُ مشروطٍ للتحكيم كان
+    يزيد الرقمَ ويُجدول عاملًا، أي قراءةٌ مدفوعةٌ لم يطلبها أحد.
+    """
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    thesis_id = uuid.UUID(answer.json()["thesis_id"])
+
+    first = await _grant_again(slot, thesis_id)
+    assert first.status_code == 200, first.text
+    await _reach(tid, thesis_id, "ready_for_review")
+    _s, attempts, _c, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+    scheduled = len(_no_background)
+
+    repeat = await _grant_again(slot, thesis_id)
+    assert repeat.status_code == 200, repeat.text
+
+    _s2, after, _c2, _f2, _fc2, _fd2 = await _thesis_row(tid, thesis_id)
+    assert after == attempts, f"منحٌ مكرَّرٌ بدأ محاولةً بعد الاكتمال: {attempts} ← {after}"
+    assert len(_no_background) == scheduled, "جُدوِل عاملٌ لمنحٍ مكرَّر"
+    assert (await _thesis_row(tid, thesis_id))[0] == "ready_for_review"
+
+
+@requires_db
+async def test_27_a_repeated_grant_after_failure_starts_nothing(
+    two_tenants, _no_background,
+):
+    """منحٌ مكرَّرٌ بعد `failed`: لا محاولةَ ولا عامل — والإعادةُ الصريحةُ هي البابُ."""
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    thesis_id = uuid.UUID(answer.json()["thesis_id"])
+
+    assert (await _grant_again(slot, thesis_id)).status_code == 200
+    await _reach(tid, thesis_id, "failed", failure_code="extraction_failed")
+    _s, attempts, _c, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+    scheduled = len(_no_background)
+
+    assert (await _grant_again(slot, thesis_id)).status_code == 200
+    _s2, after, _c2, _f2, _fc2, _fd2 = await _thesis_row(tid, thesis_id)
+    assert after == attempts, f"منحٌ مكرَّرٌ بدأ محاولةً بعد الإخفاق: {after}"
+    assert len(_no_background) == scheduled, "جُدوِل عاملٌ لمنحٍ مكرَّر"
+
+    # والإعادةُ الصريحةُ **تبدأ جيلًا** — فالبابُ مفتوحٌ لمن يقصده.
+    async with _client(slot) as http:
+        explicit = await http.post(f"/api/v1/theses/{thesis_id}/reprocess")
+    assert explicit.status_code == 202, explicit.text
+    _s3, deliberate, _c3, _f3, _fc3, _fd3 = await _thesis_row(tid, thesis_id)
+    assert deliberate == attempts + 1, "الإعادةُ الصريحةُ لم تبدأ جيلًا"
+
+
+@requires_db
+async def test_28_a_repeated_grant_recovers_a_safely_stale_attempt(
+    two_tenants, _no_background,
+):
+    """منحٌ مكرَّرٌ ومحاولةٌ مهجورةٌ آمنة: تُستعاد **بالرقم نفسِه**."""
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    thesis_id = uuid.UUID(answer.json()["thesis_id"])
+
+    assert (await _grant_again(slot, thesis_id)).status_code == 200
+    _s, attempts, _c, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+    await _make_stale(tid, thesis_id)
+    scheduled = len(_no_background)
+
+    assert (await _grant_again(slot, thesis_id)).status_code == 200
+    _s2, after, _c2, _f2, _fc2, _fd2 = await _thesis_row(tid, thesis_id)
+    assert after == attempts, f"الاستعادةُ زادت الرقم: {attempts} ← {after}"
+    assert len(_no_background) == scheduled + 1, "لم يُجدوَل عاملُ الاستعادة"
+
+
+@requires_db
+async def test_29_a_repeated_grant_past_the_horizon_starts_nothing(
+    two_tenants, _no_background,
+):
+    """منحٌ مكرَّرٌ ومحاولةٌ تجاوزت أفقَ سِجلِّها: **لا رقمَ يزيد، ولا عامل**."""
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    body = answer.json()
+    thesis_id, file_id = uuid.UUID(body["thesis_id"]), uuid.UUID(body["file_id"])
+    claim = _no_background[0][1][2]
+
+    assert (await _grant_again(slot, thesis_id)).status_code == 200
+    _s, attempts, _c, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+    await _age_run_past_horizon(tid, file_id, attempts)
+    await _make_stale(tid, thesis_id)
+    scheduled = len(_no_background)
+
+    assert (await _grant_again(slot, thesis_id)).status_code == 200
+    _s2, after, _c2, _f2, _fc2, _fd2 = await _thesis_row(tid, thesis_id)
+    assert after == attempts, f"بُدئ جيلٌ جديدٌ من منحٍ مكرَّر: {attempts} ← {after}"
+    assert len(_no_background) == scheduled, "جُدوِل عاملٌ على جيلٍ لا يُستعاد"
+    assert claim.attempt == attempts
+
+
+async def _age_run_past_horizon(tid, file_id, attempt):
+    """يُنشئ تشغيلةَ المحاولةِ ويُقدّمها إلى ما قبل أفقِ السِّجلّ."""
+    import datetime as _dt
+
+    from sqlalchemy import text
+
+    from athera_api.db import tenant_session
+    from athera_api.models.research import ExtractionRun
+    from athera_api.services.document_intelligence.states import Status
+    from athera_api.services.idempotency import TTL
+    from athera_api.services.thesis.processing import run_id_for
+    from tests.test_at_rc_t1_h3_ai_long_transactions import _observer
+
+    run_id = run_id_for(tid, file_id, attempt)
+    rows = await _rows("SELECT id FROM extraction_runs WHERE id = :r",
+                       {"r": str(run_id)})
+    if not rows:
+        async with tenant_session(tid, None) as session:
+            session.add(ExtractionRun(
+                id=run_id, tenant_id=tid, file_id=file_id,
+                extractor="document_intelligence", status=Status.PARSING.value,
+                chunks_parsed=0, candidates_proposed=0,
+                candidates_rejected_unquoted=0,
+                started_at=_dt.datetime.now(_dt.UTC)))
+    engine, factory = await _observer()
+    try:
+        async with factory() as observer:
+            await observer.execute(
+                text("UPDATE extraction_runs SET started_at ="
+                     "        now() - make_interval(secs => :back) WHERE id = :r"),
+                {"back": int(TTL.total_seconds()) + 3600, "r": str(run_id)})
+            await observer.commit()
+    finally:
+        await engine.dispose()
+
+
+# ═════ ٦ · إعادةُ HTTP لا تصير جيلًا جديدًا (BLOCKER 2) ═════
+
+
+@requires_db
+async def test_30_an_upload_replay_past_the_horizon_schedules_nothing(
+    two_tenants, _no_background,
+):
+    """مفتاحٌ مخزونٌ حيٌّ ومحاولةٌ تجاوزت أفقَ سِجلِّها: **الجوابُ وحدَه**.
+
+    وهذه نافذةٌ حقيقيّة: بقاءُ المفتاحِ أربعٌ وعشرون ساعة، وأفقُ السِّجلِّ
+    دونها. فبينهما يعيش مفتاحٌ مُكتمِلٌ على محاولةٍ لا تُستعاد — ولو جاز
+    للإعادةِ أن تبدأ جيلًا لصار تكرارُ طلبٍ شبكيٍّ ينفّذ نموذجًا مدفوعًا.
+    """
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    key = uuid.uuid4().hex
+    first = await _upload(slot, key=key)
+    body = first.json()
+    thesis_id, file_id = uuid.UUID(body["thesis_id"]), uuid.UUID(body["file_id"])
+    _s, attempts, _c, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+
+    await _age_run_past_horizon(tid, file_id, attempts)
+    await _make_stale(tid, thesis_id)
+    runs_before = await _count(
+        "SELECT count(*) FROM extraction_runs WHERE tenant_id = :t", {"t": str(tid)})
+    scheduled = len(_no_background)
+
+    replay = await _upload(slot, key=key)
+
+    assert replay.status_code == 202, f"{replay.status_code}: {replay.text[:220]}"
+    assert replay.json() == body, "لم يُعَد الجوابُ المخزون"
+    _s2, after, _c2, _f2, _fc2, _fd2 = await _thesis_row(tid, thesis_id)
+    assert after == attempts, f"إعادةُ HTTP بدأت جيلًا جديدًا: {attempts} ← {after}"
+    assert len(_no_background) == scheduled, "جُدوِل عاملٌ من إعادةٍ مخزونة"
+    assert await _count(
+        "SELECT count(*) FROM extraction_runs WHERE tenant_id = :t",
+        {"t": str(tid)}) == runs_before, "أُنشئت تشغيلةٌ من إعادةٍ مخزونة"
+
+    # ── وفعلٌ صريحٌ **يجوز له** أن يبدأ جيلًا ──
+    await _reach(tid, thesis_id, "failed", failure_code="extraction_failed")
+    async with _client(slot) as http:
+        explicit = await http.post(f"/api/v1/theses/{thesis_id}/reprocess")
+    assert explicit.status_code == 202, explicit.text
+    _s3, deliberate, _c3, _f3, _fc3, _fd3 = await _thesis_row(tid, thesis_id)
+    assert deliberate == attempts + 1, "الفعلُ الصريحُ لم يبدأ جيلًا"
+
+
+@requires_db
+async def test_31_a_reprocess_replay_past_the_horizon_schedules_nothing(
+    two_tenants, _no_background,
+):
+    """وإعادةُ `reprocess` المُمفتَحةُ كذلك: جوابٌ مخزونٌ بلا جيلٍ جديد."""
+    slot = two_tenants["a"]
+    tid = slot["tenant_id"]
+    answer = await _upload(slot, key=uuid.uuid4().hex)
+    body = answer.json()
+    thesis_id, file_id = uuid.UUID(body["thesis_id"]), uuid.UUID(body["file_id"])
+    await _reach(tid, thesis_id, "failed", failure_code="extraction_failed")
+
+    key = uuid.uuid4().hex
+    async with _client(slot) as http:
+        first = await http.post(f"/api/v1/theses/{thesis_id}/reprocess",
+                                headers={"Idempotency-Key": key})
+    assert first.status_code == 202, first.text
+    _s, attempts, _c, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+
+    await _age_run_past_horizon(tid, file_id, attempts)
+    await _make_stale(tid, thesis_id)
+    scheduled = len(_no_background)
+
+    async with _client(slot) as http:
+        replay = await http.post(f"/api/v1/theses/{thesis_id}/reprocess",
+                                 headers={"Idempotency-Key": key})
+
+    assert replay.status_code == 202, replay.text
+    assert replay.json() == first.json(), "لم يُعَد الجوابُ المخزون"
+    _s2, after, _c2, _f2, _fc2, _fd2 = await _thesis_row(tid, thesis_id)
+    assert after == attempts, f"إعادةُ HTTP بدأت جيلًا: {attempts} ← {after}"
+    assert len(_no_background) == scheduled, "جُدوِل عاملٌ من إعادةٍ مخزونة"
+
+
+def test_32_every_http_replay_path_is_recovery_only() -> None:
+    """**ولا مسلكَ إعادةٍ يستعمل التحكيمَ العامّ** — يُقاس بالبنية.
+
+    فـ`process-file` و`reprocess` يتشاركان المُعينَ نفسَه، والرفعُ له مُعينُه.
+    والدعوى أنّ أيًّا منها لا ينادي `claim_generation` بوضعها الافتراضيّ.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from athera_api.routers import document_intelligence as router_module
+
+    for fn in (router_module._recover_then_replay, router_module._replayed_upload):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = ast.unparse(node.func)
+            assert not name.endswith("claim_generation"), (
+                f"{fn.__name__}: إعادةٌ مخزونةٌ تنادي التحكيمَ العامّ — "
+                "فقد تبدأ جيلًا جديدًا")
+            if name.endswith("recover_generation"):
+                break
+        else:
+            raise AssertionError(f"{fn.__name__}: لا استعادةَ فيه أصلًا")
+
+    # والمسلكان المُمفتَحان يستعملان المُعينَ المشترك لا نسخةً ثانية.
+    for route in (router_module.process_stored_file, router_module.reprocess):
+        source = inspect.getsource(route)
+        assert "_recover_then_replay" in source, (
+            f"{route.__name__}: لا يمرّ بمُعينِ الإعادةِ المشترك")
+
+
+# ═════ ٧ · سياجُ الخاتمة: حاملٌ واحدٌ للعامل الواحد (BLOCKER 3) ═════
+
+
+@requires_db
+async def test_33_a_finished_worker_writes_no_completion_audit_after_takeover(
+    two_tenants, _no_background, monkeypatch,
+):
+    """(أ) انتهت الأولى، وبدأ الباحثُ جيلًا ثانيًا قبل أن تُكتب خاتمتُها.
+
+    فلو كُتبت بلا سياجٍ لسُجّل «اكتمل الاستخراج» على رسالةٍ صارت لغيرها —
+    ولادّعى تدقيقُها أنّ الجيلَ الأوّلَ أتمّ عملًا على رسالةٍ لا يملكها.
+    """
+    from athera_api.config import get_settings
+    from athera_api.db import tenant_session
+    from athera_api.routers import document_intelligence as di
+    from athera_api.services import audit as audit_module
+    from athera_api.services.thesis import processing
+    from tests.test_at_rc_t1_h2b4_model_ambiguity import _Structured, _activate
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    thesis_id, _file_id = await _ready_thesis(slot)
+    claim = _no_background[0][1][2]
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C2", raising=False)
+    _activate(monkeypatch, _Structured(_batch()))
+
+    # **والاستيلاءُ يقع بين الخطِّ وخاتمتِه** — لا داخل معاملةِ الخاتمة:
+    # تلك تُمسك قفلَ الصفّ، فاستيلاءٌ من جلسةٍ أخرى داخلها ينتظره أبدًا.
+    # وهذه هي المسابقةُ بعينها: انتهى الخطّ، واستلم غيرُه، ثمّ جاءت الخاتمة.
+    from athera_api.services.document_intelligence import pipeline
+
+    real_run = pipeline.run_extraction
+    taken: dict = {}
+
+    async def _finish_then_steal(*args, **kwargs):
+        result = await real_run(*args, **kwargs)
+        async with tenant_session(tid, uid) as other:
+            taken["claim"] = await processing.claim_generation(
+                other, tenant_id=tid, thesis_id=thesis_id)
+        return result
+
+    monkeypatch.setattr(pipeline, "run_extraction", _finish_then_steal)
+    assert audit_module.record is not None
+    await di._process(tid, uid, claim, "ar")
+
+    assert taken.get("claim") is not None, "لم يقع الاستيلاءُ فالفحصُ فارغ"
+    assert taken["claim"].attempt == claim.attempt + 1
+
+    completed = await _count(
+        "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+        "   AND action = 'thesis.extraction_completed'", {"t": str(tid)})
+    assert completed == 0, (
+        f"كتب عاملٌ سُلب منه جيلُه تدقيقَ اكتمالٍ ({completed})")
+
+    state, attempts, changed, _f, _fc, _fd = await _thesis_row(tid, thesis_id)
+    assert attempts == taken["claim"].attempt, "عبث العاملُ القديمُ بالجيل"
+    assert changed == taken["claim"].fence, "كتب القديمُ فوق سياجِ من استلم"
+
+
+@requires_db
+async def test_34_a_current_worker_failing_after_a_transition_records_it(
+    two_tenants, _no_background, monkeypatch,
+):
+    """(ب) عاملٌ **حاضرٌ** يسقط بعد انتقالٍ حقيقيّ: يُكتب فشلُه ولا يُحسب بائتًا.
+
+    وهذا هو الوجهُ الآخرُ للعطب: لو قِيس بالسياجِ الأوّلِ لا الأحدث، لظُنّ
+    بائتًا فلا يُكتب شيء — وتبقى الرسالةُ «جارية» بلا عاملٍ يعمل، أبدًا.
+    """
+    from athera_api.config import get_settings
+    from athera_api.routers import document_intelligence as di
+    from athera_api.services.document_intelligence import pipeline
+    from athera_api.services.document_intelligence.states import Status
+    from athera_api.services.thesis import processing
+    from tests.test_at_rc_t1_h2b4_model_ambiguity import _Structured, _activate
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    thesis_id, file_id = await _ready_thesis(slot)
+    claim = _no_background[0][1][2]
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C2", raising=False)
+    _activate(monkeypatch, _Structured(_batch()))
+
+    # يسقط **بعد** أن تقدّم السياجُ من `queued` إلى `parsing` ثمّ `extracting`.
+    real_finalize = pipeline.finalize
+
+    async def _explode(*args, **kwargs):
+        raise RuntimeError("unexpected failure after the fence advanced")
+
+    monkeypatch.setattr(pipeline, "finalize", _explode)
+    await di._process(tid, uid, claim, "ar")
+
+    state, attempts, _c, _f, failure_code, failure_detail = await _thesis_row(
+        tid, thesis_id)
+    assert state == processing.FAILED, (
+        f"عاملٌ حاضرٌ سقط ولم يُكتب فشلُه — بقيت الحالُ {state}")
+    assert attempts == claim.attempt, "تبدّل الجيلُ بلا سبب"
+    assert failure_code == "extraction_failed", failure_code
+    assert "RuntimeError" in (failure_detail or ""), failure_detail
+    # **ولا مقتطفَ من المستند في التفصيل.**
+    assert "مشكلة الدراسة" not in (failure_detail or "")
+
+    run_id = pipeline.run_id_for(tid, file_id, claim.attempt)
+    rows = await _rows("SELECT status FROM extraction_runs WHERE id = :r",
+                       {"r": str(run_id)})
+    assert rows and rows[0][0] == Status.EXTRACTION_FAILED.value, rows
+    assert real_finalize is not None
+
+
+@requires_db
+async def test_35_a_truly_superseded_worker_failing_writes_nothing(
+    two_tenants, _no_background, monkeypatch,
+):
+    """(ج) عاملٌ سُلب منه جيلُه ثمّ سقط: **صفرُ كتابةٍ وصفرُ تدقيق**."""
+    from athera_api.config import get_settings
+    from athera_api.db import tenant_session
+    from athera_api.routers import document_intelligence as di
+    from athera_api.services.document_intelligence import pipeline
+    from athera_api.services.thesis import processing
+    from tests.test_at_rc_t1_h2b4_model_ambiguity import _Structured, _activate
+
+    slot = two_tenants["a"]
+    tid, uid = slot["tenant_id"], slot["user_id"]
+    thesis_id, _file_id = await _ready_thesis(slot)
+    claim = _no_background[0][1][2]
+    monkeypatch.setattr(get_settings(), "model_external_send_max_classification",
+                        "C2", raising=False)
+    _activate(monkeypatch, _Structured(_batch()))
+
+    taken: dict = {}
+
+    async def _steal_then_explode(*args, **kwargs):
+        await _make_stale(tid, thesis_id)
+        async with tenant_session(tid, uid) as other:
+            taken["claim"] = await processing.claim_generation(
+                other, tenant_id=tid, thesis_id=thesis_id)
+        raise RuntimeError("failing after the generation was taken away")
+
+    monkeypatch.setattr(pipeline, "finalize", _steal_then_explode)
+    await di._process(tid, uid, claim, "ar")
+
+    assert taken.get("claim") is not None, "لم يقع الاستيلاء"
+    state, attempts, changed, _f, failure_code, _fd = await _thesis_row(tid, thesis_id)
+    assert attempts == taken["claim"].attempt
+    assert changed == taken["claim"].fence, "كتب البائتُ فوق سياجِ من استلم"
+    assert state != processing.FAILED, (
+        f"كتب البائتُ حالَ فشلٍ على جيلٍ ليس له: {state}")
+    assert failure_code is None, f"كتب البائتُ رمزَ فشل: {failure_code}"
+    assert await _count(
+        "SELECT count(*) FROM audit_events WHERE tenant_id = :t"
+        "   AND action = 'thesis.extraction_completed'", {"t": str(tid)}) == 0
