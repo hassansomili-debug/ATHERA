@@ -598,3 +598,28 @@ async def test_21_list_endpoints_issue_a_constant_number_of_statements(two_tenan
     assert len(page["items"]) == 25
     usage = (await _get(a, "/api/v1/admin/usage")).json()
     assert usage["summary"]["model_runs"] == 120 and len(usage["by_day"]) <= 31
+
+
+def test_22_every_admin_query_pins_the_principal_tenant() -> None:
+    """**طبقتان لا طبقة**: RLS، وفوقها شرطُ `tenant_id == tid` صريحٌ في كلّ دالّة.
+
+    وRLS وحدَها تُخفي حذفَ الشرط الصريح في الفحوص الحيّة — فحذفُه لا يُحمّر
+    شيئًا وتسقط الطبقةُ الثانية صامتة. فيُقرأ المصدر: كلُّ نموذجٍ مستأجَرٍ تلمسه
+    دالّةٌ هنا يُقيَّد فيها بـ`tid` المأخوذ من الرمز.
+    """
+    source = (API / "athera_api" / "services" / "admin_console.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    scoped = ("Membership", "Role", "ResearchProject", "File", "Thesis", "AgentRun",
+              "ModelRun", "ToolRun", "ProjectMember", "ProjectFile", "Manuscript", "AuditEvent")
+    # `_owner_expr` و`_lifecycle_expr` تعبيران يُركَّبان داخل استعلامٍ مقيَّدٍ أصلًا.
+    exempt = {"_owner_expr", "_lifecycle_expr"}
+    offenders = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name in exempt:
+            continue
+        body = ast.get_source_segment(source, fn) or ""
+        for model in scoped:
+            if re.search(rf"\b{model}\.(?!tenant_id)\w+", body) and \
+                    f"{model}.tenant_id == tid" not in body:
+                offenders.append(f"{fn.name}: {model}")
+    assert offenders == [], f"نموذجٌ مستأجَرٌ بلا شرطِ المستأجر الصريح: {offenders}"
