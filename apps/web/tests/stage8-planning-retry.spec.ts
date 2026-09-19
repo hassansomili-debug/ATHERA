@@ -211,6 +211,133 @@ test.describe("Stage 8 — a failed generation keeps its retry, and its key", ()
   });
 });
 
+const NAMESPACE = "pubriva.idempotency.v1";
+const pendingKeys = (page: Page) => page.evaluate((ns) => {
+  const raw = window.sessionStorage.getItem(ns);
+  return raw ? Object.values(JSON.parse(raw) as Record<string, { key: string }>)
+    .map((r) => r.key) : [];
+}, NAMESPACE);
+const newGeneration = (page: Page) => page.getByTestId("planning-new-generation");
+
+test.describe("Stage 8 — a retry that cannot help is not offered as a retry", () => {
+  test("external_result_unknown: no same-key Retry, the key stays pending, "
+    + "and only an explicit new generation mints K2", async ({ page }) => {
+    await register(page);
+    await declareModelReady(page);
+    await serveContext(page, () => ({ sufficient: true, consent_state: "granted" }));
+    const gen = generation(page, [
+      (r) => r.fulfill(failure(409, "idempotency.external_result_unknown",
+        "قد تكون المحاولةُ السابقةُ نُفّذت")),
+      (r) => r.fulfill(json(200, listing([opportunity("proposed")]))),
+    ]);
+    await gen.install([]);
+    await openPlanning(page);
+    await cta(page).click();
+    await expect.poll(() => gen.keys.length, { timeout: 30_000 }).toBe(1);
+
+    await expect(pageError(page)).toContainText("قد تكون المحاولةُ السابقةُ نُفّذت");
+    await expect(cta(page), "زرُّ إعادةٍ بالمفتاح نفسِه على أثرٍ لا يُعرف").toHaveCount(0);
+    await expect(newGeneration(page)).toHaveText("ابدأ توليدًا جديدًا");
+    await expect(page.getByTestId("planning-unknown-note")).toBeVisible();
+    // لا طلبَ ثانيًا تلقائيًّا — والنيّةُ K1 باقيةٌ معلَّقة.
+    await page.waitForTimeout(1500);
+    expect(gen.keys).toHaveLength(1);
+    expect(await pendingKeys(page), "حُرّرت النيّةُ بلا قرار").toContain(gen.keys[0]);
+
+    await newGeneration(page).click();
+    await expect.poll(() => gen.keys.length, { timeout: 30_000 }).toBe(2);
+    expect(gen.keys[1]).toMatch(KEY);
+    expect(gen.keys[1], "التوليدُ الجديدُ الصريحُ حمل المفتاحَ القديم").not.toBe(gen.keys[0]);
+  });
+
+  test("intent_expired: no network, no same-key Retry, explicit restart mints a new key",
+    async ({ page }) => {
+      await register(page);
+      await declareModelReady(page);
+      await serveContext(page, () => ({ sufficient: true, consent_state: "granted" }));
+      const posts = { n: 0 };
+      page.on("request", (req) => {
+        if (req.method() === "POST" && req.url().endsWith("/publication-opportunities")) {
+          posts.n += 1;
+        }
+      });
+      const gen = generation(page, [
+        (r) => r.fulfill(failure(503, "server.error")),
+        (r) => r.fulfill(json(200, listing([]))),
+      ]);
+      await gen.install([]);
+      await openPlanning(page);
+      await cta(page).click();
+      await expect.poll(() => gen.keys.length, { timeout: 30_000 }).toBe(1);
+      await expect(cta(page)).toHaveText("أعد محاولة التوليد");
+
+      // النيّةُ تشيخ بعد الأفق الآمن.
+      await page.evaluate((ns) => {
+        const all = JSON.parse(window.sessionStorage.getItem(ns) ?? "{}");
+        for (const row of Object.values(all) as Array<{ createdAt: number }>) {
+          row.createdAt = Date.now() - 23.5 * 60 * 60 * 1000;
+        }
+        window.sessionStorage.setItem(ns, JSON.stringify(all));
+      }, NAMESPACE);
+      await cta(page).click();
+      await expect(newGeneration(page)).toBeVisible({ timeout: 30_000 });
+      await expect(cta(page)).toHaveCount(0);
+      expect(posts.n, "طلبٌ خرج على نيّةٍ منقضية").toBe(1);
+
+      await newGeneration(page).click();
+      await expect.poll(() => gen.keys.length, { timeout: 30_000 }).toBe(2);
+      expect(gen.keys[1]).not.toBe(gen.keys[0]);
+    });
+
+  test("idempotency.in_progress keeps Retry and reuses K1", async ({ page }) => {
+    await register(page);
+    await declareModelReady(page);
+    await serveContext(page, () => ({ sufficient: true, consent_state: "granted" }));
+    const gen = generation(page, [
+      (r) => r.fulfill(failure(409, "idempotency.in_progress")),
+      (r) => r.fulfill(json(200, listing([]))),
+    ]);
+    await gen.install([]);
+    await openPlanning(page);
+    await cta(page).click();
+    await expect.poll(() => gen.keys.length, { timeout: 30_000 }).toBe(1);
+    await expect(cta(page)).toHaveText("أعد محاولة التوليد");
+    await expect(newGeneration(page)).toHaveCount(0);
+    await cta(page).click();
+    await expect.poll(() => gen.keys.length, { timeout: 30_000 }).toBe(2);
+    expect(gen.keys[1]).toBe(gen.keys[0]);
+  });
+
+  test("no cryptographic entropy: no generation CTA and no protected POST",
+    async ({ page }) => {
+      await register(page);
+      await page.addInitScript(() => {
+        // `subtle` باقٍ للبصمة؛ مولّدا العشوائيّة وحدَهما يُنزعان.
+        Object.defineProperty(Crypto.prototype, "randomUUID",
+          { value: undefined, configurable: true });
+        Object.defineProperty(Crypto.prototype, "getRandomValues",
+          { value: undefined, configurable: true });
+      });
+      await declareModelReady(page);
+      await serveContext(page, () => ({ sufficient: true, consent_state: "granted" }));
+      const posts = { n: 0 };
+      page.on("request", (req) => {
+        if (req.method() === "POST" && req.url().endsWith("/publication-opportunities")) {
+          posts.n += 1;
+        }
+      });
+      const gen = generation(page, [(r) => r.fulfill(json(200, listing([])))]);
+      await gen.install([]);
+      await openPlanning(page);
+      await cta(page).click();
+      await expect(pageError(page)).toContainText("عشوائيّةً معمّاة", { timeout: 30_000 });
+      await expect(cta(page), "زرُّ توليدٍ يَعِد بما تمنعه البيئة").toHaveCount(0);
+      await expect(newGeneration(page)).toHaveCount(0);
+      await page.waitForTimeout(1000);
+      expect(posts.n, "طلبٌ محميٌّ خرج بلا عشوائيّةٍ معمّاة").toBe(0);
+    });
+});
+
 test.describe("Stage 8 — the outline build carries one key per intent", () => {
   async function selectedWorkspace(page: Page) {
     await declareModelReady(page);

@@ -271,6 +271,42 @@ export function intentRefusal(cause: unknown, locale: Locale): unknown {
  * و`FormData` لا يُقرأ: محتواه قد يبلغ مئاتِ الميغابايت، وقراءتُه لبناء
  * بصمةٍ عبثٌ. فتُشترط هُويّةٌ صريحةٌ من الواجهة، ويُفحص ذلك في حارسِ التغطية.
  */
+/**
+ * يُحرّر نيّةً معلَّقةً **بقرارٍ صريحٍ من الباحث** — ولا شيءَ غيرَ ذلك (المرحلة ٨).
+ *
+ * ## ولمَ يوجد
+ *
+ * `idempotency.external_result_unknown` تقول: المحاولةُ السابقةُ **ربّما**
+ * نُفّذت، ولن تُعاد عمياءَ بالمفتاح نفسِه؛ والتنفيذُ الجديدُ يحتاج مفتاحًا
+ * جديدًا. و`idempotency.intent_expired` تقول: نيّةٌ معلَّقةٌ شاخت، ولا
+ * يُسكّ لها بديلٌ تلقائيًّا. وفي الحالتين **لا يغيّر الزرُّ نفسُه شيئًا** —
+ * الإعادةُ بالمفتاح نفسِه تلقى الجوابَ نفسَه إلى الأبد.
+ *
+ * فالخروجُ قرارٌ لا تكرار: الباحثُ يختار «ابدأ من جديد» وهو يعلم أنّ ما
+ * سبق ربّما وقع. وهذه الدالّةُ هي ذلك القرارُ في السجلّ.
+ *
+ * ## وما لا تفعله
+ *
+ * **لا تُرسل طلبًا، ولا تسكّ مفتاحًا.** تحسب البصمةَ **كما يحسبها `apiFetch`
+ * حرفًا** — الفعل والمسار ومادّةُ الجسم الدلاليّة والهُويّةُ الصريحة — ثمّ
+ * تحسم النيّةَ وحدَها. والطلبُ التالي يمرّ بـ`apiFetch` فيسكّ مفتاحَه بنفسه.
+ * ولا تُنادى من `catch` ولا عند ٤٠٩: **من فعلِ مستخدمٍ صريحٍ وحده**.
+ */
+export async function releaseProtectedIntentForExplicitRestart(
+  path: string,
+  options: { method: string; body?: BodyInit | null; intentId?: string },
+): Promise<void> {
+  const method = options.method.toUpperCase();
+  if (!isProtectedRequest(method, path)) return;
+  const fingerprint = await intentFingerprint({
+    method,
+    path,
+    body: bodyFingerprintMaterial(options.body),
+    intentId: options.intentId,
+  });
+  resolveIntent(fingerprint);
+}
+
 function bodyFingerprintMaterial(body: BodyInit | null | undefined): unknown {
   if (body == null) return null;
   if (typeof FormData !== "undefined" && body instanceof FormData) return "__form_data__";

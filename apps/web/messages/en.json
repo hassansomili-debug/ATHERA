@@ -1231,6 +1231,7 @@
     "select": "Select this opportunity",
     "selectionRequired": "Select an opportunity first to build its thread and outline.",
     "showEvidence": "Show evidence",
+    "startNewGeneration": "Start a new generation",
     "statusExcluded": "Excluded",
     "statusProposed": "Proposed",
     "statusSelected": "Selected",
@@ -1243,6 +1244,7 @@
     "thread": "Golden Thread",
     "threadIssues": "Validator findings",
     "title": "Publication opportunities",
+    "unknownOutcomeNote": "The earlier attempt may have completed on the server. Starting a new generation runs another one; it does not undo the earlier attempt.",
     "verified": "Verified",
     "verifiedFacts": "Verified facts",
     "workspace": "Selected opportunity workspace"
