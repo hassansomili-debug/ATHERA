@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { fileIntentId } from "@/lib/idempotency";
 import { AtheraApiError, apiFetch } from "@/lib/api";
 import { AiAnswerCard, type AiAnswer } from "./AiAnswer";
 import { type Locale, type Messages, translator } from "@/lib/i18n";
@@ -101,18 +102,32 @@ export function AtheraAiInput({
     return () => { live = false; };
   }, [attachFileId, locale, t]);
 
+  /**
+   * **المرفقُ المختارُ يبقى ما دامت نيّتُه معلَّقة** (Stage 6).
+   *
+   * فالحقلُ يُفرَّغ بعد كلِّ اختيار، ولا يملك الباحثُ بعد عطبٍ غامضٍ إلا
+   * أن يفتح المنتقي ثانية — فيصنع كائن `File` آخر، وتصير الرفعةُ الواحدة
+   * نيّتَين ومفتاحَين وملفَّين مخزونَين. فيُمسَك الكائنُ نفسُه.
+   */
+  const [pendingAttachment, setPendingAttachment] = useState<File | null>(null);
+
   /** يرفع الملف فعلًا عبر مسار الرفع القائم، ويُظهر ما أُرفق. */
   async function attach(file: File) {
     setBusy(true);
     setError(null);
+    setPendingAttachment(file);
     try {
       const form = new FormData();
       form.append("upload", file);
       form.append("classification", "C2");
       const stored = await apiFetch<{ id: string; original_filename: string }>(
-        "/api/v1/files/upload", { method: "POST", locale, body: form },
+        // هُويّةُ النيّةِ كائنُ الملفِّ المرفق — لا اسمُه (Stage 6).
+        "/api/v1/files/upload",
+        { method: "POST", locale, body: form, intentId: fileIntentId(file) },
       );
       setAttached({ id: stored.id, name: stored.original_filename });
+      // نجاحٌ يحسم النيّة — ولا إعادةَ تُعرض على رفعةٍ تمّت.
+      setPendingAttachment(null);
     } catch (err) {
       setError(failure(err, t("ai.uploadFailed")));
     } finally {
@@ -336,6 +351,21 @@ export function AtheraAiInput({
       {error ? (
         <div role="alert" data-testid="ai-error" data-state={error.state} style={{ marginBlockStart: 10 }}>
           <p className="error" style={{ margin: 0 }}>{error.text}</p>
+          {/* **الإعادةُ على المرفقِ نفسِه** — ولا يُعاد فتحُ المنتقي. */}
+          {pendingAttachment ? (
+            <p style={{ margin: "6px 0 0" }}>
+              <button
+                type="button"
+                data-testid="ai-attachment-retry"
+                disabled={busy}
+                onClick={() => {
+                  if (pendingAttachment) void attach(pendingAttachment);
+                }}
+              >
+                {t("ai.retryUpload")}
+              </button>
+            </p>
+          ) : null}
           {error.state === "permission_denied" ? (
             <p className="metric-label" style={{ margin: "4px 0 0" }}>
               {t("common.permissionDenied")}

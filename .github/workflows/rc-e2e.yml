@@ -206,6 +206,21 @@ jobs:
         env:
           PUBRIVA_WEB_SERVER: external
 
+      # ── مفتاحُ الإعادة في المتصفّح، على المكدّس نفسِه (STAGE 6) ──
+      #
+      # **موضعُها هنا لا في `ci.yml`.** الرقعتان تُسجّلان حسابًا حقيقيًّا
+      # وترفعان ملفًّا حقيقيًّا؛ والثانيةُ أبعد: تُجري الطلبَ على الـAPI
+      # ثمّ تقطع **ردَّه** وحدَه، فالخادمُ عمل والمتصفّحُ لم يعلم — ثمّ
+      # تعدّ الكائنات. ولا تُثبت شيئًا إلّا على خادمٍ يُفتِّح المفاتيح.
+      - name: Browser intent keys (real browser · real API)
+        run: cd apps/web && npm run test:idem-browser
+        env:
+          PUBRIVA_WEB_SERVER: external
+      - name: One intent, one object (real API · reply dropped mid-flight)
+        run: cd apps/web && npm run test:idem-fullstack
+        env:
+          PUBRIVA_WEB_SERVER: external
+
       # ── والتعاونُ البحثيُّ عبر ثلاث مؤسسات، على المكدّس نفسِه ──
       #
       # **موضعُها هنا لا في `ci.yml`.** الرحلةُ تُسجّل ثلاثةَ حساباتٍ في

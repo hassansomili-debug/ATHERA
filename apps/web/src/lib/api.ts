@@ -7,6 +7,15 @@
  */
 import type { Locale } from "./i18n";
 import {
+  IdempotencyEntropyUnavailable,
+  IdempotencyIntentExpired,
+  intentFingerprint,
+  isProtectedRequest,
+  keyForIntent,
+  resolveIntent,
+  shouldRetainIntent,
+} from "./idempotency";
+import {
   clearSession,
   getAccessToken,
   getRefreshToken,
@@ -168,19 +177,130 @@ function redirectToLogin(locale: Locale): void {
  * التجديد **مرّة واحدة**، ويُعاد الطلب الأصلي **مرّة واحدة**، فإن فشل
  * التجديد فحينئذٍ — وحينئذٍ فقط — تُمحى الجلسة.
  */
+export interface IdempotentOptions {
+  /**
+   * هُويّةُ نيّةٍ صريحةٌ من الواجهة — **لازمةٌ حين لا يكفي الجسم**.
+   *
+   * ورفعُ الملفّات مثالُها: `FormData` لا يُقرأ جسمُه لبناء بصمة، وملفّان
+   * مختلفان قد يتّفقان في الاسم والحجم والنوع. فتُمرّر الواجهةُ هُويّةَ
+   * عنصرِ الطابور، فيصير لكلِّ ملفٍّ مفتاحُه.
+   */
+  intentId?: string;
+  /** مفتاحٌ مُعَدٌّ سلفًا — يمرّره مسلكُ الرفع ليتشارك النقلان مفتاحًا واحدًا. */
+  idempotencyKey?: string;
+}
+
 export async function apiFetch<T>(
   path: string,
-  options: RequestInit & { locale: Locale; token?: string },
+  options: RequestInit & { locale: Locale; token?: string } & IdempotentOptions,
 ): Promise<T> {
-  return requestWithRefresh<T>(path, options, false);
+  // ══ المفتاحُ يُعَدُّ **قبل** أوّل طلب (Stage 6) ══
+  //
+  // فلو وُلّد داخل حلقة الإعادة لَحمل كلُّ محاولةٍ مفتاحًا آخر — وتلك
+  // ليست إعادةً في نظر الخادم بل طلباتٌ مستقلّة، فتتكرّر الطفرة.
+  const method = (options.method ?? "GET").toUpperCase();
+  if (!isProtectedRequest(method, path)) {
+    return requestWithRefresh<T>(path, options, false);
+  }
+  const fingerprint = await intentFingerprint({
+    method,
+    path,
+    body: bodyFingerprintMaterial(options.body),
+    intentId: options.intentId,
+  });
+  // **وقد يُغلَق البابُ هنا** — نيّةٌ معلَّقةٌ شاخت، أو لا عشوائيّةَ
+  // معمّاة. وفي الحالين **لا طلبَ يخرج**: الخطأُ يُرفع قبل الشبكة.
+  let key: string;
+  try {
+    key = options.idempotencyKey ?? keyForIntent(fingerprint);
+  } catch (cause) {
+    throw intentRefusal(cause, options.locale);
+  }
+  return requestWithRefresh<T>(path, options, false, { key, fingerprint });
+}
+
+/**
+ * يترجم رفضَ سياسةِ النيّة إلى خطأِ العميل المعتاد — **بلا مخطّطٍ موازٍ**.
+ *
+ * فالشاشاتُ كلُّها تعرض `AtheraApiError` وتقرأ `localized(locale)`؛ ونوعٌ
+ * ثالثٌ يعني شاشةً تسقط أو تقول «تعذّر» بلا سبب. والحالُ ليست ٥٠٠ ولا ٤٠٠:
+ * لا جوابَ من خادمٍ أصلًا، فالحالةُ صفرٌ كما في انقطاع النقل.
+ */
+export function intentRefusal(cause: unknown, locale: Locale): unknown {
+  if (cause instanceof IdempotencyIntentExpired) {
+    return new AtheraApiError(0, {
+      code: cause.code,
+      locale,
+      message: "محاولةٌ سابقةٌ لهذه العمليّة لم يُعرف مصيرُها.",
+      messages: {
+        ar:
+          "محاولةٌ سابقةٌ لهذه العمليّة لم يُعرف مصيرُها، وقد مضى عليها وقتٌ "
+          + "طويل. ولن تُعاد تلقائيًّا: قد تكون تمّت عند الخادم، وإعادتُها "
+          + "الآن قد تُكرّرها. افتح تبويبةً جديدة أو راجع نتيجةَ العمليّة "
+          + "قبل أن تبدأ من جديد.",
+        en:
+          "An earlier attempt at this operation was never confirmed, and too "
+          + "much time has passed. It will not be retried automatically: it may "
+          + "have completed on the server, and repeating it now could duplicate "
+          + "it. Open a new tab, or check the outcome before starting again.",
+      },
+    });
+  }
+  if (cause instanceof IdempotencyEntropyUnavailable) {
+    return new AtheraApiError(0, {
+      code: cause.code,
+      locale,
+      message: "هذا المتصفّح لا يوفّر عشوائيّةً معمّاة.",
+      messages: {
+        ar:
+          "هذا المتصفّح لا يوفّر عشوائيّةً معمّاة، ولا تُرسَل عمليّةٌ محميّة "
+          + "بلا مفتاحٍ سليم. حدِّث المتصفّح أو افتح الموقع عبر HTTPS.",
+        en:
+          "This browser exposes no cryptographic randomness, and a protected "
+          + "operation is never sent without a sound key. Update the browser, "
+          + "or open the site over HTTPS.",
+      },
+    });
+  }
+  return cause;
+}
+
+/**
+ * ما يدخل البصمةَ من الجسم — **ولا يُحفَظ منه شيء**.
+ *
+ * و`FormData` لا يُقرأ: محتواه قد يبلغ مئاتِ الميغابايت، وقراءتُه لبناء
+ * بصمةٍ عبثٌ. فتُشترط هُويّةٌ صريحةٌ من الواجهة، ويُفحص ذلك في حارسِ التغطية.
+ */
+function bodyFingerprintMaterial(body: BodyInit | null | undefined): unknown {
+  if (body == null) return null;
+  if (typeof FormData !== "undefined" && body instanceof FormData) return "__form_data__";
+  if (typeof body === "string") {
+    try {
+      return JSON.parse(body) as unknown;
+    } catch {
+      return body;
+    }
+  }
+  return "__opaque_body__";
+}
+
+interface IntentTicket {
+  key: string;
+  fingerprint: string;
 }
 
 async function requestWithRefresh<T>(
   path: string,
-  options: RequestInit & { locale: Locale; token?: string },
+  options: RequestInit & { locale: Locale; token?: string } & IdempotentOptions,
   alreadyRetried: boolean,
+  intent?: IntentTicket,
 ): Promise<T> {
-  const { locale, token, ...init } = options;
+  // **ولا يُسرَّب وسيطُ نيّةٍ إلى `fetch`.** `intentId`/`idempotencyKey`
+  // شأنُ هذه الطبقة، و`RequestInit` لا يعرفهما — فيُنزَعان هنا.
+  const { locale, token, ...rest } = options;
+  const init: RequestInit = { ...rest };
+  delete (init as Record<string, unknown>).intentId;
+  delete (init as Record<string, unknown>).idempotencyKey;
 
   // يُعلَن الخلل قبل الطلب: محاولة الاتصال بـlocalhost من نطاق منشور تُحجب
   // في المتصفح برسالة CSP غامضة، فيبدو العطب في الخادم لا في الإعداد.
@@ -193,22 +313,37 @@ async function requestWithRefresh<T>(
   // (boundary) يولّده المتصفح ويضعه في الترويسة؛ وفرضُ `application/json`
   // فوقه يُنتج طلبًا لا يستطيع الخادم تفكيكه.
   const isMultipart = typeof FormData !== "undefined" && init.body instanceof FormData;
-  const response = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      ...(isMultipart ? {} : { "Content-Type": "application/json" }),
-      "Accept-Language": locale,
-      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
-      ...init.headers,
-    },
-  });
+  // **وتُبنى الترويساتُ بواجهتها لا بنشرِ كائن.** `init.headers` قد يكون
+  // `Headers` أو مصفوفةَ أزواج، ونشرُها بـ`...` يُنتج كائنًا فارغًا فتضيع
+  // ترويسةُ المُنادي صامتةً.
+  const headers = new Headers(init.headers as HeadersInit | undefined);
+  if (!isMultipart && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  headers.set("Accept-Language", locale);
+  if (bearer) headers.set("Authorization", `Bearer ${bearer}`);
+  // والمفتاحُ يُرسَل كما هو في كلّ محاولةٍ لهذه النيّة — ومنها إعادةُ
+  // المحاولة بعد التجديد.
+  if (intent) headers.set("Idempotency-Key", intent.key);
+
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  } catch (networkError) {
+    // ══ انقطاعُ نقلٍ: **لا يُعرف أوَدع الخادمُ أم لا** ══
+    //
+    // فتبقى النيّةُ معلَّقةً بمفتاحها، وإعادةُ المحاولةِ نفسِها تحمله —
+    // فيحسم الخادمُ الأمرَ بجوابه المخزون أو بتنفيذٍ أوّل.
+    throw networkError;
+  }
 
   if (response.status === 401 && !isAuthPath(path)) {
     // رمزٌ مُمرَّر يدويًّا ليس جلسة المتصفح، فلا يُجدَّد نيابةً عن صاحبه.
     const ownsSession = token === undefined;
     if (ownsSession) {
       if (!alreadyRetried && getRefreshToken() && (await refreshOnce())) {
-        return requestWithRefresh<T>(path, options, true);
+        // **وبالمفتاح نفسِه**: تجديدُ الرمز ليس نيّةً جديدة.
+        return requestWithRefresh<T>(path, options, true, intent);
       }
       // **ولا تُمحى جلسة المتصفح لأجل رمزٍ ليس لها.** رفضُ رمزٍ مرّره
       // المستدعي صراحةً خبرٌ عن ذلك الرمز، لا حكمٌ على من يجلس أمام الشاشة.
@@ -219,6 +354,10 @@ async function requestWithRefresh<T>(
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    // ── تُحرَّر النيّةُ إن حُسمت، وتبقى إن بقي الأثرُ مجهولًا ──
+    if (intent && !shouldRetainIntent(response.status, body?.error?.code)) {
+      resolveIntent(intent.fingerprint);
+    }
     throw new AtheraApiError(response.status, body?.error ?? {
       code: "server.error",
       locale,
@@ -228,6 +367,8 @@ async function requestWithRefresh<T>(
   }
   // **٢٠٤ ليست جسمًا فارغًا، بل لا جسم لها.** و`response.json()` يرمي عليها.
   // والخروج يردّ ٢٠٤ — فبلا هذا السطر يفشل كل خروجٍ ناجح ويبدو عطبًا.
+  // **والنجاحُ يحسم النيّة** — ومنه الإعادةُ المخزونة: نجاحٌ هو نجاح.
+  if (intent) resolveIntent(intent.fingerprint);
   if (response.status === 204 || response.headers.get("content-length") === "0") {
     return undefined as T;
   }
